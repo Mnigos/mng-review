@@ -9,7 +9,7 @@ The conductor is code. Models do five jobs:
 | Role | Defined by | Job |
 |---|---|---|
 | Router | engine | adds agents the path rules missed and rates the risk of the change |
-| Main reviewer | engine, steered by `.mng/context.md` | finds bugs across files; runs on every code change |
+| Main reviewer | engine, steered by `.mng/CONTEXT.md` | finds bugs across files; runs on every code change |
 | Declared agents | `.mng/agents/*.md` | `kind: bug` specialists and `kind: nit` convention checks |
 | Validator | engine | tries to refute each bug finding before it is posted |
 | Verdict | engine | `ready`, `needs fixes` or `needs owner` |
@@ -19,8 +19,8 @@ The conductor is code. Models do five jobs:
 ```
 .mng/
   review.yml     # settings
-  context.md     # for the main reviewer: intentional patterns, where bugs hide
-  memory.md      # accepted "intentional" decisions, one line each
+  CONTEXT.md     # for the main reviewer: intentional patterns, where bugs hide
+  MEMORY.md      # accepted "intentional" decisions, one line each
   agents/        # declared agents, one Markdown file each
 ```
 
@@ -51,7 +51,7 @@ Trace every changed handler to the check that proves the caller owns the row.
 
 `when.triage` is the sentence the router reads to decide whether to add this agent when no path matched.
 
-Selection rules: every non-empty `when` list must match. `labels` needs any one of the pull request's labels, `authors` the author, `targets` the base branch, and `paths` at least one changed file that no `exclude` pattern matches. An agent without `paths` covers every changed file. Only an agent that failed on `paths` alone, and has a `triage` line, is offered to the router. Patterns are globs; a pattern without a `/` matches the file name in any directory.
+Selection rules: every non-empty `when` list must match. `labels` needs any one of the pull request's labels, `authors` the author, `targets` the base branch, and `paths` at least one changed file that no `exclude` pattern matches; a renamed file matches at its old or new path. An agent without `paths` covers every changed file. Only an agent that failed on `paths` alone, and has a `triage` line, is offered to the router. Patterns are globs; a pattern without a `/` matches the file name in any directory.
 
 Import lines stand alone on their line. `@/path` imports the whole file and `@/path#Heading` the section from that heading to the next heading of the same or a higher level. A missing file or heading fails the run.
 
@@ -115,10 +115,10 @@ models:
 2. **Route.** Paths, labels, authors and target branch select agents. The router model then reads the path list, a truncated diff and each unselected agent's `when.triage` line. It returns agents to add, one reason each, and a risk level: `trivial`, `normal` or `risky`. It can add agents and never removes one. A change under `risk_paths` is `risky`. If the router fails, the run continues with path selection and `normal`.
 3. **Depth.** `trivial`: metadata agents only. `normal`: main reviewer and selected agents once. `risky`: the main reviewer runs one sub-agent per changed unit (function, handler, migration; up to 8 in parallel) at higher effort.
 4. **Find.** Each reviewer is a tool loop over chat completions. Tools are read-only and confined to the repository: `read_file(ref, path, range)`, `grep(ref, pattern, glob)`, `list_dir(ref, path)`, `diff(path?)`, `blame(path, range)`, `pr_metadata()`. Head content is read with `git show`; nothing from the change is built or executed. Change text and tool output are passed as fenced data. Output: findings as JSON `{path, line, severity, title, trigger, impact, evidence[], suggestion?}`.
-5. **Validate.** One fresh agent per bug finding, instructed to refute it. It receives the finding, the file, the diff, `context.md`, `memory.md` and earlier threads on that file. It answers confirm or reject, a re-rated severity and `path:line` evidence. It rejects speculation without a trigger in this repository, claims that rest on behaviour the repository does not show, repeats of open threads and anything `memory.md` covers. Findings with the same root cause merge. A finding the validator cannot answer for after two attempts is kept.
+5. **Validate.** One fresh agent per bug finding, instructed to refute it. It receives the finding, the file, the diff, `CONTEXT.md`, `MEMORY.md` and earlier threads on that file. It answers confirm or reject, a re-rated severity and `path:line` evidence. It rejects speculation without a trigger in this repository, claims that rest on behaviour the repository does not show, repeats of open threads and anything `MEMORY.md` covers. Findings with the same root cause merge. A finding the validator cannot answer for after two attempts is kept.
 6. **Publish.** Bugs at or above `comments.min_severity` get one inline thread each, with a hidden JSON block (`id`, `agent`, `severity`, `fingerprint`). Nits go into one review per run, capped by `comments.max_nits`. A sticky summary comment lists the agents that ran, the ones skipped and why, the router's additions, the risk level, findings by severity, rejected findings and tokens per model. Each agent gets a check run; the commit status `MNG Review` counts open bug threads.
 7. **Converse.** A reply in one of the bot's threads starts a run for that thread. Fixed: resolve with the commit. "Intentional" with a reason the code confirms, at or below `disputes.accept_intentional_up_to`: resolve and record a memory candidate. Reason does not hold: one reply naming the failed premise. Above the limit, or a second disagreement: label `needs-owner`. On every push the bot re-checks its open threads whose file changed.
-8. **Learn.** Accepted decisions are proposed for `.mng/memory.md` in a periodic pull request. A periodic report lists findings, fixes, dismissals and tokens per agent.
+8. **Learn.** Accepted decisions are proposed for `.mng/MEMORY.md` in a periodic pull request. A periodic report lists findings, fixes, dismissals and tokens per agent.
 
 ## Running it
 

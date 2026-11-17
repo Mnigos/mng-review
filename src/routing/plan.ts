@@ -4,7 +4,7 @@ import { agentSettings, raiseEffort } from '../agents/settings.ts'
 import { type ChangedFile, reviewableFiles } from '../change/change.ts'
 import type { Config, Effort } from '../config/schema.ts'
 import { featureActive, gateRun, type PullRequestInfo } from './context.ts'
-import { type Depth, depthIsFixed, type Risk, resolveDepth } from './depth.ts'
+import { type Depth, type Risk, resolveDepth } from './depth.ts'
 import type { RouterAddition, RouterInput, RouterOutcome } from './router.ts'
 import { type RuleSelection, riskPathHits, selectByRules } from './select.ts'
 
@@ -97,7 +97,7 @@ export async function buildPlan(input: PlanInput): Promise<Plan> {
       })
     : []
 
-  const router = await consultRouter(input, reviewable, hits, candidates)
+  const router = await consultRouter(input, reviewable, candidates)
   const risk: Risk =
     hits.length > 0 ? 'risky' : (router.risk ?? (reviewable.length ? 'normal' : 'trivial'))
   const riskSource = hits.length > 0 ? 'risk_paths' : router.risk ? 'router' : 'default'
@@ -183,29 +183,30 @@ export async function buildPlan(input: PlanInput): Promise<Plan> {
 async function consultRouter(
   input: PlanInput,
   reviewable: ChangedFile[],
-  hits: string[],
   candidates: DeclaredAgent[],
 ): Promise<RouterReport> {
-  const { config, pr } = input
-  if (reviewable.length === 0)
+  if (reviewable.length === 0) {
     return { status: 'skipped', detail: 'no reviewable files', added: [] }
-  if (candidates.length === 0 && depthIsFixed(config, pr, hits)) {
-    return { status: 'skipped', detail: 'depth is fixed and no agent is left to add', added: [] }
   }
   if (!input.route) {
     return { status: 'failed', detail: input.routeUnavailable ?? 'no model endpoint', added: [] }
   }
-  const outcome = await input.route({
-    files: reviewable,
-    diff: await input.diff(),
-    candidates: candidates.map(agent => ({
-      name: agent.name,
-      title: agent.title,
-      triage: agent.frontMatter.when.triage ?? '',
-    })),
-  })
-  if (outcome.status === 'failed') return { status: 'failed', detail: outcome.error, added: [] }
-  return { status: 'ok', risk: outcome.risk, added: outcome.added }
+  try {
+    const outcome = await input.route({
+      files: reviewable,
+      diff: await input.diff(),
+      candidates: candidates.map(agent => ({
+        name: agent.name,
+        title: agent.title,
+        triage: agent.frontMatter.when.triage ?? '',
+      })),
+    })
+    if (outcome.status === 'failed') return { status: 'failed', detail: outcome.error, added: [] }
+    return { status: 'ok', risk: outcome.risk, added: outcome.added }
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    return { status: 'failed', detail, added: [] }
+  }
 }
 
 function routerSkipReason(router: RouterReport): string {

@@ -42,13 +42,19 @@ describe('agent front matter', () => {
     ['kind: bug\nunknown: true', 'unknown'],
     ['kind: bug\nwhen: {unknown: []}', 'when.unknown'],
     ['kind: bug\ncomments: {max_nit: 1}', 'comments.max_nit'],
-    ['kind: bug\nlimits: {concurrency: 2}', 'limits.concurrency'],
+    ['kind: bug\nlimits: {concurrency: 2}', 'limits'],
     ['kind: bug\nmax_findings: 0', 'max_findings'],
     ['kind: bug\nneeds: ci', 'needs'],
     ['', 'kind'],
   ])('rejects invalid schema %s', (yaml, key) => {
     expect(() => parseFrontMatter(yaml, 'auth.md')).toThrow(ConfigError)
     expect(() => parseFrontMatter(yaml, 'auth.md')).toThrow(key)
+  })
+  test('rejects a front matter file limit as an unknown limits key', () => {
+    const yaml = 'kind: bug\nlimits: {max_file_kb: 12}'
+    const parse = () => parseFrontMatter(yaml, 'auth.md')
+    expect(parse).toThrow(ConfigError)
+    expect(parse).toThrow('auth.md: unknown key "limits"')
   })
   test.each(['reviewer', 'router', 'validator', 'verdict'])('reserves %s', async name => {
     await expect(
@@ -174,10 +180,10 @@ describe('agent settings', () => {
     const cfg = config()
     const settings = agentSettings(agent('auth', { kind }), cfg)
     const model = kind === 'bug' ? cfg.models.reviewer : cfg.models.nits
-    expect(settings).toEqual({ ...model, comments: cfg.comments, maxFileKb: 300 })
+    expect(settings).toEqual({ ...model, comments: cfg.comments })
   })
   test.each(['bug', 'nit'] as const)(
-    '%s front matter overrides model, effort, comments and file limit',
+    '%s front matter overrides model, effort and comments',
     kind => {
       const cfg = config()
       expect(
@@ -187,7 +193,6 @@ describe('agent settings', () => {
             model: 'custom',
             effort: 'low',
             comments: { max_nits: 2, summary: false },
-            limits: { max_file_kb: 12 },
           }),
           cfg,
         ),
@@ -195,10 +200,8 @@ describe('agent settings', () => {
         model: 'custom',
         effort: 'low',
         comments: { min_severity: 'medium', max_nits: 2, summary: false },
-        maxFileKb: 12,
       })
       expect(cfg.comments.max_nits).toBe(5)
-      expect(cfg.limits.max_file_kb).toBe(300)
     },
   )
   test('model and effort overrides are independent', () => {

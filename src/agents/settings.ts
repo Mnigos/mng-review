@@ -6,7 +6,6 @@ export interface AgentSettings {
   model: string
   effort: Effort
   comments: Config['comments']
-  maxFileKb: number
 }
 
 /** Settings for one declared agent: its front matter over `review.yml`. */
@@ -17,7 +16,6 @@ export function agentSettings(agent: DeclaredAgent, config: Config): AgentSettin
     model: fm.model ?? base.model,
     effort: fm.effort ?? base.effort,
     comments: deepMerge(config.comments, fm.comments ?? {}),
-    maxFileKb: fm.limits?.max_file_kb ?? config.limits.max_file_kb,
   }
 }
 

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { featureActive, gateRun } from '../src/routing/context.ts'
-import { depthIsFixed, resolveDepth } from '../src/routing/depth.ts'
+import { resolveDepth } from '../src/routing/depth.ts'
 import { matches, matchesAny } from '../src/routing/glob.ts'
 import { riskPathHits, selectByRules } from '../src/routing/select.ts'
 import { agent, config, file, pr } from './support/fakes.ts'
@@ -215,6 +215,56 @@ describe('selection matrix', () => {
       ).selected,
     ).toBe(false)
   })
+  test.each(['src/auth/session.ts', 'src/session.ts'])(
+    'renamed files match when.paths at %s and report the new path',
+    path => {
+      const renamedFiles = [
+        file('src/session.ts', { status: 'renamed', oldPath: 'src/auth/session.ts' }),
+      ]
+      expect(selectByRules(agent('auth', { when: { paths: [path] } }), renamedFiles, pr())).toEqual(
+        {
+          selected: true,
+          files: ['src/session.ts'],
+        },
+      )
+    },
+  )
+  test.each([
+    ['src/auth/**', true],
+    ['src/session.ts', false],
+  ] as const)('rename exclusion %s applies only to the new path', (exclude, selected) => {
+    const selection = selectByRules(
+      agent('auth', { when: { paths: ['src/auth/**'], exclude: [exclude] } }),
+      [file('src/session.ts', { status: 'renamed', oldPath: 'src/auth/session.ts' })],
+      pr(),
+    )
+    expect(selection).toMatchObject({ selected, files: selected ? ['src/session.ts'] : [] })
+  })
+  test('skipped renamed files cannot satisfy old path rules or risk paths', () => {
+    const renamedFiles = [
+      file('src/session.ts', {
+        status: 'renamed',
+        oldPath: 'src/auth/session.ts',
+        skipped: 'binary',
+      }),
+    ]
+    expect(
+      selectByRules(agent('auth', { when: { paths: ['src/auth/**'] } }), renamedFiles, pr()),
+    ).toMatchObject({ selected: false, routable: false, files: [] })
+    expect(riskPathHits(renamedFiles, ['src/auth/**'])).toEqual([])
+  })
+  test.each([
+    { patterns: ['src/auth/**'] },
+    { patterns: ['src/session.ts'] },
+    { patterns: ['src/auth/**', 'src/session.ts'] },
+  ])('renamed files match risk paths %p and report the new path once', ({ patterns }) => {
+    expect(
+      riskPathHits(
+        [file('src/session.ts', { status: 'renamed', oldPath: 'src/auth/session.ts' })],
+        patterns,
+      ),
+    ).toEqual(['src/session.ts'])
+  })
   test('riskPathHits includes only reviewable matching files', () => {
     expect(
       riskPathHits(
@@ -234,7 +284,6 @@ describe('depth precedence', () => {
       depth: 'deep',
       source: 'risk_paths',
     })
-    expect(depthIsFixed(cfg, info, ['src/billing/invoice.ts'])).toBe(true)
   })
   test('deep label wins over quick label and fixed setting', () => {
     expect(
@@ -256,7 +305,6 @@ describe('depth precedence', () => {
       depth,
       source: 'review.yml depth',
     })
-    expect(depthIsFixed(config(`depth: ${depth}`), pr(), [])).toBe(true)
   })
   test.each([
     ['trivial', 'quick'],
@@ -264,9 +312,5 @@ describe('depth precedence', () => {
     ['risky', 'deep'],
   ] as const)('maps risk %s to %s', (risk, depth) => {
     expect(resolveDepth(config(), pr(), risk, [])).toEqual({ depth, source: `risk ${risk}` })
-    expect(depthIsFixed(config(), pr(), [])).toBe(false)
-  })
-  test.each(['mng-review-deep', 'mng-review-quick'])('label %s fixes depth', label => {
-    expect(depthIsFixed(config(), pr({ labels: [label] }), [])).toBe(true)
   })
 })

@@ -86,5 +86,4 @@ export type Config = z.infer<typeof configSchema>
 /** Keys an agent's front matter may override for that agent only. */
 export const agentOverrideSchema = z.strictObject({
   comments: commentsSchema.partial().optional(),
-  limits: limitsSchema.pick({ max_file_kb: true }).partial().optional(),
 })

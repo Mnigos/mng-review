@@ -33,8 +33,3 @@ export function resolveDepth(
   if (config.depth !== 'auto') return { depth: config.depth, source: 'review.yml depth' }
   return { depth: depthForRisk[risk], source: `risk ${risk}` }
 }
-
-/** True when the depth is already settled without the router's risk level. */
-export function depthIsFixed(config: Config, pr: PullRequestInfo, riskPathHits: readonly string[]) {
-  return resolveDepth(config, pr, 'normal', riskPathHits).source !== 'risk normal'
-}

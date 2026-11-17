@@ -39,10 +39,14 @@ export function gitRefReader(git: Git, ref: string, commit: string): RepoReader 
 
 export function worktreeReader(root: string): RepoReader {
   const inside = async (path: string): Promise<string | null> => {
-    const full = join(root, requirePath(path))
+    const clean = requirePath(path)
     try {
-      const [real, realRoot] = await Promise.all([realpath(full), realpath(root)])
-      return real === realRoot || real.startsWith(realRoot + sep) ? real : null
+      const [real, realRoot] = await Promise.all([realpath(join(root, clean)), realpath(root)])
+      if (real !== realRoot && !real.startsWith(realRoot + sep)) return null
+      // On a case-insensitive file system `CONTEXT.md` also opens `context.md`. Git is case
+      // sensitive, so treat a name that differs only in case as missing.
+      const expected = join(realRoot, clean)
+      return real !== expected && real.toLowerCase() === expected.toLowerCase() ? null : real
     } catch {
       return null
     }

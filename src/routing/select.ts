@@ -43,13 +43,16 @@ export function selectByRules(
   const inScope = files
     .filter(file => !file.skipped && !matchesAny(file.path, when.exclude))
     .map(file => file.path)
+  const touches = (path: string) =>
+    matchesAny(path, when.paths) ||
+    files.some(file => file.path === path && file.oldPath && matchesAny(file.oldPath, when.paths))
   if (when.paths.length === 0) {
     if (inScope.length > 0 || agent.frontMatter.input === 'metadata') {
       return { selected: true, files: inScope }
     }
     return { selected: false, reason: 'no reviewable file in scope', routable: false, files: [] }
   }
-  const matched = inScope.filter(path => matchesAny(path, when.paths))
+  const matched = inScope.filter(touches)
   if (matched.length > 0) return { selected: true, files: matched }
   return {
     selected: false,
@@ -59,8 +62,15 @@ export function selectByRules(
   }
 }
 
-/** Reviewable files under `risk_paths`. */
+/** Reviewable files under `risk_paths`, matched at their new or, for a rename, old path. */
 export function riskPathHits(files: ChangedFile[], riskPaths: readonly string[]): string[] {
   if (riskPaths.length === 0) return []
-  return files.filter(file => !file.skipped && matchesAny(file.path, riskPaths)).map(f => f.path)
+  return files
+    .filter(file => !file.skipped)
+    .filter(
+      file =>
+        matchesAny(file.path, riskPaths) ||
+        (file.oldPath !== undefined && matchesAny(file.oldPath, riskPaths)),
+    )
+    .map(file => file.path)
 }

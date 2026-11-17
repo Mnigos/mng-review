@@ -70,6 +70,13 @@ describe('repository readers', () => {
     expect(await reader.readFile('missing')).toBeNull()
     expect(await loadAgents(reader)).toEqual([])
   })
+  test('worktreeReader requires exact filename casing', async () => {
+    const repo = await temp()
+    await repo.write('.mng/context.md', 'Repository context.')
+    const reader = worktreeReader(repo.root)
+    expect(await reader.readFile('.mng/CONTEXT.md')).toBeNull()
+    expect(await reader.readFile('.mng/context.md')).toBe('Repository context.')
+  })
   test('worktreeReader refuses a file or directory symlink outside the root but permits an internal link', async () => {
     const repo = await temp()
     const outside = await temp()

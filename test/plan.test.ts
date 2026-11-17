@@ -1,7 +1,7 @@
 import { describe, expect, mock, test } from 'bun:test'
 import { buildPlan, type PlanInput } from '../src/routing/plan.ts'
-import type { RouterInput, RouterOutcome } from '../src/routing/router.ts'
-import { agent, config, file, pr } from './support/fakes.ts'
+import { runRouter, type RouterInput, type RouterOutcome } from '../src/routing/router.ts'
+import { agent, config, file, pr, response, ScriptedLlm } from './support/fakes.ts'
 
 function planInput(overrides: Partial<PlanInput> = {}): PlanInput {
   return {
@@ -79,6 +79,63 @@ describe('buildPlan', () => {
     })
     expect(plan.runs.map(run => run.name)).toEqual(['reviewer', 'auth'])
     expect(plan.skips.find(skip => skip.name === 'billing')?.reason).toContain('router failed')
+  })
+  test.each(['diff', 'route'] as const)(
+    '%s() rejection keeps path selection with failed router and normal risk',
+    async failing => {
+      const detail = failing + ' unavailable'
+      const diff = mock(async () => {
+        if (failing === 'diff') throw new Error(detail)
+        return '+ changed'
+      })
+      const route = mock(async (_input: RouterInput): Promise<RouterOutcome> => {
+        throw new Error(detail)
+      })
+      const plan = await buildPlan(
+        planInput({
+          agents: [
+            agent('auth', { when: { paths: ['packages/auth/**'] } }),
+            agent('billing', { when: { paths: ['src/billing/**'], triage: 'invoices' } }),
+          ],
+          diff,
+          route,
+        }),
+      )
+      expect(plan).toMatchObject({
+        risk: 'normal',
+        riskSource: 'default',
+        depth: 'balanced',
+        router: { status: 'failed', detail, added: [] },
+      })
+      expect(plan.runs.map(run => [run.name, run.selectedBy, run.files])).toEqual([
+        ['reviewer', 'default', ['packages/auth/session.ts']],
+        ['auth', 'paths', ['packages/auth/session.ts']],
+      ])
+      expect(plan.skips.find(skip => skip.name === 'billing')?.reason).toContain('router failed')
+      expect(diff).toHaveBeenCalledTimes(1)
+      expect(route).toHaveBeenCalledTimes(failing === 'diff' ? 0 : 1)
+    },
+  )
+  test('a rename out of risk_paths stays risky/deep and selects the old path agent', async () => {
+    const plan = await buildPlan(
+      planInput({
+        config: config('risk_paths: [src/auth/**]'),
+        files: [file('src/session.ts', { status: 'renamed', oldPath: 'src/auth/session.ts' })],
+        agents: [agent('auth', { when: { paths: ['src/auth/**'] } })],
+        route: async () => normal(),
+      }),
+    )
+    expect(plan).toMatchObject({
+      risk: 'risky',
+      riskSource: 'risk_paths',
+      riskPathHits: ['src/session.ts'],
+      depth: 'deep',
+      depthSource: 'risk_paths',
+    })
+    expect(plan.runs.map(run => [run.name, run.selectedBy, run.files])).toEqual([
+      ['reviewer', 'default', ['src/session.ts']],
+      ['auth', 'paths', ['src/session.ts']],
+    ])
   })
   test('risk_paths forces risky/deep even against a trivial router rating, quick label and quick config', async () => {
     const route = mock(async (_input: RouterInput): Promise<RouterOutcome> => ({
@@ -221,17 +278,27 @@ describe('buildPlan', () => {
       expect(plan.runs.map(run => [run.name, run.files])).toEqual([['meta', []]])
     },
   )
-  test('fixed depth with no candidates avoids both router and diff', async () => {
-    const route = mock(async (_input: RouterInput): Promise<RouterOutcome> => normal())
-    const diff = mock(async () => '+ changed')
-    const plan = await buildPlan(planInput({ config: config('depth: balanced'), route, diff }))
-    expect(plan.router).toMatchObject({
-      status: 'skipped',
-      detail: 'depth is fixed and no agent is left to add',
-    })
-    expect(route).not.toHaveBeenCalled()
-    expect(diff).not.toHaveBeenCalled()
-  })
+  test.each(['quick', 'balanced', 'deep'] as const)(
+    'fixed depth %s with no candidates still calls the router for risk',
+    async depth => {
+      const cfg = config('depth: ' + depth)
+      const llm = new ScriptedLlm([response({ content: '{"risk":"risky","add":[]}' })])
+      const route = mock((input: RouterInput) => runRouter(llm, cfg.models.router, input))
+      const diff = mock(async () => '+ changed')
+      const plan = await buildPlan(planInput({ config: cfg, route, diff }))
+      expect(plan).toMatchObject({
+        depth,
+        depthSource: 'review.yml depth',
+        risk: 'risky',
+        riskSource: 'router',
+        router: { status: 'ok', risk: 'risky', added: [] },
+      })
+      expect(route).toHaveBeenCalledTimes(1)
+      expect(route.mock.calls[0]?.[0]).toMatchObject({ candidates: [], diff: '+ changed' })
+      expect(diff).toHaveBeenCalledTimes(1)
+      expect(llm.requests).toHaveLength(1)
+    },
+  )
   test('fixed depth still consults router when candidates remain', async () => {
     const route = mock(async (_input: RouterInput): Promise<RouterOutcome> => normal())
     await buildPlan(
