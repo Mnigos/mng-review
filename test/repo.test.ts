@@ -77,6 +77,18 @@ describe('repository readers', () => {
     expect(await reader.readFile('.mng/CONTEXT.md')).toBeNull()
     expect(await reader.readFile('.mng/context.md')).toBe('Repository context.')
   })
+  test('worktreeReader requires exact path casing through an internal directory symlink', async () => {
+    const repo = await temp()
+    await repo.write('docs/notes.md', 'Project notes.')
+    await repo.write('.mng/agents/example.md', 'Example instructions.')
+    await symlink('../docs', join(repo.root, '.mng/link'))
+    const reader = worktreeReader(repo.root)
+    expect(await reader.readFile('.mng/link/notes.md')).toBe('Project notes.')
+    expect(await reader.readFile('.mng/LINK/notes.md')).toBeNull()
+    expect(await reader.readFile('.mng/link/NOTES.md')).toBeNull()
+    expect(await reader.listFiles('.mng/agents')).toEqual(['example.md'])
+    expect(await reader.listFiles('.mng/AGENTS')).toBeNull()
+  })
   test('worktreeReader refuses a file or directory symlink outside the root but permits an internal link', async () => {
     const repo = await temp()
     const outside = await temp()

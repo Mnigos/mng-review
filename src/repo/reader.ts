@@ -43,10 +43,7 @@ export function worktreeReader(root: string): RepoReader {
     try {
       const [real, realRoot] = await Promise.all([realpath(join(root, clean)), realpath(root)])
       if (real !== realRoot && !real.startsWith(realRoot + sep)) return null
-      // On a case-insensitive file system `CONTEXT.md` also opens `context.md`. Git is case
-      // sensitive, so treat a name that differs only in case as missing.
-      const expected = join(realRoot, clean)
-      return real !== expected && real.toLowerCase() === expected.toLowerCase() ? null : real
+      return (await namesMatchExactly(root, clean)) ? real : null
     } catch {
       return null
     }
@@ -76,6 +73,20 @@ export function worktreeReader(root: string): RepoReader {
       }
     },
   }
+}
+
+/**
+ * On a case-insensitive file system `CONTEXT.md` also opens `context.md`. Git is case sensitive,
+ * so every component of the path must appear in its directory with exactly this spelling.
+ */
+async function namesMatchExactly(root: string, path: string): Promise<boolean> {
+  let dir = root
+  for (const name of path.split('/')) {
+    const entries = await readdir(dir)
+    if (!entries.includes(name)) return false
+    dir = join(dir, name)
+  }
+  return true
 }
 
 function requirePath(path: string): string {
