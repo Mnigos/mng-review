@@ -105,7 +105,8 @@ export function parseNumstat(output: string): Map<string, LineCount> {
   for (let i = 0; i < parts.length;) {
     const entry = parts[i++]
     if (!entry) continue
-    const [added = '', deleted = '', path = ''] = entry.split('\t')
+    const [added = '', deleted = '', ...rest] = entry.split('\t')
+    const path = rest.join('\t')
     let target = path
     if (path === '') {
       i++ // old path
@@ -123,14 +124,21 @@ export function parseNumstat(output: string): Map<string, LineCount> {
 
 async function blobSizes(git: Git, commit: string, paths: string[]): Promise<Map<string, number>> {
   const sizes = new Map<string, number>()
-  if (paths.length === 0) return sizes
-  const input = paths.map(path => `${commit}:${path}\n`).join('')
-  const result = await git.exec(['cat-file', '--batch-check=%(objecttype) %(objectsize)'], input)
-  const lines = decode(result.stdout).split('\n')
-  paths.forEach((path, index) => {
-    const [type, size] = (lines[index] ?? '').split(' ')
-    if (type === 'blob' && size) sizes.set(path, Number(size))
-  })
+  // --batch-check reads one object name per line, so paths with a newline are asked one by one.
+  const plain = paths.filter(path => !path.includes('\n'))
+  if (plain.length > 0) {
+    const input = plain.map(path => `${commit}:${path}\n`).join('')
+    const result = await git.exec(['cat-file', '--batch-check=%(objecttype) %(objectsize)'], input)
+    const lines = decode(result.stdout).split('\n')
+    plain.forEach((path, index) => {
+      const [type, size] = (lines[index] ?? '').split(' ')
+      if (type === 'blob' && size) sizes.set(path, Number(size))
+    })
+  }
+  for (const path of paths.filter(p => p.includes('\n'))) {
+    const result = await git.exec(['cat-file', '-s', `${commit}:${path}`])
+    if (result.exitCode === 0) sizes.set(path, Number(decode(result.stdout).trim()))
+  }
   return sizes
 }
 

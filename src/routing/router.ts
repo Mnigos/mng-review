@@ -104,7 +104,7 @@ export async function runRouter(
       return { status: 'failed', error: 'router answer did not match the schema' }
     return { status: 'ok', risk: answer.data.risk, added: keepValid(answer.data.add, input) }
   } catch (error) {
-    return { status: 'failed', error: (error as Error).message }
+    return { status: 'failed', error: error instanceof Error ? error.message : String(error) }
   }
 }
 

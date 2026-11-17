@@ -85,6 +85,12 @@ export function createHttpClient(options: HttpClientOptions): LlmClient {
   const doFetch = options.fetch ?? fetch
   const semaphore = new Semaphore(options.concurrency ?? 4)
   const tokens = options.tokens ?? new TokenLedger()
+  const secrets = [options.key, endpoint, base.href, base.host].filter((value): value is string =>
+    Boolean(value),
+  )
+  /** Removes the key and the endpoint address from text that ends up in an error message. */
+  const redact = (text: string) =>
+    secrets.reduce((out, secret) => out.replaceAll(secret, '[redacted]'), text)
 
   const send = async (request: ChatRequest): Promise<Response> => {
     const signals = [AbortSignal.timeout(timeoutMs)]
@@ -100,10 +106,12 @@ export function createHttpClient(options: HttpClientOptions): LlmClient {
         signal: AbortSignal.any(signals),
       })
     } catch (error) {
-      const name = (error as Error).name
+      const name = error instanceof Error ? error.name : ''
       if (name === 'TimeoutError') throw new LlmError(`model call timed out after ${timeoutMs} ms`)
       if (name === 'AbortError') throw new LlmError('model call aborted')
-      throw new LlmError(`model endpoint unreachable: ${(error as Error).message}`)
+      throw new LlmError(
+        `model endpoint unreachable: ${redact(String((error as Error)?.message ?? error))}`,
+      )
     }
   }
 
@@ -112,12 +120,12 @@ export function createHttpClient(options: HttpClientOptions): LlmClient {
     if (isRetryable(response.status)) {
       const wait = retryWait(response.headers.get('retry-after'), retryDelayMs)
       await response.body?.cancel()
-      if (wait > maxRetryAfterMs) throw httpError(response.status, '')
+      if (wait > maxRetryAfterMs) throw httpError(response.status, '', redact)
       await Bun.sleep(wait)
       response = await send(request)
     }
     const text = await response.text()
-    if (!response.ok) throw httpError(response.status, text)
+    if (!response.ok) throw httpError(response.status, text, redact)
     let json: unknown
     try {
       json = JSON.parse(text)
@@ -175,7 +183,7 @@ export function retryWait(header: string | null, fallbackMs: number): number {
   return Number.isNaN(date) ? fallbackMs : Math.max(0, date - Date.now())
 }
 
-function httpError(status: number, body: string): LlmError {
-  const detail = body.replace(/\s+/g, ' ').trim().slice(0, 200)
+function httpError(status: number, body: string, redact: (text: string) => string): LlmError {
+  const detail = redact(body).replace(/\s+/g, ' ').trim().slice(0, 200)
   return new LlmError(`model endpoint answered ${status}${detail ? `: ${detail}` : ''}`, status)
 }
