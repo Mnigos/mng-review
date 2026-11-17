@@ -51,6 +51,10 @@ Trace every changed handler to the check that proves the caller owns the row.
 
 `when.triage` is the sentence the router reads to decide whether to add this agent when no path matched.
 
+Selection rules: every non-empty `when` list must match. `labels` needs any one of the pull request's labels, `authors` the author, `targets` the base branch, and `paths` at least one changed file that no `exclude` pattern matches. An agent without `paths` covers every changed file. Only an agent that failed on `paths` alone, and has a `triage` line, is offered to the router. Patterns are globs; a pattern without a `/` matches the file name in any directory.
+
+Import lines stand alone on their line. `@/path` imports the whole file and `@/path#Heading` the section from that heading to the next heading of the same or a higher level. A missing file or heading fails the run.
+
 ## `review.yml`
 
 Every key has a default in the engine preset. Unknown keys fail the run and name the key.
@@ -118,7 +122,7 @@ models:
 
 ## Running it
 
-- **CLI:** `mng-review --base <ref>` reviews the current branch and prints findings as text or JSON (`--json`). `mng-review init` writes a starter `.mng/`. `mng-review bench <file>` replays recorded changes against expected findings.
+- **CLI:** `mng-review --base <ref>` reviews the current branch and prints findings as text or JSON (`--json`). `mng-review plan --base <ref>` prints which agents would run, which are skipped and why, the router's additions and the risk level, without a review. Locally, `.mng/` is read from the working tree; `--rules-ref <ref>` reads it from a commit instead, as CI does. `mng-review init` writes a starter `.mng/`. `mng-review bench <file>` replays recorded changes against expected findings.
 - **Endpoint:** `MNG_REVIEW_LLM_URL` and `MNG_REVIEW_LLM_KEY`. Nothing else about the provider is assumed.
 - **CI:** a reusable workflow; the caller keeps its triggers and concurrency and passes the endpoint and key as secrets. Rules are read from the base commit, so a pull request cannot change the rules it is judged by. Fork pull requests are skipped.
 - **Commands** in a pull request comment, from the repository owner: `/mng-review`, `/mng-review deep`, `/mng-review <agent>`.

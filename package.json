@@ -1,0 +1,39 @@
+{
+  "name": "@mnigos/mng-review",
+  "version": "0.0.0",
+  "description": "Pull request review by one built-in reviewer and the agents a repository declares",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Mnigos/mng-review.git"
+  },
+  "bin": {
+    "mng-review": "src/cli/main.ts"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src"
+  ],
+  "engines": {
+    "bun": ">=1.3.0"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint --deny-warnings src test",
+    "format": "oxfmt src test",
+    "format:check": "oxfmt --check src test",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.4",
+    "oxfmt": "0.79.0",
+    "oxlint": "1.94.0",
+    "typescript": "7.0.2"
+  }
+}
