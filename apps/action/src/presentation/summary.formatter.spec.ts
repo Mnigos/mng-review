@@ -55,6 +55,55 @@ const OUTCOMES = [
 	readonly log: string
 }[]
 
+describe('formatLogLine', () => {
+	for (const command of [
+		'::add-mask::x',
+		'::error::failure',
+		'::stop-commands::t',
+		'##[error]',
+		'\u001B[31merror\u001B[0m',
+	]) {
+		const reason = `failure\r\n${command}`
+		for (const entry of OUTCOMES)
+			test(`neutralizes ${JSON.stringify(command)} in ${entry.outcome.status} reasons`, () => {
+				const line = formatLogLine({ ...entry.outcome, reason })
+				expect(line).toContain('failure ')
+				expect(line).not.toMatch(/\p{Cc}/u)
+				expect(line).not.toContain('::')
+				expect(line).not.toContain('##[')
+			})
+		test(`neutralizes ${JSON.stringify(command)} in reviewed endpoint errors`, () => {
+			const line = formatLogLine({
+				status: 'reviewed',
+				event: EVENT,
+				report: { ...reviewReport(), endpointError: reason },
+			})
+			expect(line).toContain('incomplete, the model endpoint failed: failure ')
+			expect(line).not.toMatch(/\p{Cc}/u)
+			expect(line).not.toContain('::')
+			expect(line).not.toContain('##[')
+		})
+		test(`neutralizes ${JSON.stringify(command)} in reviewed skip reasons`, () => {
+			const report = reviewReport()
+			const line = formatLogLine({
+				status: 'reviewed',
+				event: EVENT,
+				report: {
+					...report,
+					planReport: {
+						...report.planReport,
+						plan: { ...report.planReport.plan, skippedRun: reason },
+					},
+				},
+			})
+			expect(line).toContain('mng-review: skipped: failure ')
+			expect(line).not.toMatch(/\p{Cc}/u)
+			expect(line).not.toContain('::')
+			expect(line).not.toContain('##[')
+		})
+	}
+})
+
 describe('formatSummary', () => {
 	for (const entry of OUTCOMES)
 		test(`formats ${entry.outcome.status} outcome and log`, () => {

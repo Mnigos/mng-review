@@ -1,4 +1,4 @@
-import { escapeMarkdown, toCodeSpan } from './markdown.util'
+import { escapeMarkdown, toCodeSpan, toLogText } from './markdown.util'
 
 describe('escapeMarkdown', () => {
 	test('escapes image, HTML and table syntax and flattens line breaks', () => {
@@ -7,9 +7,44 @@ describe('escapeMarkdown', () => {
 				'![x](https://evil.example/a.png) <img src=x> | col\r\n next'
 			)
 		).toBe(
-			'\\!\\[x\\]\\(https://evil.example/a.png\\) \\<img src=x\\> \\| col next'
+			'\\!\\[x\\]\\(`https://evil.example/a.png)` \\<img src=x\\> \\| col next'
 		)
 	})
+	test.each([
+		[
+			'HTTPS URL',
+			'https://example.com/a_b?q=x&next=1',
+			'`https://example.com/a_b?q=x&next=1`',
+		],
+		['FTP URL', 'ftp://example.com/file.txt', '`ftp://example.com/file.txt`'],
+		['www host', 'www.example.com/path', '`www.example.com/path`'],
+		['email address', 'review+test@example.com', '`review+test@example.com`'],
+		[
+			'table separator',
+			'| https://example.com/a| next |',
+			'\\| `https://example.com/a`\\| next \\|',
+		],
+		[
+			'embedded backticks',
+			'https://example.com/a`b``c',
+			'`https://example.com/a`\\`b\\`\\`c',
+		],
+		[
+			'several autolinks',
+			'https://example.com ftp://example.com www.example.com test@example.com',
+			'`https://example.com` `ftp://example.com` `www.example.com` `test@example.com`',
+		],
+		[
+			'surrounding syntax',
+			'*before* https://example.com/a\t_after_ [tail]\r\n# next',
+			'\\*before\\* `https://example.com/a`\t\\_after\\_ \\[tail\\] \\# next',
+		],
+	])(
+		'encloses %s in code while escaping other text',
+		(_name, input, expected) => {
+			expect(escapeMarkdown(input)).toBe(expected)
+		}
+	)
 	test('escapes every Markdown syntax character including backslashes and entities', () => {
 		for (const character of [
 			'\\',
@@ -33,6 +68,38 @@ describe('escapeMarkdown', () => {
 	test('retains plain text and empty strings', () => {
 		expect(escapeMarkdown('plain text: 42')).toBe('plain text: 42')
 		expect(escapeMarkdown('')).toBe('')
+	})
+})
+
+describe('toLogText', () => {
+	test.each([
+		['CR/LF', 'first\r\nsecond\rthird\nfourth', 'first second third fourth'],
+		['C0 controls', 'a\u0000b\u0007c\td\u000Be\u000Cf', 'a b c d e f'],
+		['DEL and C1 controls', 'a\u007Fb\u0085c\u009Bd', 'a b c d'],
+		['ANSI escape', '\u001B[31mred\u001B[0m', ' [31mred [0m'],
+		[
+			'colon markers anywhere',
+			'::start middle::end::',
+			': :start middle: :end: :',
+		],
+		[
+			'legacy markers anywhere',
+			'##[error] middle ##[warning] end##[',
+			'## [error] middle ## [warning] end## [',
+		],
+		[
+			'mixed workflow commands',
+			'\n::add-mask::x\r\n::error::failure\n::stop-commands::t\n##[error]',
+			' : :add-mask: :x : :error: :failure : :stop-commands: :t ## [error]',
+		],
+		[
+			'ordinary text',
+			'plain : text # [value] https://example.com',
+			'plain : text # [value] https://example.com',
+		],
+		['empty text', '', ''],
+	])('neutralizes %s', (_name, input, expected) => {
+		expect(toLogText(input)).toBe(expected)
 	})
 })
 
