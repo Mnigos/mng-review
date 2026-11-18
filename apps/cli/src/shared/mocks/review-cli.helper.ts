@@ -133,7 +133,7 @@ export function runReviewCli(
 			const status = response?.status ?? options.status
 			const content =
 				response?.content ??
-				(index === 0
+				(call.tools?.some(tool => tool.function.name === 'report_findings')
 					? { findings: options.findings ?? [] }
 					: {
 							verdict: 'confirm',

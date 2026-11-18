@@ -36,17 +36,15 @@ import {
 	MAX_INCREMENTAL_DIFF_CHARS,
 } from '../../domain/review.constants'
 import { TokenBudgetError } from '../../domain/review.errors'
+import type { LoopRequest } from '../agent-loop.types'
+import type { FinderContext } from '../finder.types'
 import {
 	FINDING_RULES_PROMPT,
 	NIT_PROMPT,
 	REVIEWER_PROMPT,
 } from '../reviewer.prompt'
-import { AgentLoopService, type LoopRequest } from './agent-loop.service'
-import {
-	FinderService,
-	FinderServiceLive,
-	type FinderContext,
-} from './finder.service'
+import { AgentLoopService } from './agent-loop.service'
+import { FinderService, FinderServiceLive } from './finder.service'
 
 /** Defaults keep the finder scope and loaded rules aligned. */
 function context(overrides: Partial<FinderContext> = {}): FinderContext {
@@ -146,7 +144,10 @@ layer(Layer.empty)('FinderService', test => {
 					)
 				).toMatchObject({ report: { status: 'ok' } })
 				const calls = yield* ScriptedLlm.use(script => script.calls)
-				expect(calls).toHaveLength(1)
+				expect(calls).toHaveLength(2)
+				expect(JSON.stringify(calls[1]?.options.prompt)).toContain(
+					'Before your answer counts'
+				)
 				for (const prompt of [REVIEWER_PROMPT, FINDING_RULES_PROMPT])
 					expect(calls[0]?.options.prompt.content[0]).toMatchObject({
 						role: 'system',
@@ -359,10 +360,14 @@ ${DIFF}`)
 					yield* FinderService.use(finder =>
 						finder.run(plannedRun(), context({ fanOut: true }))
 					)
-				).toMatchObject({ report: { status: 'ok', units: 2 } })
+				).toMatchObject({ report: { status: 'ok', units: 2, continued: 2 } })
 				const calls = yield* ScriptedLlm.use(script => script.calls)
-				expect(calls).toHaveLength(2)
-				for (const [index, call] of calls.entries()) {
+				expect(calls).toHaveLength(4)
+				const firstCalls = calls.filter(
+					call => call.options.prompt.content.length === 2
+				)
+				expect(firstCalls).toHaveLength(2)
+				for (const [index, call] of firstCalls.entries()) {
 					expect(call.options.prompt.content).toHaveLength(2)
 					expect(userText(call)).toContain(
 						`Your unit:\n\`\`\`text\n${BILLING_PATH}: export function charge${index}() {\n\`\`\``
@@ -728,9 +733,10 @@ layer(Layer.empty)('finder unit budgets and paths', test => {
 					)
 				)
 				expect(output.report.units).toBe(2)
-				expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(2)
+				expect(output.report.continued).toBe(2)
+				expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(4)
 				expect(yield* TokenLedger.use(ledger => ledger.sources)).toMatchObject({
-					reviewer: { calls: 2, conversations: 2 },
+					reviewer: { calls: 4, conversations: 2 },
 				})
 			}).pipe(
 				Effect.provide(
@@ -752,7 +758,7 @@ layer(Layer.empty)('finder unit budgets and paths', test => {
 					})
 				)
 			)
-			expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(1)
+			expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(2)
 		}).pipe(
 			Effect.provide(
 				finderLayer(
@@ -774,7 +780,7 @@ layer(Layer.empty)('finder unit budgets and paths', test => {
 						)
 					)
 					const calls = yield* ScriptedLlm.use(script => script.calls)
-					expect(calls).toHaveLength(paths.includes(BILLING_PATH) ? 1 : 0)
+					expect(calls).toHaveLength(paths.includes(BILLING_PATH) ? 2 : 0)
 					expect(output.report.status).toBe('ok')
 					if (paths.includes(BILLING_PATH)) {
 						expect(userText(calls[0])).toContain('Your unit:')
@@ -812,7 +818,7 @@ layer(Layer.empty)('finder conversation allowances', test => {
 		'each deep unit receives its equal floored allowance and finder source',
 		() =>
 			Effect.gen(function* () {
-				const requests: LoopRequest<unknown>[] = []
+				const requests: Omit<LoopRequest<unknown>, 'coverage'>[] = []
 				const run: AgentLoopService['Service']['run'] = request => {
 					requests.push(request)
 					return request.parse({ findings: [] }).pipe(
@@ -849,5 +855,128 @@ layer(Layer.empty)('finder conversation allowances', test => {
 					expect(request.source).toBe('reviewer')
 				}
 			})
+	)
+})
+
+layer(Layer.empty)('finder coverage jobs', test => {
+	for (const job of ['balanced', 'deep', 'agent'] as const)
+		test.effect(
+			`${job} attaches coverage only for the main reviewer scope`,
+			() =>
+				Effect.gen(function* () {
+					const coverages: (readonly string[] | undefined)[] = []
+					const run: AgentLoopService['Service']['run'] = request => {
+						coverages.push(request.coverage?.paths)
+						return request.parse({ findings: [] }).pipe(
+							Effect.orDie,
+							Effect.map(value => ({ value, turns: 1, toolCalls: 0 }))
+						)
+					}
+					const scope = {
+						...SCOPE,
+						change: {
+							...SCOPE.change,
+							files: [
+								file(BILLING_PATH),
+								file('other.ts'),
+								file('outside.ts'),
+								file('skip.ts', { skipped: 'too_large' }),
+								file('binary.dat', { binary: true, skipped: 'binary' }),
+							],
+						},
+					}
+					const planned = plannedRun({
+						files: [BILLING_PATH, 'other.ts', 'skip.ts', 'binary.dat'],
+						...(job === 'agent' ? { role: 'agent', name: 'billing' } : {}),
+					})
+					const output = yield* FinderService.use(finder =>
+						finder.run(
+							planned,
+							context({
+								scope,
+								fanOut: job === 'deep',
+								rules: { agents: [agent('billing')] },
+							})
+						)
+					).pipe(
+						Effect.provide(
+							FinderServiceLive.pipe(
+								Layer.provide(Layer.succeed(AgentLoopService, { run })),
+								Layer.provideMerge(
+									reviewDependencies(
+										() => Effect.die('unexpected model call'),
+										{},
+										gitFixture({
+											readDiff: () =>
+												Effect.succeed(DIFF + unifiedDiff('other.ts')),
+										})
+									)
+								)
+							)
+						)
+					)
+					expect(coverages).toEqual(
+						job === 'balanced'
+							? [[BILLING_PATH, 'other.ts']]
+							: job === 'deep'
+								? [[BILLING_PATH], ['other.ts']]
+								: [undefined]
+					)
+					expect(output.report.continued).toBeUndefined()
+				})
+		)
+	test.effect(
+		'counts only conversations that actually continued, preserving merged findings',
+		() =>
+			Effect.gen(function* () {
+				const output = yield* FinderService.use(finder =>
+					finder.run(
+						plannedRun({ files: [BILLING_PATH, 'other.ts'] }),
+						context({
+							fanOut: true,
+							scope: {
+								...SCOPE,
+								change: {
+									...SCOPE.change,
+									files: [file(BILLING_PATH), file('other.ts')],
+								},
+							},
+						})
+					)
+				)
+				expect(output.report).toMatchObject({
+					units: 2,
+					continued: 1,
+					findings: 2,
+				})
+				expect(output.findings.map(entry => entry.path).toSorted()).toEqual(
+					['other.ts', BILLING_PATH].toSorted()
+				)
+				const calls = yield* ScriptedLlm.use(script => script.calls)
+				expect(calls).toHaveLength(3)
+				expect(
+					calls.filter(call => call.options.prompt.content.length === 2)
+				).toHaveLength(2)
+			}).pipe(
+				Effect.provide(
+					finderLayer(
+						call =>
+							Effect.succeed(
+								answer('report_findings', {
+									findings: userText(call).includes(
+										'Your unit:\n```text\nother.ts'
+									)
+										? [rawFinding({ path: 'other.ts' })]
+										: call.options.prompt.content.length === 2
+											? []
+											: [rawFinding()],
+								})
+							),
+						gitFixture({
+							readDiff: () => Effect.succeed(DIFF + unifiedDiff('other.ts')),
+						})
+					)
+				)
+			)
 	)
 })

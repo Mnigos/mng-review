@@ -150,3 +150,25 @@ describe('verdictSchema', () => {
 		expect(Result.isFailure(decode({ ...VERDICT, ...overrides }))).toBeTruthy()
 	})
 })
+
+describe('same_root_cause', () => {
+	test.each(
+		[null, [], [1], [2, 1, 99]].map(sameRootCause => ({ sameRootCause }))
+	)('accepts optional nearby numbers %j', ({ sameRootCause }) => {
+		expect(decode({ ...VERDICT, same_root_cause: sameRootCause })).toEqual(
+			Result.succeed({ ...VERDICT, same_root_cause: sameRootCause })
+		)
+	})
+	test.each(
+		[[0], [-1], [1.5], ['1'], [null], '1'].map(sameRootCause => ({
+			sameRootCause,
+		}))
+	)(
+		'rejects non-positive or non-integer nearby numbers %j',
+		({ sameRootCause }) => {
+			expect(
+				Result.isFailure(decode({ ...VERDICT, same_root_cause: sameRootCause }))
+			).toBeTruthy()
+		}
+	)
+})

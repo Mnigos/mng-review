@@ -63,17 +63,25 @@ layer(Layer.empty, { excludeTestServices: true })('review CLI', test => {
 					blocking: false,
 					endpointError: null,
 					bugs: [],
-					tokens: { reviewer: { totalTokens: 5 } },
+					tokens: { reviewer: { totalTokens: 10 } },
 					tokenSources: {
 						reviewer: {
-							calls: 1,
+							calls: 2,
 							conversations: 1,
-							firstMessageTokens: 3,
+							firstMessageTokens: 6,
 							historyTokens: 0,
 						},
 					},
 				})
-				expect(invocation.requests).toEqual([`${ENDPOINT}/chat/completions`])
+				expect(invocation.requests).toEqual(
+					Array.from({ length: 2 }, () => `${ENDPOINT}/chat/completions`)
+				)
+				expect(decodeReport(invocation.out).agents).toMatchObject([
+					{ continued: 1 },
+				])
+				expect(JSON.stringify(invocation.calls[1]?.messages.at(-1))).toContain(
+					'Before your answer counts'
+				)
 			})
 	)
 	for (const severity of ['low', 'medium'] as const)
@@ -598,7 +606,12 @@ layer(Layer.empty, { excludeTestServices: true })('review CLI', test => {
 					).toHaveLength(1)
 					expect(
 						invocation.calls.filter(call => call.model !== 'router')
-					).toHaveLength(expectedDepth === 'deep' ? 4 : 1)
+					).toHaveLength(expectedDepth === 'deep' ? 8 : 2)
+					expect(report.agents).toMatchObject(
+						Array.from({ length: count }, () => ({
+							continued: expectedDepth === 'deep' ? 2 : 1,
+						}))
+					)
 					expect(report.endpointError).toBeNull()
 					expect(report.droppedModels).toEqual([])
 				})

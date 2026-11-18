@@ -2,7 +2,7 @@ import { layer } from '@effect/vitest'
 import { Effect, Layer } from 'effect'
 import { rawFinding } from '../shared/mocks/domain-test.helper'
 import { FindingsAnswerError } from './finding.errors'
-import { parseFindingsAnswer } from './findings-answer.parser'
+import { addLaterFindings, parseFindingsAnswer } from './findings-answer.parser'
 
 layer(Layer.empty)('parseFindingsAnswer', test => {
 	test.effect(
@@ -65,4 +65,33 @@ layer(Layer.empty)('parseFindingsAnswer', test => {
 					).toEqual({ findings: [], dropped: 1 })
 				})
 		)
+})
+
+describe('addLaterFindings', () => {
+	test('keeps the original report and adds only different fingerprints, summing dropped entries', () => {
+		const original = rawFinding({ evidence: ['first evidence'] })
+		const duplicate = rawFinding({
+			title: 'Balance loses duplicate charge',
+			line: 90,
+			severity: 'high',
+		})
+		const later = rawFinding({ title: 'Missing ownership guard' })
+		const otherPath = rawFinding({ path: 'src/refund.ts' })
+		const first = { findings: [original], dropped: 2 }
+		const second = { findings: [duplicate, later, otherPath], dropped: 3 }
+		expect(addLaterFindings(first, second)).toEqual({
+			findings: [original, later, otherPath],
+			dropped: 5,
+		})
+		expect(first.findings).toEqual([original])
+		expect(second.findings).toEqual([duplicate, later, otherPath])
+	})
+	test('an empty continuation preserves the first findings', () => {
+		const first = { findings: [rawFinding()], dropped: 1 }
+		expect(addLaterFindings(first, { findings: [], dropped: 0 })).toEqual(first)
+	})
+	test('an empty first answer accepts later findings', () => {
+		const later = { findings: [rawFinding()], dropped: 1 }
+		expect(addLaterFindings({ findings: [], dropped: 0 }, later)).toEqual(later)
+	})
 })
