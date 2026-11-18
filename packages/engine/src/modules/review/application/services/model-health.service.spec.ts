@@ -48,6 +48,18 @@ describe('getDropReason', () => {
 		[500, 'InternalProviderError', 'model unavailable', undefined],
 		[400, 'InvalidRequestError', 'invalid messages', undefined],
 		[422, 'InvalidRequestError', 'model requires a parameter', undefined],
+		[
+			400,
+			'InvalidRequestError',
+			'invalid model parameter: temperature',
+			undefined,
+		],
+		[
+			400,
+			'InvalidRequestError',
+			'model parameter top_k is not supported',
+			undefined,
+		],
 	])('status %s with %s and %s', (status, reason, detail, expected) => {
 		expect(
 			getDropReason(
