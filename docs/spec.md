@@ -139,7 +139,7 @@ models:
 
 ## Running it
 
-- **CLI:** `mng-review --base <ref>` reviews the current branch and prints findings as text or JSON (`--json`). `mng-review plan --base <ref>` prints which agents would run, which are skipped and why, the router's additions and the risk level, without a review. Locally, `.mng/` is read from the working tree; `--rules-ref <ref>` reads it from a commit instead, as CI does. `mng-review init` writes a starter `.mng/`; `--from-macroscope` builds it from `.macroscope/` (see Init). `mng-review bench <file>` replays recorded changes against expected findings.
+- **CLI:** `mng-review --base <ref>` reviews the current branch and prints findings as text or JSON (`--json`). `mng-review plan --base <ref>` prints which agents would run, which are skipped and why, the router's additions and the risk level, without a review. Locally, `.mng/` is read from the working tree; `--rules-ref <ref>` reads it from a commit instead, as CI does. `mng-review init` writes a starter `.mng/`; `--from-macroscope` builds it from `.macroscope/` (see Init). `mng-review bench <file>` replays recorded changes against expected findings (see Benchmark).
 - **Endpoint:** `MNG_REVIEW_LLM_URL` and `MNG_REVIEW_LLM_KEY`. Nothing else about the provider is assumed.
 - **CI:** a reusable workflow; the caller keeps its triggers and concurrency and passes the endpoint and key as secrets. Rules are read from the base commit, so a pull request cannot change the rules it is judged by. Fork pull requests are skipped.
 - **Commands** in a pull request comment, from the repository owner: `/mng-review`, `/mng-review deep`, `/mng-review <agent>`.
@@ -168,6 +168,49 @@ models:
 | its body | not imported |
 
 Each agent gets `kind: nit` when its title or body mentions conventions, style or hygiene, otherwise `kind: bug`. A file name becomes lowercase with dashes for other characters; a name that is still invalid, names a built-in role or is taken gets a suffix. Line ends become LF. The output lists every dropped, changed or guessed field at the end. Exit codes: 0 when written, 2 when nothing is written.
+
+## Benchmark
+
+`mng-review bench <file>` replays recorded changes and compares the kept bug findings with the findings a case expects. It measures; it never passes or fails a run on the scores.
+
+### File format, version 1
+
+```yaml
+version: 1
+cases:
+  - id: checkout-timeout          # unique in the file
+    base: <commit sha>            # merge base of the change
+    head: <commit sha>            # commit to review
+    labels: []                    # optional pull request labels to simulate
+    expected:
+      - id: duplicate-charge      # unique within the case
+        path: src/payments/charge.handler.ts
+        line: 81
+        label: real               # real | intentional | false
+        summary: one sentence
+```
+
+`real` is a bug the change has. `intentional` is code that looks wrong but is deliberate, and `false` a known false alarm; a finding on either counts as noise. A bare `label: false` is read as the label `false`, though YAML parses it as a boolean. Unknown keys, a missing key, a `line` below 1 and duplicate ids fail the run and name the key.
+
+### Run
+
+Rules come from the working tree's `.mng/`, or from `--rules-ref <ref>`, as for a review. Each case is planned and reviewed like `mng-review --base <base> --head <head>` with the case's labels, read from git by its two commits; nothing is checked out and nothing from the change runs. Each case has its own token budget and model health.
+
+A kept bug finding matches an expected entry of its case when the paths are equal and the lines differ by at most `--line-window` (default 20). An entry matches at most one finding and a finding at most one entry; the closest pairs match first, ties go to the earlier entry. Nits are counted apart and never match.
+
+| Per case | Meaning |
+|---|---|
+| real found | `real` entries a finding matched |
+| real missed | `real` entries no finding matched |
+| noise | `intentional` or `false` entries a finding matched |
+| unmatched | findings that matched no entry |
+| nits | kept nits |
+| tokens | per model, router included |
+| wall time | plan and review |
+
+The totals sum every case and add recall (found over all `real` entries) and unmatched findings per case. `--json` prints the same report as JSON. `--case <id>` (repeatable) runs a subset; an unknown id fails. `--concurrency <n>` reviews `n` cases at once, default 1.
+
+Exit codes: 0 when every case ran, 2 on a configuration error (bench file, `.mng/`, an unknown commit) or when a case failed at the endpoint. With an endpoint failure the report is still printed.
 
 ## Stages
 

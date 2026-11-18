@@ -79,6 +79,14 @@ reviews the commits between the merge base with `main` and `HEAD` and prints the
 
 `plan` takes the same flags apart from `--title` and `--body`.
 
+### Benchmark
+
+```sh
+mng-review bench bench.yml
+```
+
+replays the recorded changes in `bench.yml` and compares the findings with the expected ones: real bugs found and missed, noise, unmatched findings, nits, tokens per model and wall time per case, then totals with recall. The file format is in [docs/spec.md](docs/spec.md#benchmark). `--case <id>` runs a subset, `--line-window <n>` sets how far a finding may be from the expected line (default 20), `--concurrency <n>` reviews several cases at once, `--json` prints JSON. It exits 0 when every case ran, whatever the scores.
+
 ### Exit codes
 
 | Code | `mng-review`                                              | `plan`, `init`                                                                 |

@@ -13,7 +13,7 @@ packages/
   domain/                  @mng-review/domain: Schema and pure logic
   engine/                  @mng-review/engine: Effect services
     src/platform/          config, llm, git
-    src/modules/           routing, review, validation, init
+    src/modules/           routing, review, validation, init, bench
 tooling/
   typescript-config/       @mng-review/typescript-config: the strict tsconfig preset
   oxlint-plugin/           @mng-review/oxlint-plugin: the mng-review/* lint rules
@@ -55,6 +55,10 @@ Publish (6), converse (7) and learn (8) run on GitHub and arrive with `packages/
 ## Init
 
 `mng-review init` writes `.mng/` at the repository root. The starter files and the conversion from `.macroscope/` are pure functions in `domain/src/init`; `modules/init` reads `.macroscope/` through the same confined working-tree reader as the rules, loads every generated `review.yml` and agent file as `RulesService` does (imports expanded), refuses symlinks on the way to its targets, and only then writes. It never runs a model.
+
+## Bench
+
+`mng-review bench` parses the benchmark file with the schema in `domain/src/bench`, loads the rules once, then plans and reviews each case with the same services as a review, each case on its own token ledger and review layer. Matching and totals are pure functions in `domain/src/bench/bench.helper.ts`.
 
 ## Model endpoint
 
