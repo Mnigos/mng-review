@@ -44,8 +44,9 @@ permissions:
 jobs:
   review:
     name: MNG Review (shadow)
-    # A fork's pull request never gets the job, its secrets or the tailnet; the entry skips forks too.
-    if: github.event.pull_request == null || github.event.pull_request.head.repo.full_name == github.repository
+    # Only a pull request from this repository gets the job, its secrets and the tailnet; the entry
+    # skips forks and other events too.
+    if: github.event.pull_request != null && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ${{ inputs.runner }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
@@ -55,9 +56,15 @@ jobs:
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
     steps:
+      # Without these (GitHub Enterprise Server), checkout would fall back to the caller's repository.
+      - name: Check the workflow's own commit
+        if: job.workflow_repository == '' || job.workflow_sha == ''
+        run: |
+          echo "::error::job.workflow_repository and job.workflow_sha are not available on this GitHub; MNG Review cannot check out its own code."
+          exit 1
+
       # The base commit only, never the head; credentials are not left in .git/config.
       - name: Check out the base commit
-        if: github.event.pull_request != null
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.base.sha }}
@@ -67,7 +74,6 @@ jobs:
 
       # Objects only: the head commit is never checked out, and git reads it with `git show`.
       - name: Fetch the head commit
-        if: github.event.pull_request != null
         working-directory: repo
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -105,13 +111,18 @@ jobs:
           oauth-client-id: ${{ secrets.tailscale-oauth-client-id }}
           oauth-secret: ${{ secrets.tailscale-oauth-secret }}
           tags: ${{ inputs.tailscale-tags }}
+          # No subnet routes from the tailnet, no inbound connections to the runner.
+          args: --accept-routes=false --shields-up
           use-cache: 'false'
           log-mode: quiet
 
+      # Bun starts in the engine's directory and loads no .env file, so no bunfig.toml, .env or
+      # tsconfig.json of the reviewed repository is read; git runs in MNG_REVIEW_REPO_DIR.
       - name: Review
-        working-directory: ${{ github.event.pull_request && 'repo' || '.' }}
+        working-directory: .mng-review-engine
         env:
           MNG_REVIEW_LLM_URL: ${{ secrets.llm-url }}
           MNG_REVIEW_LLM_KEY: ${{ secrets.llm-key }}
           MNG_REVIEW_ENGINE_COMMIT: ${{ job.workflow_sha }}
-        run: bun "$GITHUB_WORKSPACE/.mng-review-engine/apps/action/src/main.ts"
+          MNG_REVIEW_REPO_DIR: ${{ github.workspace }}/repo
+        run: bun --no-env-file apps/action/src/main.ts
