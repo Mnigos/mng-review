@@ -482,6 +482,89 @@ layer(Layer.empty)('AgentLoopService', test => {
 		})
 	)
 	test.effect(
+		'repository calls a model returns after the wall time are refused',
+		() =>
+			Effect.gen(function* () {
+				const entered = yield* Deferred.make<void>()
+				const release = yield* Deferred.make<void>()
+				const callSpy = vi.fn(() => Effect.succeed('unused'))
+				yield* Effect.gen(function* () {
+					const fiber = yield* AgentLoopService.use(loop =>
+						loop.run(REQUEST)
+					).pipe(Effect.forkChild)
+					yield* Deferred.await(entered)
+					yield* TestClock.adjust(1000)
+					yield* Deferred.succeed(release, undefined)
+					yield* Fiber.join(fiber)
+					expect(callSpy).not.toHaveBeenCalled()
+					const calls = yield* ScriptedLlm.use(script => script.calls)
+					expect(calls[1]?.options.prompt.content).toContainEqual(
+						expect.objectContaining({
+							role: 'tool',
+							content: [
+								expect.objectContaining({
+									id: 'read_file',
+									result: expect.stringContaining(
+										'error: tool read_file is not available'
+									) as unknown,
+								}) as unknown,
+							],
+						})
+					)
+				}).pipe(
+					Effect.provide(
+						loopLayer(
+							(_call, index) =>
+								index === 0
+									? Deferred.succeed(entered, undefined).pipe(
+											Effect.andThen(Deferred.await(release)),
+											Effect.as([toolCall('read_file'), FINISH])
+										)
+									: Effect.succeed(answer()),
+							{},
+							callSpy
+						)
+					)
+				)
+			})
+	)
+	test.effect(
+		'a correction turn after the wall time gets only what is left of the grace period',
+		() =>
+			Effect.gen(function* () {
+				const entered = yield* Deferred.make<void>()
+				const release = yield* Deferred.make<void>()
+				const graceMillis = Duration.toMillis(
+					Duration.fromInputUnsafe(WRAP_UP_GRACE)
+				)
+				yield* Effect.gen(function* () {
+					const fiber = yield* AgentLoopService.use(loop =>
+						loop.run(REQUEST)
+					).pipe(Effect.flip, Effect.forkChild)
+					yield* Deferred.await(entered)
+					yield* TestClock.adjust(1000 + graceMillis - 100)
+					yield* Deferred.succeed(release, undefined)
+					yield* TestClock.adjust(100)
+					expect(yield* Fiber.join(fiber)).toMatchObject({
+						_tag: 'LoopError',
+						reason: 'agent ran past its wall time',
+					})
+					expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(2)
+				}).pipe(
+					Effect.provide(
+						loopLayer((_call, index) =>
+							index === 0
+								? Deferred.succeed(entered, undefined).pipe(
+										Effect.andThen(Deferred.await(release)),
+										Effect.as(answer('report_findings', {}))
+									)
+								: Effect.never
+						)
+					)
+				)
+			})
+	)
+	test.effect(
 		'a loop queued behind another call chooses finish-only after acquiring its slot',
 		() =>
 			Effect.gen(function* () {

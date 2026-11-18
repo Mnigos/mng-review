@@ -91,8 +91,9 @@ function toUserMessage(content: string): Prompt.MessageEncoded {
  * Runs one agent as a tool loop on `effect/ai` `Chat`: one model call per turn, the turn's tool
  * calls resolved in parallel by the loop, until the agent calls its finish tool or answers with
  * plain JSON. Tool calls are bounded by `maxToolCalls` (calls in one turn never exceed what is
- * left), wall time by `maxWallTime` (each call gets the time left plus a grace period); past either,
- * the agent gets only the finish tool and is told to answer. An invalid answer gets a correction
+ * left), wall time by `maxWallTime`; past either, the agent gets only the finish tool and is told to
+ * answer. Repository calls a model returns after the wall time are refused. Every model call,
+ * corrections included, ends by one fixed deadline: the wall time plus one grace period. An invalid answer gets a correction
  * turn; after `MAX_CORRECTIONS` the agent fails with a `LoopError`.
  */
 export class AgentLoopService extends Context.Service<
@@ -126,6 +127,7 @@ export const AgentLoopServiceLive = Layer.effect(
 				{ role: 'user', content: request.user },
 			])
 			const deadline = (yield* Clock.currentTimeMillis) + wallMillis
+			const hardDeadline = deadline + graceMillis
 
 			const correct = (state: LoopState, pending: Prompt.MessageEncoded[]) => {
 				if (state.corrections >= MAX_CORRECTIONS)
@@ -198,12 +200,13 @@ export const AgentLoopServiceLive = Layer.effect(
 							disableToolCallResolution: true,
 							toolCallValidation: 'deferred',
 						})
-						return { usage: response.usage, response, wrapUp }
+						const expired = (yield* Clock.currentTimeMillis) >= deadline
+						return { usage: response.usage, response, wrapUp, expired }
 					})
 					const attempt = yield* Effect.result(
 						health.run(request.model, turn).pipe(
 							Effect.timeoutOrElse({
-								duration: Math.max(0, deadline - queuedAt) + graceMillis,
+								duration: Math.max(0, hardDeadline - queuedAt),
 								orElse: () =>
 									Effect.fail(
 										new LoopError({ reason: 'agent ran past its wall time' })
@@ -226,7 +229,7 @@ export const AgentLoopServiceLive = Layer.effect(
 							])
 						return yield* Effect.fail(error)
 					}
-					const { response, wrapUp } = attempt.success
+					const { response, wrapUp, expired } = attempt.success
 					const sent = { ...state, wrapUpSent: state.wrapUpSent || wrapUp }
 					const calls: readonly ToolCall[] = response.toolCalls
 					const finishCall = calls.find(call => call.name === finish)
@@ -266,7 +269,7 @@ export const AgentLoopServiceLive = Layer.effect(
 									]
 						)
 					}
-					const outputs = yield* resolveCalls(calls, state, wrapUp)
+					const outputs = yield* resolveCalls(calls, state, wrapUp || expired)
 					const message = toToolMessage(
 						calls,
 						outputs.map(output => fenceData(TOOL_OUTPUT_LABEL, output))
