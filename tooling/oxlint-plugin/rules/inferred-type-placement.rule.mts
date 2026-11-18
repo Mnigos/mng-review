@@ -254,9 +254,17 @@ export const inferredTypePlacementRule = defineRule({
 
 					if (!anchor) return
 
-					const anchorEnd = getTrailingComments(anchor).at(-1) ?? anchor
+					const trailing = getTrailingComments(anchor)
+					const anchorEnd = trailing.at(-1) ?? anchor
 
 					if (!startsOwnStatementAfter(anchorEnd)) return
+					// A next-line directive after the anchor targets the following statement; moving the alias under it would steal the suppression.
+					if (
+						trailing.some(comment =>
+							/(?:oxlint|eslint)-disable-next-line/u.test(comment.value)
+						)
+					)
+						return
 
 					return {
 						start: anchorEnd.end,
