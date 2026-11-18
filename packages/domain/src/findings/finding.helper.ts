@@ -122,7 +122,7 @@ export function isSameRootCause(a: Finding, b: Finding): boolean {
 }
 
 /** The kept finding with the other's agents, models and evidence added. */
-function absorb(kept: Finding, other: Finding): Finding {
+export function absorb(kept: Finding, other: Finding): Finding {
 	const suggestion = kept.suggestion ?? other.suggestion
 	return {
 		...kept,
@@ -192,6 +192,42 @@ export function mergeFindings(findings: readonly Finding[]): Finding[] {
 		groups.map(group =>
 			toBySeverity(group).reduce((kept, other) => absorb(kept, other))
 		)
+	)
+}
+
+/**
+ * Two merged bugs that may be one defect worded differently, for the validator to judge: same kind
+ * and path, lines at most `NEAR_LINES` apart, and no finder (agent and model) reported both, so one
+ * finder's own distinct reports are never offered as duplicates.
+ */
+export function isNearDuplicate(a: Finding, b: Finding): boolean {
+	return (
+		a.kind === b.kind &&
+		a.path === b.path &&
+		Math.abs(a.line - b.line) <= NEAR_LINES &&
+		hasOtherReporter(a, b)
+	)
+}
+
+/**
+ * The findings in groups linked by `isNearDuplicate`, each group and the groups in input order; a
+ * finding with no near duplicate is a group of one.
+ */
+export function getNearGroups(findings: readonly Finding[]): Finding[][] {
+	const groups: Finding[][] = []
+	for (const finding of findings) {
+		const [first, ...others] = groups.filter(group =>
+			group.some(member => isNearDuplicate(member, finding))
+		)
+		if (!first) {
+			groups.push([finding])
+			continue
+		}
+		first.push(...others.flat(), finding)
+		for (const other of others) groups.splice(groups.indexOf(other), 1)
+	}
+	return groups.map(group =>
+		group.toSorted((a, b) => findings.indexOf(a) - findings.indexOf(b))
 	)
 }
 

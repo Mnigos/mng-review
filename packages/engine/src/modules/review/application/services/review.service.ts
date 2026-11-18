@@ -96,13 +96,15 @@ export const ReviewServiceLive = Layer.effect(
 					bugs.length
 				),
 			}
-			const validations = yield* Effect.forEach(
-				bugs,
-				bug => validator.validate(bug, { scope, config, rules, budget }),
-				{ concurrency: 'unbounded' }
-			)
+			const validated = yield* validator.validateAll(bugs, {
+				scope,
+				config,
+				rules,
+				budget,
+			})
+			const { validations } = validated
 			const outcome = decideOutcome({
-				bugs,
+				bugs: validated.bugs,
 				validations,
 				nits,
 				config,
