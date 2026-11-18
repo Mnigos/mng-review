@@ -10,6 +10,7 @@ import {
 } from '@mng-review/domain'
 import { Array as Arr, Context, Effect, Layer, Stream } from 'effect'
 import { ChildProcess, ChildProcessSpawner } from 'effect/process'
+import { splitCappedLines } from '../../utils/capped-lines.util'
 import { GitError } from './git.errors'
 
 /**
@@ -45,6 +46,23 @@ export interface GitResult {
 	readonly stdout: string
 	readonly stderr: string
 }
+
+/** How `foldLines` reduces stdout: a start state, a step per line and the longest line it keeps. */
+export interface LineFold<TState> {
+	readonly initial: TState
+	readonly maxLineChars: number
+	readonly step: (state: TState, line: string) => TState
+}
+
+/** A git command's exit code and stderr with its stdout folded into a state. */
+export interface GitFoldResult<TState> extends Omit<GitResult, 'stdout'> {
+	readonly state: TState
+}
+
+/** Reads a command's decoded stdout into a value. */
+type StdoutReader<TOut> = <TError>(
+	stdout: Stream.Stream<string, TError>
+) => Effect.Effect<TOut, TError>
 
 /** The merge base and head commit a diff runs between. */
 type DiffRange = Pick<Change, 'mergeBase' | 'head'>
@@ -85,6 +103,11 @@ export class GitService extends Context.Service<
 		readonly exec: (
 			args: readonly string[]
 		) => Effect.Effect<GitResult, GitError>
+		/** Like `exec`, but stdout is folded line by line while it streams and never held whole. */
+		readonly foldLines: <TState>(
+			args: readonly string[],
+			fold: LineFold<TState>
+		) => Effect.Effect<GitFoldResult<TState>, GitError>
 		/** Sorted names of the files directly inside a directory; `undefined` when it is missing. */
 		readonly listFilesAt: (
 			commit: string,
@@ -128,10 +151,11 @@ export const GitServiceLive = Layer.effect(
 		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
 		const { cwd } = yield* GitWorkdir
 
-		const run = (
+		const spawn = <TOut>(
 			dir: string,
-			args: readonly string[]
-		): Effect.Effect<GitResult, GitError> =>
+			args: readonly string[],
+			readStdout: StdoutReader<TOut>
+		) =>
 			Effect.scoped(
 				Effect.gen(function* () {
 					const handle = yield* spawner.spawn(
@@ -144,7 +168,7 @@ export const GitServiceLive = Layer.effect(
 					)
 					const [stdout, stderr, exitCode] = yield* Effect.all(
 						[
-							Stream.mkString(Stream.decodeText(handle.stdout)),
+							readStdout(Stream.decodeText(handle.stdout)),
 							Stream.mkString(Stream.decodeText(handle.stderr)),
 							handle.exitCode,
 						],
@@ -157,6 +181,11 @@ export const GitServiceLive = Layer.effect(
 					error => new GitError({ args, exitCode: -1, stderr: error.message })
 				)
 			)
+
+		const run = (
+			dir: string,
+			args: readonly string[]
+		): Effect.Effect<GitResult, GitError> => spawn(dir, args, Stream.mkString)
 
 		const toplevel = yield* run(cwd, ['rev-parse', '--show-toplevel'])
 		if (toplevel.exitCode !== 0)
@@ -348,6 +377,16 @@ export const GitServiceLive = Layer.effect(
 		return {
 			root,
 			exec: (args: readonly string[]) => run(root, args),
+			foldLines: <TState>(args: readonly string[], fold: LineFold<TState>) =>
+				spawn(root, args, stdout =>
+					Stream.runFold(
+						splitCappedLines(stdout, fold.maxLineChars),
+						() => fold.initial,
+						fold.step
+					)
+				).pipe(
+					Effect.map(({ stdout, ...result }) => ({ ...result, state: stdout }))
+				),
 			resolveCommit,
 			mergeBase,
 			branchName,

@@ -57,6 +57,7 @@ function gitFixture(
 	return {
 		root: '/fixture',
 		exec: () => Effect.die('unexpected exec'),
+		foldLines: () => Effect.die('unexpected fold'),
 		readDiff,
 		resolveCommit: () => Effect.die('unexpected resolve'),
 		mergeBase: () => Effect.die('unexpected merge'),

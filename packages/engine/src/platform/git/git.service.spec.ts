@@ -321,6 +321,41 @@ layer(Layer.empty, { excludeTestServices: true })('GitService', test => {
 						)
 				})
 		)
+	test.effect(
+		'foldLines streams a blob line by line with each line cut to the cap',
+		() =>
+			Effect.gen(function* () {
+				const repo = createRepo()
+				const lines = Array.from(
+					{ length: 50_000 },
+					(_, index) => `line ${index}`
+				)
+				repo.write('big.txt', `${'x'.repeat(100_000)}\n${lines.join('\n')}\n`)
+				const commit = repo.commit()
+				yield* Effect.gen(function* () {
+					const git = yield* GitService
+					const lineSpy = vi.fn((count: number, line: string) => {
+						expect(line.length).toBeLessThanOrEqual(10)
+						return count + 1
+					})
+					expect(
+						yield* git.foldLines(['show', `${commit}:big.txt`], {
+							initial: 0,
+							maxLineChars: 10,
+							step: lineSpy,
+						})
+					).toEqual({ exitCode: 0, stderr: '', state: 50_001 })
+					expect(lineSpy.mock.calls[0]?.[1]).toBe('x'.repeat(10))
+					expect(
+						yield* git.foldLines(['show', `${commit}:missing.txt`], {
+							initial: 0,
+							maxLineChars: 10,
+							step: count => count + 1,
+						})
+					).toMatchObject({ exitCode: 128, state: 0 })
+				}).pipe(Effect.provide(gitLayer(repo.root)))
+			})
+	)
 	test.effect('not a repository fails with ConfigError', () =>
 		Effect.gen(function* () {
 			const repo = createRepo()

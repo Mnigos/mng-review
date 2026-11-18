@@ -1,8 +1,6 @@
 import {
 	type Change,
 	getReviewableFiles,
-	type LineRange,
-	matchesGlob,
 	normalizeRepoPath,
 	parseLineRange,
 	parseLsTree,
@@ -13,11 +11,14 @@ import { GitService } from '../../../../platform/git/git.service'
 import { truncateText } from '../../../../utils/fence.util'
 import {
 	BYTES_PER_KB,
-	MAX_GREP_LINES,
 	MAX_GREP_PER_FILE,
 	MAX_TOOL_OUTPUT_CHARS,
 } from '../../domain/review.constants'
 import { ToolError } from '../../domain/review.errors'
+import {
+	addGrepMatch,
+	addNumberedLine,
+} from '../../infrastructure/tool-output.parser'
 import {
 	BlameTool,
 	DiffTool,
@@ -55,10 +56,10 @@ export class RepoToolsService extends Context.Service<
 	}
 >()('mng-review/RepoToolsService') {}
 
-/** A repository-relative path, or `.` for the root when `root` allows it. */
 /** Longest path, pattern or glob a tool passes to git; Linux refuses a single argument over 128 KB. */
 const MAX_ARGUMENT_CHARS = 4096
 
+/** A repository-relative path, or `.` for the root when `root` allows it. */
 function requirePath(value: string, root: boolean) {
 	if (value.length > MAX_ARGUMENT_CHARS)
 		return Effect.fail(new ToolError({ reason: 'path is too long' }))
@@ -97,37 +98,6 @@ function requireGlob(glob: string | undefined) {
 /** The commit a tool ref names: the head, or the merge base for `base`. */
 function toCommit(scope: RepoScope, ref: ToolRef): string {
 	return ref === 'head' ? scope.change.head.commit : scope.change.mergeBase
-}
-
-/** Lines with their numbers, `start` to `end`, cut to the file. */
-function toNumberedLines(text: string, range: LineRange | undefined): string {
-	const lines = text.split('\n')
-	const start = range?.start ?? 1
-	const end = Math.min(range?.end ?? lines.length, lines.length)
-	const shown = lines
-		.slice(start - 1, end)
-		.map((line, index) => `${start + index}| ${line}`)
-	return shown.length > 0 ? shown.join('\n') : '(no lines in range)'
-}
-
-/** `git grep -z` records as `path:line:text`, kept to the glob and to `MAX_GREP_LINES`. */
-function toGrepLines(output: string, commit: string, glob: string | undefined) {
-	const prefix = `${commit}:`
-	const matches = output
-		.split('\n')
-		.filter(Boolean)
-		.map(record => record.split('\0'))
-		.map(([file = '', line = '', ...text]) => ({
-			path: file.startsWith(prefix) ? file.slice(prefix.length) : file,
-			text: `${line}:${text.join('\0')}`,
-		}))
-		.filter(match => glob === undefined || matchesGlob(match.path, glob))
-	if (matches.length === 0) return '(no matches)'
-	const shown = matches
-		.slice(0, MAX_GREP_LINES)
-		.map(match => `${match.path}:${match.text}`)
-	const rest = matches.length - shown.length
-	return [...shown, ...(rest > 0 ? [`[${rest} more matches]`] : [])].join('\n')
 }
 
 export const RepoToolsServiceLive = Layer.effect(
@@ -177,14 +147,21 @@ export const RepoToolsServiceLive = Layer.effect(
 				return yield* new ToolError({
 					reason: `${path} is larger than ${maxFileKb} KB; pass a range`,
 				})
-			const text = yield* gitText([
-				'show',
-				'--no-textconv',
-				`${commit}:${path}`,
-			])
-			if (text.includes('\0'))
+			const { exitCode, stderr, state } = yield* git.foldLines(
+				['show', '--no-textconv', `${commit}:${path}`],
+				{
+					initial: { text: '', seen: 0, binary: false },
+					maxLineChars: MAX_TOOL_OUTPUT_CHARS,
+					step: addNumberedLine(range),
+				}
+			)
+			if (exitCode !== 0)
+				return yield* new ToolError({
+					reason: stderr.trim() || 'git show failed',
+				})
+			if (state.binary)
 				return yield* new ToolError({ reason: `${path} is a binary file` })
-			return toNumberedLines(text, range)
+			return state.text || '(no lines in range)'
 		})
 
 		const grep = Effect.fn('RepoToolsService.grep')(function* (
@@ -210,13 +187,16 @@ export const RepoToolsServiceLive = Layer.effect(
 				commit,
 				'--',
 			]
-			const result = yield* git.exec(args)
-			if (result.exitCode === 1) return '(no matches)'
-			if (result.exitCode !== 0)
-				return yield* new ToolError({
-					reason: result.stderr.trim() || 'grep failed',
-				})
-			return toGrepLines(result.stdout, commit, glob)
+			const { exitCode, stderr, state } = yield* git.foldLines(args, {
+				initial: { text: '', shown: 0, rest: 0 },
+				maxLineChars: MAX_TOOL_OUTPUT_CHARS,
+				step: addGrepMatch(commit, glob),
+			})
+			if (exitCode !== 0 && exitCode !== 1)
+				return yield* new ToolError({ reason: stderr.trim() || 'grep failed' })
+			if (state.shown === 0) return '(no matches)'
+			const more = state.rest > 0 ? `\n[${state.rest} more matches]` : ''
+			return `${state.text}${more}`
 		})
 
 		const listDir = Effect.fn('RepoToolsService.listDir')(function* (
