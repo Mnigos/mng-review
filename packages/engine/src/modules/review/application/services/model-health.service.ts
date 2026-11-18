@@ -14,9 +14,12 @@ import { ReviewLimits } from '../review-limits.context'
 /** Why a model call failed in a way the run can go on from. */
 export type ModelCallError = LlmError | ModelDroppedError | TokenBudgetError
 
-/** An unknown-model answer: the provider's code or a message that says the model does not exist. */
+/**
+ * An unknown-model answer: the provider's code or a message that says the model does not exist.
+ * "model parameter" names a request setting, not the model, so it never counts.
+ */
 const UNKNOWN_MODEL =
-	/model_not_found|(?:unknown|no such|invalid)\s+model|model\b.*\b(?:not found|unknown|does not exist|not supported|no such|unavailable)/iu
+	/model_not_found|(?:unknown|no such|invalid)\s+model\b(?![\s_-]*param)|model\b(?![\s_-]*param).*\b(?:not found|unknown|does not exist|not supported|no such|unavailable)/iu
 
 /** Why an error drops its model for the rest of the run, or `undefined` to keep the model. */
 export function getDropReason(error: LlmError): string | undefined {
