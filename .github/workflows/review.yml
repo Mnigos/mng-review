@@ -113,10 +113,15 @@ jobs:
           oauth-client-id: ${{ secrets.tailscale-oauth-client-id }}
           oauth-secret: ${{ secrets.tailscale-oauth-secret }}
           tags: ${{ inputs.tailscale-tags }}
-          # No subnet routes from the tailnet, no inbound connections to the runner.
-          args: --accept-routes=false --shields-up
+          # No inbound connections to the runner.
+          args: --shields-up
           use-cache: 'false'
           log-mode: quiet
+
+      # The action always passes --accept-routes, and the CLI refuses the flag twice, so routes go off here.
+      - name: Turn off subnet routes
+        if: inputs.tailscale
+        run: sudo tailscale set --accept-routes=false
 
       # Bun starts in the engine's directory and loads no .env file, so no bunfig.toml, .env or
       # tsconfig.json of the reviewed repository is read; git runs in MNG_REVIEW_REPO_DIR.

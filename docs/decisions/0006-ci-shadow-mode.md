@@ -17,7 +17,7 @@ Stage 3 runs the review in GitHub Actions. The review needs the endpoint URL and
 - Title, body and labels reach the models only as fenced data. Every text in the job summary that comes from a model or the repository is escaped, and URLs become code, so it cannot add links, images or HTML.
 - Shadow mode: the result goes to the job summary only. No comment, review, check run or status is created. The job exits 0 whatever the findings and when the endpoint is offline (`GET /models` unreachable, timed out, 401, 403, 429 or 5xx; also when the URL is not set); 2 when `.mng/` at the base commit or the event is invalid, naming the file or key; 1 when git cannot read the change.
 - The endpoint URL and key are registered with `::add-mask::` before anything else and never printed.
-- An optional ephemeral tailnet node, with tags the caller gives, reaches an endpoint that is not on the internet. It joins with `--accept-routes=false --shields-up`. The tailnet's access rules decide what that node can reach; the documentation asks for a tag that reaches only the endpoint's host and port and an OAuth client limited to that tag.
+- An optional ephemeral tailnet node, with tags the caller gives, reaches an endpoint that is not on the internet. It joins with `--shields-up` and then turns subnet routes off (`tailscale set --accept-routes=false`). The tailnet's access rules decide what that node can reach; the documentation asks for a tag that reaches only the endpoint's host and port and an OAuth client limited to that tag.
 
 ## Consequences
 
