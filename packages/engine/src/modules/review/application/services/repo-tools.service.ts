@@ -184,6 +184,8 @@ export const RepoToolsServiceLive = Layer.effect(
 			scope: RepoScope,
 			params: typeof GrepTool.parametersSchema.Type
 		) {
+			if (params.pattern === '')
+				return yield* new ToolError({ reason: 'pattern is required' })
 			const glob = yield* requireGlob(params.glob)
 			const commit = toCommit(scope, params.ref)
 			const args = [

@@ -16,7 +16,7 @@ export type ModelCallError = LlmError | ModelDroppedError | TokenBudgetError
 
 /** An unknown-model answer: the provider's code or a message that says the model does not exist. */
 const UNKNOWN_MODEL =
-	/model_not_found|model.*(?:not found|unknown|does not exist|not supported|no such|unavailable)/iu
+	/model_not_found|(?:unknown|no such|invalid)\s+model|model\b.*\b(?:not found|unknown|does not exist|not supported|no such|unavailable)/iu
 
 /** Why an error drops its model for the rest of the run, or `undefined` to keep the model. */
 export function getDropReason(error: LlmError): string | undefined {

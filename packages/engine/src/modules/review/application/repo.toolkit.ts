@@ -32,7 +32,9 @@ export const GrepTool = Tool.make('grep', {
 		'Search file contents with an extended regular expression. Returns path:line:text.',
 	parameters: Schema.Struct({
 		ref: refSchema,
-		pattern: Schema.NonEmptyString,
+		pattern: Schema.String.annotate({
+			description: 'Extended regular expression, not empty.',
+		}),
 		glob: Schema.optionalKey(Schema.String).annotate({
 			description: 'Limit to paths matching this glob, e.g. `src/**/*.ts`.',
 		}),
