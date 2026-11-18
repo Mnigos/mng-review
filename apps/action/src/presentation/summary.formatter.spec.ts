@@ -1,3 +1,4 @@
+import { MECHANICAL_CONDITIONS } from '@mng-review/domain'
 import type {
 	PullRequestEvent,
 	ShadowOutcome,
@@ -388,3 +389,67 @@ describe('toVerdictLine', () => {
 		).toContain('incomplete, the model endpoint failed: no model available')
 	})
 })
+
+for (const failed of [[], MECHANICAL_CONDITIONS] as const)
+	test(`summary annotates the risk line with mechanical failures ${failed.join(', ')}`, () => {
+		const fixture = reviewReport()
+		const shape = {
+			files: 1,
+			smallShare: 1,
+			netShare: 0,
+			riskyRewrites: [],
+			failed,
+		}
+		const report = {
+			...fixture,
+			planReport: {
+				...fixture.planReport,
+				plan: {
+					...fixture.planReport.plan,
+					riskPathHits: ['src/billing/charge.ts'],
+					shape,
+				},
+			},
+		}
+		const text = formatSummary(
+			{ status: 'reviewed', event: EVENT, report },
+			CONTEXT
+		)
+		const riskLine = text.split('\n').find(line => line.startsWith('Risk **'))
+		expect(riskLine).toContain(
+			failed.length
+				? `; not mechanical, failed: ${failed.join(', ')}`
+				: '; mechanical change'
+		)
+	})
+
+test.each([false, true])(
+	'summary omits shape annotation when risk paths are absent=%s',
+	absentRiskPaths => {
+		const fixture = reviewReport()
+		const shape = {
+			files: 1,
+			smallShare: 1,
+			netShare: 0,
+			riskyRewrites: [],
+			failed: [],
+		}
+		const report = {
+			...fixture,
+			planReport: {
+				...fixture.planReport,
+				plan: {
+					...fixture.planReport.plan,
+					riskPathHits: absentRiskPaths ? [] : ['src/billing/charge.ts'],
+					shape: absentRiskPaths ? shape : undefined,
+				},
+			},
+		}
+		const text = formatSummary(
+			{ status: 'reviewed', event: EVENT, report },
+			CONTEXT
+		)
+		expect(text).not.toContain('; mechanical change')
+		expect(text).not.toContain('; not mechanical')
+	}
+)

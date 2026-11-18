@@ -38,6 +38,9 @@ const findingSchema = Schema.Struct({
 	line: Schema.Number,
 	title: Schema.String,
 	severity: Schema.String,
+	trigger: Schema.String,
+	impact: Schema.String,
+	status: Schema.Literals(['confirmed', 'unverified', 'unvalidated']),
 })
 const matchSchema = Schema.Struct({
 	expected: expectedSchema,
@@ -46,6 +49,7 @@ const matchSchema = Schema.Struct({
 const scoreSchema = Schema.Struct({
 	found: Schema.Array(matchSchema),
 	missed: Schema.Array(expectedSchema),
+	near: Schema.Array(matchSchema),
 	noise: Schema.Array(matchSchema),
 	unmatched: Schema.Array(findingSchema),
 })
@@ -72,6 +76,18 @@ const decodeReport = Schema.decodeUnknownSync(
 					base: Schema.String,
 					head: Schema.String,
 					score: scoreSchema,
+					depth: Schema.Struct({ level: Schema.String, source: Schema.String }),
+					risk: Schema.String,
+					rejected: Schema.Array(
+						Schema.Struct({
+							path: Schema.String,
+							line: Schema.Number,
+							title: Schema.String,
+							severity: Schema.String,
+							reason: Schema.String,
+							validatedBy: Schema.String,
+						})
+					),
 					nits: Schema.Number,
 					tokens: tokensSchema,
 					tokenSources: Schema.Record(
@@ -92,6 +108,9 @@ const decodeReport = Schema.decodeUnknownSync(
 			totals: Schema.Struct({
 				cases: Schema.Number,
 				found: Schema.Number,
+				confirmed: Schema.Number,
+				unverified: Schema.Number,
+				near: Schema.Number,
 				missed: Schema.Number,
 				noise: Schema.Number,
 				unmatched: Schema.Number,
@@ -202,6 +221,102 @@ afterEach(cleanupRepos)
 
 layer(Layer.empty, { excludeTestServices: true })('bench CLI', test => {
 	test.effect(
+		'case titles and descriptions reach the reviewer without leaking between cases',
+		() =>
+			Effect.gen(function* () {
+				const repo = benchRepo()
+				const cases = repo.file.cases.map((entry, index) => ({
+					...entry,
+					title: `Recorded change ${index}`,
+					body: `Description for recorded case ${index}`,
+				}))
+				repo.write(BENCH_FILE, JSON.stringify({ ...repo.file, cases }))
+				const invocation = yield* runReviewCli(
+					repo.root,
+					['bench', BENCH_FILE, '--json'],
+					OPTIONS
+				)
+				expect(invocation.outcome._tag).toBe('Success')
+				for (const [index, entry] of cases.entries()) {
+					const calls = invocation.calls.filter(
+						call =>
+							call.tools?.some(
+								candidate => candidate.function.name === 'report_findings'
+							) && JSON.stringify(call.messages).includes(entry.title)
+					)
+					expect(calls).toHaveLength(1)
+					expect(JSON.stringify(calls[0]?.messages)).toContain(entry.body)
+					expect(JSON.stringify(calls[0]?.messages)).not.toContain(
+						`Recorded change ${1 - index}`
+					)
+				}
+			})
+	)
+	test.effect('a case without metadata uses the ordinary review context', () =>
+		Effect.gen(function* () {
+			const invocation = yield* runReviewCli(
+				benchRepo().root,
+				['bench', BENCH_FILE, '--case', 'checkout-timeout', '--json'],
+				OPTIONS
+			)
+			expect(invocation.outcome._tag).toBe('Success')
+			expect(decodeReport(invocation.out).cases[0]).toMatchObject({
+				depth: { level: 'balanced', source: 'review.yml depth' },
+				risk: 'normal',
+				rejected: [],
+			})
+			expect(JSON.stringify(invocation.calls)).not.toContain('Recorded change')
+		})
+	)
+	test.effect(
+		'case reports retain each rejected bug and validator evidence while keeping it out of scores',
+		() =>
+			Effect.gen(function* () {
+				const invocation = yield* runReviewCli(
+					benchRepo().root,
+					['bench', BENCH_FILE, '--case', 'checkout-timeout', '--json'],
+					{
+						endpoint: ENDPOINT,
+						respond: call =>
+							call.tools?.some(tool => tool.function.name === 'report_verdict')
+								? {
+										content: {
+											verdict: 'reject',
+											severity: 'medium',
+											reason: 'src/billing/charge.ts:2 guards the retry.',
+											evidence: ['src/billing/charge.ts:2'],
+										},
+									}
+								: respond(call),
+					}
+				)
+				expect(invocation.outcome._tag).toBe('Success')
+				const report = decodeReport(invocation.out)
+				expect(report.cases[0]?.rejected).toEqual(
+					[REPORTED_FINDING, EXTRA_FINDING].map(finding => ({
+						path: finding.path,
+						line: finding.line,
+						title: finding.title,
+						severity: finding.severity,
+						reason: 'src/billing/charge.ts:2 guards the retry.',
+						validatedBy: 'reviewer',
+					}))
+				)
+				expect(report.cases[0]?.score).toMatchObject({
+					found: [],
+					near: [],
+					unmatched: [],
+					missed: [{ id: 'duplicate-charge' }, { id: 'missing-guard' }],
+				})
+				expect(report.totals).toMatchObject({
+					found: 0,
+					confirmed: 0,
+					unverified: 0,
+					recall: 0,
+				})
+			})
+	)
+	test.effect(
 		'case reports retain scored findings when the token budget stops validation',
 		() =>
 			Effect.gen(function* () {
@@ -222,6 +337,9 @@ layer(Layer.empty, { excludeTestServices: true })('bench CLI', test => {
 					expect(entry.endpointError).toBeUndefined()
 				}
 				expect(report.cases[0]?.score.found).toHaveLength(1)
+				expect(report.cases[0]?.score.found[0]?.finding.status).toBe(
+					'unvalidated'
+				)
 				expect(report.cases[1]?.score.noise).toHaveLength(1)
 				expect(invocation.requests).toHaveLength(4)
 				expect(
@@ -259,6 +377,9 @@ layer(Layer.empty, { excludeTestServices: true })('bench CLI', test => {
 					totals: {
 						cases: 2,
 						found: 1,
+						confirmed: 1,
+						unverified: 0,
+						near: 0,
 						missed: 1,
 						noise: 1,
 						unmatched: 2,
@@ -277,7 +398,12 @@ layer(Layer.empty, { excludeTestServices: true })('bench CLI', test => {
 					found: [
 						{
 							expected: { id: 'duplicate-charge' },
-							finding: { title: REPORTED_FINDING.title },
+							finding: {
+								title: REPORTED_FINDING.title,
+								status: 'confirmed',
+								trigger: REPORTED_FINDING.trigger,
+								impact: REPORTED_FINDING.impact,
+							},
 						},
 					],
 					missed: [{ id: 'missing-guard' }],
@@ -290,6 +416,13 @@ layer(Layer.empty, { excludeTestServices: true })('bench CLI', test => {
 					noise: [{ expected: { label: 'intentional' } }],
 					unmatched: [{ title: EXTRA_FINDING.title }],
 				})
+				for (const entry of report.cases) {
+					expect(entry).toMatchObject({
+						depth: { level: 'balanced', source: 'review.yml depth' },
+						risk: 'normal',
+						rejected: [],
+					})
+				}
 				expect(report.cases.every(entry => entry.wallMillis >= 0)).toBeTruthy()
 				expect(report.wallMillis).toBeGreaterThanOrEqual(0)
 				expect(invocation.requests).toEqual(
@@ -318,8 +451,12 @@ layer(Layer.empty, { excludeTestServices: true })('bench CLI', test => {
 					OPTIONS
 				)
 				expect(invocation.outcome._tag).toBe('Success')
-				expect(invocation.out).toContain('checkout-timeout  real 1/2 found')
-				expect(invocation.out).toContain('checkout-retry  real 0/0 found')
+				expect(invocation.out).toContain(
+					'checkout-timeout  balanced  real 1/2 found'
+				)
+				expect(invocation.out).toContain(
+					'checkout-retry  balanced  real 0/0 found'
+				)
 				expect(invocation.out).toContain('Recall: 50.0% (1 of 2 real)')
 			})
 	)
@@ -450,6 +587,9 @@ layer(Layer.empty, { excludeTestServices: true })('bench CLI', test => {
 				expect(decodeReport(sequential.out).totals).toEqual({
 					cases: 2,
 					found: 1,
+					confirmed: 1,
+					unverified: 0,
+					near: 0,
 					missed: 1,
 					noise: 1,
 					unmatched: 2,
@@ -480,6 +620,9 @@ layer(Layer.empty, { excludeTestServices: true })('bench CLI', test => {
 				expect(report.totals).toEqual({
 					cases: 1,
 					found: 0,
+					confirmed: 0,
+					unverified: 0,
+					near: 0,
 					missed: 0,
 					noise: 1,
 					unmatched: 1,

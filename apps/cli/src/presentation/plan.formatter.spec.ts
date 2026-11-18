@@ -1,4 +1,14 @@
-import { DEFAULT_PRESET, type Plan, type PlannedRun } from '@mng-review/domain'
+import {
+	DEFAULT_PRESET,
+	MECHANICAL_CONDITIONS,
+	MECHANICAL_MIN_FILES,
+	MECHANICAL_MIN_SMALL_SHARE,
+	MECHANICAL_MAX_NET_SHARE,
+	MECHANICAL_REWRITE_MIN_LINES,
+	type ChangeShape,
+	type Plan,
+	type PlannedRun,
+} from '@mng-review/domain'
 import type { PlanReport } from '@mng-review/engine'
 import { formatPlanJson, formatPlanText } from './plan.formatter'
 
@@ -124,6 +134,7 @@ test('JSON keeps the public report structure and duplicate reviewer order', () =
 					level: input.plan.risk,
 					source: input.plan.riskSource,
 					riskPaths: input.plan.riskPathHits,
+					shape: null,
 				},
 				depth: { level: input.plan.depth, source: input.plan.depthSource },
 				router: input.plan.router,
@@ -182,5 +193,61 @@ test('mechanical risk source explains the count of files under risk paths in tex
 	)
 	expect(JSON.parse(formatPlanJson(input))).toMatchObject({
 		risk: { source: 'mechanical', riskPaths: input.plan.riskPathHits },
+	})
+})
+
+test.each([true, false])(
+	'plan prints measured shape, limits and mechanical verdict=%s',
+	mechanical => {
+		const shape = {
+			files: MECHANICAL_MIN_FILES,
+			smallShare: MECHANICAL_MIN_SMALL_SHARE,
+			netShare: MECHANICAL_MAX_NET_SHARE,
+			riskyRewrites: mechanical ? [] : ['src/auth.ts', 'src/billing.ts'],
+			failed: mechanical ? [] : MECHANICAL_CONDITIONS,
+		} as const satisfies ChangeShape
+		const input = report({ shape })
+		const text = formatPlanText(input)
+		const verdict = mechanical
+			? 'mechanical'
+			: `not mechanical, failed: ${MECHANICAL_CONDITIONS.join(', ')}`
+		expect(
+			text.split('\n').filter(line => line.startsWith('Change shape:'))
+		).toEqual([
+			`Change shape: ${shape.files} reviewable file(s) (mechanical needs ${MECHANICAL_MIN_FILES}), ${Math.round(shape.smallShare * 100)}% small edits (needs ${Math.round(MECHANICAL_MIN_SMALL_SHARE * 100)}%), added and removed lines ${Math.round(shape.netShare * 100)}% apart (at most ${Math.round(MECHANICAL_MAX_NET_SHARE * 100)}%), ${shape.riskyRewrites.length} risky file(s) with ${MECHANICAL_REWRITE_MIN_LINES}+ changed lines (needs 0): ${verdict}`,
+		])
+		expect(
+			text
+				.split('\n')
+				.filter(line => line.startsWith('  - rewrite under risk_paths:'))
+		).toEqual(
+			shape.riskyRewrites.map(path => `  - rewrite under risk_paths: ${path}`)
+		)
+		expect(JSON.parse(formatPlanJson(input))).toMatchObject({
+			risk: { shape: { ...shape, mechanical } },
+		})
+	}
+)
+
+test('shape stays in JSON but is silent in text without a risk-path hit', () => {
+	const shape = {
+		files: 1,
+		smallShare: 1,
+		netShare: 0,
+		riskyRewrites: [],
+		failed: ['files'],
+	} as const satisfies ChangeShape
+	const input = report({ shape, riskPathHits: [] })
+	expect(formatPlanText(input)).not.toContain('Change shape:')
+	expect(JSON.parse(formatPlanJson(input))).toMatchObject({
+		risk: { shape: { ...shape, mechanical: false } },
+	})
+})
+
+test('absent shape is null in JSON and silent in text even with risk-path hits', () => {
+	const input = report()
+	expect(formatPlanText(input)).not.toContain('Change shape:')
+	expect(JSON.parse(formatPlanJson(input))).toMatchObject({
+		risk: { shape: null },
 	})
 })

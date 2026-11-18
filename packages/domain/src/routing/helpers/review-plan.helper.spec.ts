@@ -10,6 +10,7 @@ import {
 	pr,
 } from '../../shared/mocks/domain-test.helper'
 import { MECHANICAL_MIN_FILES, REVIEWER_NAME } from '../routing.constants'
+import { getChangeShape } from './change-shape.helper'
 import { buildPlan, getPlanRouting } from './review-plan.helper'
 
 describe('plan routing and construction', () => {
@@ -391,6 +392,7 @@ describe('plan routing and construction', () => {
 			router: { status: 'skipped', detail: 'run skipped', added: [] },
 			depthSource: 'run skipped',
 		})
+		expect(buildPlan(input, NORMAL_ROUTER)).not.toHaveProperty('shape')
 	})
 
 	test.each([
@@ -558,3 +560,19 @@ describe('mechanical plan depth', () => {
 			).toBe(depth))
 	}
 })
+
+test.each([false, true])(
+	'active plans retain measured shape with risk paths=%s',
+	risky => {
+		const files = mechanicalFiles()
+		const input = planInput({
+			files,
+			config: config({ risk_paths: risky ? ['src/billing/**'] : [] }),
+		})
+		const plan = buildPlan(input, { ...NORMAL_ROUTER, risk: 'risky' })
+		expect(plan.shape).toEqual(getChangeShape(files, plan.riskPathHits))
+		expect(plan.shape?.failed).toEqual([])
+		expect(plan.risk).toBe('normal')
+		expect(plan.riskSource).toBe('mechanical')
+	}
+)
