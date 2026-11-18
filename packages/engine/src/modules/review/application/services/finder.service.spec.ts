@@ -398,4 +398,43 @@ ${DIFF}`)
 			expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(0)
 		}).pipe(Effect.provide(finderLayer(() => Effect.succeed(answer()))))
 	)
+
+	for (const failure of ['endpoint', 'budget', 'loop'] as const)
+		test.effect(
+			`whole ${
+				failure
+			} failure returns no findings and classifies endpoint errors`,
+			() =>
+				Effect.gen(function* () {
+					const run = yield* FinderService.use(finder =>
+						finder.run(plannedRun(), context())
+					)
+					expect(run.findings).toEqual([])
+					expect(run.report.status).toBe('failed')
+					expect(run.report.error).toContain(
+						failure === 'endpoint'
+							? 'fixture failure'
+							: failure === 'budget'
+								? 'token budget spent'
+								: 'no valid report_findings answer'
+					)
+					expect(run.report.endpointError).toBe(
+						failure === 'endpoint' ? true : undefined
+					)
+					expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(
+						failure === 'budget' ? 0 : failure === 'loop' ? 3 : 1
+					)
+				}).pipe(
+					Effect.provide(
+						finderLayer(
+							() =>
+								failure === 'endpoint'
+									? Effect.fail(providerError(500))
+									: Effect.succeed(answer('report_findings', {})),
+							gitFixture(),
+							failure === 'budget' ? { tokensPerRun: 0 } : {}
+						)
+					)
+				)
+		)
 })

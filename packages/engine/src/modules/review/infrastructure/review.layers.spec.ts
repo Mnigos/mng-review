@@ -1,6 +1,10 @@
 import { layer } from '@effect/vitest'
 import { parseReviewConfig } from '@mng-review/domain'
 import { Effect, Layer } from 'effect'
+import {
+	RulesService,
+	RulesServiceLive,
+} from '../../../platform/config/rules.service'
 import { GitService } from '../../../platform/git/git.service'
 import {
 	makeScriptedLlmLayer,
@@ -16,6 +20,12 @@ import {
 	config,
 	rawFinding,
 } from '../../../shared/mocks/domain-test.helper'
+import {
+	cleanupRepos,
+	createRepo,
+	FileSystemLayer,
+	gitLayer,
+} from '../../../shared/mocks/git-test.helper'
 import {
 	gitFixture,
 	offers,
@@ -533,4 +543,145 @@ layer(Layer.empty)('ReviewPipelineLive', test => {
 					)
 				)
 		)
+
+	for (const form of ['object', 'list'] as const)
+		for (const depth of ['balanced', 'deep'] as const)
+			test.effect(`one ${form} reviewer runs once at ${depth} depth`, () =>
+				Effect.gen(function* () {
+					const cfg = yield* parseReviewConfig(
+						`depth: ${depth}\nmodels:\n  reviewer: ${
+							form === 'object'
+								? '{model: model-a, effort: high}'
+								: '[{model: model-a, effort: high}]'
+						}`
+					)
+					const report = yield* ReviewService.use(review =>
+						review.review(reviewRequest(cfg))
+					)
+					expect(report.agents).toMatchObject([
+						{ name: 'reviewer', model: 'model-a', status: 'ok' },
+					])
+					expect(report.agents).toHaveLength(1)
+					expect(report.endpointError).toBeUndefined()
+					expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(1)
+				}).pipe(Effect.provide(pipelineLayer(emptyScript)))
+			)
+	for (const kind of ['bug', 'nit'] as const)
+		test.effect(
+			`declared ${kind} agent alone falls back and validates only bugs`,
+			() =>
+				Effect.gen(function* () {
+					const request = reviewRequest(
+						config({
+							features: { reviewer: 'off' },
+							models: {
+								reviewer: REVIEWERS,
+								agents: MODEL,
+								validator: 'cross',
+							},
+						}),
+						[agent('billing', { kind })]
+					)
+					const report = yield* ReviewService.use(review =>
+						review.review(request)
+					)
+					expect(report.agents).toMatchObject([
+						{
+							name: 'billing',
+							kind,
+							model: 'model-b',
+							status: 'ok',
+							fellBackFrom: 'model-a',
+						},
+					])
+					expect(report.endpointError).toBeUndefined()
+					expect(report.droppedModels).toEqual([
+						{ model: 'model-a', reason: 'unavailable (503)' },
+					])
+					expect(kind === 'bug' ? report.bugs : report.nits).toMatchObject([
+						{ kind, agents: ['billing'], models: ['model-b'] },
+					])
+					expect(
+						(yield* ScriptedLlm.use(script => script.calls))
+							.filter(call => offers(call, 'report_verdict'))
+							.map(call => call.model.model)
+					).toEqual(kind === 'bug' ? ['model-b'] : [])
+				}).pipe(
+					Effect.provide(
+						pipelineLayer(call =>
+							call.model.model === 'model-a'
+								? Effect.fail(providerError(503))
+								: Effect.succeed(
+										offers(call, 'report_verdict')
+											? answer('report_verdict', verdict())
+											: answer('report_findings', { findings: [rawFinding()] })
+									)
+						)
+					)
+				)
+		)
 })
+
+afterEach(cleanupRepos)
+
+layer(Layer.empty, { excludeTestServices: true })(
+	'ReviewPipelineLive committed notes',
+	test => {
+		for (const ref of [undefined, 'HEAD'])
+			test.effect(
+				`lowercase context in ${
+					ref ?? 'working tree'
+				} never reaches the main reviewer`,
+				() =>
+					Effect.gen(function* () {
+						const repo = createRepo()
+						repo.write(
+							'.mng/context.md',
+							'Lowercase notes must not reach the main reviewer.'
+						)
+						repo.write(
+							'.mng/review.yml',
+							'models:\n  reviewer: {model: model-a, effort: high}\n'
+						)
+						repo.write('src/billing/charge.ts', 'before\n')
+						repo.commit()
+						repo.git('checkout', '-b', 'feature')
+						repo.write('src/billing/charge.ts', 'after\n')
+						repo.commit()
+						const rules = yield* RulesService.use(service =>
+							service.load(ref)
+						).pipe(
+							Effect.provide(
+								RulesServiceLive.pipe(
+									Layer.provide(gitLayer(repo.root)),
+									Layer.provide(FileSystemLayer)
+								)
+							)
+						)
+						const git = yield* GitService.pipe(
+							Effect.provide(gitLayer(repo.root))
+						)
+						const change = yield* git.readChange('main', 'HEAD')
+						const request = reviewRequest(rules.config)
+						yield* Effect.gen(function* () {
+							const report = yield* ReviewService.use(review =>
+								review.review({
+									...request,
+									rules,
+									planReport: { ...request.planReport, change },
+								})
+							)
+							expect(report.agents[0]?.status).toBe('ok')
+							const calls = yield* ScriptedLlm.use(script => script.calls)
+							expect(calls).toHaveLength(1)
+							expect(
+								JSON.stringify(calls[0]?.options.prompt.content[0])
+							).not.toContain('Lowercase notes')
+							expect(
+								JSON.stringify(calls[0]?.options.prompt.content[0])
+							).not.toContain("Notes from the repository's maintainers:")
+						}).pipe(Effect.provide(pipelineLayer(emptyScript, {}, git)))
+					})
+			)
+	}
+)

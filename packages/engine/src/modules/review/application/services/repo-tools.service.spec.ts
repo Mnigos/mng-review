@@ -576,4 +576,19 @@ layer(Layer.empty, { excludeTestServices: true })('RepoToolsService', test => {
 			}).pipe(Effect.provide(toolsLayer(repo.root)))
 		})
 	)
+	test.effect(
+		'grep with an empty pattern returns its required-pattern error',
+		() =>
+			Effect.gen(function* () {
+				const repo = fixture()
+				yield* Effect.gen(function* () {
+					const input = yield* scope
+					expect(
+						yield* RepoToolsService.use(tools =>
+							tools.call(input, 'grep', { pattern: '' })
+						)
+					).toBe('error: pattern is required')
+				}).pipe(Effect.provide(toolsLayer(repo.root)))
+			})
+	)
 })
