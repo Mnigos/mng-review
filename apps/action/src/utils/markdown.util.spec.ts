@@ -18,6 +18,17 @@ describe('escapeMarkdown', () => {
 		],
 		['FTP URL', 'ftp://example.com/file.txt', '`ftp://example.com/file.txt`'],
 		['www host', 'www.example.com/path', '`www.example.com/path`'],
+		[
+			'URL glued to an underscore',
+			'_https://evil.example',
+			'\\_`https://evil.example`',
+		],
+		[
+			'URL glued to a digit',
+			'1https://evil.example',
+			'1`https://evil.example`',
+		],
+		['www host glued to text', 'x_www.evil.example', 'x\\_`www.evil.example`'],
 		['email address', 'review+test@example.com', '`review+test@example.com`'],
 		[
 			'table separator',
@@ -37,7 +48,7 @@ describe('escapeMarkdown', () => {
 		[
 			'surrounding syntax',
 			'*before* https://example.com/a\t_after_ [tail]\r\n# next',
-			'\\*before\\* `https://example.com/a`\t\\_after\\_ \\[tail\\] \\# next',
+			'\\*before\\* `https://example.com/a` \\_after\\_ \\[tail\\] \\# next',
 		],
 	])(
 		'encloses %s in code while escaping other text',
@@ -45,6 +56,13 @@ describe('escapeMarkdown', () => {
 			expect(escapeMarkdown(input)).toBe(expected)
 		}
 	)
+	test.each([
+		['a lone carriage return', 'first\rlast'],
+		['consecutive carriage returns', 'first\r\rlast'],
+		['NUL', 'first\u0000last'],
+	])('flattens %s to one space', (_name, input) => {
+		expect(escapeMarkdown(input)).toBe('first last')
+	})
 	test('escapes every Markdown syntax character including backslashes and entities', () => {
 		for (const character of [
 			'\\',
@@ -77,6 +95,10 @@ describe('toLogText', () => {
 		['C0 controls', 'a\u0000b\u0007c\td\u000Be\u000Cf', 'a b c d e f'],
 		['DEL and C1 controls', 'a\u007Fb\u0085c\u009Bd', 'a b c d'],
 		['ANSI escape', '\u001B[31mred\u001B[0m', ' [31mred [0m'],
+		['right-to-left override', 'first\u202Elast', 'first last'],
+		['zero-width space', 'first\u200Blast', 'first last'],
+		['line separator', 'first\u2028last', 'first last'],
+		['paragraph separator', 'first\u2029last', 'first last'],
 		[
 			'colon markers anywhere',
 			'::start middle::end::',
@@ -104,6 +126,13 @@ describe('toLogText', () => {
 })
 
 describe('toCodeSpan', () => {
+	test.each([
+		['a lone carriage return', 'first\rlast'],
+		['consecutive carriage returns', 'first\r\rlast'],
+		['NUL', 'first\u0000last'],
+	])('flattens %s to one space inside code', (_name, input) => {
+		expect(toCodeSpan(input)).toBe('`first last`')
+	})
 	test('uses a longer fence than embedded backticks', () => {
 		expect(toCodeSpan('a`b``c')).toBe('```a`b``c```')
 	})
