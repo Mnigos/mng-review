@@ -1,6 +1,7 @@
 import { Effect, Option, Schema } from 'effect'
 import { normalizeRepoPath } from '../utils/repo-path.util'
 import { FindingsAnswerError } from './finding.errors'
+import { toFingerprint } from './finding.helper'
 import {
 	findingsAnswerSchema,
 	type ReportedFinding,
@@ -45,4 +46,22 @@ export function parseFindingsAnswer(
 			return { findings, dropped: entries.length - findings.length }
 		})
 	)
+}
+
+/**
+ * A finder's first answer plus the reports of its continuation answer that do not repeat one of
+ * them (same path and title fingerprint), so a finding reported twice is kept once.
+ */
+export function addLaterFindings(
+	first: ParsedFindings,
+	later: ParsedFindings
+): ParsedFindings {
+	const seen = new Set(first.findings.map(toFingerprint))
+	return {
+		findings: [
+			...first.findings,
+			...later.findings.filter(finding => !seen.has(toFingerprint(finding))),
+		],
+		dropped: first.dropped + later.dropped,
+	}
 }

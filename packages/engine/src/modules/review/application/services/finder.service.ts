@@ -1,7 +1,8 @@
 import {
-	type Finding,
+	addLaterFindings,
 	getReviewableFiles,
 	type ModelSetting,
+	type ParsedFindings,
 	type PlannedRun,
 	parseFindingsAnswer,
 	sortFindings,
@@ -9,7 +10,6 @@ import {
 	toFinding,
 } from '@mng-review/domain'
 import { Clock, Context, Effect, Layer, Result } from 'effect'
-import type { Rules } from '../../../../platform/config/rules.service'
 import { GitService } from '../../../../platform/git/git.service'
 import { fenceData } from '../../../../utils/fence.util'
 import {
@@ -29,11 +29,12 @@ import {
 	MAX_INCREMENTAL_DIFF_CHARS,
 } from '../../domain/review.constants'
 import { LoopError } from '../../domain/review.errors'
+import type { LoopCoverage } from '../agent-loop.types'
+import type { FinderContext, FinderJob, FinderResult } from '../finder.types'
 import {
 	ALL_REPO_TOOLS,
 	METADATA_REPO_TOOLS,
 	PrMetadataTool,
-	type RepoToolName,
 } from '../repo.toolkit'
 import { ReportFindingsTool } from '../report-findings.tool'
 import {
@@ -46,42 +47,18 @@ import { AgentLoopService } from './agent-loop.service'
 import { ModelHealthService } from './model-health.service'
 import { type RepoScope, RepoToolsService } from './repo-tools.service'
 
-/** What every finder of one run shares. */
-export interface FinderContext {
-	readonly scope: RepoScope
-	readonly rules: Pick<Rules, 'agents' | 'context'>
-	/** Deep depth: the main reviewer runs one sub-agent per unit of the change. */
-	readonly fanOut: boolean
-	/** Models to switch to, in order, when the run's model is dropped; `undefined` keeps the model. */
-	readonly fallback: readonly ModelSetting[] | undefined
-	readonly tokens: FinderTokens
-	/** At deep depth, review only the units that touch one of these paths; `undefined` reviews all. */
-	readonly unitPaths?: readonly string[]
-}
-
-/** Tokens one planned finder may spend. */
-export interface FinderTokens {
-	/** This run's share of the finders' tokens, split evenly over its units. */
-	readonly allowance: number
-	/** Every finder answers once the whole run has spent this many tokens. */
-	readonly runTokens: number
-}
-
-/** A finder's report and its findings, `max_findings` applied. */
-export interface FinderResult {
-	readonly report: AgentRunReport
-	readonly findings: readonly Finding[]
-}
-
-/** One agent conversation: the main reviewer, one unit of it, or a declared agent. */
-interface FinderJob {
-	readonly system: string
-	readonly user: string
-	readonly tools: readonly RepoToolName[]
-	/** The unit's label when a deep review splits the change. */
-	readonly unit?: string
-	/** Tokens this conversation may spend. */
-	readonly tokens: number
+/**
+ * The main reviewer's method check: the changed files it must read before it answers. A
+ * continuation adds only findings that do not repeat the first answer's.
+ */
+export function toFindingsCoverage(
+	paths: readonly string[]
+): LoopCoverage<ParsedFindings> {
+	return {
+		paths,
+		answered: value => value.findings.map(entry => entry.path),
+		merge: addLaterFindings,
+	}
 }
 
 /**
@@ -149,6 +126,7 @@ export const FinderServiceLive = Layer.effect(
 					}),
 					tools: ALL_REPO_TOOLS,
 					tokens,
+					coverage: unit.paths,
 				}))
 			}
 			return [
@@ -163,6 +141,9 @@ export const FinderServiceLive = Layer.effect(
 					}),
 					tools: ALL_REPO_TOOLS,
 					tokens: allowance,
+					coverage: getReviewableFiles(context.scope.change.files)
+						.map(file => file.path)
+						.filter(path => run.files.includes(path)),
 				},
 			]
 		})
@@ -271,11 +252,15 @@ export const FinderServiceLive = Layer.effect(
 						conversationTokens: job.tokens,
 					},
 					source: run.name,
+					...(job.coverage
+						? { coverage: toFindingsCoverage(job.coverage) }
+						: {}),
 				})
 				.pipe(
 					Effect.map(result => ({
 						model: model.model,
 						toolCalls: result.toolCalls,
+						continued: result.continued === true,
 						malformed: result.value.dropped,
 						findings: result.value.findings.map(reported =>
 							toFinding(reported, {
@@ -366,6 +351,9 @@ export const FinderServiceLive = Layer.effect(
 				malformed: done.reduce((sum, entry) => sum + entry.malformed, 0),
 				findings: findings.length,
 				...(jobs.success.length > 1 ? { units: jobs.success.length } : {}),
+				...(done.some(entry => entry.continued)
+					? { continued: done.filter(entry => entry.continued).length }
+					: {}),
 				...(unfinished.length > 0 ? { unfinished } : {}),
 				...(firstFailure === undefined
 					? {}

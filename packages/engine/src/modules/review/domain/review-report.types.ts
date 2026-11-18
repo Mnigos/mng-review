@@ -32,6 +32,8 @@ export interface AgentRunReport {
 	readonly malformed: number
 	/** Sub-agents of a deep review split into units. */
 	readonly units?: number
+	/** Conversations that got a continuation turn for changed files they had not read. */
+	readonly continued?: number
 	/** Units the token budget stopped before they answered; the agent's name when it is not split. */
 	readonly unfinished?: readonly string[]
 	readonly wallMillis: number
