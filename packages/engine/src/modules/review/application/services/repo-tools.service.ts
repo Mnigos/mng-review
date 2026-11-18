@@ -56,7 +56,12 @@ export class RepoToolsService extends Context.Service<
 >()('mng-review/RepoToolsService') {}
 
 /** A repository-relative path, or `.` for the root when `root` allows it. */
+/** Longest path, pattern or glob a tool passes to git; Linux refuses a single argument over 128 KB. */
+const MAX_ARGUMENT_CHARS = 4096
+
 function requirePath(value: string, root: boolean) {
+	if (value.length > MAX_ARGUMENT_CHARS)
+		return Effect.fail(new ToolError({ reason: 'path is too long' }))
 	const path = normalizeRepoPath(value)
 	if (path === undefined || (path === '.' && !root))
 		return Effect.fail(
@@ -80,6 +85,8 @@ function requireRange(value: string | undefined) {
 /** Globs stay inside the repository: no leading `/`, no `..`, no backslash or NUL. */
 function requireGlob(glob: string | undefined) {
 	if (glob === undefined || glob === '') return Effect.succeed(undefined)
+	if (glob.length > MAX_ARGUMENT_CHARS)
+		return Effect.fail(new ToolError({ reason: 'glob is too long' }))
 	if (glob.startsWith('/') || glob.includes('..') || /[\\\0]/u.test(glob))
 		return Effect.fail(
 			new ToolError({ reason: 'glob must be a repository-relative pattern' })
@@ -186,6 +193,8 @@ export const RepoToolsServiceLive = Layer.effect(
 		) {
 			if (params.pattern === '')
 				return yield* new ToolError({ reason: 'pattern is required' })
+			if (params.pattern.length > MAX_ARGUMENT_CHARS)
+				return yield* new ToolError({ reason: 'pattern is too long' })
 			const glob = yield* requireGlob(params.glob)
 			const commit = toCommit(scope, params.ref)
 			const args = [
