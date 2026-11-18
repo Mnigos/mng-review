@@ -1,6 +1,6 @@
 import { layer } from '@effect/vitest'
-import { UNNAMED_PREMISE } from '@mng-review/domain'
-import { Effect, Layer, Ref } from 'effect'
+import { absorb, NEAR_LINES, UNNAMED_PREMISE } from '@mng-review/domain'
+import { Deferred, Effect, Fiber, Layer, Ref } from 'effect'
 import { LanguageModel } from 'effect/ai'
 import {
 	RulesService,
@@ -985,5 +985,329 @@ layer(Layer.empty)('validator first-message context', test => {
 						)
 					)
 				})
+		)
+})
+
+layer(Layer.empty)('ValidatorService.validateAll', test => {
+	for (const status of ['confirm', 'unverified'] as const)
+		test.effect(
+			`${status} absorbs only named nearby reports with all provenance`,
+			() =>
+				Effect.gen(function* () {
+					const first = finding({ severity: 'high', evidence: ['first'] })
+					const duplicate = finding({
+						agents: ['agent-b'],
+						models: ['model-c'],
+						title: 'Another description',
+						evidence: ['second'],
+					})
+					const output = yield* ValidatorService.use(validator =>
+						validator.validateAll([first, duplicate], CONTEXT)
+					)
+					expect(output.bugs).toEqual([absorb(first, duplicate)])
+					expect(output.validations).toMatchObject([
+						{
+							status: status === 'confirm' ? 'confirmed' : 'unverified',
+							severity: 'high',
+						},
+					])
+					const calls = yield* ScriptedLlm.use(script => script.calls)
+					expect(calls).toHaveLength(1)
+					expect(
+						calls[0]?.options.prompt.content.map(message => message.role)
+					).toEqual(['system', 'user'])
+					expect(userText(calls[0])).toContain(
+						`Nearby findings from other reviewers in ${BILLING_PATH}:`
+					)
+					expect(userText(calls[0])).toContain('"number": 1')
+					expect(userText(calls[0])).toContain('Another description')
+					expect(userText(calls[0])).toContain(duplicate.trigger)
+					expect(userText(calls[0])).toContain(duplicate.impact)
+				}).pipe(
+					Effect.provide(
+						validatorLayer(() =>
+							Effect.succeed(
+								answer(
+									'report_verdict',
+									verdict({
+										verdict: status,
+										premise: 'The SDK retries writes.',
+										same_root_cause: [1],
+									})
+								)
+							)
+						)
+					)
+				)
+		)
+	test.effect(
+		'a rejection absorbs nothing even when it names the nearby finding',
+		() =>
+			Effect.gen(function* () {
+				const bugs = [
+					finding(),
+					finding({ agents: ['agent-b'], title: 'Other failure' }),
+				]
+				const output = yield* ValidatorService.use(validator =>
+					validator.validateAll(bugs, CONTEXT)
+				)
+				expect(output.bugs).toEqual(bugs)
+				expect(output.validations.map(validation => validation.status)).toEqual(
+					['rejected', 'confirmed']
+				)
+				const calls = yield* ScriptedLlm.use(script => script.calls)
+				expect(calls).toHaveLength(2)
+				expect(userText(calls[1])).toContain('Other failure')
+				expect(userText(calls[1])).not.toContain(
+					'Nearby findings from other reviewers'
+				)
+			}).pipe(
+				Effect.provide(
+					validatorLayer((_call, index) =>
+						Effect.succeed(
+							answer(
+								'report_verdict',
+								verdict({
+									verdict: index === 0 ? 'reject' : 'confirm',
+									same_root_cause: [1],
+								})
+							)
+						)
+					)
+				)
+			)
+	)
+	test.effect(
+		'an unvalidated first report leaves its neighbor for an independent validation',
+		() =>
+			Effect.gen(function* () {
+				const bugs = [
+					finding(),
+					finding({ agents: ['agent-b'], title: 'Other failure' }),
+				]
+				const output = yield* ValidatorService.use(validator =>
+					validator.validateAll(bugs, CONTEXT)
+				)
+				expect(output.bugs).toEqual(bugs)
+				expect(output.validations.map(validation => validation.status)).toEqual(
+					['unvalidated', 'confirmed']
+				)
+				const calls = yield* ScriptedLlm.use(script => script.calls)
+				expect(calls).toHaveLength(3)
+				expect(userText(calls[2])).toContain('Other failure')
+			}).pipe(
+				Effect.provide(
+					validatorLayer((_call, index) =>
+						index < 2
+							? Effect.fail(providerError(500))
+							: Effect.succeed(
+									answer('report_verdict', verdict({ same_root_cause: [1] }))
+								)
+					)
+				)
+			)
+	)
+	test.effect(
+		'out-of-range nearby numbers are ignored and the remainder continues sequentially',
+		() =>
+			Effect.gen(function* () {
+				const first = finding({ title: 'First report' })
+				const second = finding({ title: 'Second report', agents: ['agent-b'] })
+				const third = finding({ title: 'Third report', agents: ['agent-c'] })
+				const output = yield* ValidatorService.use(validator =>
+					validator.validateAll([first, second, third], CONTEXT)
+				)
+				expect(output.bugs).toEqual([first, absorb(second, third)])
+				expect(output.validations.map(validation => validation.status)).toEqual(
+					['confirmed', 'confirmed']
+				)
+				const calls = yield* ScriptedLlm.use(script => script.calls)
+				expect(calls).toHaveLength(2)
+				expect(userText(calls[0])).toContain('"number": 2')
+				expect(userText(calls[1])).toContain('Second report')
+				expect(userText(calls[1])).toContain('Third report')
+				expect(userText(calls[1])).not.toContain('First report')
+				expect(userText(calls[1])).not.toContain('"number": 2')
+			}).pipe(
+				Effect.provide(
+					validatorLayer((_call, index) =>
+						Effect.succeed(
+							answer(
+								'report_verdict',
+								verdict({ same_root_cause: index === 0 ? [99] : [1, 1, 99] })
+							)
+						)
+					)
+				)
+			)
+	)
+	test.effect(
+		'same-finder reports are excluded from the nearby list even through a chain',
+		() =>
+			Effect.gen(function* () {
+				const first = finding({ line: 1, title: 'First report' })
+				const second = finding({
+					line: 1 + NEAR_LINES,
+					title: 'Same finder report',
+				})
+				const bridge = finding({
+					line: 1 + NEAR_LINES,
+					title: 'Bridge report',
+					agents: ['agent-b'],
+				})
+				const output = yield* ValidatorService.use(validator =>
+					validator.validateAll([first, second, bridge], CONTEXT)
+				)
+				expect(output.bugs).toEqual([absorb(first, bridge), second])
+				const calls = yield* ScriptedLlm.use(script => script.calls)
+				expect(calls).toHaveLength(2)
+				expect(userText(calls[0])).toContain('Bridge report')
+				expect(userText(calls[0])).not.toContain('Same finder report')
+				expect(userText(calls[1])).not.toContain(
+					'Nearby findings from other reviewers'
+				)
+			}).pipe(
+				Effect.provide(
+					validatorLayer(() =>
+						Effect.succeed(
+							answer('report_verdict', verdict({ same_root_cause: [1] }))
+						)
+					)
+				)
+			)
+	)
+	test.effect(
+		'separate singletons preserve findings and receive fresh validation contexts',
+		() =>
+			Effect.gen(function* () {
+				const bugs = [
+					finding(),
+					finding({ line: 2 + NEAR_LINES + 1, agents: ['agent-b'] }),
+				]
+				const output = yield* ValidatorService.use(validator =>
+					validator.validateAll(bugs, CONTEXT)
+				)
+				expect(output.bugs).toEqual(bugs)
+				expect(output.validations.map(validation => validation.status)).toEqual(
+					['confirmed', 'confirmed']
+				)
+				const calls = yield* ScriptedLlm.use(script => script.calls)
+				expect(calls).toHaveLength(2)
+				for (const call of calls) {
+					expect(
+						call.options.prompt.content.map(message => message.role)
+					).toEqual(['system', 'user'])
+					expect(userText(call)).not.toContain(
+						'Nearby findings from other reviewers'
+					)
+				}
+			}).pipe(
+				Effect.provide(
+					validatorLayer(() =>
+						Effect.succeed(
+							answer('report_verdict', verdict({ same_root_cause: [1] }))
+						)
+					)
+				)
+			)
+	)
+	test.effect('empty input starts no validation', () =>
+		Effect.gen(function* () {
+			expect(
+				yield* ValidatorService.use(validator =>
+					validator.validateAll([], CONTEXT)
+				)
+			).toEqual({ bugs: [], validations: [] })
+			expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(0)
+		}).pipe(
+			Effect.provide(validatorLayer(() => Effect.die('unexpected model call')))
+		)
+	)
+})
+
+layer(Layer.empty)('group validation scheduling', test => {
+	test.effect(
+		'validates groups in parallel while awaiting each group first verdict before its remainder',
+		() =>
+			Effect.gen(function* () {
+				const firstEntered = yield* Deferred.make<void>()
+				const otherEntered = yield* Deferred.make<void>()
+				const release = yield* Deferred.make<void>()
+				const first = finding({ title: 'First group report' })
+				const remainder = finding({
+					title: 'Remainder report',
+					agents: ['agent-b'],
+				})
+				const other = finding({ path: 'other.ts', title: 'Other group report' })
+				const schedulingScript: ScriptedLlmAnswer = call => {
+					const text = userText(call)
+					if (text.includes('"title": "First group report"'))
+						return Deferred.succeed(firstEntered, undefined).pipe(
+							Effect.andThen(Deferred.await(release)),
+							Effect.as(answer('report_verdict', verdict()))
+						)
+					if (text.includes('"title": "Other group report"'))
+						return Deferred.succeed(otherEntered, undefined).pipe(
+							Effect.as(answer('report_verdict', verdict()))
+						)
+					return Effect.succeed(answer('report_verdict', verdict()))
+				}
+				yield* Effect.gen(function* () {
+					const pending = yield* ValidatorService.use(validator =>
+						validator.validateAll([first, remainder, other], CONTEXT)
+					).pipe(Effect.forkChild)
+					yield* Deferred.await(firstEntered)
+					yield* Deferred.await(otherEntered)
+					const calls = yield* ScriptedLlm.use(script => script.calls)
+					expect(calls).toHaveLength(2)
+					expect(
+						calls.filter(call => userText(call).includes('Other group report'))
+					).toHaveLength(1)
+					yield* Deferred.succeed(release, undefined)
+					const output = yield* Fiber.join(pending)
+					expect(output.bugs).toEqual([first, remainder, other])
+					expect(output.validations).toHaveLength(3)
+					expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(3)
+				}).pipe(
+					Effect.provide(validatorLayer(schedulingScript, { concurrency: 3 }))
+				)
+			})
+	)
+	for (const invalid of [0, -1, 1.5])
+		test.effect(
+			`the verdict tool corrects invalid same_root_cause number ${invalid}`,
+			() =>
+				Effect.gen(function* () {
+					expect(
+						yield* ValidatorService.use(validator =>
+							validator.validateAll(
+								[
+									finding(),
+									finding({ agents: ['agent-b'], title: 'Other failure' }),
+								],
+								CONTEXT
+							)
+						)
+					).toMatchObject({
+						bugs: [{ agents: ['reviewer', 'agent-b'] }],
+						validations: [{ status: 'confirmed' }],
+					})
+					const calls = yield* ScriptedLlm.use(script => script.calls)
+					expect(calls).toHaveLength(2)
+					expect(JSON.stringify(calls[1]?.options.prompt)).toContain(
+						'same_root_cause'
+					)
+				}).pipe(
+					Effect.provide(
+						validatorLayer((_call, index) =>
+							Effect.succeed(
+								answer(
+									'report_verdict',
+									verdict({ same_root_cause: [index === 0 ? invalid : 1] })
+								)
+							)
+						)
+					)
+				)
 		)
 })

@@ -1,5 +1,9 @@
 import { layer } from '@effect/vitest'
-import { parseFindingsAnswer } from '@mng-review/domain'
+import {
+	addLaterFindings,
+	parseFindingsAnswer,
+	type ParsedFindings,
+} from '@mng-review/domain'
 import { Deferred, Duration, Effect, Fiber, Layer } from 'effect'
 import { AiError } from 'effect/ai'
 import { TestClock } from 'effect/testing'
@@ -12,7 +16,11 @@ import {
 	TokenLedger,
 	TokenLedgerLive,
 } from '../../../../platform/llm/token-ledger.service'
-import { reviewDependencies } from '../../../../shared/mocks/review-layer.helper'
+import { rawFinding } from '../../../../shared/mocks/domain-test.helper'
+import {
+	reviewDependencies,
+	providerError,
+} from '../../../../shared/mocks/review-layer.helper'
 import {
 	answer,
 	BILLING_PATH,
@@ -32,12 +40,9 @@ import {
 	TOOL_OUTPUT_LABEL,
 	WRAP_UP_GRACE,
 } from '../../domain/review.constants'
+import type { LoopRequest } from '../agent-loop.types'
 import { ReviewLimits } from '../review-limits.context'
-import {
-	AgentLoopService,
-	AgentLoopServiceLive,
-	type LoopRequest,
-} from './agent-loop.service'
+import { AgentLoopService, AgentLoopServiceLive } from './agent-loop.service'
 import {
 	ModelHealthService,
 	ModelHealthServiceLive,
@@ -1372,5 +1377,265 @@ layer(Layer.empty)('conversation token budget and sources', test => {
 			yield* AgentLoopService.use(loop => loop.run(REQUEST))
 			expect(yield* TokenLedger.use(ledger => ledger.sources)).toEqual({})
 		}).pipe(Effect.provide(loopLayer(() => Effect.succeed(answer()))))
+	)
+})
+
+const COVERED_REQUEST = {
+	...REQUEST,
+	tools: ['read_file', 'diff', 'blame'],
+	coverage: {
+		paths: [BILLING_PATH],
+		answered: (value: ParsedFindings) =>
+			value.findings.map(entry => entry.path),
+		merge: addLaterFindings,
+	},
+} as const
+
+/** A typed parsed answer for coverage callbacks. */
+function rawParsed() {
+	return { findings: [rawFinding()], dropped: 0 }
+}
+
+layer(Layer.empty)('coverage continuation', test => {
+	for (const name of ['read_file', 'diff', 'blame'] as const)
+		test.effect(`successful ${name} counts as reading a normalized path`, () =>
+			Effect.gen(function* () {
+				expect(
+					yield* AgentLoopService.use(loop => loop.run(COVERED_REQUEST))
+				).toEqual({
+					value: { findings: [], dropped: 0 },
+					turns: 2,
+					toolCalls: 1,
+				})
+				expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(2)
+			}).pipe(
+				Effect.provide(
+					loopLayer((_call, index) =>
+						Effect.succeed(
+							index === 0
+								? [toolCall(name, { path: `./${BILLING_PATH}` }), FINISH]
+								: answer()
+						)
+					)
+				)
+			)
+		)
+	test.effect('a finding on the covered file counts as answered', () =>
+		Effect.gen(function* () {
+			expect(
+				yield* AgentLoopService.use(loop => loop.run(COVERED_REQUEST))
+			).toEqual({ value: rawParsed(), turns: 1, toolCalls: 0 })
+			expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(1)
+		}).pipe(
+			Effect.provide(
+				loopLayer(() => Effect.succeed(answer('report_findings', rawParsed())))
+			)
+		)
+	)
+	test.effect(
+		'an error tool output leaves the path unread and returns continuation as the finish result',
+		() =>
+			Effect.gen(function* () {
+				expect(
+					yield* AgentLoopService.use(loop => loop.run(COVERED_REQUEST))
+				).toEqual({
+					value: { findings: [], dropped: 0 },
+					continued: true,
+					toolCalls: 1,
+					turns: 3,
+				})
+				const calls = yield* ScriptedLlm.use(script => script.calls)
+				expect(calls).toHaveLength(3)
+				expect(calls[2]?.options.prompt.content).toContainEqual(
+					expect.objectContaining({
+						role: 'tool',
+						content: [
+							expect.objectContaining({
+								name: REQUEST.finish,
+								result: expect.stringContaining(`- ${BILLING_PATH}`) as unknown,
+							}),
+						],
+					})
+				)
+			}).pipe(
+				Effect.provide(
+					loopLayer(
+						(_call, index) =>
+							Effect.succeed(
+								index === 0
+									? [toolCall('read_file', { path: BILLING_PATH }), FINISH]
+									: answer()
+							),
+						{},
+						() => Effect.succeed('error: missing file')
+					)
+				)
+			)
+	)
+	for (const plain of [false, true])
+		test.effect(
+			`merges the second ${plain ? 'plain JSON' : 'tool'} answer and never continues twice`,
+			() =>
+				Effect.gen(function* () {
+					const first = rawFinding({ path: 'src/other.ts' })
+					const second = rawFinding({ path: 'src/later.ts' })
+					expect(
+						yield* AgentLoopService.use(loop => loop.run(COVERED_REQUEST))
+					).toEqual({
+						value: { findings: [first, second], dropped: 0 },
+						continued: true,
+						turns: 2,
+						toolCalls: 0,
+					})
+					const calls = yield* ScriptedLlm.use(script => script.calls)
+					expect(calls).toHaveLength(2)
+					expect(calls[1]?.options.prompt.content).toContainEqual(
+						expect.objectContaining({ role: plain ? 'user' : 'tool' })
+					)
+					expect(JSON.stringify(calls[1]?.options.prompt)).toContain(
+						`- ${BILLING_PATH}`
+					)
+				}).pipe(
+					Effect.provide(
+						loopLayer((_call, index) => {
+							const payload = {
+								findings: [
+									rawFinding({
+										path: index === 0 ? 'src/other.ts' : 'src/later.ts',
+									}),
+								],
+							}
+							return Effect.succeed(
+								plain
+									? [{ type: 'text', text: JSON.stringify(payload) }, FINISH]
+									: answer('report_findings', payload)
+							)
+						})
+					)
+				)
+		)
+	for (const failure of ['model', 'loop', 'budget'] as const)
+		test.effect(
+			`a ${failure} failure during continuation keeps the first answer`,
+			() =>
+				Effect.gen(function* () {
+					expect(
+						yield* AgentLoopService.use(loop => loop.run(COVERED_REQUEST))
+					).toMatchObject({
+						value: {
+							findings: [rawFinding({ path: 'src/other.ts' })],
+							dropped: 0,
+						},
+						continued: true,
+					})
+					const calls = yield* ScriptedLlm.use(script => script.calls)
+					expect(calls).toHaveLength(
+						failure === 'loop'
+							? MAX_CORRECTIONS + 2
+							: failure === 'budget'
+								? 1
+								: 2
+					)
+				}).pipe(
+					Effect.provide(
+						loopLayer((_call, index) =>
+							index === 0
+								? Effect.succeed([
+										toolCall('report_findings', {
+											findings: [rawFinding({ path: 'src/other.ts' })],
+										}),
+										finishWithUsage(
+											failure === 'budget' ? LIMITS.tokensPerRun : 3
+										),
+									])
+								: failure === 'model'
+									? Effect.fail(providerError(500))
+									: Effect.succeed([{ type: 'text', text: 'invalid' }, FINISH])
+						)
+					)
+				)
+		)
+	for (const stop of [
+		'tool limit',
+		'initial wrap-up',
+		'conversation budget',
+		'run budget',
+		'wall time',
+	] as const)
+		test.effect(`${stop} suppresses continuation`, () =>
+			Effect.gen(function* () {
+				const budget =
+					stop === 'conversation budget'
+						? { conversationTokens: 100, runTokens: 10_000 }
+						: stop === 'run budget'
+							? { conversationTokens: 10_000, runTokens: 100 }
+							: undefined
+				const output = yield* AgentLoopService.use(loop =>
+					loop.run({ ...COVERED_REQUEST, ...(budget ? { budget } : {}) })
+				)
+				expect(output.continued).toBeUndefined()
+				expect(output.value).toEqual({ findings: [], dropped: 0 })
+				expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(
+					stop === 'tool limit' ? 2 : 1
+				)
+			}).pipe(
+				Effect.provide(
+					loopLayer(
+						(_call, index) => {
+							const response =
+								stop === 'tool limit' && index === 0
+									? [toolCall('grep'), FINISH]
+									: [
+											toolCall('report_findings', { findings: [] }),
+											finishWithUsage(
+												stop === 'conversation budget' || stop === 'run budget'
+													? 100
+													: 3
+											),
+										]
+							return stop === 'wall time'
+								? TestClock.adjust(1000).pipe(Effect.as(response))
+								: Effect.succeed(response)
+						},
+						stop === 'initial wrap-up'
+							? { maxToolCalls: 0 }
+							: stop === 'tool limit'
+								? { maxToolCalls: 1 }
+								: {}
+					)
+				)
+			)
+		)
+	test.effect('continuation names only files neither read nor answered', () =>
+		Effect.gen(function* () {
+			yield* AgentLoopService.use(loop =>
+				loop.run({
+					...COVERED_REQUEST,
+					coverage: {
+						...COVERED_REQUEST.coverage,
+						paths: [BILLING_PATH, 'answered.ts', 'unread.ts'],
+					},
+				})
+			)
+			const calls = yield* ScriptedLlm.use(script => script.calls)
+			const continuation = JSON.stringify(
+				calls[2]?.options.prompt.content.at(-1)
+			)
+			expect(continuation).toContain('- unread.ts')
+			expect(continuation).not.toContain(`- ${BILLING_PATH}`)
+			expect(continuation).not.toContain('- answered.ts')
+		}).pipe(
+			Effect.provide(
+				loopLayer((_call, index) =>
+					Effect.succeed(
+						index === 0
+							? [toolCall('read_file', { path: BILLING_PATH }), FINISH]
+							: answer('report_findings', {
+									findings: [rawFinding({ path: 'answered.ts' })],
+								})
+					)
+				)
+			)
+		)
 	)
 })

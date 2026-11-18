@@ -1,5 +1,5 @@
 import { layer } from '@effect/vitest'
-import { getPlannedTokens, toRunAllowances } from '@mng-review/domain'
+import { absorb, getPlannedTokens, toRunAllowances } from '@mng-review/domain'
 import { Effect, Layer, Ref } from 'effect'
 import { TestClock } from 'effect/testing'
 import { TokenLedgerLive } from '../../../../platform/llm/token-ledger.service'
@@ -16,8 +16,9 @@ import { ValidatorService } from '../../../validation/application/validator.serv
 import { getValidationTokens } from '../../domain/finder-budget.helper'
 import type { DroppedModel } from '../../domain/review-report.types'
 import { FINDER_TOKEN_SHARE } from '../../domain/review.constants'
+import type { FinderResult } from '../finder.types'
 import { ReviewLimits } from '../review-limits.context'
-import { FinderService, type FinderResult } from './finder.service'
+import { FinderService } from './finder.service'
 import { ModelHealthService } from './model-health.service'
 import { ReviewService, ReviewServiceLive } from './review.service'
 
@@ -26,13 +27,22 @@ function reviewLayer(
 	find: FinderService['Service']['run'],
 	validate: ValidatorService['Service']['validate'],
 	dropped: ModelHealthService['Service']['dropped'] = Effect.succeed([]),
-	spent = 0
+	spent = 0,
+	validateAll?: ValidatorService['Service']['validateAll']
 ) {
 	return ReviewServiceLive.pipe(
 		Layer.provide(
 			Layer.mergeAll(
 				Layer.succeed(FinderService, { run: find }),
-				Layer.succeed(ValidatorService, { validate }),
+				Layer.succeed(ValidatorService, {
+					validate,
+					validateAll:
+						validateAll ??
+						((bugs, context) =>
+							Effect.all(bugs.map(bug => validate(bug, context))).pipe(
+								Effect.map(validations => ({ bugs, validations }))
+							)),
+				}),
 				Layer.succeed(ModelHealthService, {
 					run: () => Effect.die('unexpected model call'),
 					isAvailable: () => Effect.succeed(true),
@@ -439,6 +449,69 @@ layer(Layer.empty)('review token allocation', test => {
 						runTokens: planned,
 						conversationTokens: getValidationTokens(100_001, bugs.length),
 					})
+			})
+	)
+})
+
+layer(Layer.empty)('judged duplicate outcome', test => {
+	test.effect(
+		'uses validateAll merged bugs and aligned verdicts for the final outcome',
+		() =>
+			Effect.gen(function* () {
+				const first = finding()
+				const second = finding({
+					title: 'Missing ownership guard',
+					trigger: 'An attacker submits a foreign id.',
+					impact: 'Another account data is changed.',
+					agents: ['agent-b'],
+					models: ['model-b'],
+				})
+				const merged = absorb(first, second)
+				const validateSpy = vi.fn<ValidatorService['Service']['validate']>(() =>
+					Effect.die('unexpected per-finding validation')
+				)
+				const validateAllSpy = vi.fn<
+					ValidatorService['Service']['validateAll']
+				>(() =>
+					Effect.succeed({
+						bugs: [merged],
+						validations: [
+							{
+								status: 'confirmed',
+								severity: 'high',
+								reason: 'The code permits the write.',
+								evidence: ['src/billing/charge.ts:2'],
+								model: 'validator',
+							},
+						],
+					})
+				)
+				const report = yield* ReviewService.use(review =>
+					review.review(reviewRequest())
+				).pipe(
+					Effect.provide(
+						reviewLayer(
+							() => Effect.succeed(finderResult([first, second])),
+							validateSpy,
+							Effect.succeed([]),
+							0,
+							validateAllSpy
+						)
+					)
+				)
+				expect(validateAllSpy).toHaveBeenCalledTimes(1)
+				expect(validateAllSpy.mock.calls[0]?.[0]).toEqual([first, second])
+				expect(validateSpy).not.toHaveBeenCalled()
+				expect(report.bugs).toMatchObject([
+					{
+						fingerprint: first.fingerprint,
+						agents: merged.agents,
+						models: merged.models,
+						severity: 'high',
+						validation: { status: 'confirmed' },
+					},
+				])
+				expect(report.blocking).toBe(true)
 			})
 	)
 })

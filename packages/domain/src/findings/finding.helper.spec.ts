@@ -8,6 +8,9 @@ import {
 	SAME_FAILURE_OVERLAP,
 } from './finding.constants'
 import {
+	absorb,
+	getNearGroups,
+	isNearDuplicate,
 	toFingerprint,
 	isSameRootCause,
 	mergeFindings,
@@ -549,5 +552,71 @@ describe('description overlap across finders', () => {
 				impact: 'logo viewer eta theta',
 			})
 		).toBe(false)
+	})
+})
+
+describe('judged duplicate candidates', () => {
+	test.each([-NEAR_LINES, 0, NEAR_LINES])(
+		'different finders qualify at line distance %s regardless of wording',
+		offset => {
+			const first = finding({ line: NEAR_LINES + 1 })
+			const other = finding({
+				line: first.line + offset,
+				title: 'Unrelated failure',
+				agents: ['agent-b'],
+			})
+			expect(isNearDuplicate(first, other)).toBe(true)
+			expect(isNearDuplicate(other, first)).toBe(true)
+		}
+	)
+	test.each([
+		{ line: 2 + NEAR_LINES + 1, agents: ['agent-b'] },
+		{ path: 'other.ts', agents: ['agent-b'] },
+		{ kind: 'nit' as const, agents: ['agent-b'] },
+		{ title: 'Another report by the same finder' },
+		{ agents: ['reviewer', 'agent-b'], models: ['model-a', 'model-b'] },
+	])('excludes incompatible reports %j', overrides => {
+		expect(isNearDuplicate(finding(), finding(overrides))).toBe(false)
+	})
+	test('the same agent on another model is a different finder', () => {
+		expect(isNearDuplicate(finding(), finding({ models: ['model-b'] }))).toBe(
+			true
+		)
+	})
+	test('groups bridging chains in original member and group order without mutating input', () => {
+		const first = finding({ line: 1 })
+		const last = finding({ line: 1 + 2 * NEAR_LINES, agents: ['agent-c'] })
+		const isolated = finding({ path: 'other.ts' })
+		const bridge = finding({ line: 1 + NEAR_LINES, agents: ['agent-b'] })
+		const input = [first, last, isolated, bridge]
+		expect(getNearGroups(input)).toEqual([[first, last, bridge], [isolated]])
+		expect(input).toEqual([first, last, isolated, bridge])
+	})
+	test('keeps a single finder reports in separate singleton groups', () => {
+		const first = finding()
+		const second = finding({ title: 'Missing ownership guard' })
+		expect(getNearGroups([first, second])).toEqual([[first], [second]])
+		expect(getNearGroups([])).toEqual([])
+	})
+	test('absorb preserves identity and unions provenance and evidence with suggestion fallback', () => {
+		const first = finding({ evidence: ['shared', 'first'] })
+		const other = finding({
+			agents: ['agent-b'],
+			models: ['model-b'],
+			evidence: ['shared', 'second'],
+			suggestion: 'Guard the write.',
+		})
+		expect(absorb(first, other)).toEqual({
+			...first,
+			agents: ['reviewer', 'agent-b'],
+			models: ['model-a', 'model-b'],
+			evidence: ['shared', 'first', 'second'],
+			suggestion: 'Guard the write.',
+		})
+		expect(
+			absorb({ ...first, suggestion: 'Keep this suggestion.' }, other)
+				.suggestion
+		).toBe('Keep this suggestion.')
+		expect(first.evidence).toEqual(['shared', 'first'])
 	})
 })

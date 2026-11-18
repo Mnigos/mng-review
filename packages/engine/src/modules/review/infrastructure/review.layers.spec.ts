@@ -164,13 +164,17 @@ layer(Layer.empty)('ReviewPipelineLive', test => {
 						depth === 'deep' ? ['model-a', 'model-b'] : ['model-a']
 					)
 					const calls = yield* ScriptedLlm.use(script => script.calls)
-					expect(calls).toHaveLength(depth === 'deep' ? 4 : 1)
+					expect(calls).toHaveLength(depth === 'deep' ? 8 : 2)
 					if (depth === 'deep') {
 						expect(report.agents.map(run => run.units)).toEqual([2, 2])
 						for (const model of REVIEWERS)
 							expect(
 								calls
-									.filter(call => call.model.model === model.model)
+									.filter(
+										call =>
+											call.model.model === model.model &&
+											call.options.prompt.content.length === 2
+									)
 									.map(userText)
 							).toEqual([
 								expect.stringContaining('charge0') as unknown,
@@ -572,7 +576,8 @@ layer(Layer.empty)('ReviewPipelineLive', test => {
 					])
 					expect(report.agents).toHaveLength(1)
 					expect(report.endpointError).toBeUndefined()
-					expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(1)
+					expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(2)
+					expect(report.agents[0]?.continued).toBe(1)
 				}).pipe(Effect.provide(pipelineLayer(emptyScript)))
 			)
 	for (const kind of ['bug', 'nit'] as const)
@@ -682,7 +687,7 @@ layer(Layer.empty, { excludeTestServices: true })(
 							)
 							expect(report.agents[0]?.status).toBe('ok')
 							const calls = yield* ScriptedLlm.use(script => script.calls)
-							expect(calls).toHaveLength(1)
+							expect(calls).toHaveLength(2)
 							expect(
 								JSON.stringify(calls[0]?.options.prompt.content[0])
 							).not.toContain('Lowercase notes')
