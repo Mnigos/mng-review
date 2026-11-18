@@ -146,8 +146,8 @@ export const CONVENTION_SPEC_RULES = {
 	],
 } satisfies OxlintOverride['rules']
 
-/** The CLI entry point: the one file that runs effects. */
-const ENTRY_FILE = 'apps/cli/src/main.ts'
+/** The app entry points: the CLI and the GitHub workflow entry, the only files that run effects. */
+const ENTRY_FILES = ['apps/cli/src/main.ts', 'apps/action/src/main.ts'] as const
 const ROLE_NAMED_SOURCES = ['apps/*/src/**', 'packages/*/src/**'] as const
 const SPEC_FILES = ['**/*.spec.ts'] as const
 
@@ -191,7 +191,7 @@ export const CONVENTION_OVERRIDES = [
 		},
 	},
 	{
-		files: [ENTRY_FILE],
+		files: [...ENTRY_FILES],
 		rules: { 'mng-review/no-default-runtime': 'off' },
 	},
 	{
