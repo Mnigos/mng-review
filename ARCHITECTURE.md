@@ -58,8 +58,9 @@ Publish (6), converse (7) and learn (8) run on GitHub and arrive with `packages/
 
 ## Decision records
 
-| ADR                                                            | Decision                                                                        |
-| -------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| [0001](docs/decisions/0001-package-layout.md)                  | Package layout: `domain`, `engine`, `cli` and tooling, one dependency direction |
-| [0002](docs/decisions/0002-effect-everywhere.md)               | Effect 4.1.4 for schemas, services, the CLI, processes, HTTP and the tool loop  |
-| [0003](docs/decisions/0003-naming-and-layering-conventions.md) | File roles, layers, role subfolders and the test conventions, enforced by lint  |
+| ADR                                                            | Decision                                                                         |
+| -------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| [0001](docs/decisions/0001-package-layout.md)                  | Package layout: `domain`, `engine`, `cli` and tooling, one dependency direction  |
+| [0002](docs/decisions/0002-effect-everywhere.md)               | Effect 4.1.4 for schemas, services, the CLI, processes, HTTP and the tool loop   |
+| [0003](docs/decisions/0003-naming-and-layering-conventions.md) | File roles, layers, role subfolders and the test conventions, enforced by lint   |
+| [0004](docs/decisions/0004-domain-text-and-hash-primitives.md) | Effect's `Yaml` and `Glob` and `node:crypto` in `domain`; no third-party parsers |
