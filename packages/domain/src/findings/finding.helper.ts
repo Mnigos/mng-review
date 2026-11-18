@@ -183,12 +183,15 @@ function isConsistentGroup(group: readonly Finding[]): boolean {
  * Merges findings with the same root cause. The merged finding keeps the text and the severity of
  * the most severe report and every agent, model and distinct evidence line. A report that matches
  * several groups joins them all when no finder would end up with two distinct reports in one group,
- * so the result does not depend on the order of the reports. Inputs are not modified.
+ * so the result does not depend on the order of the reports. The result is most severe first, the
+ * order validation spends its tokens in. Inputs are not modified.
  */
 export function mergeFindings(findings: readonly Finding[]): Finding[] {
 	const groups = toBySeverity(findings).reduce<Finding[][]>(addToGroups, [])
-	return groups.map(group =>
-		toBySeverity(group).reduce((kept, other) => absorb(kept, other))
+	return toBySeverity(
+		groups.map(group =>
+			toBySeverity(group).reduce((kept, other) => absorb(kept, other))
+		)
 	)
 }
 
