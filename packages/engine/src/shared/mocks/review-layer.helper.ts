@@ -54,6 +54,7 @@ export function gitFixture(
 		branchName: () => Effect.succeed('main'),
 		readChange: () => Effect.succeed(SCOPE.change),
 		listFilesAt: () => Effect.succeed([]),
+		getFilesAt: (_commit, paths) => Effect.succeed(new Set(paths)),
 		...overrides,
 	}
 }

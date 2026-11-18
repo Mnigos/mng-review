@@ -1,13 +1,19 @@
 import {
+	CONTEXT_PATH,
 	type Finding,
 	formatSchemaIssue,
+	getEvidencePaths,
 	getValidatorChoices,
+	MEMORY_PATH,
 	type ReviewConfig,
+	toValidation,
 	type Validation,
+	type Verdict,
 	verdictSchema,
 } from '@mng-review/domain'
 import { Context, Effect, Layer, Ref, Schema } from 'effect'
 import type { Rules } from '../../../platform/config/rules.service'
+import { GitService } from '../../../platform/git/git.service'
 import { fenceData, truncateText } from '../../../utils/fence.util'
 import {
 	ReadFileTool,
@@ -43,6 +49,8 @@ const NONE = '(none)'
 const NO_MODEL_LEFT = 'no validator model left'
 /** The validators' line in the run's tokens by source. */
 const VALIDATOR_SOURCE = 'validator'
+/** Rule files the validator reads in its first message; citing them counts as repository evidence. */
+const RULE_FILES: ReadonlySet<string> = new Set([CONTEXT_PATH, MEMORY_PATH])
 
 /** Why a validator conversation gave no verdict. */
 type ValidatorFailure = LoopError | ModelCallError
@@ -86,6 +94,33 @@ export const ValidatorServiceLive = Layer.effect(
 		const loop = yield* AgentLoopService
 		const health = yield* ModelHealthService
 		const repoTools = yield* RepoToolsService
+		const git = yield* GitService
+
+		/**
+		 * True when an evidence entry names a rule file or a file at the head or the merge base. A git
+		 * failure counts as no evidence, which keeps the finding.
+		 */
+		const hasRepositoryEvidence = Effect.fn(
+			'ValidatorService.hasRepositoryEvidence'
+		)(function* (verdict: Verdict, scope: RepoScope) {
+			const paths = getEvidencePaths(verdict.evidence)
+			if (paths.some(path => RULE_FILES.has(path))) return true
+			if (paths.length === 0) return false
+			const { change } = scope
+			const [head, base] = yield* Effect.all(
+				[
+					git.getFilesAt(change.head.commit, paths),
+					git.getFilesAt(change.mergeBase, paths),
+				],
+				{ concurrency: 2 }
+			).pipe(
+				Effect.orElseSucceed((): readonly ReadonlySet<string>[] => [
+					new Set(),
+					new Set(),
+				])
+			)
+			return head.size + base.size > 0
+		})
 
 		const toUserMessage = Effect.fn('ValidatorService.toUserMessage')(
 			function* (finding: Finding, context: ValidatorContext) {
@@ -156,22 +191,14 @@ export const ValidatorServiceLive = Layer.effect(
 						...(context.budget ? { budget: context.budget } : {}),
 					})
 					.pipe(Effect.tapError(error => Ref.set(lastError, error)))
-				const judgement = {
-					severity: value.severity,
-					reason: value.reason,
-					evidence: value.evidence,
+				return toValidation({
+					verdict: value,
+					reported: finding.severity,
 					model: model.model,
-				}
-				if (value.verdict === 'unverified')
-					return {
-						...judgement,
-						status: 'unverified',
-						premise: value.premise ?? '',
-					} satisfies Validation
-				return {
-					...judgement,
-					status: value.verdict === 'confirm' ? 'confirmed' : 'rejected',
-				} satisfies Validation
+					hasRepositoryEvidence:
+						value.verdict !== 'reject' ||
+						(yield* hasRepositoryEvidence(value, context.scope)),
+				})
 			})
 
 		const validate = Effect.fn('ValidatorService.validate')(function* (
