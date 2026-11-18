@@ -1,4 +1,9 @@
-import { toFinding, type KeptFinding } from '@mng-review/domain'
+import {
+	toFinding,
+	type Judgement,
+	type KeptFinding,
+	type Unverified,
+} from '@mng-review/domain'
 import {
 	reviewReport,
 	unverifiedBug,
@@ -149,4 +154,37 @@ describe('toFindingsLines', () => {
 			toFindingsLines({ ...reviewReport(), bugs: [], nits: [], rejected: [] })
 		).toEqual(['', '### Bugs', '', 'None.'])
 	})
+})
+
+for (const status of ['confirmed', 'unverified'] as const)
+	test(`findings summary escapes lowering explanations and notes for ${status} findings`, () => {
+		const original = unverifiedBug()
+		const validation = {
+			...original.validation,
+			status,
+			severity: 'medium',
+			loweredBecause: MALICIOUS,
+			note: MALICIOUS,
+		} as const satisfies Judgement | Unverified
+		const text = toFindingsLines({
+			...reviewReport(),
+			bugs: [
+				{
+					...original,
+					severity: 'medium',
+					reportedSeverity: 'high',
+					validation,
+				},
+			],
+		}).join('\n')
+		expect(text).toContain(`  - Lowered because: ${escapeMarkdown(MALICIOUS)}`)
+		expect(text).toContain(`  - Note: ${escapeMarkdown(MALICIOUS)}`)
+		expect(text).not.toContain('![')
+		expect(text).not.toMatch(/(?<!\\)<img/u)
+	})
+
+test('findings summary omits lowering and note labels when the validator supplied neither', () => {
+	const text = toFindingsLines(reviewReport()).join('\n')
+	expect(text).not.toContain('Lowered because:')
+	expect(text).not.toContain('Note:')
 })

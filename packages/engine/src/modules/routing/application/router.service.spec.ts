@@ -70,6 +70,7 @@ function gitFixture(
 		readChange: () => Effect.die('unexpected change'),
 		readFileAt: () => Effect.die('unexpected file'),
 		listFilesAt: () => Effect.die('unexpected list'),
+		getFilesAt: () => Effect.die('unexpected files'),
 	}
 }
 

@@ -316,6 +316,71 @@ layer(Layer.empty, { excludeTestServices: true })('GitService', test => {
 				}).pipe(Effect.provide(gitLayer(repo.root)))
 			})
 	)
+	test.effect(
+		'getFilesAt returns committed files, excluding directories, missing paths and gitlinks',
+		() =>
+			Effect.gen(function* () {
+				const repo = createRepo()
+				repo.write('docs/guide.md', 'committed')
+				repo.write('docs/with space.md', 'space')
+				repo.write('docs/tab\tname.md', 'tab')
+				const base = repo.commit()
+				repo.git(
+					'update-index',
+					'--add',
+					'--cacheinfo',
+					`160000,${base},module`
+				)
+				repo.git('commit', '-m', 'gitlink')
+				repo.write('untracked.md', 'not committed')
+				yield* Effect.gen(function* () {
+					const git = yield* GitService
+					expect(
+						yield* git.getFilesAt('HEAD', [
+							'docs/guide.md',
+							'docs/with space.md',
+							'docs/tab\tname.md',
+							'docs',
+							'missing.md',
+							'untracked.md',
+							'module',
+						])
+					).toEqual(
+						new Set([
+							'docs/guide.md',
+							'docs/with space.md',
+							'docs/tab\tname.md',
+						])
+					)
+					expect(yield* git.getFilesAt('HEAD', [])).toEqual(new Set())
+				}).pipe(Effect.provide(gitLayer(repo.root)))
+			})
+	)
+	test.effect(
+		'getFilesAt checks the specified commit and returns GitError for an invalid commit',
+		() =>
+			Effect.gen(function* () {
+				const repo = createRepo()
+				repo.write('deleted.md', 'base only')
+				const base = repo.commit()
+				repo.git('rm', 'deleted.md')
+				repo.write('added.md', 'head only')
+				const head = repo.commit()
+				yield* Effect.gen(function* () {
+					const git = yield* GitService
+					const paths = ['deleted.md', 'added.md']
+					expect(yield* git.getFilesAt(base, paths)).toEqual(
+						new Set(['deleted.md'])
+					)
+					expect(yield* git.getFilesAt(head, paths)).toEqual(
+						new Set(['added.md'])
+					)
+					expect(
+						yield* git.getFilesAt('missing-commit', paths).pipe(Effect.flip)
+					).toMatchObject({ _tag: 'GitError' })
+				}).pipe(Effect.provide(gitLayer(repo.root)))
+			})
+	)
 	test.effect('gitlinks count as zero bytes', () =>
 		Effect.gen(function* () {
 			const repo = createRepo()

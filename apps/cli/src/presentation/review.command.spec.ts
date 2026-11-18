@@ -84,7 +84,11 @@ layer(Layer.empty, { excludeTestServices: true })('review CLI', test => {
 					const invocation = yield* runReviewCli(
 						reviewRepo().root,
 						['--base', 'main', '--no-router', '--json'],
-						{ endpoint: ENDPOINT, findings: [REPORTED_FINDING], severity }
+						{
+							endpoint: ENDPOINT,
+							findings: [{ ...REPORTED_FINDING, severity }],
+							severity,
+						}
 					)
 					const blocking = severity === 'medium'
 					expect(decodeReport(invocation.out).blocking).toBe(blocking)
@@ -112,6 +116,39 @@ layer(Layer.empty, { excludeTestServices: true })('review CLI', test => {
 					])
 				})
 		)
+	test.effect(
+		'unexplained validator lowering keeps the reported severity and blocking exit',
+		() =>
+			Effect.gen(function* () {
+				const invocation = yield* runReviewCli(
+					reviewRepo().root,
+					['--base', 'main', '--no-router', '--json'],
+					{ endpoint: ENDPOINT, findings: [REPORTED_FINDING], severity: 'low' }
+				)
+				expect(decodeReport(invocation.out)).toMatchObject({
+					blocking: true,
+					bugs: [
+						{
+							severity: REPORTED_FINDING.severity,
+							validation: {
+								status: 'confirmed',
+								severity: REPORTED_FINDING.severity,
+								note: expect.stringContaining(
+									'without naming the criterion'
+								) as unknown,
+							},
+						},
+					],
+				})
+				expect(invocation.outcome).toMatchObject({
+					_tag: 'Failure',
+					cause: {
+						reasons: [{ error: { _tag: 'CliExit', code: BLOCKING_EXIT_CODE } }],
+					},
+				})
+				expect(invocation.requests).toHaveLength(2)
+			})
+	)
 	test.effect(
 		'text output includes the finding, validator, tokens and wall time',
 		() =>
@@ -390,7 +427,7 @@ layer(Layer.empty, { excludeTestServices: true })('review CLI', test => {
 									content: call.tools?.some(
 										tool => tool.function.name === 'report_findings'
 									)
-										? { findings: [REPORTED_FINDING] }
+										? { findings: [{ ...REPORTED_FINDING, severity }] }
 										: {
 												verdict: 'confirm',
 												severity,

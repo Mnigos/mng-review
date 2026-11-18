@@ -1,10 +1,12 @@
 import { layer } from '@effect/vitest'
+import { UNNAMED_PREMISE } from '@mng-review/domain'
 import { Effect, Layer, Ref } from 'effect'
 import { LanguageModel } from 'effect/ai'
 import {
 	RulesService,
 	RulesServiceLive,
 } from '../../../platform/config/rules.service'
+import { GitError } from '../../../platform/git/git.errors'
 import { GitService } from '../../../platform/git/git.service'
 import {
 	ScriptedLlm,
@@ -19,6 +21,7 @@ import {
 	gitLayer,
 } from '../../../shared/mocks/git-test.helper'
 import {
+	gitFixture,
 	providerError,
 	reviewDependencies,
 	userText,
@@ -296,7 +299,7 @@ layer(Layer.empty)('ValidatorService', test => {
 				)
 		)
 	test.effect(
-		'rejection retains the reason and model and permits empty evidence',
+		'rejection with empty evidence stays unverified at reported severity with the reason and model',
 		() =>
 			Effect.gen(function* () {
 				expect(
@@ -304,7 +307,10 @@ layer(Layer.empty)('ValidatorService', test => {
 						validator.validate(finding(), CONTEXT)
 					)
 				).toMatchObject({
-					status: 'rejected',
+					status: 'unverified',
+					severity: finding().severity,
+					premise: UNNAMED_PREMISE,
+					note: expect.stringContaining('without citing lines') as unknown,
 					model: 'model-b',
 					reason: 'Caller deduplicates.',
 					evidence: [],
@@ -326,6 +332,246 @@ layer(Layer.empty)('ValidatorService', test => {
 				)
 			)
 	)
+	for (const existingAt of [SCOPE.change.head.commit, SCOPE.change.mergeBase])
+		test.effect(
+			`rejection citing a file existing only at ${existingAt} stays rejected`,
+			() =>
+				Effect.gen(function* () {
+					const getFilesAtSpy = vi.fn<GitService['Service']['getFilesAt']>(
+						(commit, paths) =>
+							Effect.succeed(new Set(commit === existingAt ? paths : []))
+					)
+					yield* Effect.gen(function* () {
+						expect(
+							yield* ValidatorService.use(validator =>
+								validator.validate(finding(), CONTEXT)
+							)
+						).toMatchObject({
+							status: 'rejected',
+							severity: finding().severity,
+						})
+						expect(getFilesAtSpy).toHaveBeenCalledTimes(2)
+						for (const commit of [
+							SCOPE.change.head.commit,
+							SCOPE.change.mergeBase,
+						])
+							expect(getFilesAtSpy).toHaveBeenCalledWith(commit, [BILLING_PATH])
+					}).pipe(
+						Effect.provide(
+							ValidatorServiceLive.pipe(
+								Layer.provideMerge(
+									reviewDependencies(
+										() =>
+											Effect.succeed(
+												answer('report_verdict', verdict({ verdict: 'reject' }))
+											),
+										{},
+										gitFixture({ getFilesAt: getFilesAtSpy })
+									)
+								)
+							)
+						)
+					)
+				})
+		)
+	for (const evidence of [
+		['missing/source.ts:7 not present', 'missing/other.ts:4 also absent'],
+		['node_modules/example/index.d.ts:12 remembered API'],
+		['../outside.ts:2 outside repository'],
+	])
+		test.effect(
+			`rejection without repository files stays unverified: ${JSON.stringify(evidence)}`,
+			() =>
+				Effect.gen(function* () {
+					const premise = 'Example SDK returns an absolute URL.'
+					const getFilesAtSpy = vi.fn<GitService['Service']['getFilesAt']>(() =>
+						Effect.succeed(new Set())
+					)
+					yield* Effect.gen(function* () {
+						expect(
+							yield* ValidatorService.use(validator =>
+								validator.validate(finding({ severity: 'high' }), CONTEXT)
+							)
+						).toMatchObject({
+							status: 'unverified',
+							severity: 'high',
+							premise,
+							evidence,
+							note: expect.stringContaining('without citing lines') as unknown,
+						})
+						expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(
+							1
+						)
+						expect(getFilesAtSpy).toHaveBeenCalledTimes(
+							evidence[0]?.startsWith('../') ? 0 : 2
+						)
+					}).pipe(
+						Effect.provide(
+							ValidatorServiceLive.pipe(
+								Layer.provideMerge(
+									reviewDependencies(
+										() =>
+											Effect.succeed(
+												answer(
+													'report_verdict',
+													verdict({
+														verdict: 'reject',
+														severity: 'low',
+														evidence,
+														premise,
+													})
+												)
+											),
+										{},
+										gitFixture({ getFilesAt: getFilesAtSpy })
+									)
+								)
+							)
+						)
+					)
+				})
+		)
+	for (const path of ['.mng/MEMORY.md', '.mng/CONTEXT.md'])
+		test.effect(
+			`rejection citing ${path} stays rejected without checking git files`,
+			() =>
+				Effect.gen(function* () {
+					const getFilesAtSpy = vi.fn<GitService['Service']['getFilesAt']>(() =>
+						Effect.die('rules need no git check')
+					)
+					yield* Effect.gen(function* () {
+						expect(
+							yield* ValidatorService.use(validator =>
+								validator.validate(finding(), CONTEXT)
+							)
+						).toMatchObject({ status: 'rejected' })
+						expect(getFilesAtSpy).not.toHaveBeenCalled()
+					}).pipe(
+						Effect.provide(
+							ValidatorServiceLive.pipe(
+								Layer.provideMerge(
+									reviewDependencies(
+										() =>
+											Effect.succeed(
+												answer(
+													'report_verdict',
+													verdict({
+														verdict: 'reject',
+														evidence: [`${path}:1 intentional`],
+													})
+												)
+											),
+										{},
+										gitFixture({ getFilesAt: getFilesAtSpy })
+									)
+								)
+							)
+						)
+					)
+				})
+		)
+	test.effect(
+		'a git file lookup failure keeps a rejection unverified without retrying the model',
+		() =>
+			Effect.gen(function* () {
+				const getFilesAtSpy = vi.fn<GitService['Service']['getFilesAt']>(() =>
+					Effect.fail(
+						new GitError({
+							args: ['ls-tree'],
+							stderr: 'fixture git failure',
+							exitCode: 128,
+						})
+					)
+				)
+				yield* Effect.gen(function* () {
+					expect(
+						yield* ValidatorService.use(validator =>
+							validator.validate(finding(), CONTEXT)
+						)
+					).toMatchObject({
+						status: 'unverified',
+						severity: finding().severity,
+						premise: UNNAMED_PREMISE,
+						note: expect.stringContaining('without citing lines') as unknown,
+					})
+					expect(getFilesAtSpy).toHaveBeenCalled()
+					expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(1)
+				}).pipe(
+					Effect.provide(
+						ValidatorServiceLive.pipe(
+							Layer.provideMerge(
+								reviewDependencies(
+									() =>
+										Effect.succeed(
+											answer('report_verdict', verdict({ verdict: 'reject' }))
+										),
+									{},
+									gitFixture({ getFilesAt: getFilesAtSpy })
+								)
+							)
+						)
+					)
+				)
+			})
+	)
+	for (const verdictName of ['confirm', 'reject', 'unverified'])
+		for (const loweredBecause of [
+			undefined,
+			'high: no main flow fails and no wrong data is returned.',
+		])
+			test.effect(
+				`${verdictName} lowering ${loweredBecause ? 'with' : 'without'} lowered_because is enforced through the model tool`,
+				() =>
+					Effect.gen(function* () {
+						const validation = yield* ValidatorService.use(validator =>
+							validator.validate(finding({ severity: 'high' }), CONTEXT)
+						)
+						expect(validation).toMatchObject({
+							status:
+								verdictName === 'confirm'
+									? 'confirmed'
+									: verdictName === 'reject'
+										? 'rejected'
+										: 'unverified',
+							severity: loweredBecause ? 'medium' : 'high',
+						})
+						if (loweredBecause) {
+							expect(validation).toHaveProperty(
+								'loweredBecause',
+								loweredBecause
+							)
+							expect(validation).not.toHaveProperty('note')
+						} else {
+							expect(validation).toHaveProperty(
+								'note',
+								expect.stringContaining('without naming the criterion')
+							)
+							expect(validation).not.toHaveProperty('loweredBecause')
+						}
+						expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(
+							1
+						)
+					}).pipe(
+						Effect.provide(
+							validatorLayer(() =>
+								Effect.succeed(
+									answer(
+										'report_verdict',
+										verdict({
+											verdict: verdictName,
+											...(verdictName === 'unverified'
+												? { premise: 'Example SDK retries automatically.' }
+												: {}),
+											...(loweredBecause
+												? { lowered_because: loweredBecause }
+												: {}),
+										})
+									)
+								)
+							)
+						)
+					)
+			)
 	for (const evidence of [
 		[],
 		['no source location'],

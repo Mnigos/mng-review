@@ -1,3 +1,4 @@
+import type { Judgement, Unverified } from '@mng-review/domain'
 import type { ReviewReport } from '@mng-review/engine'
 import { Schema } from 'effect'
 import {
@@ -260,4 +261,44 @@ test('review text and JSON carry source token accounting', () => {
 	expect(decodeJson(formatReviewJson(report))).toMatchObject({
 		tokenSources: report.tokenSources,
 	})
+})
+
+for (const status of ['confirmed', 'unverified'] as const)
+	test(`review text and JSON show lowering explanations and engine notes for ${status} findings`, () => {
+		const fixture = reviewReport()
+		const original = unverifiedBug()
+		const loweredBecause =
+			'high: no main flow fails and no wrong data is returned.'
+		const note =
+			'Kept the reported severity because the criterion was not named.'
+		const validation = {
+			...original.validation,
+			status,
+			severity: 'medium',
+			loweredBecause,
+			note,
+		} as const satisfies Judgement | Unverified
+		const report: ReviewReport = {
+			...fixture,
+			bugs: [
+				{
+					...original,
+					severity: 'medium',
+					reportedSeverity: 'high',
+					validation,
+				},
+			],
+		}
+		const text = formatReviewText(report)
+		expect(text).toContain(`      lowered because: ${loweredBecause}`)
+		expect(text).toContain(`      note: ${note}`)
+		expect(decodeJson(formatReviewJson(report))).toMatchObject({
+			bugs: [{ validation: { loweredBecause, note } }],
+		})
+	})
+
+test('review text omits lowering and note labels when the validator supplied neither', () => {
+	const text = formatReviewText(reviewReport())
+	expect(text).not.toContain('lowered because:')
+	expect(text).not.toContain('note:')
 })
