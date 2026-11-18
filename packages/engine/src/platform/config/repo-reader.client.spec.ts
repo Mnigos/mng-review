@@ -136,9 +136,16 @@ layer(NodeLayer, { excludeTestServices: true })('repository readers', test => {
 			symlinkSync(outside.root, join(repo.root, 'escape-dir'))
 			symlinkSync('inside.md', join(repo.root, 'internal.md'))
 			const reader = yield* makeWorktreeReader(repo.root)
-			expect(yield* reader.readFile('escape.md')).toBeUndefined()
-			expect(yield* reader.readFile('escape-dir/private.md')).toBeUndefined()
-			expect(yield* reader.listFiles('escape-dir')).toBeUndefined()
+			for (const path of ['escape.md', 'escape-dir', 'escape-dir/private.md'])
+				for (const failure of [
+					yield* reader.readFile(path).pipe(Effect.flip),
+					yield* reader.listFiles(path).pipe(Effect.flip),
+				])
+					expect(failure).toMatchObject({
+						_tag: 'ConfigError',
+						source: path,
+						reason: 'resolves outside the repository (symlink)',
+					})
 			expect(yield* reader.readFile('internal.md')).toBe('Inside data')
 		})
 	)

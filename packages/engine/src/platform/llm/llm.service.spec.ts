@@ -1,3 +1,4 @@
+import { inspect } from 'node:util'
 import { OpenAiLanguageModel } from '@effect/ai-openai-compat'
 import { layer } from '@effect/vitest'
 import {
@@ -9,6 +10,7 @@ import {
 	Layer,
 	Redacted,
 	Schema,
+	Tracer,
 } from 'effect'
 import { LanguageModel, Tool, Toolkit } from 'effect/ai'
 import {
@@ -105,6 +107,19 @@ function harness(reply: Reply, options: HarnessOptions = {}) {
 		)
 	)
 	return { layer: liveLayer, requests, starts }
+}
+
+/** Keeps complete native spans, including error exits and event attributes, for leak assertions. */
+function recordingTracer() {
+	const spans: Tracer.NativeSpan[] = []
+	const tracer = Tracer.make({
+		span(options) {
+			const span = new Tracer.NativeSpan(options)
+			spans.push(span)
+			return span
+		},
+	})
+	return { spans, layer: Layer.succeed(Tracer.Tracer, tracer) }
 }
 
 layer(Layer.empty)('LlmService HTTP', test => {
@@ -550,6 +565,88 @@ layer(Layer.empty)('LlmService HTTP', test => {
 			])
 		})
 	)
+
+	for (const status of [400, 200])
+		test.effect(
+			status === 400
+				? 'records only a redacted outer span when the provider echoes credentials and endpoint details'
+				: 'records no provider or HTTP spans for a successful call',
+			() =>
+				Effect.gen(function* () {
+					const endpoint = new URL(ENDPOINT)
+					const http = harness(
+						() =>
+							Effect.succeed(
+								status === 400
+									? Response.json(
+											{
+												error: {
+													message: `Rejected ${FIXTURE_CREDENTIAL} ${ENDPOINT} ${endpoint.origin} ${endpoint.host}`,
+													type: 'invalid_request_error',
+												},
+											},
+											{ status }
+										)
+									: completion()
+							),
+						{ credential: FIXTURE_CREDENTIAL }
+					)
+					const recording = recordingTracer()
+					const outcome = yield* LlmService.use(llm =>
+						llm.run(MODEL, generate)
+					).pipe(
+						Effect.exit,
+						Effect.provide(http.layer),
+						Effect.provide(recording.layer)
+					)
+					expect(http.requests).toHaveLength(1)
+					expect(recording.spans.map(span => span.name)).toEqual(
+						status === 400
+							? ['LlmService.run']
+							: ['LlmService.run', 'TokenLedger.record']
+					)
+					const outer = recording.spans.find(
+						span => span.name === 'LlmService.run'
+					)
+					expect(outer?.attributes).toEqual(
+						new Map([
+							['model', MODEL.model],
+							['effort', MODEL.effort],
+						])
+					)
+					expect(outer?.status).toMatchObject({ _tag: 'Ended', exit: outcome })
+					if (status === 400)
+						expect(Exit.findErrorOption(outcome)).toMatchObject({
+							_tag: 'Some',
+							value: { _tag: 'LlmError', status: 400, retryable: false },
+						})
+					else expect(Exit.isSuccess(outcome)).toBeTruthy()
+					for (const span of recording.spans) {
+						const recorded = inspect(
+							{
+								name: span.name,
+								attributes: span.attributes,
+								events: span.events,
+								status: span.status,
+							},
+							{
+								depth: null,
+								showHidden: true,
+								customInspect: false,
+								maxArrayLength: null,
+								maxStringLength: null,
+							}
+						)
+						for (const secret of [
+							FIXTURE_CREDENTIAL,
+							ENDPOINT,
+							endpoint.origin,
+							endpoint.host,
+						])
+							expect(recorded).not.toContain(secret)
+					}
+				})
+		)
 
 	test.effect(
 		'rejects a missing provider model without retry and redacts the error',
