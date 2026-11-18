@@ -3,9 +3,12 @@ const MARKDOWN_SYNTAX = /[\\`*_[\]()!<>|#~&]/gu
 /** Whitespace and control characters, so a lone carriage return or a line separator cannot end a line either. */
 const LINE_BREAKS = /[\s\p{Cc}]+/gu
 const BACKTICK_RUN = /`+/gu
-/** What GitHub turns into a link on its own: URLs with a scheme, `www.` hosts and e-mail addresses. */
+/**
+ * What GitHub turns into a link on its own: URLs with a scheme, `www.` hosts and e-mail addresses.
+ * An address starts only where its local part starts, so a long word is scanned once.
+ */
 const AUTOLINK =
-	/(?:[a-z][a-z0-9+.-]*:\/\/|www\.)[^\s|`]+|[\w.+-]+@[\w-]+(?:\.[\w-]+)+/giu
+	/(?:[a-z][a-z0-9+.-]*:\/\/|www\.)[^\s|`]+|(?<![\w.+-])[\w.+-]+@[\w-]+(?:\.[\w-]+)+/giu
 /** Control and format characters and line separators: they could end a log line, drive the terminal or reorder text. */
 const CONTROL_CHARACTERS = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu
 
