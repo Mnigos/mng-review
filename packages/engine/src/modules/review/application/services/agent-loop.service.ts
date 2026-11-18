@@ -1,15 +1,19 @@
-import type { ModelSetting } from '@mng-review/domain'
-import { Clock, Context, Duration, Effect, Layer, Result } from 'effect'
+import { Clock, Context, Duration, Effect, Layer, Ref, Result } from 'effect'
 import { Chat, type Prompt, type Response, Toolkit } from 'effect/ai'
 import { TokenLedger } from '../../../../platform/llm/token-ledger.service'
 import { fenceData } from '../../../../utils/fence.util'
 import {
 	type CallStop,
 	isOutOfTokens,
-	type LoopBudget,
 	toAffordableOutputs,
 	toEstimatedTokens,
 } from '../../domain/loop-budget.helper'
+import {
+	getCallPath,
+	toContinuationMessage,
+	toToolMessage,
+	toUserMessage,
+} from '../../domain/loop-message.helper'
 import {
 	MAX_CORRECTIONS,
 	TOOL_OUTPUT_LABEL,
@@ -17,12 +21,13 @@ import {
 } from '../../domain/review.constants'
 import { LoopError } from '../../domain/review.errors'
 import { parseAnswerJson } from '../../infrastructure/answer-json.parser'
-import { REPO_TOOLS, type RepoToolName } from '../repo.toolkit'
+import type { LoopRequest, LoopResult, LoopState } from '../agent-loop.types'
+import { REPO_TOOLS } from '../repo.toolkit'
 import { ReportFindingsTool } from '../report-findings.tool'
 import { ReportVerdictTool } from '../report-verdict.tool'
 import { ReviewLimits } from '../review-limits.context'
 import { type ModelCallError, ModelHealthService } from './model-health.service'
-import { type RepoScope, RepoToolsService } from './repo-tools.service'
+import { RepoToolsService } from './repo-tools.service'
 
 /** Every tool an agent can be offered; each run picks its own with `toolChoice.oneOf`. */
 const AGENT_TOOLKIT = Toolkit.make(
@@ -30,80 +35,7 @@ const AGENT_TOOLKIT = Toolkit.make(
 	ReportFindingsTool,
 	ReportVerdictTool
 )
-export type FinishToolName =
-	| typeof ReportFindingsTool.name
-	| typeof ReportVerdictTool.name
-
-/** A problem with an answer, told back to the model. */
-interface AnswerProblem {
-	readonly message: string
-}
-
-/** One agent run: its prompts, its model, the tools it may call and how its answer is read. */
-export interface LoopRequest<TValue> {
-	readonly model: ModelSetting
-	readonly system: string
-	readonly user: string
-	readonly scope: RepoScope
-	/** Repository tools this agent may call. */
-	readonly tools: readonly RepoToolName[]
-	/** The tool the agent calls once with its answer. */
-	readonly finish: FinishToolName
-	/** Reads the finish tool's arguments or a plain JSON answer. */
-	readonly parse: (answer: unknown) => Effect.Effect<TValue, AnswerProblem>
-	/** When the agent must answer for tokens; without it, only `limits.tokens_per_run` stops it. */
-	readonly budget?: LoopBudget
-	/** Who the turns' tokens count for in the ledger, a finder's name or `validator`; none counts none. */
-	readonly source?: string
-}
-
-/** An agent's answer and what it took. */
-export interface LoopResult<TValue> {
-	readonly value: TValue
-	readonly toolCalls: number
-	readonly turns: number
-}
-
-/** Where a loop stands between turns. */
-interface LoopState {
-	readonly toolCalls: number
-	readonly corrections: number
-	readonly wrapUpSent: boolean
-	readonly turn: number
-	/** Messages the next turn sends: tool results and corrections. */
-	readonly pending: readonly Prompt.MessageEncoded[]
-	/** Input tokens of the conversation's first call, once it answered. */
-	readonly firstMessageTokens?: number
-	/** Tokens this conversation has spent. */
-	readonly spentTokens: number
-	/** Estimated input of the next call; see `ConversationTokens`. */
-	readonly nextInputTokens: number
-}
-
 type ToolCall = Response.ToolCallPart<string, unknown>
-
-/** A tool message answering every call of a turn with its text, in order. */
-function toToolMessage(
-	calls: readonly ToolCall[],
-	outputs: readonly string[]
-): Prompt.MessageEncoded {
-	return {
-		role: 'tool',
-		content: calls.map((call, index) => ({
-			type: 'tool-result',
-			id: call.id,
-			name: call.name,
-			isFailure: false,
-			result: outputs[index] ?? '',
-			providerExecuted: false,
-		})),
-	}
-}
-
-/** A user message. */
-function toUserMessage(content: string): Prompt.MessageEncoded {
-	return { role: 'user', content }
-}
 
 /**
  * Runs one agent as a tool loop on `effect/ai` `Chat`: one model call per turn, the turn's tool
@@ -148,6 +80,11 @@ export const AgentLoopServiceLive = Layer.effect(
 			])
 			const deadline = (yield* Clock.currentTimeMillis) + wallMillis
 			const hardDeadline = deadline + graceMillis
+			const { coverage } = request
+			/** Paths the agent read with a tool. */
+			const touched = yield* Ref.make<ReadonlySet<string>>(new Set())
+			/** The answer before a continuation turn, kept if the continuation fails. */
+			const kept = yield* Ref.make<LoopResult<TValue> | undefined>(undefined)
 
 			/** True once the conversation or the whole run is out of tokens, as the turn checks it. */
 			const isSpent = (state: LoopState) =>
@@ -159,6 +96,47 @@ export const AgentLoopServiceLive = Layer.effect(
 								spent >= request.budget.runTokens)
 					)
 				)
+
+			/** Files of `coverage` the answer leaves unread, when a continuation turn still fits. */
+			const getUnread = (state: LoopState, value: TValue, wrapUp: boolean) =>
+				Effect.gen(function* () {
+					if (!coverage || wrapUp || (yield* Ref.get(kept))) return []
+					if (state.toolCalls >= limits.maxToolCalls) return []
+					if ((yield* Clock.currentTimeMillis) >= deadline) return []
+					if (yield* isSpent(state)) return []
+					const read = new Set([
+						...(yield* Ref.get(touched)),
+						...coverage.answered(value),
+					])
+					return coverage.paths.filter(path => !read.has(path))
+				})
+
+			/**
+			 * A parsed answer: merged into the kept one after a continuation, else held for one
+			 * continuation turn when it leaves files of `coverage` unread.
+			 */
+			const accept = (
+				answer: LoopResult<TValue>,
+				next: LoopState,
+				wrapUp: boolean,
+				reply: (text: string) => Prompt.MessageEncoded
+			): Effect.Effect<LoopResult<TValue>, LoopError | ModelCallError> =>
+				Effect.gen(function* () {
+					const first = yield* Ref.get(kept)
+					if (first && coverage)
+						return {
+							...answer,
+							value: coverage.merge(first.value, answer.value),
+							continued: true,
+						}
+					const unread = yield* getUnread(next, answer.value, wrapUp)
+					if (unread.length === 0) return answer
+					yield* Ref.set(kept, { ...answer, continued: true })
+					return yield* step({
+						...next,
+						pending: [reply(toContinuationMessage(unread, finish))],
+					})
+				})
 
 			/** A correction turn; out of tokens, an invalid answer gets one, not the usual allowance. */
 			const correct = (
@@ -319,32 +297,33 @@ export const AgentLoopServiceLive = Layer.effect(
 								? Effect.fail({ message: 'the answer is not valid JSON' })
 								: request.parse(answer)
 						)
-						if (Result.isSuccess(parsed))
-							return {
-								value: parsed.success,
-								toolCalls: state.toolCalls,
-								turns: state.turn,
-							}
-						const problem = parsed.failure.message
-						return yield* correct(
-							sent,
+						const reply = (toolText: string, userText: string) =>
 							finishCall
-								? [
-										toToolMessage(
-											calls,
-											calls.map(call =>
-												call === finishCall
-													? `error: ${problem}. Call ${finish} again.`
-													: 'skipped'
-											)
-										),
-									]
-								: [
-										toUserMessage(
-											`Call the ${finish} tool with your answer (${problem}).`
-										),
-									]
-						)
+								? toToolMessage(
+										calls,
+										calls.map(call =>
+											call === finishCall ? toolText : 'skipped'
+										)
+									)
+								: toUserMessage(userText)
+						if (Result.isSuccess(parsed))
+							return yield* accept(
+								{
+									value: parsed.success,
+									toolCalls: state.toolCalls,
+									turns: state.turn,
+								},
+								{ ...sent, turn: state.turn + 1 },
+								wrapUp,
+								text => reply(text, text)
+							)
+						const problem = parsed.failure.message
+						return yield* correct(sent, [
+							reply(
+								`error: ${problem}. Call ${finish} again.`,
+								`Call the ${finish} tool with your answer (${problem}).`
+							),
+						])
 					}
 					const outputs = yield* resolveCalls(
 						calls,
@@ -355,6 +334,13 @@ export const AgentLoopServiceLive = Layer.effect(
 						},
 						yield* Clock.currentTimeMillis
 					)
+					yield* Ref.update(touched, paths => {
+						const read = calls.flatMap((call, index) => {
+							const path = getCallPath(call)
+							return path && !outputs[index]?.startsWith('error:') ? [path] : []
+						})
+						return new Set([...paths, ...read])
+					})
 					const fenced = toAffordableOutputs(
 						outputs.map(output => fenceData(TOOL_OUTPUT_LABEL, output)),
 						request.budget,
@@ -378,6 +364,7 @@ export const AgentLoopServiceLive = Layer.effect(
 					return yield* step({ ...next, corrections: state.corrections + 1 })
 				})
 
+			// A continuation that fails keeps the answer that came before it.
 			return yield* step({
 				toolCalls: 0,
 				corrections: 0,
@@ -386,7 +373,15 @@ export const AgentLoopServiceLive = Layer.effect(
 				pending: [],
 				spentTokens: 0,
 				nextInputTokens: toEstimatedTokens(request.system + request.user),
-			})
+			}).pipe(
+				Effect.catch(error =>
+					Ref.get(kept).pipe(
+						Effect.flatMap(first =>
+							first ? Effect.succeed(first) : Effect.fail(error)
+						)
+					)
+				)
+			)
 		})
 
 		return { run }

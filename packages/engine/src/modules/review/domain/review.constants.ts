@@ -27,6 +27,8 @@ export const MAX_VALIDATION_TOKENS = 60_000
  * a few calls that read the code. Many findings can take a run past its planned tokens.
  */
 export const MIN_VALIDATION_TOKENS = 30_000
+/** Changed files a continuation turn names; it counts the rest. */
+export const MAX_LISTED_UNTOUCHED = 20
 /** Invalid answers the loop corrects before it gives up on an agent. */
 export const MAX_CORRECTIONS = 2
 /** Longest tool output in characters, the cut marker included. */
