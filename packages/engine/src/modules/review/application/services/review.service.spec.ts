@@ -1,5 +1,5 @@
 import { layer } from '@effect/vitest'
-import { Effect, Layer } from 'effect'
+import { Effect, Layer, Ref } from 'effect'
 import { TestClock } from 'effect/testing'
 import { TokenLedgerLive } from '../../../../platform/llm/token-ledger.service'
 import {
@@ -9,6 +9,7 @@ import {
 } from '../../../../shared/mocks/domain-test.helper'
 import { reviewRequest } from '../../../../shared/mocks/review-test.helper'
 import { ValidatorService } from '../../../validation/application/validator.service'
+import type { DroppedModel } from '../../domain/review-report.types'
 import { FinderService, type FinderResult } from './finder.service'
 import { ModelHealthService } from './model-health.service'
 import { ReviewService, ReviewServiceLive } from './review.service'
@@ -16,7 +17,8 @@ import { ReviewService, ReviewServiceLive } from './review.service'
 /** Isolates placement and orchestration from model decoding, covered by the pipeline specs. */
 function reviewLayer(
 	find: FinderService['Service']['run'],
-	validate: ValidatorService['Service']['validate']
+	validate: ValidatorService['Service']['validate'],
+	dropped: ModelHealthService['Service']['dropped'] = Effect.succeed([])
 ) {
 	return ReviewServiceLive.pipe(
 		Layer.provide(
@@ -26,7 +28,7 @@ function reviewLayer(
 				Layer.succeed(ModelHealthService, {
 					run: () => Effect.die('unexpected model call'),
 					isAvailable: () => Effect.succeed(true),
-					dropped: Effect.succeed([]),
+					dropped,
 				}),
 				TokenLedgerLive
 			)
@@ -181,6 +183,38 @@ layer(Layer.empty)('ReviewService', test => {
 					report.nits.filter(nit => nit.placement === 'summary')
 				).toHaveLength(2)
 				expect(report.blocking).toBe(false)
+			})
+	)
+	test.effect(
+		'reviewer models dropped while validating are reported without an endpoint error',
+		() =>
+			Effect.gen(function* () {
+				const request = reviewRequest()
+				const dropped = yield* Ref.make<readonly DroppedModel[]>([])
+				const droppedAll = request.rules.config.models.reviewer.map(entry => ({
+					model: entry.model,
+					reason: 'rate limited (429)',
+				}))
+				const report = yield* ReviewService.use(review =>
+					review.review(request)
+				).pipe(
+					Effect.provide(
+						reviewLayer(
+							run =>
+								Effect.succeed(
+									finderResult([finding({ agents: [run.name] })], run.name)
+								),
+							() =>
+								Ref.set(dropped, droppedAll).pipe(
+									Effect.as({ status: 'unvalidated', error: 'fixture' })
+								),
+							Ref.get(dropped)
+						)
+					)
+				)
+				expect(report.droppedModels).toEqual(droppedAll)
+				expect(report.endpointError).toBeUndefined()
+				expect(report.bugs).toHaveLength(1)
 			})
 	)
 	test.effect('report wall time includes time already spent planning', () =>

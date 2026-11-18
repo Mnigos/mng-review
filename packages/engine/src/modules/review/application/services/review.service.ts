@@ -26,7 +26,8 @@ export interface ReviewRequest {
  * Finds, validates and places the findings of a planned run. The main reviewer and the selected
  * agents run at once; bug findings with the same root cause merge, each merged bug is validated
  * once, then the severity floor and the nit caps place them. A dropped model is reported; with no
- * reviewer model left, or a finder that failed at the endpoint, the report carries `endpointError`.
+ * reviewer model left after finding, or a finder that failed at the endpoint, the report carries
+ * `endpointError`. Models dropped while validating are reported but never fail the run.
  */
 export class ReviewService extends Context.Service<
 	ReviewService,
@@ -66,6 +67,7 @@ export const ReviewServiceLive = Layer.effect(
 			const found = results.flatMap(result => result.findings)
 			const bugs = mergeFindings(found.filter(entry => entry.kind === 'bug'))
 			const nits = mergeFindings(found.filter(entry => entry.kind === 'nit'))
+			const droppedWhileFinding = yield* health.dropped
 			const validations = yield* Effect.forEach(
 				bugs,
 				bug => validator.validate(bug, { scope, config, rules }),
@@ -82,10 +84,10 @@ export const ReviewServiceLive = Layer.effect(
 			const agents = results.map(result => result.report)
 			const failed = agents.find(agent => agent.endpointError)
 			const noReviewerLeft = reviewers.every(entry =>
-				droppedModels.some(drop => drop.model === entry.model)
+				droppedWhileFinding.some(drop => drop.model === entry.model)
 			)
 			const endpointError = noReviewerLeft
-				? `no reviewer model left: ${droppedModels.map(drop => `${drop.model} ${drop.reason}`).join('; ')}`
+				? `no reviewer model left: ${droppedWhileFinding.map(drop => `${drop.model} ${drop.reason}`).join('; ')}`
 				: failed && `${failed.name}: ${failed.error ?? 'endpoint error'}`
 			return {
 				...outcome,
