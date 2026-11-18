@@ -21,9 +21,25 @@ const INDENT = '  '
 const PLAIN_SCALAR = /^[A-Za-z_][\w./-]*(?: [\w./-]+)*$/u
 const RESERVED_WORDS = /^(?:true|false|yes|no|on|off|null|y|n)$/iu
 
-/** A string as a YAML scalar: plain when that reads back unchanged, single-quoted otherwise. */
+/** Code points below this, and DEL, are control characters such as line breaks and tabs. */
+const FIRST_PRINTABLE = 0x20
+const DELETE = 0x7f
+
+/** True when the string holds a control character, which single quotes cannot carry unchanged. */
+function hasControlCharacter(value: string): boolean {
+	return Array.from(
+		{ length: value.length },
+		(_, index) => value.codePointAt(index) ?? FIRST_PRINTABLE
+	).some(code => code < FIRST_PRINTABLE || code === DELETE)
+}
+
+/**
+ * A string as a YAML scalar: plain when that reads back unchanged, double-quoted with JSON escapes
+ * when it holds a control character, single-quoted otherwise.
+ */
 function toScalar(value: string): string {
 	if (PLAIN_SCALAR.test(value) && !RESERVED_WORDS.test(value)) return value
+	if (hasControlCharacter(value)) return JSON.stringify(value)
 	return `'${value.replaceAll("'", "''")}'`
 }
 

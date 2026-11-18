@@ -222,24 +222,31 @@ Check balances.`,
 			})
 	)
 
-	test.effect.fails(
-		'suffixes an invalid source file name after normalizing it',
+	test.effect(
+		'normalizes a file name that is not an agent name and reports the rename',
 		() =>
 			Effect.gen(function* () {
-				const { parsed } = yield* importAgent('Check balances.', 'Bad_Name')
-				expect(parsed.name).toBe(`bad-name-${RENAMED_AGENT_SUFFIX}`)
+				const { parsed, imported } = yield* importAgent(
+					'Check balances.',
+					'Bad_Name'
+				)
+				expect(parsed.name).toBe('bad-name')
+				expect(
+					imported.notes.find(note => note.kind === 'changed')?.detail
+				).toContain('written as bad-name.md')
 			})
 	)
 
-	test.effect.fails(
-		'preserves CRLF body and import bytes in the generated file',
+	test.effect(
+		'keeps a CRLF body and its import lines with LF line ends, as agent files are read',
 		() =>
 			Effect.gen(function* () {
-				const body = 'Check balances.\r\n@/docs/billing.md\r\n'
 				const { imported } = yield* importAgent(
-					`---\r\ntitle: Example checks\r\n---\r\n${body}`
+					'---\r\ntitle: Example checks\r\n---\r\nCheck balances.\r\n@/docs/billing.md\r\n'
 				)
-				expect(imported.file.text.endsWith(body)).toBeTruthy()
+				expect(
+					imported.file.text.endsWith('Check balances.\n@/docs/billing.md\n')
+				).toBeTruthy()
 			})
 	)
 })

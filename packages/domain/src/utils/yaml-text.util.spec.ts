@@ -65,7 +65,7 @@ test('writes simple words without quotes and ends with a newline', () => {
 	)
 })
 
-test.fails('round trips a multiline string without folding line breaks', () => {
-	const value = { text: 'First line\nSecond line\n' } as const
+test('round trips a multiline string without folding line breaks', () => {
+	const value = { text: 'First line\nSecond line\n', tab: 'a\tb' } as const
 	expect(Yaml.parse(toYamlText(value))).toEqual(value)
 })
