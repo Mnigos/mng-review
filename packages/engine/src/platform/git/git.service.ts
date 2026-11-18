@@ -217,10 +217,10 @@ export const GitServiceLive = Layer.effect(
 			ref: string
 		) {
 			if (ref.startsWith('-')) return undefined
+			// `--end-of-options` would be printed here; refs starting with `-` are refused above.
 			const result = yield* run(root, [
 				'rev-parse',
 				'--symbolic-full-name',
-				'--end-of-options',
 				ref,
 			])
 			if (result.exitCode !== 0) return undefined
