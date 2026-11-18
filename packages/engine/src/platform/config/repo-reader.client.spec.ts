@@ -103,6 +103,41 @@ layer(NodeLayer, { excludeTestServices: true })('repository readers', test => {
 			})
 	)
 	test.effect(
+		'lists regular files and file symlinks, enforcing confinement when reading links',
+		() =>
+			Effect.gen(function* () {
+				const repo = createRepo()
+				const outside = createRepo()
+				repo.write('docs/z-regular.md', 'Regular file')
+				repo.write('shared/target.md', 'Inside data')
+				outside.write('target.md', 'Outside data')
+				symlinkSync(
+					'../shared/target.md',
+					join(repo.root, 'docs/a-internal.md')
+				)
+				symlinkSync(
+					join(outside.root, 'target.md'),
+					join(repo.root, 'docs/m-external.md')
+				)
+				symlinkSync('missing.md', join(repo.root, 'docs/broken.md'))
+				symlinkSync('../shared', join(repo.root, 'docs/directory'))
+				const reader = yield* makeWorktreeReader(repo.root)
+				expect(yield* reader.listFiles('docs')).toEqual([
+					'a-internal.md',
+					'm-external.md',
+					'z-regular.md',
+				])
+				expect(yield* reader.readFile('docs/a-internal.md')).toBe('Inside data')
+				expect(
+					yield* reader.readFile('docs/m-external.md').pipe(Effect.flip)
+				).toMatchObject({
+					_tag: 'ConfigError',
+					source: 'docs/m-external.md',
+					reason: 'resolves outside the repository (symlink)',
+				})
+			})
+	)
+	test.effect(
 		'requires exact casing in every component, including internal directory symlinks',
 		() =>
 			Effect.gen(function* () {

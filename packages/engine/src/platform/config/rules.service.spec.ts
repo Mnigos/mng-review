@@ -130,6 +130,54 @@ layer(NodeLayer, { excludeTestServices: true })('RulesService', test => {
 			})
 	)
 	test.effect(
+		'loads an internal agent symlink using its name and the target title and instructions',
+		() =>
+			Effect.gen(function* () {
+				const repo = createRepo()
+				repo.write(
+					'shared/payments.md',
+					'---\nkind: bug\ntitle: Payment checks\n---\nCheck payment state.'
+				)
+				mkdirSync(join(repo.root, '.mng/agents'), { recursive: true })
+				symlinkSync(
+					'../../shared/payments.md',
+					join(repo.root, '.mng/agents/payments.md')
+				)
+				const rules = yield* RulesService.use(service =>
+					service.load(undefined)
+				).pipe(Effect.provide(rulesLayer(repo.root)))
+				expect(rules.agents).toMatchObject([
+					{
+						name: 'payments',
+						title: 'Payment checks',
+						instructions: 'Check payment state.',
+					},
+				])
+			})
+	)
+	test.effect('an external agent symlink is an error naming its file', () =>
+		Effect.gen(function* () {
+			const repo = createRepo()
+			const outside = createRepo()
+			outside.write('outside.md', '---\nkind: bug\n---\nOutside instructions.')
+			mkdirSync(join(repo.root, '.mng/agents'), { recursive: true })
+			symlinkSync(
+				join(outside.root, 'outside.md'),
+				join(repo.root, '.mng/agents/outside.md')
+			)
+			expect(
+				yield* RulesService.use(service => service.load(undefined)).pipe(
+					Effect.provide(rulesLayer(repo.root)),
+					Effect.flip
+				)
+			).toMatchObject({
+				_tag: 'ConfigError',
+				source: '.mng/agents/outside.md',
+				reason: 'resolves outside the repository (symlink)',
+			})
+		})
+	)
+	test.effect(
 		'expands whole-file imports once and preserves directives inside imported text',
 		() =>
 			Effect.gen(function* () {
