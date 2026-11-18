@@ -19,6 +19,7 @@
     "effect": "catalog:"
   },
   "devDependencies": {
+    "@effect/platform-node-shared": "catalog:",
     "@effect/vitest": "catalog:",
     "@mng-review/typescript-config": "workspace:*",
     "@types/bun": "catalog:",
