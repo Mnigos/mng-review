@@ -37,7 +37,9 @@ function getCrossWorkspaceImports(workspace: string) {
 	const regexes = [
 		String.raw`^(\.\./)+(${WORKSPACE_GROUPS.join('|')})/`,
 		...(siblings.length > 0
-			? [String.raw`^(\.\./)+(${siblings.join('|')})(/|$)`]
+			? [
+					String.raw`^(\.\./)+(${siblings.join('|')})(/src(/|$)|/package\.json$|/?$)`,
+				]
 			: []),
 	]
 
