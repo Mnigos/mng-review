@@ -67,15 +67,15 @@ interface FinderJob {
 }
 
 /**
- * `failed` when no job answered and one failed for another reason than the token budget,
- * `incomplete` when the budget stopped a job, else `ok`.
+ * `incomplete` when the token budget stopped a job, else `failed` when no job answered and one
+ * failed, else `ok`.
  */
 function toFinderStatus(
 	failedAll: boolean,
 	unfinished: number
 ): AgentRunReport['status'] {
-	if (failedAll) return 'failed'
-	return unfinished > 0 ? 'incomplete' : 'ok'
+	if (unfinished > 0) return 'incomplete'
+	return failedAll ? 'failed' : 'ok'
 }
 
 /**
@@ -326,7 +326,10 @@ export const FinderServiceLive = Layer.effect(
 				planned.role === 'agent' && maxFindings !== undefined
 					? sortFindings(found).slice(0, maxFindings)
 					: found
-			const [firstFailure] = failures
+			const endpointFailure = failures.find(
+				entry => entry.error._tag === 'LlmError'
+			)
+			const firstFailure = endpointFailure ?? failures[0]
 			const failedAll = done.length === 0 && errors.length > 0
 			const report: AgentRunReport = {
 				...base,

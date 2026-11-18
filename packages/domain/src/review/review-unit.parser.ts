@@ -28,14 +28,55 @@ const FILE_START = /^(?=diff --git )/mu
 const HUNK_CONTEXT = /^@@[^@]*@@ ?(.*)$/u
 const GIT_HEADER_PATH = /^diff --git a\/.* b\/(.*)$/u
 
+/** Git's C-style escapes in a quoted path: the character after the backslash and its byte. */
+const ESCAPES = new Map([
+	['a', 7],
+	['b', 8],
+	['t', 9],
+	['n', 10],
+	['v', 11],
+	['f', 12],
+	['r', 13],
+	['"', 34],
+	['\\', 92],
+])
+/** One escape (octal or single character) or a run of plain characters of a quoted path. */
+const QUOTED_TOKEN = /\\[0-7]{3}|\\.|[^\\]+/gu
+
+/** The bytes one token of a quoted path stands for. */
+function toTokenBytes(token: string): number[] {
+	if (!token.startsWith('\\')) return [...new TextEncoder().encode(token)]
+	const escaped = token.slice(1)
+	if (escaped.length === 3) return [Number.parseInt(escaped, 8)]
+	return [ESCAPES.get(escaped) ?? escaped.codePointAt(0) ?? 0]
+}
+
+/**
+ * A path as git prints it in a diff header, unquoted: git wraps a path with a quote, backslash or
+ * control character in double quotes and escapes those bytes, octal escapes included.
+ */
+export function toUnquotedPath(text: string): string {
+	if (!(text.length >= 2 && text.startsWith('"') && text.endsWith('"')))
+		return text
+	const tokens = text.slice(1, -1).match(QUOTED_TOKEN) ?? []
+	return new TextDecoder().decode(new Uint8Array(tokens.flatMap(toTokenBytes)))
+}
+
+/** The path after a header prefix such as `+++ `, unquoted, without its `a/` or `b/` side. */
+function getSidePath(line: string, prefix: string, side: string): string {
+	const path = toUnquotedPath(line.slice(prefix.length).trimEnd())
+	return path.startsWith(side) ? path.slice(side.length) : path
+}
+
 /** The file a diff block is about: the head path, else the base path or the rename target. */
 function getHeaderPath(lines: readonly string[]): string {
-	const plus = lines.find(line => line.startsWith('+++ b/'))
-	if (plus) return plus.slice('+++ b/'.length).trimEnd()
-	const minus = lines.find(line => line.startsWith('--- a/'))
-	if (minus) return minus.slice('--- a/'.length).trimEnd()
+	const plus = lines.find(line => /^\+\+\+ "?b\//u.test(line))
+	if (plus) return getSidePath(plus, '+++ ', 'b/')
+	const minus = lines.find(line => /^--- "?a\//u.test(line))
+	if (minus) return getSidePath(minus, '--- ', 'a/')
 	const renamed = lines.find(line => line.startsWith('rename to '))
-	if (renamed) return renamed.slice('rename to '.length).trimEnd()
+	if (renamed)
+		return toUnquotedPath(renamed.slice('rename to '.length).trimEnd())
 	return GIT_HEADER_PATH.exec(lines[0]?.trimEnd() ?? '')?.[1] ?? 'unknown'
 }
 

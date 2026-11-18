@@ -9,6 +9,7 @@ import {
 import { Context, Effect, Layer, Result, Schema } from 'effect'
 import { GitService } from '../../../../platform/git/git.service'
 import { truncateText } from '../../../../utils/fence.util'
+import { toOutputPart } from '../../domain/output-part.helper'
 import {
 	BYTES_PER_KB,
 	MAX_GREP_PER_FILE,
@@ -228,7 +229,10 @@ export const RepoToolsServiceLive = Layer.effect(
 			if (params.path === undefined || params.path === '') {
 				const files = getReviewableFiles(change.files)
 				if (files.length === 0) return '(no reviewable files)'
-				return (yield* git.readDiff(change, files)) || '(no changes)'
+				return toOutputPart(
+					(yield* git.readDiff(change, files)) || '(no changes)',
+					params.offset
+				)
 			}
 			const path = yield* requirePath(params.path, false)
 			const file = change.files.find(
@@ -239,7 +243,10 @@ export const RepoToolsServiceLive = Layer.effect(
 					reason: `${path} is left out of the review (${file.skipped})`,
 				})
 			if (!file) return '(no changes)'
-			return (yield* git.readDiff(change, [file])) || '(no changes)'
+			return toOutputPart(
+				(yield* git.readDiff(change, [file])) || '(no changes)',
+				params.offset
+			)
 		})
 
 		const blame = Effect.fn('RepoToolsService.blame')(function* (

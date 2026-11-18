@@ -55,7 +55,8 @@ function parseVerdict(answer: unknown) {
  * Runs one fresh agent per bug finding, told to refute it. With `validator: cross` it picks a
  * reviewer model that did not report the finding, else the same model in a fresh conversation; an
  * explicit validator comes first. Each attempt takes the first model still available. A finding with
- * no usable answer after two attempts is kept as `unvalidated`; validation never fails the run.
+ * no usable answer after two attempts, or once the token budget is spent, is kept as
+ * `unvalidated`; validation never fails the run.
  */
 export class ValidatorService extends Context.Service<
 	ValidatorService,
@@ -158,7 +159,9 @@ export const ValidatorServiceLive = Layer.effect(
 			return yield* attempt(finding, context, user, lastError).pipe(
 				Effect.retry({
 					times: VALIDATION_ATTEMPTS - 1,
-					while: error => error.message !== NO_MODEL_LEFT,
+					while: error =>
+						error.message !== NO_MODEL_LEFT &&
+						!('_tag' in error && error._tag === 'TokenBudgetError'),
 				}),
 				Effect.catch(error =>
 					Ref.get(lastError).pipe(
