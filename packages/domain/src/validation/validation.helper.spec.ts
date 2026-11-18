@@ -105,6 +105,74 @@ describe('decideOutcome', () => {
 		])
 		expect(hasBlockingBug(outcome.bugs)).toBe(false)
 	})
+	test.each(['low', 'medium', 'high', 'critical'] as const)(
+		'unverified %s bugs stay in the summary and never block',
+		severity => {
+			const validation = {
+				status: 'unverified',
+				model: 'model-b',
+				severity,
+				reason: 'The callback value reaches the path filter.',
+				evidence: ['src/filter.ts:2 callback'],
+				premise: 'Example Router passes a full URL to the callback.',
+			} as const satisfies Validation
+			const outcome = runOutcome(
+				[finding({ severity: 'medium' })],
+				[validation],
+				[],
+				config(),
+				new Map()
+			)
+			expect(outcome.bugs).toEqual([
+				{
+					...finding(),
+					severity,
+					...(severity === 'medium' ? {} : { reportedSeverity: 'medium' }),
+					placement: 'summary',
+					validation,
+				},
+			])
+			if (severity === 'medium')
+				expect(outcome.bugs[0]).not.toHaveProperty('reportedSeverity')
+			expect(outcome.rejected).toEqual([])
+			expect(hasBlockingBug(outcome.bugs)).toBe(false)
+		}
+	)
+	test('unverified bugs follow every confirmed and unvalidated bug regardless of severity', () => {
+		const judgement = {
+			model: 'model-b',
+			reason: 'The callback reaches the filter.',
+			evidence: ['src/filter.ts:2 callback'],
+		} as const
+		const outcome = runOutcome(
+			[
+				finding({ line: 1, severity: 'critical' }),
+				finding({ line: 2, severity: 'low' }),
+				finding({ line: 3, severity: 'low' }),
+				finding({ line: 4, severity: 'high' }),
+			],
+			[
+				{
+					...judgement,
+					status: 'unverified',
+					severity: 'critical',
+					premise: 'Example Router passes a URL.',
+				},
+				{ ...judgement, status: 'confirmed', severity: 'low' },
+				unvalidated,
+				{
+					...judgement,
+					status: 'unverified',
+					severity: 'high',
+					premise: 'Example Router passes a URL.',
+				},
+			],
+			[],
+			config(),
+			new Map()
+		)
+		expect(outcome.bugs.map(bug => bug.line)).toEqual([2, 3, 1, 4])
+	})
 	test('rejected findings retain the validator reason and evidence and cannot block', () => {
 		const validation: Validation = {
 			status: 'rejected',

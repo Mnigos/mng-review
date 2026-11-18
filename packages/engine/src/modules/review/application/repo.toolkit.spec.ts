@@ -1,4 +1,4 @@
-import { Predicate } from 'effect'
+import { Predicate, Result, Schema } from 'effect'
 import { Tool } from 'effect/ai'
 import { REPO_TOOLS } from './repo.toolkit'
 import { ReportFindingsTool } from './report-findings.tool'
@@ -69,6 +69,28 @@ describe('provider tool schemas', () => {
 		test(`${tool.name} omits unsupported schema keywords at every depth`, () => {
 			expect(unsupportedKeywords(Tool.getJsonSchema(tool))).toEqual([])
 		})
+	test('report_verdict exposes an optional premise in parameters and the provider schema', () => {
+		const parameters = {
+			verdict: 'unverified',
+			severity: 'high',
+			reason: 'The callback reaches the filter.',
+			evidence: ['src/filter.ts:2'],
+		} as const
+		const decode = Schema.decodeUnknownResult(
+			ReportVerdictTool.parametersSchema
+		)
+		expect(Result.isSuccess(decode(parameters))).toBeTruthy()
+		expect(
+			decode({ ...parameters, premise: 'Example Router passes a URL.' })
+		).toEqual(
+			Result.succeed({ ...parameters, premise: 'Example Router passes a URL.' })
+		)
+		const schema = Tool.getJsonSchema(ReportVerdictTool)
+		expect(schema).toMatchObject({
+			properties: { premise: { type: 'string' } },
+		})
+		expect(schema.required).not.toContain('premise')
+	})
 	test('schema walking permits keyword-shaped property names and annotation data', () => {
 		expect(
 			unsupportedKeywords({
