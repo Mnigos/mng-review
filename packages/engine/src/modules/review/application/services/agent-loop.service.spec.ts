@@ -16,7 +16,10 @@ import {
 	TokenLedger,
 	TokenLedgerLive,
 } from '../../../../platform/llm/token-ledger.service'
-import { rawFinding } from '../../../../shared/mocks/domain-test.helper'
+import {
+	rawFinding,
+	unifiedDiff,
+} from '../../../../shared/mocks/domain-test.helper'
 import {
 	reviewDependencies,
 	providerError,
@@ -33,10 +36,12 @@ import {
 } from '../../../../shared/mocks/review-test.helper'
 import { fenceData } from '../../../../utils/fence.util'
 import { toEstimatedTokens } from '../../domain/loop-budget.helper'
+import { toContinuationMessage } from '../../domain/loop-message.helper'
 import {
 	CHARS_PER_TOKEN,
 	FINDER_TOKEN_SHARE,
 	MAX_CORRECTIONS,
+	MAX_LISTED_UNTOUCHED,
 	TOOL_OUTPUT_LABEL,
 	WRAP_UP_GRACE,
 } from '../../domain/review.constants'
@@ -1397,6 +1402,91 @@ function rawParsed() {
 }
 
 layer(Layer.empty)('coverage continuation', test => {
+	for (const plain of [false, true])
+		test.effect(
+			`returns the first ${plain ? 'plain JSON' : 'tool'} answer when the continuation text reaches the conversation budget`,
+			() =>
+				Effect.gen(function* () {
+					const paths = Array.from(
+						{ length: MAX_LISTED_UNTOUCHED + 3 },
+						(_, index) => `src/unread/changed-file-${index}.ts`
+					)
+					const first = { findings: [rawFinding({ path: 'src/other.ts' })] }
+					const spentTokens =
+						FINISH.usage.inputTokens.total + FINISH.usage.outputTokens.total
+					const continuationTokens = toEstimatedTokens(
+						toContinuationMessage(paths, COVERED_REQUEST.finish)
+					)
+					const conversationTokens = 3 * spentTokens + 2 * continuationTokens
+					expect(3 * spentTokens).toBeLessThan(conversationTokens)
+					yield* Effect.gen(function* () {
+						expect(
+							yield* AgentLoopService.use(loop =>
+								loop.run({
+									...COVERED_REQUEST,
+									coverage: { ...COVERED_REQUEST.coverage, paths },
+									budget: {
+										runTokens: LIMITS.tokensPerRun,
+										conversationTokens,
+									},
+								})
+							)
+						).toEqual({
+							value: { ...first, dropped: 0 },
+							turns: 1,
+							toolCalls: 0,
+						})
+						expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(
+							1
+						)
+					}).pipe(
+						Effect.provide(
+							loopLayer(() =>
+								Effect.succeed(
+									plain
+										? [{ type: 'text', text: JSON.stringify(first) }, FINISH]
+										: answer(COVERED_REQUEST.finish, first)
+								)
+							)
+						)
+					)
+				})
+		)
+	test.effect('a pathless diff covering every file needs no continuation', () =>
+		Effect.gen(function* () {
+			const paths = [BILLING_PATH, 'src/other.ts']
+			const callSpy = vi.fn(() =>
+				Effect.succeed(paths.map(path => unifiedDiff(path)).join('\n'))
+			)
+			yield* Effect.gen(function* () {
+				expect(
+					yield* AgentLoopService.use(loop =>
+						loop.run({
+							...COVERED_REQUEST,
+							coverage: { ...COVERED_REQUEST.coverage, paths },
+						})
+					)
+				).toEqual({
+					value: { findings: [], dropped: 0 },
+					turns: 2,
+					toolCalls: 1,
+				})
+				expect(callSpy).toHaveBeenCalledExactlyOnceWith(SCOPE, 'diff', {})
+				expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(2)
+			}).pipe(
+				Effect.provide(
+					loopLayer(
+						(_call, index) =>
+							Effect.succeed(
+								index === 0 ? [toolCall('diff'), FINISH] : answer()
+							),
+						{},
+						callSpy
+					)
+				)
+			)
+		})
+	)
 	for (const name of ['read_file', 'diff', 'blame'] as const)
 		test.effect(`successful ${name} counts as reading a normalized path`, () =>
 			Effect.gen(function* () {
