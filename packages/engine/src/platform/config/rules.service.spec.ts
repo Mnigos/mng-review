@@ -5,6 +5,7 @@ import {
 	mkdtempSync,
 	realpathSync,
 	rmSync,
+	symlinkSync,
 	writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -251,6 +252,30 @@ layer(NodeLayer, { excludeTestServices: true })('RulesService', test => {
 					source: '.mng/agents/auth.md',
 				})
 				expect(failure.message).toContain('cannot be read')
+			})
+	)
+	test.effect(
+		'an external review.yml symlink is an error rather than defaults',
+		() =>
+			Effect.gen(function* () {
+				const repo = createRepo()
+				const outside = createRepo()
+				outside.write('review.yml', 'depth: deep')
+				mkdirSync(join(repo.root, '.mng'))
+				symlinkSync(
+					join(outside.root, 'review.yml'),
+					join(repo.root, '.mng/review.yml')
+				)
+				expect(
+					yield* RulesService.use(service => service.load(undefined)).pipe(
+						Effect.provide(rulesLayer(repo.root)),
+						Effect.flip
+					)
+				).toMatchObject({
+					_tag: 'ConfigError',
+					source: '.mng/review.yml',
+					reason: 'resolves outside the repository (symlink)',
+				})
 			})
 	)
 	test.effect('an unreadable review.yml is an error rather than defaults', () =>
