@@ -2,14 +2,34 @@
 const MARKDOWN_SYNTAX = /[\\`*_[\]()!<>|#~&]/gu
 const LINE_BREAKS = /\s*\r?\n\s*/gu
 const BACKTICK_RUN = /`+/gu
+/** What GitHub turns into a link on its own: URLs with a scheme, `www.` hosts and e-mail addresses. */
+const AUTOLINK =
+	/\b(?:[a-z][a-z0-9+.-]*:\/\/|www\.)[^\s|`]+|[\w.+-]+@[\w-]+(?:\.[\w-]+)+/giu
+/** Control characters, line breaks included, that could end a log line or drive the terminal. */
+const CONTROL_CHARACTERS = /\p{Cc}+/gu
+
+/** Escapes every Markdown syntax character with a backslash. */
+function escapeSyntax(text: string): string {
+	return text.replace(MARKDOWN_SYNTAX, '\\$&')
+}
 
 /**
  * Escapes text from a model or a repository for one line of GitHub Markdown: every syntax
- * character gets a backslash and line breaks become spaces, so the text can neither format the
- * page, start a table cell, link an image nor open an HTML tag.
+ * character gets a backslash, line breaks become spaces, and anything GitHub would turn into a
+ * link on its own becomes an inline code span. The text can neither format the page, start a
+ * table cell, link anything nor open an HTML tag.
  */
 export function escapeMarkdown(text: string): string {
-	return text.replace(LINE_BREAKS, ' ').replace(MARKDOWN_SYNTAX, '\\$&')
+	const flat = text.replace(LINE_BREAKS, ' ')
+	const links = [...flat.matchAll(AUTOLINK)]
+	const end = links.reduce(
+		(state, match) => ({
+			out: `${state.out}${escapeSyntax(flat.slice(state.from, match.index))}${toCodeSpan(match[0])}`,
+			from: match.index + match[0].length,
+		}),
+		{ out: '', from: 0 }
+	)
+	return `${end.out}${escapeSyntax(flat.slice(end.from))}`
 }
 
 /**
@@ -25,4 +45,16 @@ export function toCodeSpan(text: string): string {
 	const fence = '`'.repeat(longest + 1)
 	const padding = flat.startsWith('`') || flat.endsWith('`') ? ' ' : ''
 	return `${fence}${padding}${flat}${padding}${fence}`
+}
+
+/**
+ * Text that came from git, the endpoint or the repository, safe for one line of the job log: control
+ * characters become spaces and the `::` and `##[` markers of workflow commands are broken up, so
+ * the runner never reads the line as a command.
+ */
+export function toLogText(text: string): string {
+	return text
+		.replace(CONTROL_CHARACTERS, ' ')
+		.replaceAll('::', ': :')
+		.replaceAll('##[', '## [')
 }

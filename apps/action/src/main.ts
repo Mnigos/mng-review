@@ -17,6 +17,7 @@ import {
 import {
 	maskEndpoint,
 	readEventText,
+	repoDirConfig,
 	runnerEnvironmentConfig,
 	writeSummary,
 } from './infrastructure/runner.client'
@@ -31,7 +32,12 @@ import { formatLogLine, formatSummary } from './presentation/summary.formatter'
 const PlatformLive = Layer.mergeAll(
 	BunServices.layer,
 	FetchHttpClient.layer,
-	Layer.succeed(GitWorkdir, { cwd: process.cwd() })
+	Layer.effect(
+		GitWorkdir,
+		Effect.gen(function* () {
+			return { cwd: yield* repoDirConfig }
+		})
+	)
 )
 
 /** The rules, the review run and the probe over one git service and one token ledger. */

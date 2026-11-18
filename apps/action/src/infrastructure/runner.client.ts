@@ -14,6 +14,15 @@ export interface RunnerEnvironment {
 	readonly engineCommit: string | undefined
 }
 
+/**
+ * The caller's checkout git reads: `MNG_REVIEW_REPO_DIR`, or the working directory outside a
+ * workflow. The workflow starts Bun in the engine's own directory, so no `bunfig.toml`, `.env` or
+ * `tsconfig.json` of the reviewed repository is ever loaded.
+ */
+export const repoDirConfig = Config.String('MNG_REVIEW_REPO_DIR').pipe(
+	Config.withDefault(process.cwd())
+)
+
 /** Reads the runner's variables; an unset one is empty or `undefined`, never an error. */
 export const runnerEnvironmentConfig = Config.all({
 	eventName: Config.String('GITHUB_EVENT_NAME').pipe(Config.withDefault('')),

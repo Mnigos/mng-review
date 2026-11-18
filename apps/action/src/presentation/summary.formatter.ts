@@ -5,7 +5,7 @@ import type {
 	ReviewedRun,
 	ShadowOutcome,
 } from '../application/shadow-run.types'
-import { escapeMarkdown, toCodeSpan } from '../utils/markdown.util'
+import { escapeMarkdown, toCodeSpan, toLogText } from '../utils/markdown.util'
 import { toFindingsLines } from './findings-summary.formatter'
 
 export const SUMMARY_TITLE = '## MNG Review (shadow mode)'
@@ -42,8 +42,8 @@ export function toVerdictLine(report: ReviewReport): string {
 	return report.incomplete ? `${verdict}; the run is incomplete` : verdict
 }
 
-/** The one line the job log gets, without findings. */
-export function formatLogLine(outcome: ShadowOutcome): string {
+/** The outcome in words, before it is made safe for the log. */
+function toLogLine(outcome: ShadowOutcome): string {
 	if (outcome.status === 'skipped')
 		return `mng-review: skipped: ${outcome.reason}`
 	if (outcome.status === 'offline')
@@ -53,6 +53,14 @@ export function formatLogLine(outcome: ShadowOutcome): string {
 	if (outcome.status === 'failed')
 		return `mng-review: failed: ${outcome.reason}`
 	return `mng-review: ${toVerdictLine(outcome.report)}`
+}
+
+/**
+ * The one line the job log gets, without findings. Reasons can carry git output or an endpoint's
+ * message, so the line can never act as a workflow command.
+ */
+export function formatLogLine(outcome: ShadowOutcome): string {
+	return toLogText(toLogLine(outcome))
 }
 
 /** The pull request and its two commits. */
