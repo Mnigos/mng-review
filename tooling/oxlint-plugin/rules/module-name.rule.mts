@@ -25,8 +25,9 @@ function getExportedClassNames(program: ESTree.Program) {
 /**
  * Keeps names tied to their module (AGENTS.md module names). Inside
  * `<workspace>/src/modules/<module>/`, a `.service.ts` file is named
- * `<module>.service.ts` and exports the `<Module>Service` class. Files about
- * one entity (`finding.errors.ts`, `finding.schema.ts`) are not checked.
+ * `<module>.service.ts` and exports the `<Module>Service` class; its spec
+ * shares the name without the export. Files about one entity
+ * (`finding.errors.ts`, `finding.schema.ts`) are not checked.
  */
 export const moduleNameRule = defineRule({
 	meta: {
@@ -59,6 +60,8 @@ export const moduleNameRule = defineRule({
 
 					return
 				}
+
+				if (file.basename.endsWith('.spec.ts')) return
 
 				const className = `${toPascalCase(module)}Service`
 
