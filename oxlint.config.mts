@@ -129,6 +129,11 @@ export default defineConfig({
 			rules: { 'oxc/no-barrel-file': ['error', { threshold: 0 }] },
 		},
 		{
+			// The one root entry per package that AGENTS.md allows.
+			files: ['apps/*/src/index.ts', 'packages/*/src/index.ts'],
+			rules: { 'oxc/no-barrel-file': 'off' },
+		},
+		{
 			files: ['tooling/oxlint-plugin/**'],
 			rules: Object.fromEntries(
 				VENDORED_PLUGIN_DEFERRED_RULES.map(rule => [rule, 'off'])
