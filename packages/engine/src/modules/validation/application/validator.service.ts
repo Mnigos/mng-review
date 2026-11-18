@@ -49,8 +49,17 @@ const NONE = '(none)'
 const NO_MODEL_LEFT = 'no validator model left'
 /** The validators' line in the run's tokens by source. */
 const VALIDATOR_SOURCE = 'validator'
-/** Rule files the validator reads in its first message; citing them counts as repository evidence. */
-const RULE_FILES: ReadonlySet<string> = new Set([CONTEXT_PATH, MEMORY_PATH])
+
+/**
+ * The rule files whose text the validator got in its first message; citing one counts as
+ * repository evidence. An empty or missing rule file is looked up in git like any other path.
+ */
+function getSuppliedRuleFiles(rules: ValidatorContext['rules']): string[] {
+	return [
+		...(rules.context?.trim() ? [CONTEXT_PATH] : []),
+		...(rules.memory?.trim() ? [MEMORY_PATH] : []),
+	]
+}
 
 /** Why a validator conversation gave no verdict. */
 type ValidatorFailure = LoopError | ModelCallError
@@ -97,16 +106,17 @@ export const ValidatorServiceLive = Layer.effect(
 		const git = yield* GitService
 
 		/**
-		 * True when an evidence entry names a rule file or a file at the head or the merge base. A git
-		 * failure counts as no evidence, which keeps the finding.
+		 * True when an evidence entry names a rule file the validator was given or a file at the head or
+		 * the merge base. A git failure counts as no evidence, which keeps the finding.
 		 */
 		const hasRepositoryEvidence = Effect.fn(
 			'ValidatorService.hasRepositoryEvidence'
-		)(function* (verdict: Verdict, scope: RepoScope) {
+		)(function* (verdict: Verdict, context: ValidatorContext) {
 			const paths = getEvidencePaths(verdict.evidence)
-			if (paths.some(path => RULE_FILES.has(path))) return true
+			const supplied = getSuppliedRuleFiles(context.rules)
+			if (paths.some(path => supplied.includes(path))) return true
 			if (paths.length === 0) return false
-			const { change } = scope
+			const { change } = context.scope
 			const [head, base] = yield* Effect.all(
 				[
 					git.getFilesAt(change.head.commit, paths),
@@ -197,7 +207,7 @@ export const ValidatorServiceLive = Layer.effect(
 					model: model.model,
 					hasRepositoryEvidence:
 						value.verdict !== 'reject' ||
-						(yield* hasRepositoryEvidence(value, context.scope)),
+						(yield* hasRepositoryEvidence(value, context)),
 				})
 			})
 
