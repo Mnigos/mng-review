@@ -8,6 +8,7 @@ import { TestConsole } from 'effect/testing'
 import {
 	maskEndpoint,
 	readEventText,
+	repoDirConfig,
 	runnerEnvironmentConfig,
 	writeSummary,
 } from './runner.client'
@@ -28,6 +29,30 @@ afterEach(() => {
 })
 
 layer(RunnerLayer)('runner client', test => {
+	test.effect('reads the reviewed checkout from MNG_REVIEW_REPO_DIR', () =>
+		Effect.gen(function* () {
+			expect(
+				yield* repoDirConfig.pipe(
+					Effect.provide(
+						ConfigProvider.layer(
+							ConfigProvider.fromEnvRecord({
+								MNG_REVIEW_REPO_DIR: '/fixture/reviewed-repository',
+							})
+						)
+					)
+				)
+			).toBe('/fixture/reviewed-repository')
+		})
+	)
+	test.effect('defaults the reviewed checkout to the working directory', () =>
+		Effect.gen(function* () {
+			expect(
+				yield* repoDirConfig.pipe(
+					Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnvRecord({})))
+				)
+			).toBe(process.cwd())
+		})
+	)
 	test.effect('masks the endpoint URL, origin, host and key', () =>
 		Effect.gen(function* () {
 			yield* maskEndpoint().pipe(
