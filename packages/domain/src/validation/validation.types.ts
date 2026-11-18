@@ -8,6 +8,10 @@ export interface Judgement {
 	readonly reason: string
 	readonly evidence: readonly string[]
 	readonly model: string
+	/** Why the validator lowered the reported severity: the criterion that fails. */
+	readonly loweredBecause?: string
+	/** What the engine changed in the answer: an unexplained lower severity, a rejection without repository evidence. */
+	readonly note?: string
 }
 
 /**
