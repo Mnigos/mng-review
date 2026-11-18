@@ -197,6 +197,26 @@ layer(Layer.empty, { excludeTestServices: true })('GitService', test => {
 				}).pipe(Effect.provide(gitLayer(repo.root)))
 			})
 	)
+	test.effect(
+		'readDiff preserves path prefixes when diff.noprefix is enabled',
+		() =>
+			Effect.gen(function* () {
+				const repo = createRepo()
+				repo.write('src/example.ts', 'before\n')
+				const base = repo.commit()
+				repo.write('src/example.ts', 'after\n')
+				repo.commit()
+				repo.git('config', 'diff.noprefix', 'true')
+				expect(repo.git('diff', base, 'HEAD')).toContain('+++ src/example.ts')
+				yield* Effect.gen(function* () {
+					const git = yield* GitService
+					const change = yield* git.readChange(base, 'HEAD')
+					const diff = yield* git.readDiff(change, change.files)
+					expect(diff).toContain('--- a/src/example.ts')
+					expect(diff).toContain('+++ b/src/example.ts')
+				}).pipe(Effect.provide(gitLayer(repo.root)))
+			})
+	)
 	test.effect('keeps leading and trailing spaces in the repository root', () =>
 		Effect.gen(function* () {
 			const repo = createRepo(' repo with space ')

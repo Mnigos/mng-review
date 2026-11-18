@@ -11,28 +11,14 @@ import {
 import { Array as Arr, Context, Effect, Layer, Stream } from 'effect'
 import { ChildProcess, ChildProcessSpawner } from 'effect/process'
 import { splitCappedLines } from '../../utils/capped-lines.util'
+import {
+	GIT_ENV,
+	GIT_PREFIX,
+	GITLINK_TYPE,
+	PATHS_PER_CALL,
+	SAFE_DIFF,
+} from './git.constants'
 import { GitError } from './git.errors'
-
-/**
- * Every call disables pager, prompts and optional locks; pathspecs are literal, so a path with `*`
- * or `:(` names only itself.
- */
-const GIT_PREFIX = ['--literal-pathspecs', '-c', 'core.quotepath=off'] as const
-const GIT_ENV = {
-	GIT_TERMINAL_PROMPT: '0',
-	GIT_OPTIONAL_LOCKS: '0',
-	GIT_PAGER: 'cat',
-} as const satisfies Record<string, string>
-/** Diff options that never run a program from the repository's config. */
-const SAFE_DIFF = [
-	'-M',
-	'--no-ext-diff',
-	'--no-textconv',
-	'--no-color',
-] as const
-/** Paths per `ls-tree` call, to stay far below the argument length limit. */
-const PATHS_PER_CALL = 200
-const GITLINK_TYPE = 'commit'
 
 /** The directory git runs in; its repository root is resolved when the service is built. */
 export class GitWorkdir extends Context.Service<
