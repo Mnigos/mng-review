@@ -43,7 +43,10 @@ export const GrepTool = Tool.make('grep', {
 export const ListDirTool = Tool.make('list_dir', {
 	description:
 		'List a directory at head or base. Directories end with `/`; `.` is the root.',
-	parameters: Schema.Struct({ ref: refSchema, path: pathSchema }),
+	parameters: Schema.Struct({
+		ref: refSchema,
+		path: pathSchema.pipe(Schema.withDecodingDefault(Effect.succeed('.'))),
+	}),
 	success: Schema.String,
 })
 
