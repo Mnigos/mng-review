@@ -30,6 +30,23 @@ describe('escapeMarkdown', () => {
 		],
 		['www host glued to text', 'x_www.evil.example', 'x\\_`www.evil.example`'],
 		['email address', 'review+test@example.com', '`review+test@example.com`'],
+		['email address with dots', 'x.y@example.com', '`x.y@example.com`'],
+		['email address with a plus', 'x+z@example.com', '`x+z@example.com`'],
+		[
+			'email address with hyphens',
+			'x-y@example-domain.com',
+			'`x-y@example-domain.com`',
+		],
+		[
+			'email address with dots and a plus',
+			'x.y+z@example.com',
+			'`x.y+z@example.com`',
+		],
+		[
+			'email address glued after punctuation',
+			'contact:(x.y+z-w@example.com)',
+			'contact:\\(`x.y+z-w@example.com`\\)',
+		],
 		[
 			'table separator',
 			'| https://example.com/a| next |',
@@ -82,6 +99,12 @@ describe('escapeMarkdown', () => {
 			'&',
 		])
 			expect(escapeMarkdown(character)).toBe(`\\${character}`)
+	})
+	test('only escapes a long run of word characters without an at sign', () => {
+		const word = 'abc123_'.repeat(2000)
+		expect(escapeMarkdown(`*${word}*`)).toBe(
+			`\\*${'abc123\\_'.repeat(2000)}\\*`
+		)
 	})
 	test('retains plain text and empty strings', () => {
 		expect(escapeMarkdown('plain text: 42')).toBe('plain text: 42')
