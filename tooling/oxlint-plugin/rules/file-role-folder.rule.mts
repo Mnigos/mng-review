@@ -9,7 +9,7 @@ import {
 const ROLE_FOLDERS = {
 	repository: ['infrastructure'],
 	layer: ['infrastructure', 'platform'],
-	parser: ['infrastructure'],
+	parser: ['domain', 'infrastructure'],
 	mapper: ['infrastructure'],
 	query: ['infrastructure'],
 	client: ['infrastructure', 'platform'],
