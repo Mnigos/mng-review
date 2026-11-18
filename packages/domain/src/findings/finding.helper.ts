@@ -83,6 +83,14 @@ function getOverlap(a: ReadonlySet<string>, b: ReadonlySet<string>): number {
 	return [...a].filter(word => b.has(word)).length / smaller
 }
 
+/**
+ * Shared content words (stemmed, without stop words) of two texts over the shorter one's; 0 when
+ * either has none.
+ */
+export function getWordOverlap(left: string, right: string): number {
+	return getOverlap(getStemmedWords(left), getStemmedWords(right))
+}
+
 /** True when no agent and model pair reported both; one finder never reports a problem twice. */
 function hasOtherReporter(a: Finding, b: Finding): boolean {
 	const sameAgent = a.agents.some(agent => b.agents.includes(agent))
