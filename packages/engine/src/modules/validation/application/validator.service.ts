@@ -24,15 +24,25 @@ import {
 	type RepoScope,
 	RepoToolsService,
 } from '../../review/application/services/repo-tools.service'
+import type { LoopBudget } from '../../review/domain/loop-budget.helper'
 import type { LoopError } from '../../review/domain/review.errors'
 import { VALIDATOR_PROMPT } from './validator.prompt'
 
 /** Attempts per finding before it is kept as unvalidated. */
 export const VALIDATION_ATTEMPTS = 2
 /** Characters of the finding's file the validator gets in its first message. */
-const MAX_FILE_CHARS = 40_000
+const MAX_FILE_CHARS = 20_000
+/** Lines before and after the finding's line the validator gets in its first message. */
+const FILE_WINDOW_LINES = 150
+
+/** The `read_file` range around a finding's line. */
+function toFileWindow(line: number): string {
+	return `${Math.max(1, line - FILE_WINDOW_LINES)}-${line + FILE_WINDOW_LINES}`
+}
 const NONE = '(none)'
 const NO_MODEL_LEFT = 'no validator model left'
+/** The validators' line in the run's tokens by source. */
+const VALIDATOR_SOURCE = 'validator'
 
 /** Why a validator conversation gave no verdict. */
 type ValidatorFailure = LoopError | ModelCallError
@@ -42,6 +52,8 @@ export interface ValidatorContext {
 	readonly scope: RepoScope
 	readonly config: ReviewConfig
 	readonly rules: Pick<Rules, 'context' | 'memory'>
+	/** Tokens each validation may spend; without it only `limits.tokens_per_run` stops it. */
+	readonly budget?: LoopBudget
 }
 
 /** Reads a `report_verdict` answer; the schema's reasons go back to the model. */
@@ -83,6 +95,7 @@ export const ValidatorServiceLive = Layer.effect(
 						repoTools.call(scope, ReadFileTool.name, {
 							ref: 'head',
 							path: finding.path,
+							range: toFileWindow(finding.line),
 						}),
 						repoTools.call(scope, DiffTool.name, { path: finding.path }),
 					],
@@ -101,7 +114,7 @@ export const ValidatorServiceLive = Layer.effect(
 				return [
 					fenceData('The finding to check:', JSON.stringify(reported, null, 2)),
 					fenceData(
-						`${finding.path} at head:`,
+						`${finding.path} at head, lines around the finding (read more with read_file):`,
 						truncateText(file, MAX_FILE_CHARS)
 					),
 					fenceData(`Diff of ${finding.path}:`, diff),
@@ -139,6 +152,8 @@ export const ValidatorServiceLive = Layer.effect(
 						tools: VALIDATOR_REPO_TOOLS,
 						finish: ReportVerdictTool.name,
 						parse: parseVerdict,
+						source: VALIDATOR_SOURCE,
+						...(context.budget ? { budget: context.budget } : {}),
 					})
 					.pipe(Effect.tapError(error => Ref.set(lastError, error)))
 				return {

@@ -1,5 +1,8 @@
 import type { AgentKind, Effort, ReviewOutcome } from '@mng-review/domain'
-import type { TokensByModel } from '../../../platform/llm/token-ledger.service'
+import type {
+	TokensByModel,
+	TokensBySource,
+} from '../../../platform/llm/token-ledger.service'
 import type { PlanReport } from '../../routing/domain/plan-report.types'
 
 /** A model the run stopped using, and why. */
@@ -46,6 +49,8 @@ export interface ReviewReport extends ReviewOutcome {
 	readonly planReport: PlanReport
 	readonly agents: readonly AgentRunReport[]
 	readonly tokens: TokensByModel
+	/** Finder and validator tokens by source; the router counts only by model. */
+	readonly tokenSources: TokensBySource
 	readonly droppedModels: readonly DroppedModel[]
 	readonly wallMillis: number
 	/** Set when a finder failed at the endpoint, or no reviewer model is left. */

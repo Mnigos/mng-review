@@ -8,6 +8,7 @@ function addTokens(left: ModelTokens, right: ModelTokens): ModelTokens {
 	return {
 		calls: left.calls + right.calls,
 		inputTokens: left.inputTokens + right.inputTokens,
+		cachedInputTokens: left.cachedInputTokens + right.cachedInputTokens,
 		outputTokens: left.outputTokens + right.outputTokens,
 		reasoningTokens: left.reasoningTokens + right.reasoningTokens,
 		totalTokens: left.totalTokens + right.totalTokens,

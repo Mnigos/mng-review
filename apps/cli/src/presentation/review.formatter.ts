@@ -1,6 +1,7 @@
 import type { KeptFinding, RejectedFinding } from '@mng-review/domain'
 import type { AgentRunReport, ReviewReport } from '@mng-review/engine'
 import { formatPlanText, toPlanJson } from './plan.formatter'
+import { toModelTokenLines, toSourceTokenLines } from './tokens.formatter'
 
 const MILLIS_PER_SECOND = 1000
 
@@ -113,12 +114,10 @@ function toOutcomeLines(report: ReviewReport): string[] {
 			report.rejected.flatMap(toRejectedLines)
 		),
 		...toSection('Agents:', report.agents.map(toAgentLine)),
+		...toSection('Tokens:', toModelTokenLines(report.tokens, '  ')),
 		...toSection(
-			'Tokens:',
-			Object.entries(report.tokens).map(
-				([model, entry]) =>
-					`  ${model}  ${entry.totalTokens} (${entry.inputTokens} in, ${entry.outputTokens} out, ${entry.calls} call(s))`
-			)
+			'Tokens by finder and validator:',
+			toSourceTokenLines(report.tokenSources, '  ')
 		),
 		...toSection(
 			'Degraded run, models dropped:',

@@ -12,3 +12,17 @@ export const DEPTH_FOR_RISK = {
 	normal: 'balanced',
 	risky: 'deep',
 } as const satisfies Record<Risk, Depth>
+
+/**
+ * A mechanical change (a lint or format migration, a rename across the codebase) touches at least
+ * this many reviewable files.
+ */
+export const MECHANICAL_MIN_FILES = 50
+/** Most changed lines (added plus removed) of a small edit. */
+export const SMALL_EDIT_MAX_LINES = 10
+/** Least share of small edits among the files of a mechanical change. */
+export const MECHANICAL_MIN_SMALL_SHARE = 0.6
+/** Least share of small edits among its files under `risk_paths`. */
+export const MECHANICAL_MIN_RISKY_SMALL_SHARE = 0.8
+/** Most a mechanical change's added and removed lines may differ, as a share of both. */
+export const MECHANICAL_MAX_NET_SHARE = 0.25

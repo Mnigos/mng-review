@@ -1,5 +1,7 @@
 import {
 	decideOutcome,
+	getPlannedTokens,
+	toRunAllowances,
 	hasBlockingBug,
 	mergeFindings,
 	type PullRequestInfo,
@@ -9,8 +11,10 @@ import type { Rules } from '../../../../platform/config/rules.service'
 import { TokenLedger } from '../../../../platform/llm/token-ledger.service'
 import type { PlanReport } from '../../../routing/domain/plan-report.types'
 import { ValidatorService } from '../../../validation/application/validator.service'
+import { getValidationTokens } from '../../domain/finder-budget.helper'
 import { toIncompleteRun } from '../../domain/review-report.helper'
 import type { ReviewReport } from '../../domain/review-report.types'
+import { FINDER_TOKEN_SHARE } from '../../domain/review.constants'
 import { ReviewLimits } from '../review-limits.context'
 import { FinderService } from './finder.service'
 import { ModelHealthService } from './model-health.service'
@@ -25,7 +29,10 @@ export interface ReviewRequest {
 }
 
 /**
- * Finds, validates and places the findings of a planned run. The main reviewer and the selected
+ * Finds, validates and places the findings of a planned run. The run plans to spend
+ * `limits.tokens_by_depth` for its depth (never more than `limits.tokens_per_run`):
+ * `FINDER_TOKEN_SHARE` of it split over the finders by weight, the rest over the validations. At
+ * deep depth under `risk_paths`, reviewer models after the first review only the risky units. The main reviewer and the selected
  * agents run at once; bug findings with the same root cause merge, each merged bug is validated
  * once, then the severity floor and the nit caps place them. A dropped model is reported; with no
  * reviewer model left after finding, or a finder that failed at the endpoint, the report carries
@@ -57,14 +64,24 @@ export const ReviewServiceLive = Layer.effect(
 			const reviewerRuns = plan.runs.filter(run => run.role === 'reviewer')
 			// With several reviewer models finding on their own, a dropped one is not replaced.
 			const reviewerFallback = reviewerRuns.length > 1 ? undefined : reviewers
+			const plannedTokens = getPlannedTokens(config.limits, plan.depth)
+			const runTokens = Math.floor(plannedTokens * FINDER_TOKEN_SHARE)
+			const allowances = toRunAllowances(plan.runs, runTokens)
+			const [firstReviewer] = reviewerRuns
 			const results = yield* Effect.forEach(
 				plan.runs,
-				run =>
+				(run, index) =>
 					finder.run(run, {
 						scope,
 						rules,
 						fanOut: plan.depth === 'deep',
 						fallback: run.role === 'reviewer' ? reviewerFallback : reviewers,
+						tokens: { allowance: allowances[index] ?? 0, runTokens },
+						...(run.role === 'reviewer' &&
+						run !== firstReviewer &&
+						plan.riskPathHits.length > 0
+							? { unitPaths: plan.riskPathHits }
+							: {}),
 					}),
 				{ concurrency: 'unbounded' }
 			)
@@ -72,9 +89,16 @@ export const ReviewServiceLive = Layer.effect(
 			const bugs = mergeFindings(found.filter(entry => entry.kind === 'bug'))
 			const nits = mergeFindings(found.filter(entry => entry.kind === 'nit'))
 			const droppedWhileFinding = yield* health.dropped
+			const budget = {
+				runTokens: plannedTokens,
+				conversationTokens: getValidationTokens(
+					plannedTokens - (yield* health.spent),
+					bugs.length
+				),
+			}
 			const validations = yield* Effect.forEach(
 				bugs,
-				bug => validator.validate(bug, { scope, config, rules }),
+				bug => validator.validate(bug, { scope, config, rules, budget }),
 				{ concurrency: 'unbounded' }
 			)
 			const outcome = decideOutcome({
@@ -103,6 +127,7 @@ export const ReviewServiceLive = Layer.effect(
 				planReport,
 				agents,
 				tokens: yield* ledger.snapshot,
+				tokenSources: yield* ledger.sources,
 				droppedModels,
 				wallMillis: (yield* Clock.currentTimeMillis) - request.startedAt,
 				...(endpointError ? { endpointError } : {}),

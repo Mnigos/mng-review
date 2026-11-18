@@ -86,6 +86,12 @@ export const reviewConfigSchema = Schema.Struct({
 		max_runs_per_pr: positiveIntSchema,
 		max_file_kb: positiveIntSchema,
 		tokens_per_run: positiveIntSchema,
+		/** Tokens a run plans to spend at each depth; `tokens_per_run` still caps it. */
+		tokens_by_depth: Schema.Struct({
+			quick: positiveIntSchema,
+			balanced: positiveIntSchema,
+			deep: positiveIntSchema,
+		}),
 		tokens_per_pr: positiveIntSchema,
 		concurrency: positiveIntSchema,
 	}),

@@ -7,10 +7,26 @@ export const MAX_AGENT_WALL_TIME = '8 minutes' satisfies Duration.Input
 /** Extra time a model call may take past the agent's wall time, for its final answer. */
 export const WRAP_UP_GRACE = '1 minute' satisfies Duration.Input
 /**
- * Share of `limits.tokens_per_run` after which each finder is asked to answer with what it has. It
- * reserves nothing: it triggers the answer early while budget remains for it and for validation.
+ * Share of a run's planned tokens the finders spend; the rest pays for validation. Past it every
+ * finder is asked to answer with what it has. It reserves nothing: it triggers the answer early
+ * while budget remains for that answer and for validation.
  */
-export const FINDER_TOKEN_SHARE = 0.8
+export const FINDER_TOKEN_SHARE = 0.7
+/** Share of a conversation's tokens its first message may take, so it can afford a few calls. */
+export const FIRST_MESSAGE_SHARE = 0.25
+/** Characters per token assumed when sizing the first message; code runs about 3 to 4. */
+export const CHARS_PER_TOKEN = 3
+/** Fewest diff characters a first message carries, whatever the budget. */
+export const MIN_FIRST_DIFF_CHARS = 8000
+/** Tokens a deep-review unit needs to be worth its own conversation. */
+export const MIN_UNIT_TOKENS = 40_000
+/** Most tokens one validation plans to spend. */
+export const MAX_VALIDATION_TOKENS = 60_000
+/**
+ * Fewest tokens one validation plans to spend, however many findings share the budget: enough for
+ * a few calls that read the code. Many findings can take a run past its planned tokens.
+ */
+export const MIN_VALIDATION_TOKENS = 30_000
 /** Invalid answers the loop corrects before it gives up on an agent. */
 export const MAX_CORRECTIONS = 2
 /** Longest tool output in characters, the cut marker included. */

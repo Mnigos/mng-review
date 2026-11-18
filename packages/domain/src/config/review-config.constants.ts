@@ -26,6 +26,7 @@ export const DEFAULT_PRESET = {
 		max_runs_per_pr: 6,
 		max_file_kb: 300,
 		tokens_per_run: 1_500_000,
+		tokens_by_depth: { quick: 100_000, balanced: 300_000, deep: 800_000 },
 		tokens_per_pr: 5_000_000,
 		concurrency: 4,
 	},

@@ -1,5 +1,8 @@
 import type { BenchTotals, CaseScore } from '@mng-review/domain'
-import type { TokensByModel } from '../../../platform/llm/token-ledger.service'
+import type {
+	TokensByModel,
+	TokensBySource,
+} from '../../../platform/llm/token-ledger.service'
 
 /** How one case of a benchmark went. */
 export interface CaseReport {
@@ -10,6 +13,8 @@ export interface CaseReport {
 	/** Nits the review kept; they never match expected entries. */
 	readonly nits: number
 	readonly tokens: TokensByModel
+	/** Finder and validator tokens by source. */
+	readonly tokenSources: TokensBySource
 	readonly wallMillis: number
 	/** Why the gate skipped the whole run, when it did. */
 	readonly skipped?: string

@@ -63,7 +63,8 @@ export interface Plan {
 	readonly skippedRun: string | undefined
 	readonly files: readonly ChangedFile[]
 	readonly risk: Risk
-	readonly riskSource: 'risk_paths' | 'router' | 'default'
+	/** `mechanical`: a repo-wide mechanical change, kept at `normal` or below. */
+	readonly riskSource: 'risk_paths' | 'mechanical' | 'router' | 'default'
 	readonly riskPathHits: readonly string[]
 	readonly depth: Depth
 	readonly depthSource: string
