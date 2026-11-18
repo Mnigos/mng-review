@@ -23,23 +23,20 @@ function getExportedClassNames(program: ESTree.Program) {
 }
 
 /**
- * Keeps names tied to their module (AGENTS.md module names). Inside
- * `<workspace>/src/modules/<module>/`, a `.service.ts` file is named
- * `<module>.service.ts` and exports the `<Module>Service` class; its spec
- * shares the name without the export. Files about one entity
- * (`finding.errors.ts`, `finding.schema.ts`) are not checked.
+ * Keeps service names tied to their file (AGENTS.md module names). A module
+ * may hold several services, so inside `<workspace>/src/modules/<module>/` a
+ * `<name>.service.ts` file exports the `<Name>Service` class: `router.service.ts`
+ * exports `RouterService`. Specs are not checked.
  */
 export const moduleNameRule = defineRule({
 	meta: {
 		type: 'suggestion',
 		docs: {
-			description: 'Module services reuse the module name as is.',
+			description: 'A service file exports the service class named after it.',
 		},
 		messages: {
-			wrongFileName:
-				'A .{{role}}.ts file in modules/{{module}} is named {{module}}.{{role}}.ts (AGENTS.md module names).',
 			missingServiceClass:
-				'{{module}}.service.ts exports the {{className}} class (AGENTS.md module names).',
+				'{{name}}.service.ts exports the {{className}} class (AGENTS.md module names).',
 		},
 	},
 	create(context) {
@@ -50,26 +47,16 @@ export const moduleNameRule = defineRule({
 		return {
 			Program(node) {
 				if (!(module && role && MODULE_NAMED_ROLES.has(role))) return
-
-				if (file.basename.split('.')[0] !== module) {
-					context.report({
-						node,
-						messageId: 'wrongFileName',
-						data: { role, module },
-					})
-
-					return
-				}
-
 				if (file.basename.endsWith('.spec.ts')) return
 
-				const className = `${toPascalCase(module)}Service`
+				const name = file.basename.split('.')[0] ?? ''
+				const className = `${toPascalCase(name)}Service`
 
 				if (!getExportedClassNames(node).includes(className))
 					context.report({
 						node,
 						messageId: 'missingServiceClass',
-						data: { module, className },
+						data: { name, className },
 					})
 			},
 		}
