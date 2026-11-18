@@ -1151,6 +1151,47 @@ layer(Layer.empty)('conversation token budget and sources', test => {
 				)
 			})
 	)
+	test.effect(
+		'an exhausted shared run budget allows only one invalid finish correction',
+		() =>
+			Effect.gen(function* () {
+				yield* TokenLedger.use(ledger =>
+					ledger.record('model-b', finishWithUsage(700).usage)
+				)
+				expect(yield* ModelHealthService.use(health => health.spent)).toBe(700)
+				expect(
+					yield* AgentLoopService.use(loop =>
+						loop.run({
+							...REQUEST,
+							budget: { runTokens: 700, conversationTokens: 10_000 },
+						})
+					).pipe(Effect.flip)
+				).toMatchObject({
+					_tag: 'LoopError',
+					reason: 'agent gave no valid report_findings answer',
+				})
+				const calls = yield* ScriptedLlm.use(script => script.calls)
+				expect(calls).toHaveLength(2)
+				for (const call of calls) {
+					expect(call.options.tools.map(tool => String(tool.name))).toEqual([
+						REQUEST.finish,
+					])
+					expect(call.options.toolChoice).toEqual({
+						oneOf: [REQUEST.finish],
+						mode: 'required',
+					})
+				}
+			}).pipe(
+				Effect.provide(
+					loopLayer((_call, index) =>
+						Effect.succeed([
+							toolCall(REQUEST.finish, index < 2 ? {} : { findings: [] }),
+							finishWithUsage(40),
+						])
+					)
+				)
+			)
+	)
 	for (const conversationTokens of [100, 10_000])
 		test.effect(
 			`invalid finish answers use the correction allowance for a ${conversationTokens} token share`,
