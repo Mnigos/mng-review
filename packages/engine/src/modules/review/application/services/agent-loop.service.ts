@@ -142,11 +142,16 @@ export const AgentLoopServiceLive = Layer.effect(
 				})
 			}
 
-			/** Runs the turn's repository calls; the first calls up to the allowance run, the rest get an error. */
+			/**
+			 * Runs the turn's repository calls; the first calls up to the allowance run, the rest get an
+			 * error. Each call ends at the hard deadline with an error result, so a stalled git process
+			 * cannot hold the agent past its wall time.
+			 */
 			const resolveCalls = (
 				calls: readonly ToolCall[],
 				state: LoopState,
-				wrapUp: boolean
+				wrapUp: boolean,
+				now: number
 			) => {
 				const allowed = calls.filter(
 					call => !wrapUp && request.tools.some(name => name === call.name)
@@ -165,7 +170,15 @@ export const AgentLoopServiceLive = Layer.effect(
 							return Effect.succeed(
 								`error: tool call limit reached; call ${finish}`
 							)
-						return repoTools.call(request.scope, call.name, call.params)
+						return repoTools.call(request.scope, call.name, call.params).pipe(
+							Effect.timeoutOrElse({
+								duration: Math.max(0, hardDeadline - now),
+								orElse: () =>
+									Effect.succeed(
+										`error: tool ${call.name} ran past the agent's wall time`
+									),
+							})
+						)
 					},
 					{ concurrency: 'unbounded' }
 				)
@@ -269,7 +282,12 @@ export const AgentLoopServiceLive = Layer.effect(
 									]
 						)
 					}
-					const outputs = yield* resolveCalls(calls, state, wrapUp || expired)
+					const outputs = yield* resolveCalls(
+						calls,
+						state,
+						wrapUp || expired,
+						yield* Clock.currentTimeMillis
+					)
 					const message = toToolMessage(
 						calls,
 						outputs.map(output => fenceData(TOOL_OUTPUT_LABEL, output))
