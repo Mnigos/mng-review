@@ -61,8 +61,10 @@ function getAllowance(
 /**
  * Characters each file gets, by max-min fairness from the smallest diff up: a file that fits its
  * even share of what is left is kept whole, a larger one is cut to that share. Once the share drops
- * below `MIN_FILE_DIFF_CHARS`, the rest are kept whole while they fit and otherwise get nothing, so
- * many small files are not each cut to a useless stub; the allocation never switches back.
+ * below `MIN_FILE_DIFF_CHARS`, the rest are kept whole while they fit, so many small files are not
+ * each cut to a useless stub; the allocation never switches back. What is left then goes to the
+ * files that got nothing, smallest first, as excerpts of at least `MIN_FILE_DIFF_CHARS`, so a budget
+ * smaller than every diff still shows something.
  */
 function toAllowances(
 	blocks: readonly FileBlock[],
@@ -72,7 +74,7 @@ function toAllowances(
 	const order = blocks
 		.map((block, index) => ({ index, size: block.text.length }))
 		.toSorted((a, b) => a.size - b.size || a.index - b.index)
-	order.reduce<AllocationState>(
+	const { remaining } = order.reduce<AllocationState>(
 		(state, entry, rank) => {
 			const share = Math.floor(state.remaining / (order.length - rank))
 			const wholeFilesOnly =
@@ -87,6 +89,18 @@ function toAllowances(
 		},
 		{ remaining: maxChars, wholeFilesOnly: false }
 	)
+	const left = order.filter(entry => allowances[entry.index] === 0)
+	left.reduce((rest, entry, rank) => {
+		const share = Math.floor(rest / (left.length - rank))
+		const excerpt = Math.min(
+			entry.size,
+			rest,
+			Math.max(MIN_FILE_DIFF_CHARS, share)
+		)
+		if (excerpt < MIN_FILE_DIFF_CHARS) return rest
+		allowances[entry.index] = excerpt
+		return rest - excerpt
+	}, remaining)
 	return allowances
 }
 
