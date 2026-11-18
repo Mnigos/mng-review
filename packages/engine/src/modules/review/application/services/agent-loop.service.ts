@@ -149,22 +149,38 @@ export const AgentLoopServiceLive = Layer.effect(
 			const deadline = (yield* Clock.currentTimeMillis) + wallMillis
 			const hardDeadline = deadline + graceMillis
 
-			const correct = (state: LoopState, pending: Prompt.MessageEncoded[]) => {
-				// Out of tokens, an invalid answer gets one correction, not the usual allowance.
-				const allowed = isOutOfTokens(request.budget, state)
-					? 1
-					: MAX_CORRECTIONS
-				if (state.corrections >= allowed)
-					return Effect.fail(
-						new LoopError({ reason: `agent gave no valid ${finish} answer` })
+			/** True once the conversation or the whole run is out of tokens, as the turn checks it. */
+			const isSpent = (state: LoopState) =>
+				health.spent.pipe(
+					Effect.map(
+						spent =>
+							request.budget !== undefined &&
+							(isOutOfTokens(request.budget, state) ||
+								spent >= request.budget.runTokens)
 					)
-				return step({
-					...state,
-					corrections: state.corrections + 1,
-					turn: state.turn + 1,
-					pending,
-				})
-			}
+				)
+
+			/** A correction turn; out of tokens, an invalid answer gets one, not the usual allowance. */
+			const correct = (
+				state: LoopState,
+				pending: Prompt.MessageEncoded[]
+			): Effect.Effect<LoopResult<TValue>, LoopError | ModelCallError> =>
+				isSpent(state).pipe(
+					Effect.flatMap(spent => {
+						if (state.corrections >= (spent ? 1 : MAX_CORRECTIONS))
+							return Effect.fail(
+								new LoopError({
+									reason: `agent gave no valid ${finish} answer`,
+								})
+							)
+						return step({
+							...state,
+							corrections: state.corrections + 1,
+							turn: state.turn + 1,
+							pending,
+						})
+					})
+				)
 
 			/**
 			 * Runs the turn's repository calls; the first calls up to the allowance run, the rest get an
@@ -221,10 +237,7 @@ export const AgentLoopServiceLive = Layer.effect(
 					// Decided once the call holds a concurrency slot, so time spent queued counts.
 					const turn = Effect.gen(function* () {
 						const now = yield* Clock.currentTimeMillis
-						const overBudget =
-							request.budget !== undefined &&
-							(isOutOfTokens(request.budget, state) ||
-								(yield* health.spent) >= request.budget.runTokens)
+						const overBudget = yield* isSpent(state)
 						const wrapUp =
 							state.toolCalls >= limits.maxToolCalls ||
 							now >= deadline ||
