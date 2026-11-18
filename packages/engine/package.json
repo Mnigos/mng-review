@@ -11,13 +11,15 @@
     "test": "vitest run --root ../.. --project @mng-review/engine --passWithNoTests"
   },
   "dependencies": {
+    "@effect/ai-openai-compat": "catalog:",
     "@mng-review/domain": "workspace:*",
     "effect": "catalog:"
   },
   "devDependencies": {
+    "@effect/platform-node-shared": "catalog:",
     "@effect/vitest": "catalog:",
     "@mng-review/typescript-config": "workspace:*",
-    "@types/bun": "catalog:",
+    "@types/node": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }
