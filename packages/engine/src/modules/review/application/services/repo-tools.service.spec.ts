@@ -533,19 +533,20 @@ layer(Layer.empty, { excludeTestServices: true })('RepoToolsService', test => {
 				const repo = fixture()
 				yield* Effect.gen(function* () {
 					const input = yield* scope
-					for (const name of [
-						'unknown'.repeat(MAX_TOOL_OUTPUT_CHARS),
-						'read_file',
-					]) {
-						const output = yield* RepoToolsService.use(tools =>
-							tools.call(input, name, {
-								path: 'missing'.repeat(MAX_TOOL_OUTPUT_CHARS),
-							})
-						)
-						expect(output).toMatch(/^error: /u)
-						expect(output.length).toBeLessThanOrEqual(MAX_TOOL_OUTPUT_CHARS)
-						expect(output).toContain('[truncated:')
-					}
+					const output = yield* RepoToolsService.use(tools =>
+						tools.call(input, 'unknown'.repeat(MAX_TOOL_OUTPUT_CHARS), {
+							path: 'missing',
+						})
+					)
+					expect(output).toMatch(/^error: /u)
+					expect(output.length).toBeLessThanOrEqual(MAX_TOOL_OUTPUT_CHARS)
+					expect(output).toContain('[truncated:')
+					const longPath = yield* RepoToolsService.use(tools =>
+						tools.call(input, 'read_file', {
+							path: 'missing'.repeat(MAX_TOOL_OUTPUT_CHARS),
+						})
+					)
+					expect(longPath).toBe('error: path is too long')
 				}).pipe(Effect.provide(toolsLayer(repo.root)))
 			})
 	)
