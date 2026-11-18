@@ -11,7 +11,10 @@ const GENERATED_PATTERN = /\.(?:gen|d)\.ts$/u
 const ENTRY_FILES = new Set(['main.ts', 'index.ts'])
 
 function isIgnored(file: FilePath) {
-	return ENTRY_FILES.has(file.basename) || GENERATED_PATTERN.test(file.basename)
+	return (
+		ENTRY_FILES.has(file.basename.replace(/\.spec\.ts$/u, '.ts')) ||
+		GENERATED_PATTERN.test(file.basename)
+	)
 }
 
 /**
@@ -19,7 +22,8 @@ function isIgnored(file: FilePath) {
  * from the closed AGENTS.md naming table, or `<kebab-name>.<role>.<role>.ts`
  * for a file that belongs to another (`finding.schema.types.ts`), and a spec
  * to carry its source's name plus `.spec.ts`. Package entries (`index.ts`),
- * the CLI entry (`main.ts`) and generated files keep their own names.
+ * the CLI entry (`main.ts`), their specs and generated files keep their own
+ * names.
  */
 export const fileRoleSuffixRule = defineRule({
 	meta: {
