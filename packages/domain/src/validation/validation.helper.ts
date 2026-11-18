@@ -49,10 +49,16 @@ export function getValidatorChoices(
 	]
 }
 
+/** True when the validator answered `unverified`. */
+function isUnverified(finding: KeptFinding): boolean {
+	return finding.validation?.status === 'unverified'
+}
+
 /**
  * Applies the validator's answers, then `comments.min_severity` to bugs (the lowest floor among a
  * finding's agents) and `comments.max_nits` to nits. A rejected bug leaves the list; an unvalidated
- * one stays at its reported severity.
+ * one stays at its reported severity. An unverified bug (it rests on a dependency's behaviour) stays
+ * at the validator's severity, goes to the summary so it never blocks, and comes after the others.
  */
 export function decideOutcome(input: OutcomeInput): ReviewOutcome {
 	const { config, agents } = input
@@ -70,8 +76,12 @@ export function decideOutcome(input: OutcomeInput): ReviewOutcome {
 			continue
 		}
 		const severity =
-			validation.status === 'confirmed' ? validation.severity : finding.severity
+			validation.status === 'unvalidated'
+				? finding.severity
+				: validation.severity
 		const floor = getSeverityFloor(finding, config, agents)
+		const inline =
+			validation.status !== 'unverified' && isAtLeast(severity, floor)
 		kept.push({
 			...finding,
 			...(severity === finding.severity
@@ -79,11 +89,14 @@ export function decideOutcome(input: OutcomeInput): ReviewOutcome {
 				: { reportedSeverity: finding.severity }),
 			severity,
 			validation,
-			placement: isAtLeast(severity, floor) ? 'inline' : 'summary',
+			placement: inline ? 'inline' : 'summary',
 		})
 	}
 	return {
-		bugs: sortFindings(kept),
+		bugs: [
+			...sortFindings(kept.filter(finding => !isUnverified(finding))),
+			...sortFindings(kept.filter(isUnverified)),
+		],
 		nits: placeNits(input.nits, config, agents),
 		rejected: sortFindings(rejected),
 	}

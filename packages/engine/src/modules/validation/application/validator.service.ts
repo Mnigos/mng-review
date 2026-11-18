@@ -156,12 +156,21 @@ export const ValidatorServiceLive = Layer.effect(
 						...(context.budget ? { budget: context.budget } : {}),
 					})
 					.pipe(Effect.tapError(error => Ref.set(lastError, error)))
-				return {
-					status: value.verdict === 'confirm' ? 'confirmed' : 'rejected',
+				const judgement = {
 					severity: value.severity,
 					reason: value.reason,
 					evidence: value.evidence,
 					model: model.model,
+				}
+				if (value.verdict === 'unverified')
+					return {
+						...judgement,
+						status: 'unverified',
+						premise: value.premise ?? '',
+					} satisfies Validation
+				return {
+					...judgement,
+					status: value.verdict === 'confirm' ? 'confirmed' : 'rejected',
 				} satisfies Validation
 			})
 
