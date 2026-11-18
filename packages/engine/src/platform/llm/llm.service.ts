@@ -1,6 +1,14 @@
 import { OpenAiClient, OpenAiLanguageModel } from '@effect/ai-openai-compat'
 import type { ModelSetting } from '@mng-review/domain'
-import { Context, Effect, Layer, Redacted, Schedule, Semaphore } from 'effect'
+import {
+	Clock,
+	Context,
+	Effect,
+	Layer,
+	Redacted,
+	Schedule,
+	Semaphore,
+} from 'effect'
 import type { AiError, LanguageModel, Response } from 'effect/ai'
 import { EndpointConfig } from '../config/endpoint.config'
 import {
@@ -100,12 +108,19 @@ export const LlmServiceLive = Layer.effect(
 				Effect.provide(OpenAiLanguageModel.model(model.model)),
 				Effect.provideService(OpenAiClient.OpenAiClient, client),
 				Effect.timeout(LLM_CALL_TIMEOUT),
-				Effect.mapError(failure =>
-					LlmError.fromFailure(failure, {
-						model: model.model,
-						secrets,
-						timeout: LLM_CALL_TIMEOUT,
-					})
+				Effect.catch(error =>
+					Clock.currentTimeMillis.pipe(
+						Effect.flatMap(now =>
+							Effect.fail(
+								LlmError.fromFailure(error, {
+									model: model.model,
+									secrets,
+									timeout: LLM_CALL_TIMEOUT,
+									now,
+								})
+							)
+						)
+					)
 				),
 				slots.withPermits(1),
 				Effect.retry({ while: isRetryWorthy, schedule: RETRY_SCHEDULE })

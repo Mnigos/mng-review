@@ -62,6 +62,7 @@ export function makeScriptedLlmLayer(
 							model: model.model,
 							secrets: [],
 							timeout: 0,
+							now: 0,
 						})
 					)
 				)
