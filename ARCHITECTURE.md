@@ -13,7 +13,7 @@ packages/
   domain/                  @mng-review/domain: Schema and pure logic
   engine/                  @mng-review/engine: Effect services
     src/platform/          config, llm, git
-    src/modules/           routing, review, validation
+    src/modules/           routing, review, validation, init
 tooling/
   typescript-config/       @mng-review/typescript-config: the strict tsconfig preset
   oxlint-plugin/           @mng-review/oxlint-plugin: the mng-review/* lint rules
@@ -51,6 +51,10 @@ One run of `mng-review --base <ref>` goes through these steps. Numbers match the
 9. The CLI formats the kept findings as text or JSON.
 
 Publish (6), converse (7) and learn (8) run on GitHub and arrive with `packages/github`.
+
+## Init
+
+`mng-review init` writes `.mng/` at the repository root. The starter files and the conversion from `.macroscope/` are pure functions in `domain/src/init`; `modules/init` reads `.macroscope/` through the same confined working-tree reader as the rules, decodes every generated `review.yml` and agent file with the rule schemas, and only then writes. It never runs a model.
 
 ## Model endpoint
 
