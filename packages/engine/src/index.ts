@@ -1,4 +1,7 @@
 /** The engine package: git, `.mng/` rules, the model endpoint, routing, the plan, review and validation. */
+export * from './modules/bench/application/bench.service'
+export * from './modules/bench/domain/bench-report.helper'
+export type * from './modules/bench/domain/bench-report.types'
 export * from './modules/init/application/init.service'
 export type * from './modules/init/domain/init-report.types'
 export * from './modules/init/domain/init.errors'
