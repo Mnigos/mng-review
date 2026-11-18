@@ -1,12 +1,13 @@
 /** Characters GitHub's Markdown reads as syntax: emphasis, links, images, code, tables, headings and HTML. */
 const MARKDOWN_SYNTAX = /[\\`*_[\]()!<>|#~&]/gu
-const LINE_BREAKS = /\s*\r?\n\s*/gu
+/** Whitespace and control characters, so a lone carriage return or a line separator cannot end a line either. */
+const LINE_BREAKS = /[\s\p{Cc}]+/gu
 const BACKTICK_RUN = /`+/gu
 /** What GitHub turns into a link on its own: URLs with a scheme, `www.` hosts and e-mail addresses. */
 const AUTOLINK =
-	/\b(?:[a-z][a-z0-9+.-]*:\/\/|www\.)[^\s|`]+|[\w.+-]+@[\w-]+(?:\.[\w-]+)+/giu
-/** Control characters, line breaks included, that could end a log line or drive the terminal. */
-const CONTROL_CHARACTERS = /\p{Cc}+/gu
+	/(?:[a-z][a-z0-9+.-]*:\/\/|www\.)[^\s|`]+|[\w.+-]+@[\w-]+(?:\.[\w-]+)+/giu
+/** Control and format characters and line separators: they could end a log line, drive the terminal or reorder text. */
+const CONTROL_CHARACTERS = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu
 
 /** Escapes every Markdown syntax character with a backslash. */
 function escapeSyntax(text: string): string {
