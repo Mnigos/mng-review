@@ -37,6 +37,18 @@ describe('review formatters', () => {
 		])
 			expect(text).toContain(part)
 	})
+	test('text shows each nit with its trigger, impact, evidence and suggestion under its heading', () => {
+		const [nit] = reviewReport().nits
+		expect(formatReviewText(reviewReport())).toContain(
+			[
+				`  ${nit?.path}:${nit?.line}  Use repository convention [reviewer]`,
+				`    trigger: ${nit?.trigger}`,
+				`    impact: ${nit?.impact}`,
+				...(nit?.evidence ?? []).map(line => `    evidence: ${line}`),
+				'    suggestion: Rename to chargeInvoice.',
+			].join('\n')
+		)
+	})
 	test('text shows agent status, tool calls, units, fallback, malformed, tokens, dropped reason and wall time', () => {
 		const text = formatReviewText(reviewReport())
 		for (const part of [
