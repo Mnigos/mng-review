@@ -120,6 +120,7 @@ const jsonReportSchema = Schema.Struct({
 		Schema.Struct({
 			calls: Schema.Number,
 			inputTokens: Schema.Number,
+			cachedInputTokens: Schema.Number,
 			outputTokens: Schema.Number,
 			reasoningTokens: Schema.Number,
 			totalTokens: Schema.Number,
@@ -269,6 +270,7 @@ layer(Layer.empty, { excludeTestServices: true })('plan CLI', test => {
 				{
 					calls: 1,
 					inputTokens: 3,
+					cachedInputTokens: 0,
 					outputTokens: 2,
 					reasoningTokens: 0,
 					totalTokens: 5,

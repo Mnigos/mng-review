@@ -5,6 +5,7 @@ import {
 	ScriptedLlm,
 	type ScriptedLlmAnswer,
 } from '../../../../platform/llm/scripted-llm.layer'
+import { TokenLedger } from '../../../../platform/llm/token-ledger.service'
 import {
 	agent,
 	file,
@@ -27,14 +28,16 @@ import {
 	SCOPE,
 	toolCall,
 } from '../../../../shared/mocks/review-test.helper'
+import { getFirstDiffChars } from '../../domain/finder-budget.helper'
 import {
+	MIN_UNIT_TOKENS,
 	FINDER_TOKEN_SHARE,
 	MAX_FULL_DIFF_CHARS,
 	MAX_INCREMENTAL_DIFF_CHARS,
 } from '../../domain/review.constants'
 import { TokenBudgetError } from '../../domain/review.errors'
 import { NIT_PROMPT } from '../reviewer.prompt'
-import { AgentLoopService } from './agent-loop.service'
+import { AgentLoopService, type LoopRequest } from './agent-loop.service'
 import {
 	FinderService,
 	FinderServiceLive,
@@ -48,6 +51,7 @@ function context(overrides: Partial<FinderContext> = {}): FinderContext {
 		rules: { agents: [], context: 'Invoices intentionally use integer cents.' },
 		fanOut: false,
 		fallback: undefined,
+		tokens: { allowance: 300_000, runTokens: 700_000 },
 		...overrides,
 	}
 }
@@ -130,7 +134,16 @@ layer(Layer.empty)('FinderService', test => {
 				Effect.gen(function* () {
 					expect(
 						yield* FinderService.use(finder =>
-							finder.run(plannedRun(), context({ fanOut }))
+							finder.run(
+								plannedRun(),
+								context({
+									fanOut,
+									tokens: {
+										allowance: 300_000,
+										runTokens: 100 * FINDER_TOKEN_SHARE,
+									},
+								})
+							)
 						)
 					).toMatchObject({
 						report: { status: 'ok', ...(fanOut ? { units: 2 } : {}) },
@@ -205,6 +218,10 @@ layer(Layer.empty)('FinderService', test => {
 							}),
 							context({
 								scope,
+								tokens: {
+									allowance: MIN_UNIT_TOKENS,
+									runTokens: context().tokens.runTokens,
+								},
 								rules: { agents: [agent('billing', { input })] },
 							})
 						)
@@ -227,9 +244,12 @@ layer(Layer.empty)('FinderService', test => {
 							?.split('\n```')[0] ?? ''
 					expect(diff.length).toBeGreaterThan(0)
 					expect(diff.length).toBeLessThanOrEqual(
-						input === 'incremental'
-							? MAX_INCREMENTAL_DIFF_CHARS
-							: MAX_FULL_DIFF_CHARS
+						getFirstDiffChars(
+							MIN_UNIT_TOKENS,
+							input === 'incremental'
+								? MAX_INCREMENTAL_DIFF_CHARS
+								: MAX_FULL_DIFF_CHARS
+						)
 					)
 					expect(diff).toContain(unifiedDiff('small.ts'))
 					expect(BETWEEN_CAPS.length).toBeGreaterThan(
@@ -669,4 +689,143 @@ ${DIFF}`)
 					)
 				)
 		)
+})
+
+layer(Layer.empty)('finder unit budgets and paths', test => {
+	test.effect(
+		'deep reviewer fan-out follows the allowance and records one source conversation per unit',
+		() =>
+			Effect.gen(function* () {
+				const output = yield* FinderService.use(finder =>
+					finder.run(
+						plannedRun(),
+						context({
+							fanOut: true,
+							tokens: { allowance: MIN_UNIT_TOKENS * 2, runTokens: 200_000 },
+						})
+					)
+				)
+				expect(output.report.units).toBe(2)
+				expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(2)
+				expect(yield* TokenLedger.use(ledger => ledger.sources)).toMatchObject({
+					reviewer: { calls: 2, conversations: 2 },
+				})
+			}).pipe(
+				Effect.provide(
+					finderLayer(
+						() => Effect.succeed(answer()),
+						gitFixture({ readDiff: () => Effect.succeed(TWO_UNITS) })
+					)
+				)
+			)
+	)
+	test.effect('a low allowance keeps a deep reviewer to one conversation', () =>
+		Effect.gen(function* () {
+			yield* FinderService.use(finder =>
+				finder.run(
+					plannedRun(),
+					context({
+						fanOut: true,
+						tokens: { allowance: MIN_UNIT_TOKENS, runTokens: 200_000 },
+					})
+				)
+			)
+			expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(1)
+		}).pipe(
+			Effect.provide(
+				finderLayer(
+					() => Effect.succeed(answer()),
+					gitFixture({ readDiff: () => Effect.succeed(TWO_UNITS) })
+				)
+			)
+		)
+	)
+	for (const paths of [[BILLING_PATH], ['absent.ts'], []])
+		test.effect(
+			`multiple units filtered by ${JSON.stringify(paths)} start only matching jobs`,
+			() =>
+				Effect.gen(function* () {
+					const output = yield* FinderService.use(finder =>
+						finder.run(
+							plannedRun(),
+							context({ fanOut: true, unitPaths: paths })
+						)
+					)
+					const calls = yield* ScriptedLlm.use(script => script.calls)
+					expect(calls).toHaveLength(paths.includes(BILLING_PATH) ? 1 : 0)
+					expect(output.report.status).toBe('ok')
+					if (paths.includes(BILLING_PATH)) {
+						expect(userText(calls[0])).toContain('Your unit:')
+						expect(userText(calls[0])).not.toContain('+unrelated-code')
+					}
+				}).pipe(
+					Effect.provide(
+						finderLayer(
+							() => Effect.succeed(answer()),
+							gitFixture({
+								readDiff: () =>
+									Effect.succeed(
+										DIFF + unifiedDiff('other.ts', 1, 'unrelated-code')
+									),
+							})
+						)
+					)
+				)
+		)
+	test.effect('a single unit with no matching path starts no job', () =>
+		Effect.gen(function* () {
+			yield* FinderService.use(finder =>
+				finder.run(
+					plannedRun(),
+					context({ fanOut: true, unitPaths: ['absent.ts'] })
+				)
+			)
+			expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(0)
+		}).pipe(Effect.provide(finderLayer(() => Effect.succeed(answer()))))
+	)
+})
+
+layer(Layer.empty)('finder conversation allowances', test => {
+	test.effect(
+		'each deep unit receives its equal floored allowance and finder source',
+		() =>
+			Effect.gen(function* () {
+				const requests: LoopRequest<unknown>[] = []
+				const run: AgentLoopService['Service']['run'] = request => {
+					requests.push(request)
+					return request.parse({ findings: [] }).pipe(
+						Effect.orDie,
+						Effect.map(value => ({ value, turns: 1, toolCalls: 0 }))
+					)
+				}
+				const allowance = MIN_UNIT_TOKENS * 2 + 1
+				yield* FinderService.use(finder =>
+					finder.run(
+						plannedRun(),
+						context({ fanOut: true, tokens: { allowance, runTokens: 200_000 } })
+					)
+				).pipe(
+					Effect.provide(
+						FinderServiceLive.pipe(
+							Layer.provide(Layer.succeed(AgentLoopService, { run })),
+							Layer.provideMerge(
+								reviewDependencies(
+									() => Effect.die('unexpected model call'),
+									{},
+									gitFixture({ readDiff: () => Effect.succeed(TWO_UNITS) })
+								)
+							)
+						)
+					)
+				)
+				expect(requests).toHaveLength(2)
+				for (const request of requests) {
+					expect(request.budget).toEqual({
+						runTokens: 200_000,
+						conversationTokens: Math.floor(allowance / requests.length),
+					})
+					expect(request.source).toBe('reviewer')
+				}
+			})
+	)
 })

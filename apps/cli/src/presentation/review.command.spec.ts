@@ -29,6 +29,15 @@ const decodeReport = Schema.decodeUnknownSync(
 			droppedModels: Schema.Array(
 				Schema.Struct({ model: Schema.String, reason: Schema.String })
 			),
+			tokenSources: Schema.Record(
+				Schema.String,
+				Schema.Struct({
+					calls: Schema.Number,
+					conversations: Schema.Number,
+					firstMessageTokens: Schema.Number,
+					historyTokens: Schema.Number,
+				})
+			),
 			tokens: Schema.Record(
 				Schema.String,
 				Schema.Struct({ totalTokens: Schema.Number })
@@ -55,6 +64,14 @@ layer(Layer.empty, { excludeTestServices: true })('review CLI', test => {
 					endpointError: null,
 					bugs: [],
 					tokens: { reviewer: { totalTokens: 5 } },
+					tokenSources: {
+						reviewer: {
+							calls: 1,
+							conversations: 1,
+							firstMessageTokens: 3,
+							historyTokens: 0,
+						},
+					},
 				})
 				expect(invocation.requests).toEqual([`${ENDPOINT}/chat/completions`])
 			})
@@ -111,7 +128,7 @@ layer(Layer.empty, { excludeTestServices: true })('review CLI', test => {
 					'agents: reviewer; models: reviewer; fingerprint',
 					'validator (reviewer): confirmed',
 					'Tokens:',
-					'reviewer  10 (6 in, 4 out, 2 call(s))',
+					'reviewer  10 (6 in, 0 cached, 4 out, 2 call(s))',
 					'Wall time:',
 				])
 					expect(invocation.out).toContain(text)
@@ -291,7 +308,7 @@ layer(Layer.empty, { excludeTestServices: true })('review CLI', test => {
 						'Caller checks ownership.',
 						'Agents:',
 						'Tokens:',
-						'reviewer  15 (9 in, 6 out, 3 call(s))',
+						'reviewer  15 (9 in, 0 cached, 6 out, 3 call(s))',
 					])
 						expect(invocation.out).toContain(text)
 				})

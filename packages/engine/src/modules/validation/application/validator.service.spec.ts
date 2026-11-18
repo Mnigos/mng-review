@@ -10,6 +10,7 @@ import {
 	ScriptedLlm,
 	type ScriptedLlmAnswer,
 } from '../../../platform/llm/scripted-llm.layer'
+import { TokenLedger } from '../../../platform/llm/token-ledger.service'
 import { config, finding } from '../../../shared/mocks/domain-test.helper'
 import {
 	cleanupRepos,
@@ -35,6 +36,7 @@ import {
 import { AgentLoopService } from '../../review/application/services/agent-loop.service'
 import { ModelHealthService } from '../../review/application/services/model-health.service'
 import { TokenBudgetError } from '../../review/domain/review.errors'
+import { RepoToolsService } from '../../review/application/services/repo-tools.service'
 import { ValidatorService, ValidatorServiceLive } from './validator.service'
 
 const CONTEXT = {
@@ -540,3 +542,67 @@ layer(Layer.empty, { excludeTestServices: true })(
 		)
 	}
 )
+
+layer(Layer.empty)('validator first-message context', test => {
+	for (const [line, range] of [
+		[2, '1-152'],
+		[500, '350-650'],
+	] as const)
+		test.effect(
+			`reads finding line ${line} at head with range ${range} and caps the file at 20k characters`,
+			() =>
+				Effect.gen(function* () {
+					const callSpy = vi.fn<RepoToolsService['Service']['call']>(
+						(_scope, name) =>
+							Effect.succeed(
+								name === 'read_file'
+									? `${'x'.repeat(20_000)}TAIL_OUTSIDE_CAP`
+									: 'fixture diff'
+							)
+					)
+					yield* Effect.gen(function* () {
+						yield* ValidatorService.use(validator =>
+							validator.validate(finding({ line }), {
+								...CONTEXT,
+								budget: { runTokens: 1000, conversationTokens: 1 },
+							})
+						)
+						expect(callSpy).toHaveBeenCalledWith(SCOPE, 'read_file', {
+							ref: 'head',
+							path: BILLING_PATH,
+							range,
+						})
+						const calls = yield* ScriptedLlm.use(script => script.calls)
+						const message = userText(calls[0])
+						const fileText =
+							message
+								.split(
+									'lines around the finding (read more with read_file):\n```text\n'
+								)[1]
+								?.split('\n```')[0] ?? ''
+						expect(fileText.length).toBeGreaterThan(0)
+						expect(fileText.length).toBeLessThanOrEqual(20_000)
+						expect(message).not.toContain('TAIL_OUTSIDE_CAP')
+						expect(
+							calls[0]?.options.tools.map(tool => String(tool.name))
+						).toEqual(['report_verdict'])
+						expect(
+							yield* TokenLedger.use(ledger => ledger.sources)
+						).toMatchObject({ validator: { calls: 1, conversations: 1 } })
+					}).pipe(
+						Effect.provide(
+							ValidatorServiceLive.pipe(
+								Layer.provide(
+									Layer.succeed(RepoToolsService, { call: callSpy })
+								),
+								Layer.provideMerge(
+									reviewDependencies(() =>
+										Effect.succeed(answer('report_verdict', verdict()))
+									)
+								)
+							)
+						)
+					)
+				})
+		)
+})

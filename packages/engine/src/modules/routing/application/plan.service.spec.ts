@@ -180,6 +180,7 @@ layer(Layer.empty, { excludeTestServices: true })('PlanService', test => {
 				expect(report.tokens[rules.config.models.router.model]).toEqual({
 					calls: 1,
 					inputTokens: 3,
+					cachedInputTokens: 0,
 					outputTokens: 2,
 					reasoningTokens: 0,
 					totalTokens: 5,

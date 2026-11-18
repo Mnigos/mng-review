@@ -16,6 +16,7 @@ const SPEC_DEFAULTS = {
 		max_runs_per_pr: 6,
 		max_file_kb: 300,
 		tokens_per_run: 1_500_000,
+		tokens_by_depth: DEFAULT_PRESET.limits.tokens_by_depth,
 		tokens_per_pr: 5_000_000,
 		concurrency: 4,
 	},
@@ -278,4 +279,42 @@ layer(Layer.empty)('parseReviewConfig', test => {
 				)
 			})
 		)
+})
+
+layer(Layer.empty)('depth token config', test => {
+	test.effect(
+		'merges a partial depth override without changing other depths or the preset',
+		() =>
+			Effect.gen(function* () {
+				expect(
+					(yield* parseReviewConfig('limits: {tokens_by_depth: {quick: 123}}'))
+						.limits.tokens_by_depth
+				).toEqual({ ...DEFAULT_PRESET.limits.tokens_by_depth, quick: 123 })
+				expect(
+					(yield* parseReviewConfig(undefined)).limits.tokens_by_depth
+				).toEqual(DEFAULT_PRESET.limits.tokens_by_depth)
+			})
+	)
+	for (const depth of ['quick', 'balanced', 'deep'])
+		for (const value of ['0', '-1', '1.5', 'null', '"100"'])
+			test.effect(`rejects ${depth} budget ${value}`, () =>
+				Effect.gen(function* () {
+					expect(
+						(yield* Effect.flip(
+							parseReviewConfig(
+								`limits: {tokens_by_depth: {${depth}: ${value}}}`
+							)
+						)).reason
+					).toContain(`limits.tokens_by_depth.${depth}`)
+				})
+			)
+	test.effect('rejects an unknown depth key with its full path', () =>
+		Effect.gen(function* () {
+			expect(
+				(yield* Effect.flip(
+					parseReviewConfig('limits: {tokens_by_depth: {extreme: 100}}')
+				)).reason
+			).toContain('limits.tokens_by_depth.extreme')
+		})
+	)
 })

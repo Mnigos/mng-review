@@ -149,6 +149,7 @@ layer(Layer.empty)('RouterService', test => {
 						'router-custom': {
 							calls: 1,
 							inputTokens: 3,
+							cachedInputTokens: 0,
 							outputTokens: 2,
 							reasoningTokens: 0,
 							totalTokens: 5,

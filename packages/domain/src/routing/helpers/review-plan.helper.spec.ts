@@ -3,6 +3,8 @@ import {
 	agent,
 	config,
 	file,
+	mechanicalFiles,
+	featureFiles,
 	NORMAL_ROUTER,
 	planInput,
 	pr,
@@ -461,4 +463,75 @@ describe('plan routing and construction', () => {
 		expect(plan.runs[0]?.files).toEqual([reviewable.path])
 		expect(input).toEqual(before)
 	})
+})
+
+describe('mechanical plan depth', () => {
+	for (const rated of ['normal', 'risky'] as const)
+		test(`mechanical billing edits cap ${rated} risk without forcing deep`, () => {
+			const files = mechanicalFiles()
+			const plan = buildPlan(
+				planInput({
+					files,
+					config: config({ risk_paths: ['src/billing/**'] }),
+				}),
+				{ ...NORMAL_ROUTER, risk: rated }
+			)
+			expect(plan).toMatchObject({
+				risk: 'normal',
+				riskSource: 'mechanical',
+				depth: 'balanced',
+			})
+			expect(plan.riskPathHits).toHaveLength(22)
+			expect(plan.depthSource).not.toBe('risk_paths')
+			expect(plan.runs.filter(run => run.role === 'reviewer')).toHaveLength(1)
+		})
+	test('mechanical edits without risk paths still cap router risk', () =>
+		expect(
+			buildPlan(planInput({ files: mechanicalFiles() }), {
+				...NORMAL_ROUTER,
+				risk: 'risky',
+			})
+		).toMatchObject({
+			risk: 'normal',
+			riskSource: 'mechanical',
+			depth: 'balanced',
+		}))
+	test('feature changes under risk paths remain risky and deep', () =>
+		expect(
+			buildPlan(
+				planInput({
+					files: featureFiles(),
+					config: config({ risk_paths: ['src/billing/**'] }),
+				}),
+				NORMAL_ROUTER
+			)
+		).toMatchObject({
+			risk: 'risky',
+			riskSource: 'risk_paths',
+			depth: 'deep',
+			depthSource: 'risk_paths',
+		}))
+	for (const depth of ['quick', 'deep'] as const) {
+		test(`explicit ${depth} config still applies to mechanical edits`, () =>
+			expect(
+				buildPlan(
+					planInput({
+						files: mechanicalFiles(),
+						config: config({ depth, risk_paths: ['src/billing/**'] }),
+					}),
+					NORMAL_ROUTER
+				).depth
+			).toBe(depth))
+		test(`${depth} label still applies to mechanical edits`, () =>
+			expect(
+				buildPlan(
+					planInput({
+						files: mechanicalFiles(),
+						config: config({ risk_paths: ['src/billing/**'] }),
+						pr: pr({ labels: [DEFAULT_PRESET.labels.depth[depth]] }),
+					}),
+					NORMAL_ROUTER
+				).depth
+			).toBe(depth))
+	}
 })

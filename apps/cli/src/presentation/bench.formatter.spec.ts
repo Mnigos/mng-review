@@ -35,6 +35,7 @@ const TOKENS = {
 	reviewer: {
 		calls: 2,
 		inputTokens: 6,
+		cachedInputTokens: 0,
 		outputTokens: 4,
 		reasoningTokens: 1,
 		totalTokens: 10,
@@ -47,6 +48,7 @@ const CASE = {
 	score: SCORE,
 	nits: 3,
 	tokens: TOKENS,
+	tokenSources: {},
 	wallMillis: 1200,
 } as const satisfies CaseReport
 const REPORT = {
@@ -90,6 +92,7 @@ describe('formatBenchText', () => {
 				reviewer: {
 					calls: 4,
 					inputTokens: 12,
+					cachedInputTokens: 0,
 					outputTokens: 8,
 					reasoningTokens: 2,
 					totalTokens: 20,
@@ -104,11 +107,11 @@ describe('formatBenchText', () => {
 			`    missed  missing-guard  ${REPORTED_FINDING.path}:81  A guard is missing.`,
 			`    noise  deliberate-retry (intentional)  ${REPORTED_FINDING.path}:2 medium ${REPORTED_FINDING.title}`,
 			`    unmatched  ${REPORTED_FINDING.path}:100 medium Unmatched retry`,
-			'    tokens  reviewer  10 (6 in, 4 out, 2 call(s))',
+			'    tokens  reviewer  10 (6 in, 0 cached, 4 out, 2 call(s))',
 			'Totals (2 case(s)): real found 2, missed 2, noise 2, unmatched 2, nits 6',
 			'Recall: 50.0% (2 of 4 real)',
 			'Unmatched per case: 1.00',
-			'Tokens:\n  reviewer  20 (12 in, 8 out, 4 call(s))',
+			'Tokens:\n  reviewer  20 (12 in, 0 cached, 8 out, 4 call(s))',
 			'Wall time: 1.5 s',
 		])
 			expect(text).toContain(line)
@@ -153,5 +156,23 @@ describe('formatBenchText', () => {
 describe('formatBenchJson', () => {
 	test('preserves the full report including reasoning usage and per-case details', () => {
 		expect(JSON.parse(formatBenchJson(REPORT))).toEqual(REPORT)
+	})
+})
+
+test('bench case text and JSON carry source token accounting', () => {
+	const tokenSources = {
+		validator: {
+			...TOKENS.reviewer,
+			conversations: 2,
+			firstMessageTokens: 4,
+			historyTokens: 2,
+		},
+	}
+	const report = { ...REPORT, cases: [{ ...CASE, tokenSources }] }
+	expect(formatBenchText(report)).toContain(
+		'    source  validator  10 (4 first messages, 2 history, 0 cached, 4 out, 2 call(s), 2 conversation(s))'
+	)
+	expect(JSON.parse(formatBenchJson(report))).toMatchObject({
+		cases: [{ tokenSources }],
 	})
 })

@@ -1,4 +1,5 @@
 import { layer } from '@effect/vitest'
+import { getPlannedTokens, toRunAllowances } from '@mng-review/domain'
 import { Effect, Layer, Ref } from 'effect'
 import { TestClock } from 'effect/testing'
 import { TokenLedgerLive } from '../../../../platform/llm/token-ledger.service'
@@ -12,7 +13,9 @@ import {
 	reviewRequest,
 } from '../../../../shared/mocks/review-test.helper'
 import { ValidatorService } from '../../../validation/application/validator.service'
+import { getValidationTokens } from '../../domain/finder-budget.helper'
 import type { DroppedModel } from '../../domain/review-report.types'
+import { FINDER_TOKEN_SHARE } from '../../domain/review.constants'
 import { ReviewLimits } from '../review-limits.context'
 import { FinderService, type FinderResult } from './finder.service'
 import { ModelHealthService } from './model-health.service'
@@ -22,7 +25,8 @@ import { ReviewService, ReviewServiceLive } from './review.service'
 function reviewLayer(
 	find: FinderService['Service']['run'],
 	validate: ValidatorService['Service']['validate'],
-	dropped: ModelHealthService['Service']['dropped'] = Effect.succeed([])
+	dropped: ModelHealthService['Service']['dropped'] = Effect.succeed([]),
+	spent = 0
 ) {
 	return ReviewServiceLive.pipe(
 		Layer.provide(
@@ -33,7 +37,7 @@ function reviewLayer(
 					run: () => Effect.die('unexpected model call'),
 					isAvailable: () => Effect.succeed(true),
 					dropped,
-					spent: Effect.succeed(0),
+					spent: Effect.succeed(spent),
 				}),
 				Layer.succeed(ReviewLimits, LIMITS),
 				TokenLedgerLive
@@ -296,5 +300,145 @@ layer(Layer.empty)('ReviewService', test => {
 			expect(report.wallMillis).toBe(1234)
 			expect(report.blocking).toBe(false)
 		})
+	)
+})
+
+layer(Layer.empty)('review token allocation', test => {
+	for (const depth of ['quick', 'balanced', 'deep'] as const)
+		test.effect(
+			`${depth} distributes 70 percent by run weights and gives validators the remainder`,
+			() =>
+				Effect.gen(function* () {
+					const cfg = config({ depth, limits: { tokens_per_run: 400_000 } })
+					const request = reviewRequest(cfg, [
+						agent('billing', { input: 'metadata' }),
+						agent('style', { kind: 'nit', input: 'metadata' }),
+					])
+					const findSpy = vi.fn<FinderService['Service']['run']>(run =>
+						Effect.succeed(
+							finderResult(run.kind === 'bug' ? [finding()] : [], run.name)
+						)
+					)
+					const validateSpy = vi.fn<ValidatorService['Service']['validate']>(
+						() => Effect.succeed({ status: 'unvalidated', error: 'fixture' })
+					)
+					const spent = 200_000
+					yield* ReviewService.use(review => review.review(request)).pipe(
+						Effect.provide(
+							reviewLayer(findSpy, validateSpy, Effect.succeed([]), spent)
+						)
+					)
+					const planned = getPlannedTokens(cfg.limits, depth)
+					const runTokens = Math.floor(planned * FINDER_TOKEN_SHARE)
+					const allowances = toRunAllowances(
+						request.planReport.plan.runs,
+						runTokens
+					)
+					expect(findSpy).toHaveBeenCalledTimes(
+						request.planReport.plan.runs.length
+					)
+					for (const [index, run] of request.planReport.plan.runs.entries()) {
+						const call = findSpy.mock.calls.find(([entry]) => entry === run)
+						expect(call?.[1]).toMatchObject({
+							fanOut: depth === 'deep',
+							tokens: { runTokens, allowance: allowances[index] },
+						})
+					}
+					expect(validateSpy.mock.calls[0]?.[1].budget).toEqual({
+						runTokens: planned,
+						conversationTokens: getValidationTokens(planned - spent, 1),
+					})
+				})
+		)
+	test.effect(
+		'later deep reviewers receive risk paths while the first reviewer and declared agents remain unrestricted',
+		() =>
+			Effect.gen(function* () {
+				const request = reviewRequest(
+					config({ depth: 'deep', risk_paths: ['src/billing/**'] }),
+					[agent('billing')]
+				)
+				const findSpy = vi.fn<FinderService['Service']['run']>(run =>
+					Effect.succeed(finderResult([], run.name))
+				)
+				yield* ReviewService.use(review => review.review(request)).pipe(
+					Effect.provide(
+						reviewLayer(findSpy, () =>
+							Effect.succeed({ status: 'unvalidated', error: 'unused' })
+						)
+					)
+				)
+				const reviewerCalls = findSpy.mock.calls.filter(
+					([run]) => run.role === 'reviewer'
+				)
+				expect(reviewerCalls).toHaveLength(2)
+				expect(reviewerCalls[0]?.[1].unitPaths).toBeUndefined()
+				expect(reviewerCalls[1]?.[1].unitPaths).toEqual(
+					request.planReport.plan.riskPathHits
+				)
+				expect(
+					findSpy.mock.calls.find(([run]) => run.role === 'agent')?.[1]
+						.unitPaths
+				).toBeUndefined()
+			})
+	)
+	test.effect('deep reviewers without risk path hits stay unrestricted', () =>
+		Effect.gen(function* () {
+			const findSpy = vi.fn<FinderService['Service']['run']>(run =>
+				Effect.succeed(finderResult([], run.name))
+			)
+			yield* ReviewService.use(review =>
+				review.review(reviewRequest(config({ depth: 'deep' })))
+			).pipe(
+				Effect.provide(
+					reviewLayer(findSpy, () =>
+						Effect.succeed({ status: 'unvalidated', error: 'unused' })
+					)
+				)
+			)
+			expect(
+				findSpy.mock.calls.every(
+					([, context]) => context.unitPaths === undefined
+				)
+			).toBeTruthy()
+		})
+	)
+	test.effect(
+		'validation leftovers are shared by merged bug findings, excluding nits',
+		() =>
+			Effect.gen(function* () {
+				const cfg = config()
+				const validateSpy = vi.fn<ValidatorService['Service']['validate']>(() =>
+					Effect.succeed({ status: 'unvalidated', error: 'fixture' })
+				)
+				const bugs = [
+					finding(),
+					finding({ path: 'other.ts' }),
+					finding({ path: 'third.ts' }),
+				]
+				const planned = getPlannedTokens(cfg.limits, 'balanced')
+				const spent = planned - 100_001
+				yield* ReviewService.use(review =>
+					review.review(reviewRequest(cfg))
+				).pipe(
+					Effect.provide(
+						reviewLayer(
+							() =>
+								Effect.succeed(
+									finderResult([...bugs, finding({ kind: 'nit' })])
+								),
+							validateSpy,
+							Effect.succeed([]),
+							spent
+						)
+					)
+				)
+				expect(validateSpy).toHaveBeenCalledTimes(bugs.length)
+				for (const [, context] of validateSpy.mock.calls)
+					expect(context.budget).toEqual({
+						runTokens: planned,
+						conversationTokens: getValidationTokens(100_001, bugs.length),
+					})
+			})
 	)
 })
