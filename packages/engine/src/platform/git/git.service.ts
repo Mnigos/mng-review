@@ -99,6 +99,11 @@ export class GitService extends Context.Service<
 			commit: string,
 			directory: string
 		) => Effect.Effect<readonly string[] | undefined, GitError>
+		/** The paths among `paths` that are files at the commit. */
+		readonly getFilesAt: (
+			commit: string,
+			paths: readonly string[]
+		) => Effect.Effect<ReadonlySet<string>, GitError>
 	}
 >()('mng-review/GitService') {}
 
@@ -360,6 +365,14 @@ export const GitServiceLive = Layer.effect(
 				.toSorted()
 		})
 
+		const getFilesAt = Effect.fn('GitService.getFilesAt')(function* (
+			commit: string,
+			paths: readonly string[]
+		) {
+			const entries = yield* readEntries(commit, paths)
+			return new Set(paths.filter(path => entries.get(path)?.type === 'blob'))
+		})
+
 		return {
 			root,
 			exec: (args: readonly string[]) => run(root, args),
@@ -380,6 +393,7 @@ export const GitServiceLive = Layer.effect(
 			readDiff,
 			readFileAt,
 			listFilesAt,
+			getFilesAt,
 		}
 	})
 )

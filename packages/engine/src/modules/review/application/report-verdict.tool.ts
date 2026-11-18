@@ -5,6 +5,7 @@ import { Tool } from 'effect/ai'
 /**
  * The finish tool of a validator. Answers are decoded with the domain's verdict schema, which also
  * requires evidence for a confirmation or an unverified answer and a premise for the latter.
+ * `lowered_because` is what lets the validator lower the reported severity.
  */
 export const ReportVerdictTool = Tool.make('report_verdict', {
 	description:
@@ -20,6 +21,12 @@ export const ReportVerdictTool = Tool.make('report_verdict', {
 			Schema.String.annotate({
 				description:
 					'For unverified only: the dependency behaviour the finding rests on, as one sentence naming the package.',
+			})
+		),
+		lowered_because: Schema.optionalKey(
+			Schema.String.annotate({
+				description:
+					'Only when severity is lower than reported: the reported level and the part of its criterion that fails.',
 			})
 		),
 	}),
