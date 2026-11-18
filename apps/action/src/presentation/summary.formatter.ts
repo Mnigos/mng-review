@@ -105,6 +105,14 @@ function toAgentRow(
 	return `| ${escapeMarkdown(run.name)} | ${toSelectedBy(run)} | ${escapeMarkdown(model)} ${run.effort} | ${status} | ${agent?.findings ?? 0} | ${agent?.toolCalls ?? 0} | ${agent ? toSeconds(agent.wallMillis) : ''} |`
 }
 
+/** Whether files under `risk_paths` sat in a mechanical change, and which conditions it failed. */
+function toShapeText(plan: ReviewReport['planReport']['plan']): string {
+	const { shape } = plan
+	if (!shape || plan.riskPathHits.length === 0) return ''
+	if (shape.failed.length === 0) return '; mechanical change'
+	return `; not mechanical, failed: ${shape.failed.join(', ')}`
+}
+
 /** Risk, depth and router, then the agents that ran and the ones skipped, each with why. */
 function toPlanLines(report: ReviewReport): string[] {
 	const { plan } = report.planReport
@@ -118,7 +126,7 @@ function toPlanLines(report: ReviewReport): string[] {
 			: `${plan.router.status}${plan.router.detail ? `, ${escapeMarkdown(plan.router.detail)}` : ''}`
 	return [
 		'',
-		`Risk **${plan.risk}** (${plan.riskSource}${riskPaths}). Depth ${plan.depth} (${escapeMarkdown(plan.depthSource)}). Router: ${router}.`,
+		`Risk **${plan.risk}** (${plan.riskSource}${riskPaths}${toShapeText(plan)}). Depth ${plan.depth} (${escapeMarkdown(plan.depthSource)}). Router: ${router}.`,
 		'',
 		`### Agents that ran (${plan.runs.length})`,
 		'',

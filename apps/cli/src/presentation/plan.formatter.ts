@@ -1,8 +1,17 @@
-import type { ChangedFile, PlannedRun } from '@mng-review/domain'
+import {
+	type ChangedFile,
+	type ChangeShape,
+	MECHANICAL_MAX_NET_SHARE,
+	MECHANICAL_MIN_FILES,
+	MECHANICAL_MIN_SMALL_SHARE,
+	MECHANICAL_REWRITE_MIN_LINES,
+	type PlannedRun,
+} from '@mng-review/domain'
 import type { PlanReport } from '@mng-review/engine'
 
 const SHORT_SHA_LENGTH = 8
 const BYTES_PER_KB = 1024
+const PERCENT = 100
 
 /** Shortens a commit SHA for text output. */
 function toShortSha(sha: string): string {
@@ -51,6 +60,35 @@ function toRiskSourceText(plan: PlanReport['plan']): string {
 	return plan.riskSource
 }
 
+/** A share as a whole percentage. */
+function toPercent(share: number): string {
+	return `${Math.round(share * PERCENT)}%`
+}
+
+/**
+ * The change measured against each mechanical condition, with its limit, then the verdict and the
+ * conditions it failed. Shown when files under `risk_paths` changed, where the verdict decides.
+ */
+function toShapeLines(plan: PlanReport['plan']): string[] {
+	const { shape } = plan
+	if (!shape || plan.riskPathHits.length === 0) return []
+	const rewrites = shape.riskyRewrites.length
+	const verdict =
+		shape.failed.length === 0
+			? 'mechanical'
+			: `not mechanical, failed: ${shape.failed.join(', ')}`
+	return [
+		`Change shape: ${shape.files} reviewable file(s) (mechanical needs ${MECHANICAL_MIN_FILES}), ${toPercent(shape.smallShare)} small edits (needs ${toPercent(MECHANICAL_MIN_SMALL_SHARE)}), added and removed lines ${toPercent(shape.netShare)} apart (at most ${toPercent(MECHANICAL_MAX_NET_SHARE)}), ${rewrites} risky file(s) with ${MECHANICAL_REWRITE_MIN_LINES}+ changed lines (needs 0): ${verdict}`,
+		...shape.riskyRewrites.map(path => `  - rewrite under risk_paths: ${path}`),
+	]
+}
+
+/** The shape fields of the plan JSON. */
+function toShapeJson(shape: ChangeShape | undefined) {
+	if (!shape) return null
+	return { ...shape, mechanical: shape.failed.length === 0 }
+}
+
 /** Run and skip lines, then tokens per model when the router spent any. */
 function toPlanBodyLines(report: PlanReport): string[] {
 	const { plan, tokens } = report
@@ -59,6 +97,7 @@ function toPlanBodyLines(report: PlanReport): string[] {
 	return [
 		'',
 		`Risk: ${plan.risk} (${riskFrom})`,
+		...toShapeLines(plan),
 		`Depth: ${plan.depth} (${plan.depthSource})`,
 		`Router: ${toRouterText(report)}`,
 		'',
@@ -105,6 +144,7 @@ export function toPlanJson(report: PlanReport) {
 			level: plan.risk,
 			source: plan.riskSource,
 			riskPaths: plan.riskPathHits,
+			shape: toShapeJson(plan.shape),
 		},
 		depth: { level: plan.depth, source: plan.depthSource },
 		router: plan.router,
