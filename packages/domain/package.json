@@ -16,6 +16,7 @@
   "devDependencies": {
     "@effect/vitest": "catalog:",
     "@mng-review/typescript-config": "workspace:*",
+    "@types/node": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }
