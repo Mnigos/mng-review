@@ -18,6 +18,11 @@ function toValidationLines(finding: KeptFinding): string[] {
 			`    validator (${validation.model}): confirmed. ${validation.reason}`,
 			...validation.evidence.map(line => `      ${line}`),
 		]
+	if (validation?.status === 'unverified')
+		return [
+			`    validator (${validation.model}): unverified, rests on: ${validation.premise} ${validation.reason}`,
+			...validation.evidence.map(line => `      ${line}`),
+		]
 	if (validation?.status === 'unvalidated' && validation.budgetSpent)
 		return ['    validator: not run, token budget spent; kept unvalidated']
 	if (validation?.status === 'unvalidated')
@@ -95,7 +100,13 @@ function toSection(title: string, lines: readonly string[]): string[] {
 /** Findings, nits, rejected bugs, agents, tokens, dropped models and wall time. */
 function toOutcomeLines(report: ReviewReport): string[] {
 	const inline = report.bugs.filter(bug => bug.placement === 'inline')
-	const below = report.bugs.filter(bug => bug.placement === 'summary')
+	const unverified = report.bugs.filter(
+		bug => bug.validation?.status === 'unverified'
+	)
+	const below = report.bugs.filter(
+		bug =>
+			bug.placement === 'summary' && bug.validation?.status !== 'unverified'
+	)
 	const inlineNits = report.nits.filter(nit => nit.placement === 'inline')
 	return [
 		'',
@@ -104,6 +115,10 @@ function toOutcomeLines(report: ReviewReport): string[] {
 		...toSection(
 			`Below the severity floor (${below.length}):`,
 			below.flatMap(toBugLines)
+		),
+		...toSection(
+			`Unverified, resting on a dependency's behaviour, never blocking (${unverified.length}):`,
+			unverified.flatMap(toBugLines)
 		),
 		...toSection(
 			`Nits (${inlineNits.length} inline, ${report.nits.length - inlineNits.length} in the summary):`,

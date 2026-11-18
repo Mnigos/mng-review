@@ -1,7 +1,11 @@
 import { Schema, SchemaTransformation } from 'effect'
 import { severitySchema } from '../config/review-config.schema'
 
-export const VERDICTS = ['confirm', 'reject'] as const
+/**
+ * `unverified`: the premises in the repository hold, but the bug rests on a dependency's documented
+ * behaviour the repository cannot show.
+ */
+export const VERDICTS = ['confirm', 'reject', 'unverified'] as const
 /** `path:line` or `path:start-end`, optionally followed by a note; the path may hold spaces, not colons. */
 const EVIDENCE_PATTERN = /^[^\s:](?:[^:]*[^\s:])?:\d+(?:-\d+)?(?:\s|$)/u
 
@@ -11,7 +15,10 @@ const evidenceSchema = Schema.Trim.check(
 	})
 )
 
-/** A validator's answer: confirm or reject, a re-rated severity, a reason and `path:line` evidence. */
+/**
+ * A validator's answer: confirm, reject or unverified, a re-rated severity, a reason and `path:line`
+ * evidence; `unverified` also names the premise it could not check.
+ */
 export const verdictSchema = Schema.Struct({
 	verdict: Schema.Literals(VERDICTS),
 	severity: Schema.String.pipe(
@@ -20,12 +27,20 @@ export const verdictSchema = Schema.Struct({
 	),
 	reason: Schema.Trim.check(Schema.isNonEmpty()),
 	evidence: Schema.Array(evidenceSchema),
+	/** The dependency behaviour an `unverified` finding rests on. */
+	premise: Schema.optionalKey(Schema.NullOr(Schema.Trim)),
 }).check(
 	Schema.makeFilter(
 		answer =>
 			answer.verdict === 'reject' ||
 			answer.evidence.length > 0 ||
-			'a confirmation needs at least one path:line evidence entry'
+			`${answer.verdict} needs at least one path:line evidence entry`
+	),
+	Schema.makeFilter(
+		answer =>
+			answer.verdict !== 'unverified' ||
+			Boolean(answer.premise) ||
+			'unverified needs the premise the repository cannot show'
 	)
 )
 export type Verdict = typeof verdictSchema.Type

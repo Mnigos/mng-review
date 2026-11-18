@@ -4,11 +4,11 @@ import { Tool } from 'effect/ai'
 
 /**
  * The finish tool of a validator. Answers are decoded with the domain's verdict schema, which also
- * requires evidence for a confirmation.
+ * requires evidence for a confirmation or an unverified answer and a premise for the latter.
  */
 export const ReportVerdictTool = Tool.make('report_verdict', {
 	description:
-		'Confirm or reject the finding, with a re-rated severity and evidence.',
+		'Confirm, reject or mark the finding unverified, with a re-rated severity and evidence.',
 	parameters: Schema.Struct({
 		verdict: Schema.Literals(VERDICTS),
 		severity: Schema.Literals(SEVERITIES),
@@ -16,6 +16,12 @@ export const ReportVerdictTool = Tool.make('report_verdict', {
 		evidence: Schema.Array(Schema.String).annotate({
 			description: '`path:line` entries, each with a few words.',
 		}),
+		premise: Schema.optionalKey(
+			Schema.String.annotate({
+				description:
+					'For unverified only: the dependency behaviour the finding rests on, as one sentence naming the package.',
+			})
+		),
 	}),
 	success: Schema.String,
 })
