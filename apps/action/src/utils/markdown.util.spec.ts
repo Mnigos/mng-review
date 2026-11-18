@@ -17,6 +17,11 @@ describe('escapeMarkdown', () => {
 			'`https://example.com/a_b?q=x&next=1`',
 		],
 		['FTP URL', 'ftp://example.com/file.txt', '`ftp://example.com/file.txt`'],
+		[
+			'Git SSH URL',
+			'git+ssh://example.com/repository.git',
+			'`git+ssh://example.com/repository.git`',
+		],
 		['www host', 'www.example.com/path', '`www.example.com/path`'],
 		[
 			'URL glued to an underscore',
@@ -106,6 +111,15 @@ describe('escapeMarkdown', () => {
 			`\\*${'abc123\\_'.repeat(2000)}\\*`
 		)
 	})
+	test('encloses only the final 32 letters of a 40-letter scheme in code', () => {
+		expect(escapeMarkdown(`${'a'.repeat(40)}://example.com`)).toBe(
+			`${'a'.repeat(8)}\`${'a'.repeat(32)}://example.com\``
+		)
+	})
+	test('only escapes text around a very long word of letters', () => {
+		const word = 'a'.repeat(16_000)
+		expect(escapeMarkdown(`*${word}*`)).toBe(`\\*${word}\\*`)
+	})
 	test('retains plain text and empty strings', () => {
 		expect(escapeMarkdown('plain text: 42')).toBe('plain text: 42')
 		expect(escapeMarkdown('')).toBe('')
@@ -113,6 +127,18 @@ describe('escapeMarkdown', () => {
 })
 
 describe('toLogText', () => {
+	test.each([
+		['three colons', ':::', ': : :'],
+		['four colons', '::::', ': : : :'],
+		['five colons', ':::::', ': : : : :'],
+		['three colons after NUL', '\u0000:::', ' : : :'],
+		['four colons after NUL', '\u0000::::', ' : : : :'],
+		['five colons after NUL', '\u0000:::::', ' : : : : :'],
+	])('breaks every pair in %s', (_name, input, expected) => {
+		const text = toLogText(input)
+		expect(text).toBe(expected)
+		expect(text).not.toContain('::')
+	})
 	test.each([
 		['CR/LF', 'first\r\nsecond\rthird\nfourth', 'first second third fourth'],
 		['C0 controls', 'a\u0000b\u0007c\td\u000Be\u000Cf', 'a b c d e f'],
