@@ -9,6 +9,11 @@ apps/
   cli/                     @mng-review/cli: the mng-review binary
     src/main.ts            the only file that runs effects (BunRuntime.runMain)
     src/presentation/      effect/cli commands and output formatters
+  action/                  @mng-review/action: the GitHub workflow entry, shadow mode
+    src/main.ts            the only other file that runs effects
+    src/application/       the shadow run: event, gate, probe, review
+    src/infrastructure/    event parser, runner client (summary, masks)
+    src/presentation/      job summary formatters
 packages/
   domain/                  @mng-review/domain: Schema and pure logic
   engine/                  @mng-review/engine: Effect services
@@ -22,17 +27,18 @@ docs/
   decisions/               architecture decision records
 ```
 
-`apps/action` (the GitHub workflow entry) and `packages/github` (threads, summary, checks and commands) arrive with stages 3 and 4.
+`packages/github` (threads, summary, checks and commands) arrives with stage 4. `.github/workflows/review.yml` is the reusable workflow that runs `apps/action`.
 
 ## Package layering
 
-Dependencies point one way: `apps/cli` → `packages/engine` → `packages/domain`. A package never imports an app.
+Dependencies point one way: `apps/cli` and `apps/action` → `packages/engine` → `packages/domain`. A package never imports an app, and an app never imports another app.
 
 | Package  | May use                                                                   | Never                                     |
 | -------- | ------------------------------------------------------------------------- | ----------------------------------------- |
 | `domain` | `effect` (`Schema`, `Data`, `Predicate`, pure modules)                    | services, layers, I/O, a runtime          |
 | `engine` | `domain`, `effect` and its `cli`-free modules, `@effect/ai-openai-compat` | running effects, printing to the terminal |
 | `cli`    | `engine`, `domain`, `effect/cli`, `@effect/platform-bun`                  | review logic                              |
+| `action` | `engine`, `domain`, `@effect/platform-bun`                                | review logic, posting to GitHub (stage 4) |
 
 Inside `engine`, `platform/` holds what every module shares and `modules/<module>/` holds one stage of the pipeline, split into `application/` (services, ports, model tools) and `infrastructure/` (adapters and parsers). ADR 0001 records the layout and ADR 0003 the file names.
 
@@ -48,9 +54,15 @@ One run of `mng-review --base <ref>` goes through these steps. Numbers match the
 6. Depth (3): the risk level or `depth` picks how many reviewer models run and whether the change is split into units.
 7. Find (4): `modules/review` runs the main reviewer and each selected agent as a tool loop on `effect/ai`, with read-only tools over the repository. Findings with the same root cause merge.
 8. Validate (5): `modules/validation` runs one fresh agent per bug finding to refute it, on a reviewer model that did not report it when `validator: cross`. A finding every reviewer model reported, or a run with one reviewer model, is validated once by a reviewer model in a fresh context.
-9. The CLI formats the kept findings as text or JSON.
+9. The CLI formats the kept findings as text or JSON; the workflow entry writes them to the job summary.
+
+Steps 2 to 8 run through `ReviewRunService` in `modules/review`, so the CLI, the benchmark and the workflow entry review a change the same way.
 
 Publish (6), converse (7) and learn (8) run on GitHub and arrive with `packages/github`.
+
+## GitHub workflow, shadow mode
+
+`.github/workflows/review.yml` checks out the caller's base commit (history only; the head commit is fetched as objects, never checked out) and this repository at the workflow's own commit, installs it with `--production --ignore-scripts`, optionally joins a tailnet, and runs `apps/action/src/main.ts` in the caller's checkout. `ShadowRunService` reads the event, skips forks before anything else, loads `.mng/` from the base commit, applies `skip`, asks `EndpointProbeService` for `GET /models`, and reviews base..head through `ReviewRunService`. The summary formatter escapes every text that came from a model or the repository. Nothing is posted. ADR 0006.
 
 ## Init
 
@@ -73,3 +85,4 @@ Publish (6), converse (7) and learn (8) run on GitHub and arrive with `packages/
 | [0003](docs/decisions/0003-naming-and-layering-conventions.md) | File roles, layers, role subfolders and the test conventions, enforced by lint    |
 | [0004](docs/decisions/0004-domain-text-and-hash-primitives.md) | Effect's `Yaml` and `Glob` and `node:crypto` in `domain`; no third-party parsers  |
 | [0005](docs/decisions/0005-unverified-findings.md)             | A third verdict, `unverified`, for findings that rest on a dependency's behaviour |
+| [0006](docs/decisions/0006-ci-shadow-mode.md)                  | `pull_request_target` with the base checked out only; shadow mode posts nothing   |

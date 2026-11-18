@@ -4,14 +4,14 @@ Pull request review by one built-in reviewer and the agents a repository declare
 
 ## Packages
 
-A Bun workspace on Effect 4. Dependencies point one way: `cli` and later `action` use `engine`, which uses `domain`.
+A Bun workspace on Effect 4. Dependencies point one way: `cli` and `action` use `engine`, which uses `domain`.
 
 | Workspace | Package | Holds |
 |---|---|---|
 | `packages/domain` | `@mng-review/domain` | Schemas and pure logic: config and agent file schemas, selection rules, findings, fingerprints, severities. No services, no runtime. |
 | `packages/engine` | `@mng-review/engine` | Effect services: config loading, git, the model endpoint, routing, review and validation. |
 | `apps/cli` | `@mng-review/cli` | The `mng-review` binary on `effect/cli`; the only place that runs effects. |
-| `apps/action` | later | The GitHub workflow entry (stage 3). |
+| `apps/action` | `@mng-review/action` | The GitHub workflow entry; runs effects in its own `main.ts`. |
 | `packages/github` | later | Threads, summary, checks and commands on GitHub (stage 4). |
 
 A later stage publishes a bundled build of `apps/cli` as `@mnigos/mng-review`. ADR 0001 records the layout.
@@ -144,7 +144,7 @@ models:
 
 - **CLI:** `mng-review --base <ref>` reviews the current branch and prints findings as text or JSON (`--json`). `mng-review plan --base <ref>` prints which agents would run, which are skipped and why, the router's additions and the risk level, without a review. Locally, `.mng/` is read from the working tree; `--rules-ref <ref>` reads it from a commit instead, as CI does. `mng-review init` writes a starter `.mng/`; `--from-macroscope` builds it from `.macroscope/` (see Init). `mng-review bench <file>` replays recorded changes against expected findings (see Benchmark).
 - **Endpoint:** `MNG_REVIEW_LLM_URL` and `MNG_REVIEW_LLM_KEY`. Nothing else about the provider is assumed.
-- **CI:** a reusable workflow; the caller keeps its triggers and concurrency and passes the endpoint and key as secrets. Rules are read from the base commit, so a pull request cannot change the rules it is judged by. Fork pull requests are skipped.
+- **CI:** a reusable workflow, `.github/workflows/review.yml`; the caller keeps its triggers and concurrency and passes the endpoint and key as secrets. Rules are read from the base commit, so a pull request cannot change the rules it is judged by. Fork pull requests are skipped. See CI in shadow mode.
 - **Commands** in a pull request comment, from the repository owner: `/mng-review`, `/mng-review deep`, `/mng-review <agent>`.
 
 ## Init
@@ -215,10 +215,24 @@ The totals sum every case and add recall (found over all `real` entries) and unm
 
 Exit codes: 0 when every case ran, 2 on a configuration error (bench file, `.mng/`, an unknown commit) or when a case failed at the endpoint. With an endpoint failure the report is still printed.
 
+## CI in shadow mode
+
+The caller runs the reusable workflow on `pull_request_target` and passes `llm-url` and `llm-key` as secrets. Inputs: `runner` (default `ubuntu-latest`), `tailscale` (default `false`), `tailscale-tags` (default `tag:ci`) and `timeout-minutes` (default 20); with `tailscale` the job joins a tailnet as an ephemeral node with the `tailscale-oauth-client-id` and `tailscale-oauth-secret` secrets. The job has `contents: read` and `pull-requests: read`.
+
+The job checks out the caller's base commit with its history, fetches the head commit's objects, checks out MNG Review at the workflow's own commit into a separate directory and installs it without running install scripts. It never checks out the head and never installs, builds or runs anything from the caller's repository. A fork's pull request does not start the job. The entry then:
+
+1. reads the event (`GITHUB_EVENT_PATH`): base and head commits, labels, author, draft and fork flags, title and body; any other event is skipped;
+2. skips a fork's pull request, loads `.mng/` from the base commit and applies `skip` (a draft is skipped unless `skip.drafts` is off or a `labels.always_review` label is set); `features` apply in the plan with the trigger `auto`;
+3. probes the endpoint with `GET /models` and a 10-second timeout; unreachable, timed out, 401, 403, 429, 5xx or an unset URL end the run as "reviewer offline: <reason>" with exit 0; any other answer, such as a 404 from an endpoint without `/models`, goes on;
+4. reviews base..head as `mng-review --base <base> --head <head> --rules-ref <base>` does, with title, body and labels passed to the models as fenced data;
+5. writes the job summary: the verdict it would post, the risk level, the agents that ran and why, the agents skipped and why, bugs by severity with path and line (confirmed and unvalidated first, then unverified), nits, findings the validator rejected (collapsed), agents and units that did not finish, tokens per model, wall time and the engine commit. Every text from a model or the repository is escaped.
+
+It posts nothing: no comment, review, check run or status. Exit codes: 0 for any review result, a skip or an offline endpoint; 2 when `.mng/` at the base commit or the event is invalid, with the file and key in the summary; 1 when git cannot read the change. The endpoint URL and key are registered with `::add-mask::` and never printed. ADR 0006 records the trigger and this contract.
+
 ## Stages
 
 1. Engine, local: config and agent schema, routing and risk, main reviewer, declared agents, validator, CLI output.
 2. Rules and benchmark: `init`, `bench`, a starter preset.
-3. CI in shadow mode: reusable workflow, findings in the job summary only.
+3. CI in shadow mode: reusable workflow, findings in the job summary only (see CI in shadow mode).
 4. Publish and converse: threads, nit batch, summary with verdict, status, thread re-check, author replies, commands.
 5. Memory and report.
