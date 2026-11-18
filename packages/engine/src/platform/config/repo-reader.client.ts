@@ -1,7 +1,13 @@
 import { ConfigError, normalizeRepoPath } from '@mng-review/domain'
-import { Effect, FileSystem, Path, type PlatformError } from 'effect'
+import { Effect, FileSystem, Path, type PlatformError, pipe } from 'effect'
 import type { GitError } from '../git/git.errors'
 import type { GitService } from '../git/git.service'
+
+/** A case-exact repository path and its real location inside the root. */
+interface ResolvedPath {
+	readonly clean: string
+	readonly real: string
+}
 
 /** Read failures a missing file never causes. */
 type ReadError = ConfigError | GitError
@@ -126,6 +132,23 @@ export const makeWorktreeReader = Effect.fn('makeWorktreeReader')(function* (
 				.pipe(absentAsUndefined<string>(target.clean))
 		})
 
+	/**
+	 * Regular files, and symlinks whose target is a regular file; reading such a link applies the
+	 * same confinement as any other path, so one that leaves the repository fails there.
+	 */
+	const isListedFile = (
+		directory: ResolvedPath,
+		entry: FileSystem.DirectoryEntry
+	) => {
+		if (entry.type !== 'SymbolicLink')
+			return Effect.succeed(entry.type === 'File')
+		const linkPath = `${directory.clean}/${entry.name}`
+		return fs.stat(path.join(directory.real, entry.name)).pipe(
+			absentAsUndefined<FileSystem.File.Info>(linkPath),
+			Effect.map(info => info?.type === 'File')
+		)
+	}
+
 	const listFiles = (rawPath: string) =>
 		Effect.gen(function* () {
 			const target = yield* resolveInside(rawPath)
@@ -135,10 +158,12 @@ export const makeWorktreeReader = Effect.fn('makeWorktreeReader')(function* (
 				.pipe(
 					absentAsUndefined<readonly FileSystem.DirectoryEntry[]>(target.clean)
 				)
-			return entries
-				?.filter(entry => entry.type === 'File')
-				.map(entry => entry.name)
-				.toSorted()
+			if (!entries) return undefined
+			const files = yield* pipe(
+				entries,
+				Effect.filter(entry => isListedFile(target, entry))
+			)
+			return files.map(entry => entry.name).toSorted()
 		})
 
 	return { source: WORKTREE_SOURCE, readFile, listFiles } satisfies RepoReader
