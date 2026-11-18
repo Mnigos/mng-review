@@ -10,6 +10,8 @@
       "dependsOn": ["^typecheck"]
     },
     "test": {
+      "dependsOn": ["^test"],
+      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/vitest.config.mts"],
       "outputs": []
     }
   },
