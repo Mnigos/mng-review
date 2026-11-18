@@ -17,7 +17,8 @@ const evidenceSchema = Schema.Trim.check(
 
 /**
  * A validator's answer: confirm, reject or unverified, a re-rated severity, a reason and `path:line`
- * evidence; `unverified` also names the premise it could not check.
+ * evidence; `unverified` also names the premise it could not check. A rejection without evidence
+ * and a lower severity without `lowered_because` decode; `toValidation` decides what they keep.
  */
 export const verdictSchema = Schema.Struct({
 	verdict: Schema.Literals(VERDICTS),
@@ -29,6 +30,8 @@ export const verdictSchema = Schema.Struct({
 	evidence: Schema.Array(evidenceSchema),
 	/** The dependency behaviour an `unverified` finding rests on. */
 	premise: Schema.optionalKey(Schema.NullOr(Schema.Trim)),
+	/** Which part of the reported severity's criterion fails; required to lower the severity. */
+	lowered_because: Schema.optionalKey(Schema.NullOr(Schema.Trim)),
 }).check(
 	Schema.makeFilter(
 		answer =>
