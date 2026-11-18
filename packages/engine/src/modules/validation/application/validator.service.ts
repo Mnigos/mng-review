@@ -6,7 +6,7 @@ import {
 	type Validation,
 	verdictSchema,
 } from '@mng-review/domain'
-import { Context, Effect, Layer, Schema } from 'effect'
+import { Context, Effect, Layer, Ref, Schema } from 'effect'
 import type { Rules } from '../../../platform/config/rules.service'
 import { fenceData, truncateText } from '../../../utils/fence.util'
 import {
@@ -109,34 +109,30 @@ export const ValidatorServiceLive = Layer.effect(
 			}
 		)
 
-		/** The first validator model for the finding that is still available. */
-		const getModel = (finding: Finding, config: ReviewConfig) =>
-			health.dropped.pipe(
-				Effect.map(dropped =>
-					getValidatorChoices(finding, config).find(
-						entry => !dropped.some(drop => drop.model === entry.model)
-					)
-				)
-			)
-
-		/** One fresh validator conversation on the first model still available. */
+		/** One fresh validator conversation on the first model still available; a loop failure is kept in `lastError`. */
 		const attempt = (
 			finding: Finding,
 			context: ValidatorContext,
-			user: string
+			user: string,
+			lastError: Ref.Ref<string | undefined>
 		) =>
 			Effect.gen(function* () {
-				const model = yield* getModel(finding, context.config)
+				const dropped = yield* health.dropped
+				const model = getValidatorChoices(finding, context.config).find(
+					entry => !dropped.some(drop => drop.model === entry.model)
+				)
 				if (!model) return yield* Effect.fail({ message: NO_MODEL_LEFT })
-				const { value } = yield* loop.run({
-					model,
-					system: VALIDATOR_PROMPT,
-					user,
-					scope: context.scope,
-					tools: VALIDATOR_REPO_TOOLS,
-					finish: ReportVerdictTool.name,
-					parse: parseVerdict,
-				})
+				const { value } = yield* loop
+					.run({
+						model,
+						system: VALIDATOR_PROMPT,
+						user,
+						scope: context.scope,
+						tools: VALIDATOR_REPO_TOOLS,
+						finish: ReportVerdictTool.name,
+						parse: parseVerdict,
+					})
+					.pipe(Effect.tapError(error => Ref.set(lastError, error.message)))
 				return {
 					status: value.verdict === 'confirm' ? 'confirmed' : 'rejected',
 					severity: value.severity,
@@ -151,20 +147,19 @@ export const ValidatorServiceLive = Layer.effect(
 			context: ValidatorContext
 		) {
 			const user = yield* toUserMessage(finding, context)
-			return yield* attempt(finding, context, user).pipe(
-				// A retry needs a model left, so the last error is the one that explains the outcome.
+			const lastError = yield* Ref.make<string | undefined>(undefined)
+			return yield* attempt(finding, context, user, lastError).pipe(
 				Effect.retry({
 					times: VALIDATION_ATTEMPTS - 1,
-					while: () =>
-						getModel(finding, context.config).pipe(
-							Effect.map(model => model !== undefined)
-						),
+					while: error => error.message !== NO_MODEL_LEFT,
 				}),
 				Effect.catch(error =>
-					Effect.succeed<Validation>({
-						status: 'unvalidated',
-						error: error.message,
-					})
+					Ref.get(lastError).pipe(
+						Effect.map((last): Validation => ({
+							status: 'unvalidated',
+							error: last ?? error.message,
+						}))
+					)
 				)
 			)
 		})
