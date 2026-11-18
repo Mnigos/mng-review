@@ -115,18 +115,21 @@ export async function buildPlan(input: PlanInput): Promise<Plan> {
   if (reviewerSkip) {
     skips.push({ name: 'reviewer', title: reviewerTitle, reason: reviewerSkip })
   } else {
-    const base = config.models.reviewer
-    runs.push({
-      name: 'reviewer',
-      title: reviewerTitle,
-      role: 'reviewer',
-      kind: 'bug',
-      input: 'incremental',
-      model: base.model,
-      effort: depth === 'deep' ? raiseEffort(base.effort) : base.effort,
-      files: reviewable.map(file => file.path),
-      selectedBy: 'default',
-    })
+    // A deep run has every reviewer model find on its own; otherwise the first one finds.
+    const models = depth === 'deep' ? config.models.reviewer : config.models.reviewer.slice(0, 1)
+    for (const entry of models) {
+      runs.push({
+        name: 'reviewer',
+        title: reviewerTitle,
+        role: 'reviewer',
+        kind: 'bug',
+        input: 'incremental',
+        model: entry.model,
+        effort: depth === 'deep' ? raiseEffort(entry.effort) : entry.effort,
+        files: reviewable.map(file => file.path),
+        selectedBy: 'default',
+      })
+    }
   }
 
   const added = new Map(router.added.map(addition => [addition.agent, addition.reason]))

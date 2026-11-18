@@ -176,11 +176,10 @@ describe('agent imports and sections', () => {
 })
 
 describe('agent settings', () => {
-  test.each(['bug', 'nit'] as const)('%s inherits the appropriate model and effort', kind => {
-    const cfg = config()
-    const settings = agentSettings(agent('auth', { kind }), cfg)
-    const model = kind === 'bug' ? cfg.models.reviewer : cfg.models.nits
-    expect(settings).toEqual({ ...model, comments: cfg.comments })
+  test.each(['bug', 'nit'] as const)('%s inherits models.agents model and effort', kind => {
+    const cfg = config('models: {agents: {model: test-agent, effort: low}}')
+    const settings = agentSettings(agent('check', { kind }), cfg)
+    expect(settings).toEqual({ model: 'test-agent', effort: 'low', comments: cfg.comments })
   })
   test.each(['bug', 'nit'] as const)(
     '%s front matter overrides model, effort and comments',
@@ -204,17 +203,29 @@ describe('agent settings', () => {
       expect(cfg.comments.max_nits).toBe(5)
     },
   )
-  test('model and effort overrides are independent', () => {
-    expect(agentSettings(agent('auth', { model: 'custom' }), config()).effort).toBe('medium')
-    expect(agentSettings(agent('auth', { effort: 'low' }), config()).model).toBe('gpt-6.1-sol')
+  test.each(['bug', 'nit'] as const)('%s model and effort overrides are independent', kind => {
+    const cfg = config('models: {agents: {model: test-agent, effort: medium}}')
+    expect(agentSettings(agent('check', { kind, model: 'claude-opus-5-5' }), cfg)).toEqual({
+      model: 'claude-opus-5-5',
+      effort: 'medium',
+      comments: cfg.comments,
+    })
+    expect(agentSettings(agent('check', { kind, effort: 'low' }), cfg)).toEqual({
+      model: 'test-agent',
+      effort: 'low',
+      comments: cfg.comments,
+    })
   })
   test.each([
     ['minimal', 'low'],
     ['low', 'medium'],
     ['medium', 'high'],
     ['high', 'high'],
-    ['xhigh', 'xhigh'],
   ] as const)('raises %s to %s', (input, expected) => {
     expect(raiseEffort(input)).toBe(expected)
+  })
+  // src/agents/settings.ts:26 preserves xhigh instead of applying the documented high cap.
+  test('never lowers xhigh effort', () => {
+    expect(raiseEffort('xhigh')).toBe('xhigh')
   })
 })

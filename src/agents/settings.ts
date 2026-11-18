@@ -11,7 +11,7 @@ export interface AgentSettings {
 /** Settings for one declared agent: its front matter over `review.yml`. */
 export function agentSettings(agent: DeclaredAgent, config: Config): AgentSettings {
   const fm = agent.frontMatter
-  const base = agent.frontMatter.kind === 'bug' ? config.models.reviewer : config.models.nits
+  const base = config.models.agents
   return {
     model: fm.model ?? base.model,
     effort: fm.effort ?? base.effort,
@@ -19,7 +19,7 @@ export function agentSettings(agent: DeclaredAgent, config: Config): AgentSettin
   }
 }
 
-/** One step more effort, capped at `high`. Used for bug finders on a deep run. */
+/** One step more effort, never above `high` unless it already is. Used on a deep run. */
 export function raiseEffort(effort: Effort): Effort {
   if (effort === 'minimal') return 'low'
   if (effort === 'low') return 'medium'

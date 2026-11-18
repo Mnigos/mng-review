@@ -134,6 +134,7 @@ describe('buildPlan', () => {
     })
     expect(plan.runs.map(run => [run.name, run.selectedBy, run.files])).toEqual([
       ['reviewer', 'default', ['src/session.ts']],
+      ['reviewer', 'default', ['src/session.ts']],
       ['auth', 'paths', ['src/session.ts']],
     ])
   })
@@ -177,7 +178,7 @@ describe('buildPlan', () => {
   test('deep raises reviewer and bug efforts but leaves explicit efforts and nit effort intact', async () => {
     const plan = await buildPlan(
       planInput({
-        config: config('depth: deep'),
+        config: config('depth: deep\nmodels: {agents: {model: test-agent, effort: medium}}'),
         agents: [
           agent('auth'),
           agent('explicit', { effort: 'low' }),
@@ -187,11 +188,39 @@ describe('buildPlan', () => {
     )
     expect(plan.runs.map(run => [run.name, run.effort])).toEqual([
       ['reviewer', 'high'],
+      ['reviewer', 'high'],
       ['auth', 'high'],
       ['explicit', 'low'],
       ['nits', 'medium'],
     ])
   })
+  test.each(['deep', 'balanced'] as const)(
+    '%s runs the configured reviewers in order with their own model and effort',
+    async depth => {
+      const plan = await buildPlan(
+        planInput({
+          config: config(`depth: ${depth}
+models:
+  reviewer:
+    - {model: claude-opus-5-5, effort: low}
+    - {model: gpt-6.1-sol, effort: high}`),
+        }),
+      )
+      expect(plan.depth).toBe(depth)
+      const expected = [
+        {
+          name: 'reviewer',
+          role: 'reviewer',
+          model: 'claude-opus-5-5',
+          effort: depth === 'deep' ? 'medium' : 'low',
+        },
+        { name: 'reviewer', role: 'reviewer', model: 'gpt-6.1-sol', effort: 'high' },
+      ] as const
+      expect(
+        plan.runs.map(({ name, role, model, effort }) => ({ name, role, model, effort })),
+      ).toEqual(expected.slice(0, depth === 'deep' ? 2 : 1))
+    },
+  )
   test.each(['reviewer', 'agents'] as const)(
     'features.%s off only disables that role',
     async feature => {

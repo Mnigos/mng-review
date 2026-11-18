@@ -30,10 +30,12 @@ export const defaultPreset: Config = {
   verdict: { blocking_severity: 'medium', mode: 'preview', never_approve: [] },
   models: {
     router: { model: 'gpt-6-luna', effort: 'low' },
-    reviewer: { model: 'gpt-6.1-sol', effort: 'medium' },
-    nits: { model: 'gpt-6.1-terra', effort: 'medium' },
-    validator: { model: 'gpt-6.1-sol', effort: 'high' },
-    fallback: null,
+    reviewer: [
+      { model: 'gpt-6.1-sol', effort: 'high' },
+      { model: 'claude-opus-5-5', effort: 'high' },
+    ],
+    agents: { model: 'gpt-6.1-sol', effort: 'high' },
+    validator: 'cross',
   },
 }
 

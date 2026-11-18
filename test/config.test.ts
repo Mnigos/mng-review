@@ -35,10 +35,12 @@ const specDefaults: Config = {
   verdict: { blocking_severity: 'medium', mode: 'preview', never_approve: [] },
   models: {
     router: { model: 'gpt-6-luna', effort: 'low' },
-    reviewer: { model: 'gpt-6.1-sol', effort: 'medium' },
-    nits: { model: 'gpt-6.1-terra', effort: 'medium' },
-    validator: { model: 'gpt-6.1-sol', effort: 'high' },
-    fallback: null,
+    reviewer: [
+      { model: 'gpt-6.1-sol', effort: 'high' },
+      { model: 'claude-opus-5-5', effort: 'high' },
+    ],
+    agents: { model: 'gpt-6.1-sol', effort: 'high' },
+    validator: 'cross',
   },
 }
 
@@ -60,6 +62,35 @@ describe('parseConfig', () => {
     parsed.labels.always_review.push('custom')
     expect(parseConfig(null)).toEqual(specDefaults)
   })
+  test('normalises a repository single reviewer to a list and replaces the preset list', () => {
+    const parsed = parseConfig('models: {reviewer: {model: claude-opus-5-5, effort: low}}')
+    expect(parsed.models.reviewer).toEqual([{ model: 'claude-opus-5-5', effort: 'low' }])
+    expect(parseConfig(null)).toEqual(specDefaults)
+  })
+  test('keeps two repository reviewers in order and replaces the preset list', () => {
+    const parsed = parseConfig(`models:
+  reviewer:
+    - {model: claude-opus-5-5, effort: low}
+    - {model: test-reviewer, effort: medium}`)
+    expect(parsed.models.reviewer).toEqual([
+      { model: 'claude-opus-5-5', effort: 'low' },
+      { model: 'test-reviewer', effort: 'medium' },
+    ])
+  })
+  test.each([
+    ['cross', 'cross'],
+    ['{model: claude-opus-5-5, effort: medium}', { model: 'claude-opus-5-5', effort: 'medium' }],
+  ] as const)('accepts validator %s', (yaml, expected) => {
+    expect(parseConfig(`models: {validator: ${yaml}}`).models.validator).toEqual(expected)
+  })
+  test.each([
+    ['nits', '{model: test-model, effort: medium}'],
+    ['fallback', 'null'],
+  ])('rejects removed models.%s as an unknown key', (key, value) => {
+    const parse = () => parseConfig(`models: {${key}: ${value}}`)
+    expect(parse).toThrow(ConfigError)
+    expect(parse).toThrow(`unknown key "models.${key}"`)
+  })
   test.each([
     ['typo: true', 'typo'],
     ['comments: {max_nit: 3}', 'comments.max_nit'],
@@ -71,7 +102,14 @@ describe('parseConfig', () => {
     ['features: {agents: sometimes}', 'features.agents'],
     ['risk_paths: src/auth', 'risk_paths'],
     ['depth: extreme', 'depth'],
-    ['models: {fallback: 2}', 'models.fallback'],
+    ['models: {reviewer: []}', 'models.reviewer'],
+    [
+      'models: {reviewer: [{model: test-reviewer, effort: low}, {model: test-reviewer, effort: high}]}',
+      'models.reviewer',
+    ],
+    ['models: {validator: other}', 'models.validator'],
+    ['models: {validator: ""}', 'models.validator'],
+    ['models: {validator: gpt-6.1-sol}', 'models.validator'],
     ['skip: {forks: null}', 'skip.forks'],
     ['extends: local', 'extends'],
     ['extends: 42', 'extends'],

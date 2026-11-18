@@ -23,6 +23,14 @@ const modelSchema = z.strictObject({
 })
 export type ModelSetting = z.infer<typeof modelSchema>
 
+/** One reviewer model or a list; always a list after parsing. */
+const reviewerModelsSchema = z
+  .union([modelSchema, z.array(modelSchema).min(1)])
+  .transform(value => (Array.isArray(value) ? value : [value]))
+  .refine(list => new Set(list.map(entry => entry.model)).size === list.length, {
+    message: 'each reviewer model may appear once',
+  })
+
 const commentsSchema = z.strictObject({
   min_severity: severitySchema,
   max_nits: z.int().nonnegative(),
@@ -74,10 +82,12 @@ export const configSchema = z.strictObject({
   }),
   models: z.strictObject({
     router: modelSchema,
-    reviewer: modelSchema,
-    nits: modelSchema,
-    validator: modelSchema,
-    fallback: z.string().min(1).nullable(),
+    /** The first finds; the next validates. On a risky change every model finds. */
+    reviewer: reviewerModelsSchema,
+    /** Default model for every declared agent. */
+    agents: modelSchema,
+    /** `cross`: a reviewer model that did not write the finding validates it. */
+    validator: z.union([z.literal('cross'), modelSchema]),
   }),
 })
 

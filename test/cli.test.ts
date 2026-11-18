@@ -71,6 +71,24 @@ describe('plan CLI', () => {
       'gpt-6-luna': { calls: 1, promptTokens: 3, completionTokens: 2, totalTokens: 5 },
     })
   })
+  test('plan --json lists both reviewer runs in order on a risky change', async () => {
+    const llm = new ScriptedLlm([response({ content: '{"risk":"risky","add":[]}' })])
+    const result = await run(['plan', '--base', 'main', '--json'], llm)
+    expect(result.exit).toBe(0)
+    expect(result.err).toBe('')
+    const report = JSON.parse(result.out) as PlanReport
+    expect(report.risk).toEqual({ level: 'risky', source: 'router', riskPaths: [] })
+    expect(report.depth.level).toBe('deep')
+    expect(
+      report.runs.map(({ name, role, model, effort }) => ({ name, role, model, effort })),
+    ).toEqual([
+      { name: 'reviewer', role: 'reviewer', model: 'gpt-6.1-sol', effort: 'high' },
+      { name: 'reviewer', role: 'reviewer', model: 'claude-opus-5-5', effort: 'high' },
+      { name: 'auth', role: 'agent', model: 'gpt-6.1-sol', effort: 'high' },
+    ])
+    expect(report.runs.every(entry => entry.files.includes('packages/auth/session.ts'))).toBe(true)
+    expect(llm.requests).toHaveLength(1)
+  })
   test('unknown review.yml key exits 2 and names the dotted key on stderr', async () => {
     await repo.write('.mng/review.yml', 'comments: {max_nit: 2}')
     const result = await run(['plan', '--base', 'main'])

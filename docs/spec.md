@@ -14,6 +14,8 @@ The conductor is code. Models do five jobs:
 | Validator | engine | tries to refute each bug finding before it is posted |
 | Verdict | engine | `ready`, `needs fixes` or `needs owner` |
 
+The router model only routes. Every other role runs on `gpt-6.1-sol` or `claude-opus-5-5` at high effort, and by default on both. All models go through the same OpenAI-compatible endpoint.
+
 ## `.mng/` layout
 
 ```
@@ -102,20 +104,21 @@ verdict:
   never_approve: []
 
 models:
-  router:    {model: gpt-6-luna,    effort: low}
-  reviewer:  {model: gpt-6.1-sol,   effort: medium}
-  nits:      {model: gpt-6.1-terra, effort: medium}
-  validator: {model: gpt-6.1-sol,   effort: high}
-  fallback:  null
+  router:    {model: gpt-6-luna, effort: low}
+  reviewer:                      # first finds, second validates; all find when risky
+    - {model: gpt-6.1-sol, effort: high}
+    - {model: claude-opus-5-5, effort: high}
+  agents:    {model: gpt-6.1-sol, effort: high}   # a declared agent may override model and effort
+  validator: cross               # or an explicit {model, effort}
 ```
 
 ## Pipeline
 
 1. **Gate.** Apply `skip` and `features`. Wait for the checks an agent lists in `needs`. The same head, merge-base and config hash as the last run reuses the verdict.
 2. **Route.** Paths, labels, authors and target branch select agents. The router model then reads the path list, a truncated diff and each unselected agent's `when.triage` line. It returns agents to add, one reason each, and a risk level: `trivial`, `normal` or `risky`. It can add agents and never removes one. A change under `risk_paths` is `risky`. If the router fails, the run continues with path selection and `normal`.
-3. **Depth.** `trivial`: metadata agents only. `normal`: main reviewer and selected agents once. `risky`: the main reviewer runs one sub-agent per changed unit (function, handler, migration; up to 8 in parallel) at higher effort.
-4. **Find.** Each reviewer is a tool loop over chat completions. Tools are read-only and confined to the repository: `read_file(ref, path, range)`, `grep(ref, pattern, glob)`, `list_dir(ref, path)`, `diff(path?)`, `blame(path, range)`, `pr_metadata()`. Head content is read with `git show`; nothing from the change is built or executed. Change text and tool output are passed as fenced data. Output: findings as JSON `{path, line, severity, title, trigger, impact, evidence[], suggestion?}`.
-5. **Validate.** One fresh agent per bug finding, instructed to refute it. It receives the finding, the file, the diff, `CONTEXT.md`, `MEMORY.md` and earlier threads on that file. It answers confirm or reject, a re-rated severity and `path:line` evidence. It rejects speculation without a trigger in this repository, claims that rest on behaviour the repository does not show, repeats of open threads and anything `MEMORY.md` covers. Findings with the same root cause merge. A finding the validator cannot answer for after two attempts is kept.
+3. **Depth.** `trivial`: metadata agents only. `normal`: the first reviewer model runs the main reviewer, and selected agents run once. `risky`: every reviewer model runs the main reviewer on its own, each as one sub-agent per changed unit (function, handler, migration; up to 8 in parallel).
+4. **Find.** Each reviewer is a tool loop over chat completions. Tools are read-only and confined to the repository: `read_file(ref, path, range)`, `grep(ref, pattern, glob)`, `list_dir(ref, path)`, `diff(path?)`, `blame(path, range)`, `pr_metadata()`. Head content is read with `git show`; nothing from the change is built or executed. Change text and tool output are passed as fenced data. Output: findings as JSON `{path, line, severity, title, trigger, impact, evidence[], suggestion?}`. Findings with the same root cause merge and record every model and agent that reported them. A model that answers 429, 503 or "unknown model" is dropped for the rest of the run; the run goes on with the remaining models and reports the drop. With no reviewer model left the run fails.
+5. **Validate.** One fresh agent per bug finding, instructed to refute it. With `validator: cross` it runs on a reviewer model that did not report the finding; a finding every reviewer model reported, or a run with a single reviewer model, is validated once by a reviewer model in a fresh context. An explicit `validator: {model, effort}` validates everything. It receives the finding, the file, the diff, `CONTEXT.md`, `MEMORY.md` and earlier threads on that file. It answers confirm or reject, a re-rated severity and `path:line` evidence. It rejects speculation without a trigger in this repository, claims that rest on behaviour the repository does not show, repeats of open threads and anything `MEMORY.md` covers. A finding the validator cannot answer for after two attempts is kept.
 6. **Publish.** Bugs at or above `comments.min_severity` get one inline thread each, with a hidden JSON block (`id`, `agent`, `severity`, `fingerprint`). Nits go into one review per run, capped by `comments.max_nits`. A sticky summary comment lists the agents that ran, the ones skipped and why, the router's additions, the risk level, findings by severity, rejected findings and tokens per model. Each agent gets a check run; the commit status `MNG Review` counts open bug threads.
 7. **Converse.** A reply in one of the bot's threads starts a run for that thread. Fixed: resolve with the commit. "Intentional" with a reason the code confirms, at or below `disputes.accept_intentional_up_to`: resolve and record a memory candidate. Reason does not hold: one reply naming the failed premise. Above the limit, or a second disagreement: label `needs-owner`. On every push the bot re-checks its open threads whose file changed.
 8. **Learn.** Accepted decisions are proposed for `.mng/MEMORY.md` in a periodic pull request. A periodic report lists findings, fixes, dismissals and tokens per agent.
