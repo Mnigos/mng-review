@@ -36,6 +36,14 @@ layer(Layer.empty)('agent file parsing', test => {
 		})
 	)
 
+	test.effect('closes empty front matter at the first --- line', () =>
+		Effect.gen(function* () {
+			expect(
+				yield* splitFrontMatter('---\n---\nBody\n---\nAfter', 'auth.md')
+			).toEqual({ yaml: '', body: 'Body\n---\nAfter' })
+		})
+	)
+
 	for (const text of [
 		'Instructions',
 		'---\nkind: bug\nInstructions',

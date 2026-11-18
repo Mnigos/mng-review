@@ -17,6 +17,18 @@ describe('globs', () => {
 	] as const)('matchesGlob(%s, %s) = %s', (path, pattern, expected) => {
 		expect(matchesGlob(path, pattern)).toBe(expected)
 	})
+	test.each([
+		['src/code.ts', '!**/*.spec.ts', true],
+		['src/code.spec.ts', '!**/*.spec.ts', false],
+		['src/x.ts', '!x.ts', false],
+		['src/y.ts', '!x.ts', true],
+	] as const)(
+		'negates a leading ! for %s and %s',
+		(path, pattern, expected) => {
+			expect(matchesGlob(path, pattern)).toBe(expected)
+		}
+	)
+
 	test('matches any listed glob and handles empty lists', () => {
 		expect(
 			matchesAnyGlob('src/billing/x.ts', ['docs/**', 'src/billing/**'])
