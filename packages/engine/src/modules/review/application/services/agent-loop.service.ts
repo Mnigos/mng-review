@@ -7,6 +7,7 @@ import {
 	type CallStop,
 	isOutOfTokens,
 	type LoopBudget,
+	toAffordableOutputs,
 	toEstimatedTokens,
 } from '../../domain/loop-budget.helper'
 import {
@@ -75,8 +76,8 @@ interface LoopState {
 	readonly firstMessageTokens?: number
 	/** Tokens this conversation has spent. */
 	readonly spentTokens: number
-	/** Input tokens of the conversation's last call, or the first message's estimate before it. */
-	readonly lastInputTokens: number
+	/** Estimated input of the next call; see `ConversationTokens`. */
+	readonly nextInputTokens: number
 }
 
 type ToolCall = Response.ToolCallPart<string, unknown>
@@ -149,7 +150,11 @@ export const AgentLoopServiceLive = Layer.effect(
 			const hardDeadline = deadline + graceMillis
 
 			const correct = (state: LoopState, pending: Prompt.MessageEncoded[]) => {
-				if (state.corrections >= MAX_CORRECTIONS)
+				// Out of tokens, an invalid answer gets one correction, not the usual allowance.
+				const allowed = isOutOfTokens(request.budget, state)
+					? 1
+					: MAX_CORRECTIONS
+				if (state.corrections >= allowed)
 					return Effect.fail(
 						new LoopError({ reason: `agent gave no valid ${finish} answer` })
 					)
@@ -273,24 +278,22 @@ export const AgentLoopServiceLive = Layer.effect(
 						return yield* Effect.fail(error)
 					}
 					const { response, wrapUp, expired } = attempt.success
-					const firstMessageTokens =
-						state.firstMessageTokens ?? response.usage.inputTokens.total ?? 0
+					const inputTokens = response.usage.inputTokens.total ?? 0
+					const outputTokens = response.usage.outputTokens.total ?? 0
+					const firstMessageTokens = state.firstMessageTokens ?? inputTokens
 					if (request.source !== undefined)
 						yield* ledger.recordTurn(request.source, {
 							usage: response.usage,
-							firstMessageTokens,
+							// A finish-only turn sends fewer tool definitions than the first call did.
+							firstMessageTokens: Math.min(firstMessageTokens, inputTokens),
 							first: state.firstMessageTokens === undefined,
 						})
-					const inputTokens = response.usage.inputTokens.total ?? 0
 					const sent = {
 						...state,
 						wrapUpSent: state.wrapUpSent || wrapUp,
 						firstMessageTokens,
-						spentTokens:
-							state.spentTokens +
-							inputTokens +
-							(response.usage.outputTokens.total ?? 0),
-						lastInputTokens: inputTokens,
+						spentTokens: state.spentTokens + inputTokens + outputTokens,
+						nextInputTokens: inputTokens + outputTokens,
 					}
 					const calls: readonly ToolCall[] = response.toolCalls
 					const finishCall = calls.find(call => call.name === finish)
@@ -339,12 +342,17 @@ export const AgentLoopServiceLive = Layer.effect(
 						},
 						yield* Clock.currentTimeMillis
 					)
-					const message = toToolMessage(
-						calls,
-						outputs.map(output => fenceData(TOOL_OUTPUT_LABEL, output))
+					const fenced = toAffordableOutputs(
+						outputs.map(output => fenceData(TOOL_OUTPUT_LABEL, output)),
+						request.budget,
+						sent,
+						`error: token budget reached; call ${finish} now`
 					)
+					const message = toToolMessage(calls, fenced)
 					const next = {
 						...sent,
+						nextInputTokens:
+							sent.nextInputTokens + toEstimatedTokens(fenced.join('')),
 						toolCalls: state.toolCalls + calls.length,
 						turn: state.turn + 1,
 						pending: [message],
@@ -364,7 +372,7 @@ export const AgentLoopServiceLive = Layer.effect(
 				turn: 1,
 				pending: [],
 				spentTokens: 0,
-				lastInputTokens: toEstimatedTokens(request.system + request.user),
+				nextInputTokens: toEstimatedTokens(request.system + request.user),
 			})
 		})
 

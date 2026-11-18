@@ -3,7 +3,6 @@ import { getReviewableFiles } from '../../change/file-skip.helper'
 import {
 	MECHANICAL_MAX_NET_SHARE,
 	MECHANICAL_MIN_FILES,
-	MECHANICAL_MIN_RISKY_SMALL_SHARE,
 	MECHANICAL_MIN_SMALL_SHARE,
 	SMALL_EDIT_MAX_LINES,
 } from '../routing.constants'
@@ -30,7 +29,8 @@ function getNetShare(files: readonly LineCounts[]): number {
 /**
  * A repo-wide mechanical change, such as a lint or format migration: at least
  * `MECHANICAL_MIN_FILES` reviewable files, most of them small edits, about as many lines removed as
- * added, and the files under `risk_paths` small edits too. Such a change does not go deep just
+ * added, and every file under `risk_paths` a small edit too, so one real rewrite of a risky file
+ * keeps the change risky. Such a change does not go deep just
  * because it touches a risky path; a real edit to a risky file among them does.
  */
 export function isMechanicalChange(
@@ -43,7 +43,6 @@ export function isMechanicalChange(
 	return (
 		getSmallEditShare(reviewable) >= MECHANICAL_MIN_SMALL_SHARE &&
 		getNetShare(reviewable) <= MECHANICAL_MAX_NET_SHARE &&
-		(risky.length === 0 ||
-			getSmallEditShare(risky) >= MECHANICAL_MIN_RISKY_SMALL_SHARE)
+		risky.every(file => file.additions + file.deletions <= SMALL_EDIT_MAX_LINES)
 	)
 }
