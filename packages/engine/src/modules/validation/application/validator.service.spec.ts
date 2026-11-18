@@ -225,6 +225,26 @@ layer(Layer.empty)('ValidatorService', test => {
 			)
 	)
 	test.effect(
+		'a dropped last model ends the attempts and keeps its drop as the error',
+		() =>
+			Effect.gen(function* () {
+				const cfg = config({
+					models: { reviewer: [REVIEWERS[0]], validator: 'cross' },
+				})
+				expect(
+					yield* ValidatorService.use(validator =>
+						validator.validate(finding(), { ...CONTEXT, config: cfg })
+					)
+				).toMatchObject({
+					status: 'unvalidated',
+					error: expect.stringContaining('unavailable (503)') as unknown,
+				})
+				expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(1)
+			}).pipe(
+				Effect.provide(validatorLayer(() => Effect.fail(providerError(503))))
+			)
+	)
+	test.effect(
 		'dropped validator moves to the next available model in a fresh conversation',
 		() =>
 			Effect.gen(function* () {
