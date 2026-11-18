@@ -18,7 +18,7 @@ Agents and humans need one predictable answer to "where does this file go and wh
   - `toolkit`: a group of tools with their handlers, in `application/`.
 - Roles bound to a folder: `service`, `port`, `tool`, `toolkit` in `application/` (`service` also in `platform/`, for the shared `llm` and `git` services); `repository`, `mapper`, `query` in `infrastructure/`; `parser` in `infrastructure/` or in `packages/domain`, where pure parsers of text into data (agent files, section imports) live; `layer` and `client` in `infrastructure/` or `platform/`; `command` and `formatter` in `presentation/`; `util` in `src/utils/`. Enforced as a warning by `mng-review/file-role-folder`.
 - Three or more files of one role in one layer move into a role subfolder (`application/services/`, `domain/helpers/`). Review checks it.
-- A service file in `modules/<module>/` is `<module>.service.ts` and exports `<Module>Service`. Enforced by `mng-review/module-name`.
+- A module may hold several services. A service file in `modules/<module>/` is `<name>.service.ts` and exports `<Name>Service` (`router.service.ts`, `RouterService`). Enforced by `mng-review/module-name`.
 - Specs sit next to their source with the same name plus `.spec.ts`. There is no `test/` folder and no `.test.ts`.
 - Effect specs import `layer` from `@effect/vitest` and name its callback's parameter `test`: `layer(TestLayer)('Name', test => { test.effect(…) })`. The callback has no `test.live`, so a spec that needs live services opens a `layer(TestLayer, { excludeTestServices: true })` block. Importing `it`, `effect`, `live`, `describe`, `expect`, `test` or `vi` from `@effect/vitest` is a lint error.
 
