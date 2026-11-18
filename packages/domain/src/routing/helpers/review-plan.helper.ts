@@ -172,8 +172,9 @@ export function buildPlan(input: PlanInput, router: RouterReport): Plan {
 		}
 	const reviewable = getReviewableFiles(files)
 	const fallbackRisk: Risk = reviewable.length > 0 ? 'normal' : 'trivial'
+	const routerRisk = router.status === 'ok' ? router.risk : undefined
 	const risk: Risk =
-		riskPathHits.length > 0 ? 'risky' : (router.risk ?? fallbackRisk)
+		riskPathHits.length > 0 ? 'risky' : (routerRisk ?? fallbackRisk)
 	const { depth, source } = resolveDepth(config, pr, risk, riskPathHits)
 	const context: PlanContext = { input, router, reviewable, depth }
 	const entries: PlanEntries = { runs: [], skips: [] }
@@ -190,7 +191,7 @@ export function buildPlan(input: PlanInput, router: RouterReport): Plan {
 		riskSource:
 			riskPathHits.length > 0
 				? 'risk_paths'
-				: router.risk
+				: routerRisk
 					? 'router'
 					: 'default',
 		riskPathHits,

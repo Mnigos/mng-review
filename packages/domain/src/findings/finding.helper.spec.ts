@@ -107,6 +107,44 @@ describe('finding identity and merging', () => {
 		])
 		expect([low, high]).toEqual(originals)
 	})
+	test('merges a third report through an absorbed report and keeps the highest severity text', () => {
+		const high = finding({
+			severity: 'high',
+			line: 2,
+			title: 'Duplicate charge loses balance',
+			agents: ['agent-a'],
+			models: ['model-a'],
+			evidence: ['src/billing/charge.ts:2 charge'],
+			suggestion: 'Deduplicate the invoice.',
+		})
+		const medium = finding({
+			severity: 'medium',
+			line: 5,
+			title: 'Duplicate charge loses balance twice',
+			trigger: 'A retry overlaps the original charge.',
+			impact: 'The invoice is applied twice.',
+			agents: ['agent-b'],
+			models: ['model-b'],
+			evidence: ['src/billing/charge.ts:5 retry'],
+			suggestion: 'Reject the duplicate charge.',
+		})
+		const low = finding({
+			...medium,
+			severity: 'low',
+			line: 9,
+			agents: ['agent-c'],
+			models: ['model-c'],
+			evidence: ['src/billing/charge.ts:9 balance'],
+		})
+		expect(mergeFindings([high, medium, low])).toEqual([
+			{
+				...high,
+				agents: ['agent-a', 'agent-b', 'agent-c'],
+				models: ['model-a', 'model-b', 'model-c'],
+				evidence: [...high.evidence, ...medium.evidence, ...low.evidence],
+			},
+		])
+	})
 	test('the same finding from two models records both models without duplicates', () => {
 		const sol = finding({ models: ['gpt-6.1-sol'] })
 		const opus = finding({ models: ['claude-opus-5-5'] })

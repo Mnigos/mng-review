@@ -6,7 +6,7 @@ import type { AgentImport } from './agent.types'
 /** A line that is only `@/path` or `@/path#Heading`. */
 const IMPORT_LINE = /^@\/([^\s#][^#]*?)(?:#(.+))?$/u
 /** An ATX heading; closing `#`s count only when whitespace separates them, so `## C#` keeps its `#`. */
-const HEADING_LINE = /^(#{1,6})[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$/u
+const HEADING_LINE = /^ {0,3}(#{1,6})[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$/u
 /** An opening code fence; a backtick fence's info string has no backticks. */
 const OPENING_FENCE = /^ {0,3}(?:(`{3,})[^`]*|(~{3,}).*)$/u
 /** A closing code fence: only the marker and trailing whitespace. */

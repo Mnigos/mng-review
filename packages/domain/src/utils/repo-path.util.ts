@@ -17,5 +17,7 @@ export function normalizeRepoPath(path: string): string | undefined {
 		if (segments.length === 0) return undefined
 		segments.pop()
 	}
-	return segments.length === 0 ? '.' : segments.join('/')
+	const normalized = segments.join('/')
+	if (UNSAFE_PATH.test(normalized)) return undefined
+	return normalized === '' ? '.' : normalized
 }

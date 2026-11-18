@@ -96,14 +96,23 @@ function absorb(kept: Finding, other: Finding): Finding {
  */
 export function mergeFindings(findings: readonly Finding[]): Finding[] {
 	const merged: Finding[] = []
+	/** Every report absorbed into each merged finding, so later reports match any of them. */
+	const members: Finding[][] = []
 	const bySeverity = findings.toSorted(
 		(a, b) => getSeverityRank(b.severity) - getSeverityRank(a.severity)
 	)
 	for (const finding of bySeverity) {
-		const index = merged.findIndex(entry => isSameRootCause(entry, finding))
+		const index = members.findIndex(group =>
+			group.some(member => isSameRootCause(member, finding))
+		)
 		const match = merged[index]
-		if (match) merged[index] = absorb(match, finding)
-		else merged.push(finding)
+		if (match) {
+			merged[index] = absorb(match, finding)
+			members[index]?.push(finding)
+			continue
+		}
+		merged.push(finding)
+		members.push([finding])
 	}
 	return merged
 }
