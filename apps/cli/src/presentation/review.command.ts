@@ -1,17 +1,11 @@
 import type { PullRequestInfo } from '@mng-review/domain'
 import {
 	GitService,
-	makeReviewLayer,
-	makeRouterLayer,
-	MAX_AGENT_WALL_TIME,
-	MAX_TOOL_CALLS,
-	PlanService,
-	PlanServiceLive,
-	ReviewService,
+	ReviewRunService,
+	ReviewRunServiceLive,
 	RulesService,
-	toEmptyReviewReport,
 } from '@mng-review/engine'
-import { Clock, Console, Effect, Layer, Option } from 'effect'
+import { Console, Effect, Layer, Option } from 'effect'
 import { Command, Flag } from 'effect/cli'
 import { CliExit, CONFIG_EXIT_CODE } from './cli-exit.errors'
 import {
@@ -59,39 +53,19 @@ const toReviewPullRequest = Effect.fn('reviewCommand.toReviewPullRequest')(
 
 /** Plans the change, reviews it unless nothing runs, prints the report and exits by its outcome. */
 const runReview = Effect.fn('reviewCommand')(function* (flags: ReviewFlags) {
-	const startedAt = yield* Clock.currentTimeMillis
 	const rules = yield* RulesService.use(service =>
 		service.load(Option.getOrUndefined(flags.rulesRef))
 	)
 	const pr = yield* toReviewPullRequest(flags)
-	const { limits } = rules.config
-	const routerLayer = makeRouterLayer({
-		concurrency: limits.concurrency,
-		...(flags.router ? {} : { disabledReason: NO_ROUTER_REASON }),
-	})
-	const planReport = yield* PlanService.use(service =>
-		service.plan({ rules, baseRef: flags.base, headRef: flags.head, pr })
-	).pipe(Effect.provide(PlanServiceLive.pipe(Layer.provide(routerLayer))))
-	const { plan } = planReport
-	const report =
-		plan.skippedRun || plan.runs.length === 0
-			? toEmptyReviewReport(
-					planReport,
-					(yield* Clock.currentTimeMillis) - startedAt
-				)
-			: yield* ReviewService.use(service =>
-					service.review({ rules, planReport, pr, startedAt })
-				).pipe(
-					Effect.provide(
-						makeReviewLayer({
-							concurrency: limits.concurrency,
-							tokensPerRun: limits.tokens_per_run,
-							maxFileKb: limits.max_file_kb,
-							maxToolCalls: MAX_TOOL_CALLS,
-							maxWallTime: MAX_AGENT_WALL_TIME,
-						})
-					)
-				)
+	const report = yield* ReviewRunService.use(service =>
+		service.run({
+			rules,
+			baseRef: flags.base,
+			headRef: flags.head,
+			pr,
+			...(flags.router ? {} : { routerDisabledReason: NO_ROUTER_REASON }),
+		})
+	)
 	yield* Console.log(
 		flags.json ? formatReviewJson(report) : formatReviewText(report)
 	)
@@ -111,7 +85,7 @@ const runReview = Effect.fn('reviewCommand')(function* (flags: ReviewFlags) {
  */
 export const reviewCommand = Command.make('mng-review', reviewFlags, flags =>
 	runReview(flags).pipe(
-		Effect.provide(SessionLive),
+		Effect.provide(ReviewRunServiceLive.pipe(Layer.provideMerge(SessionLive))),
 		Effect.catchTag('ConfigError', error =>
 			Effect.fail(
 				new CliExit({
