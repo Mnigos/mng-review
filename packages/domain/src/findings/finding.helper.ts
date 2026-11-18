@@ -4,6 +4,7 @@ import type { Severity } from '../config/review-config.schema'
 import {
 	FINGERPRINT_LENGTH,
 	NEAR_LINES,
+	SAME_DESCRIPTION_OVERLAP,
 	SAME_TITLE_OVERLAP,
 	STOP_WORDS,
 } from './finding.constants'
@@ -62,9 +63,40 @@ export function toFinding(
 	}
 }
 
+/** A word without a plural `s`, so `urls` and `url` count as one word. */
+function toWordStem(word: string): string {
+	return word.length > 3 && word.endsWith('s') && !word.endsWith('ss')
+		? word.slice(0, -1)
+		: word
+}
+
+/** Distinct stemmed content words of a finding's title, trigger and impact. */
+function getDescriptionWords(
+	finding: Pick<Finding, 'title' | 'trigger' | 'impact'>
+): Set<string> {
+	const text = `${finding.title} ${finding.trigger} ${finding.impact}`
+	return new Set(getTitleWords(text).map(toWordStem))
+}
+
+/** Shared words over the smaller set's size; 0 when either set is empty. */
+function getOverlap(a: ReadonlySet<string>, b: ReadonlySet<string>): number {
+	const smaller = Math.min(a.size, b.size)
+	if (smaller === 0) return 0
+	return [...a].filter(word => b.has(word)).length / smaller
+}
+
+/** True when no agent and model pair reported both; one finder never reports a problem twice. */
+function hasOtherReporter(a: Finding, b: Finding): boolean {
+	const sameAgent = a.agents.some(agent => b.agents.includes(agent))
+	const sameModel = a.models.some(model => b.models.includes(model))
+	return !(sameAgent && sameModel)
+}
+
 /**
  * Same root cause: same kind and file, and the same fingerprint, or lines at most `NEAR_LINES`
- * apart with title word overlap of at least `SAME_TITLE_OVERLAP`. The same line alone is not
+ * apart with title word overlap (Jaccard) of at least `SAME_TITLE_OVERLAP`. Nearby reports from
+ * different finders also merge when their descriptions share `SAME_DESCRIPTION_OVERLAP` of the
+ * shorter one's words, since two finders word one defect differently. The same line alone is not
  * enough, and a bug never merges with a nit.
  */
 export function isSameRootCause(a: Finding, b: Finding): boolean {
@@ -75,7 +107,12 @@ export function isSameRootCause(a: Finding, b: Finding): boolean {
 	const wordsB = new Set(getTitleWords(b.title))
 	const union = new Set([...wordsA, ...wordsB]).size
 	const shared = [...wordsA].filter(word => wordsB.has(word)).length
-	return union > 0 && shared / union >= SAME_TITLE_OVERLAP
+	if (union > 0 && shared / union >= SAME_TITLE_OVERLAP) return true
+	return (
+		hasOtherReporter(a, b) &&
+		getOverlap(getDescriptionWords(a), getDescriptionWords(b)) >=
+			SAME_DESCRIPTION_OVERLAP
+	)
 }
 
 /** The kept finding with the other's agents, models and evidence added. */

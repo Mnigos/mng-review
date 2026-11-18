@@ -112,6 +112,7 @@ const reviewCase = Effect.fn('BenchService.reviewCase')(function* (
 		wallMillis: report.wallMillis,
 		...(plan.skippedRun ? { skipped: plan.skippedRun } : {}),
 		...(report.endpointError ? { endpointError: report.endpointError } : {}),
+		...(report.incomplete ? { incomplete: report.incomplete.unfinished } : {}),
 	} satisfies CaseReport
 })
 

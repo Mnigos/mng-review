@@ -19,6 +19,7 @@ import {
 } from '../../domain/finder-message.helper'
 import type { AgentRunReport } from '../../domain/review-report.types'
 import {
+	FINDER_TOKEN_SHARE,
 	MAX_FULL_DIFF_CHARS,
 	MAX_INCREMENTAL_DIFF_CHARS,
 } from '../../domain/review.constants'
@@ -61,12 +62,28 @@ interface FinderJob {
 	readonly system: string
 	readonly user: string
 	readonly tools: readonly RepoToolName[]
+	/** The unit's label when a deep review splits the change. */
+	readonly unit?: string
+}
+
+/**
+ * `failed` when no job answered and one failed for another reason than the token budget,
+ * `incomplete` when the budget stopped a job, else `ok`.
+ */
+function toFinderStatus(
+	failedAll: boolean,
+	unfinished: number
+): AgentRunReport['status'] {
+	if (failedAll) return 'failed'
+	return unfinished > 0 ? 'incomplete' : 'ok'
 }
 
 /**
  * Runs one planned finder: the main reviewer (split into units at deep depth) or a declared agent
  * (`kind`, `input` and `max_findings` from its front matter). A job whose model is dropped moves to
- * the next available fallback model. It never fails: a failure is the report's `failed` status.
+ * the next available fallback model. Each job answers with what it has once the run spent
+ * `FINDER_TOKEN_SHARE` of its budget; a job the budget stops before it answers is listed as
+ * unfinished and the others' findings stay. It never fails: a failure is the report's status.
  */
 export class FinderService extends Context.Service<
 	FinderService,
@@ -109,14 +126,26 @@ export const FinderServiceLive = Layer.effect(
 			const units = context.fanOut ? splitReviewUnits(diff) : []
 			if (units.length > 1)
 				return units.map(unit => ({
+					unit: unit.label,
 					system: `${system}\n\n${UNIT_PROMPT}`,
-					user: toUnitMessage(unit, run.files, pr, MAX_INCREMENTAL_DIFF_CHARS),
+					user: toUnitMessage({
+						unit,
+						files: context.scope.change.files,
+						pr,
+						maxChars: MAX_INCREMENTAL_DIFF_CHARS,
+					}),
 					tools: ALL_REPO_TOOLS,
 				}))
 			return [
 				{
 					system,
-					user: toChangeMessage(run.files, pr, diff, MAX_FULL_DIFF_CHARS),
+					user: toChangeMessage({
+						files: context.scope.change.files,
+						scope: run.files,
+						pr,
+						diff,
+						maxChars: MAX_FULL_DIFF_CHARS,
+					}),
 					tools: ALL_REPO_TOOLS,
 				},
 			]
@@ -158,12 +187,13 @@ export const FinderServiceLive = Layer.effect(
 			return [
 				{
 					system,
-					user: toChangeMessage(
-						run.files,
+					user: toChangeMessage({
+						files: context.scope.change.files,
+						scope: run.files,
 						pr,
 						diff,
-						full ? MAX_FULL_DIFF_CHARS : MAX_INCREMENTAL_DIFF_CHARS
-					),
+						maxChars: full ? MAX_FULL_DIFF_CHARS : MAX_INCREMENTAL_DIFF_CHARS,
+					}),
 					tools: ALL_REPO_TOOLS,
 				},
 			]
@@ -215,6 +245,7 @@ export const FinderServiceLive = Layer.effect(
 					tools: job.tools,
 					finish: ReportFindingsTool.name,
 					parse: parseFindingsAnswer,
+					tokenShare: FINDER_TOKEN_SHARE,
 				})
 				.pipe(
 					Effect.map(result => ({
@@ -268,14 +299,24 @@ export const FinderServiceLive = Layer.effect(
 			const model = { model: planned.model, effort: planned.effort }
 			const results = yield* Effect.forEach(
 				jobs.success,
-				job =>
-					Effect.result(runJob(planned, job, context, model, [model.model])),
+				(job: FinderJob) =>
+					Effect.result(
+						runJob(planned, job, context, model, [model.model])
+					).pipe(Effect.map(result => ({ job, result }))),
 				{ concurrency: 'unbounded' }
 			)
-			const done = results.filter(Result.isSuccess).map(entry => entry.success)
-			const errors = results
-				.filter(Result.isFailure)
-				.map(entry => entry.failure)
+			const done = results.flatMap(({ result }) =>
+				Result.isSuccess(result) ? [result.success] : []
+			)
+			const failures = results.flatMap(({ job, result }) =>
+				Result.isFailure(result) ? [{ job, error: result.failure }] : []
+			)
+			const unfinished = failures
+				.filter(entry => entry.error._tag === 'TokenBudgetError')
+				.map(entry => entry.job.unit ?? planned.name)
+			const errors = failures
+				.filter(entry => entry.error._tag !== 'TokenBudgetError')
+				.map(entry => entry.error)
 			const used = [...new Set(done.map(entry => entry.model))]
 			const found = done.flatMap(entry => entry.findings)
 			const maxFindings = context.rules.agents.find(
@@ -285,24 +326,26 @@ export const FinderServiceLive = Layer.effect(
 				planned.role === 'agent' && maxFindings !== undefined
 					? sortFindings(found).slice(0, maxFindings)
 					: found
-			const [firstError] = errors
-			const failedAll = done.length === 0 && firstError !== undefined
+			const [firstFailure] = failures
+			const failedAll = done.length === 0 && errors.length > 0
 			const report: AgentRunReport = {
 				...base,
 				...(used.length > 0 && !used.includes(planned.model)
 					? { model: used.join(', '), fellBackFrom: planned.model }
 					: {}),
-				status: failedAll ? 'failed' : 'ok',
+				status: toFinderStatus(failedAll, unfinished.length),
 				toolCalls: done.reduce((sum, entry) => sum + entry.toolCalls, 0),
 				malformed: done.reduce((sum, entry) => sum + entry.malformed, 0),
 				findings: findings.length,
 				...(jobs.success.length > 1 ? { units: jobs.success.length } : {}),
-				...(firstError === undefined
+				...(unfinished.length > 0 ? { unfinished } : {}),
+				...(firstFailure === undefined
 					? {}
 					: {
-							error: failedAll
-								? firstError.message
-								: `${errors.length} of ${jobs.success.length} units failed: ${firstError.message}`,
+							error:
+								jobs.success.length === 1
+									? firstFailure.error.message
+									: `${failures.length} of ${jobs.success.length} units did not finish: ${firstFailure.error.message}`,
 						}),
 				...(errors.some(error => error._tag === 'LlmError')
 					? { endpointError: true }

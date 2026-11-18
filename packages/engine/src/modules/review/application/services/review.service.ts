@@ -9,7 +9,9 @@ import type { Rules } from '../../../../platform/config/rules.service'
 import { TokenLedger } from '../../../../platform/llm/token-ledger.service'
 import type { PlanReport } from '../../../routing/domain/plan-report.types'
 import { ValidatorService } from '../../../validation/application/validator.service'
+import { toIncompleteRun } from '../../domain/review-report.helper'
 import type { ReviewReport } from '../../domain/review-report.types'
+import { ReviewLimits } from '../review-limits.context'
 import { FinderService } from './finder.service'
 import { ModelHealthService } from './model-health.service'
 
@@ -27,7 +29,8 @@ export interface ReviewRequest {
  * agents run at once; bug findings with the same root cause merge, each merged bug is validated
  * once, then the severity floor and the nit caps place them. A dropped model is reported; with no
  * reviewer model left after finding, or a finder that failed at the endpoint, the report carries
- * `endpointError`. Models dropped while validating are reported but never fail the run.
+ * `endpointError`. Models dropped while validating are reported but never fail the run. Finders
+ * and validations the token budget stopped mark the report `incomplete`; the rest of it stays.
  */
 export class ReviewService extends Context.Service<
 	ReviewService,
@@ -41,6 +44,7 @@ export const ReviewServiceLive = Layer.effect(
 		const validator = yield* ValidatorService
 		const health = yield* ModelHealthService
 		const ledger = yield* TokenLedger
+		const limits = yield* ReviewLimits
 
 		const review = Effect.fn('ReviewService.review')(function* (
 			request: ReviewRequest
@@ -89,6 +93,11 @@ export const ReviewServiceLive = Layer.effect(
 			const endpointError = noReviewerLeft
 				? `no reviewer model left: ${droppedWhileFinding.map(drop => `${drop.model} ${drop.reason}`).join('; ')}`
 				: failed && `${failed.name}: ${failed.error ?? 'endpoint error'}`
+			const incomplete = toIncompleteRun({
+				agents,
+				validations,
+				tokensPerRun: limits.tokensPerRun,
+			})
 			return {
 				...outcome,
 				planReport,
@@ -97,6 +106,7 @@ export const ReviewServiceLive = Layer.effect(
 				droppedModels,
 				wallMillis: (yield* Clock.currentTimeMillis) - request.startedAt,
 				...(endpointError ? { endpointError } : {}),
+				...(incomplete ? { incomplete } : {}),
 				blocking: hasBlockingBug(outcome.bugs),
 			} satisfies ReviewReport
 		})

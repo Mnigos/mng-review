@@ -16,7 +16,8 @@ export interface AgentRunReport {
 	/** The models that answered; the planned one unless it was dropped. */
 	readonly model: string
 	readonly effort: Effort
-	readonly status: 'ok' | 'failed'
+	/** `incomplete`: the token budget stopped a unit or the agent before it answered. */
+	readonly status: 'ok' | 'incomplete' | 'failed'
 	readonly error?: string
 	/** The failure came from the model endpoint itself, not a dropped model or the token budget. */
 	readonly endpointError?: boolean
@@ -28,7 +29,16 @@ export interface AgentRunReport {
 	readonly malformed: number
 	/** Sub-agents of a deep review split into units. */
 	readonly units?: number
+	/** Units the token budget stopped before they answered; the agent's name when it is not split. */
+	readonly unfinished?: readonly string[]
 	readonly wallMillis: number
+}
+
+/** A run that reached `limits.tokens_per_run` before every agent and validator answered. */
+export interface IncompleteRun {
+	readonly reason: string
+	/** Finders and units that gave no answer, and the validations that did not run. */
+	readonly unfinished: readonly string[]
 }
 
 /** What `mng-review --base` reports: the plan, the outcome and what the run took. */
@@ -40,6 +50,8 @@ export interface ReviewReport extends ReviewOutcome {
 	readonly wallMillis: number
 	/** Set when a finder failed at the endpoint, or no reviewer model is left. */
 	readonly endpointError?: string
+	/** Set when the token budget stopped work; the findings that were produced are kept. */
+	readonly incomplete?: IncompleteRun
 	/** A kept bug at or above its severity floor. */
 	readonly blocking: boolean
 }

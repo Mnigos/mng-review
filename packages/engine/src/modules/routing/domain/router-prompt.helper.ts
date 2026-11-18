@@ -1,5 +1,9 @@
-import type { ChangedFile, DeclaredAgent } from '@mng-review/domain'
-import { fenceData, truncateText } from '../../../utils/fence.util'
+import {
+	budgetDiff,
+	type ChangedFile,
+	type DeclaredAgent,
+} from '@mng-review/domain'
+import { fenceData } from '../../../utils/fence.util'
 
 /** The router reads at most this much of the diff. */
 export const MAX_ROUTER_DIFF_CHARS = 24_000
@@ -17,7 +21,7 @@ function toCandidateLine(agent: DeclaredAgent): string {
 }
 
 /**
- * The router's user message: the file list, the candidates and the diff cut to
+ * The router's user message: the file list, the candidates and the diff budgeted across files to
  * `MAX_ROUTER_DIFF_CHARS`, each fenced as data with a fence longer than any backtick run inside.
  */
 export function toRouterUserMessage(
@@ -30,6 +34,6 @@ export function toRouterUserMessage(
 	return [
 		fenceData('Changed files:', fileList || NONE),
 		fenceData('Candidate agents:', candidateList || NONE),
-		fenceData('Diff:', truncateText(diff, MAX_ROUTER_DIFF_CHARS)),
+		fenceData('Diff:', budgetDiff(diff, MAX_ROUTER_DIFF_CHARS).text || NONE),
 	].join('\n\n')
 }

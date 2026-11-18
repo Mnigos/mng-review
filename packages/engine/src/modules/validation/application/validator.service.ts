@@ -16,11 +16,15 @@ import {
 } from '../../review/application/repo.toolkit'
 import { ReportVerdictTool } from '../../review/application/report-verdict.tool'
 import { AgentLoopService } from '../../review/application/services/agent-loop.service'
-import { ModelHealthService } from '../../review/application/services/model-health.service'
+import {
+	type ModelCallError,
+	ModelHealthService,
+} from '../../review/application/services/model-health.service'
 import {
 	type RepoScope,
 	RepoToolsService,
 } from '../../review/application/services/repo-tools.service'
+import type { LoopError } from '../../review/domain/review.errors'
 import { VALIDATOR_PROMPT } from './validator.prompt'
 
 /** Attempts per finding before it is kept as unvalidated. */
@@ -29,6 +33,9 @@ export const VALIDATION_ATTEMPTS = 2
 const MAX_FILE_CHARS = 40_000
 const NONE = '(none)'
 const NO_MODEL_LEFT = 'no validator model left'
+
+/** Why a validator conversation gave no verdict. */
+type ValidatorFailure = LoopError | ModelCallError
 
 /** What every validator of one run shares. */
 export interface ValidatorContext {
@@ -114,7 +121,7 @@ export const ValidatorServiceLive = Layer.effect(
 			finding: Finding,
 			context: ValidatorContext,
 			user: string,
-			lastError: Ref.Ref<string | undefined>
+			lastError: Ref.Ref<ValidatorFailure | undefined>
 		) =>
 			Effect.gen(function* () {
 				const dropped = yield* health.dropped
@@ -132,7 +139,7 @@ export const ValidatorServiceLive = Layer.effect(
 						finish: ReportVerdictTool.name,
 						parse: parseVerdict,
 					})
-					.pipe(Effect.tapError(error => Ref.set(lastError, error.message)))
+					.pipe(Effect.tapError(error => Ref.set(lastError, error)))
 				return {
 					status: value.verdict === 'confirm' ? 'confirmed' : 'rejected',
 					severity: value.severity,
@@ -147,7 +154,7 @@ export const ValidatorServiceLive = Layer.effect(
 			context: ValidatorContext
 		) {
 			const user = yield* toUserMessage(finding, context)
-			const lastError = yield* Ref.make<string | undefined>(undefined)
+			const lastError = yield* Ref.make<ValidatorFailure | undefined>(undefined)
 			return yield* attempt(finding, context, user, lastError).pipe(
 				Effect.retry({
 					times: VALIDATION_ATTEMPTS - 1,
@@ -157,7 +164,10 @@ export const ValidatorServiceLive = Layer.effect(
 					Ref.get(lastError).pipe(
 						Effect.map((last): Validation => ({
 							status: 'unvalidated',
-							error: last ?? error.message,
+							error: last?.message ?? error.message,
+							...(last?._tag === 'TokenBudgetError'
+								? { budgetSpent: true }
+								: {}),
 						}))
 					)
 				)
