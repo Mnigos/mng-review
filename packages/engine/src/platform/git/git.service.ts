@@ -40,7 +40,7 @@ export class GitWorkdir extends Context.Service<
 >()('mng-review/GitWorkdir') {}
 
 /** Output of one git command. */
-interface GitResult {
+export interface GitResult {
 	readonly exitCode: number
 	readonly stdout: string
 	readonly stderr: string
@@ -81,6 +81,10 @@ export class GitService extends Context.Service<
 			commit: string,
 			path: string
 		) => Effect.Effect<string | undefined, GitError>
+		/** Runs a read-only git command at the root; the caller judges the exit code. */
+		readonly exec: (
+			args: readonly string[]
+		) => Effect.Effect<GitResult, GitError>
 		/** Sorted names of the files directly inside a directory; `undefined` when it is missing. */
 		readonly listFilesAt: (
 			commit: string,
@@ -343,6 +347,7 @@ export const GitServiceLive = Layer.effect(
 
 		return {
 			root,
+			exec: (args: readonly string[]) => run(root, args),
 			resolveCommit,
 			mergeBase,
 			branchName,

@@ -7,6 +7,10 @@ export const FEATURE_MODES = ['always', 'manual', 'off'] as const
 export const DEPTH_SETTINGS = ['auto', 'quick', 'balanced', 'deep'] as const
 export const VERDICT_MODES = ['preview', 'approve'] as const
 export const CONFIG_PATH = '.mng/review.yml'
+/** Notes for the main reviewer and the validator: intentional patterns, where bugs hide. */
+export const CONTEXT_PATH = '.mng/CONTEXT.md'
+/** Accepted intentional decisions, one line each. */
+export const MEMORY_PATH = '.mng/MEMORY.md'
 export const DEFAULT_PRESET_NAME = 'mng:default'
 /** `models.validator` value that validates a finding on a reviewer model that did not report it. */
 export const CROSS_VALIDATOR = 'cross'

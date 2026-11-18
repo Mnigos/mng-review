@@ -13,15 +13,15 @@ import { Command, Flag } from 'effect/cli'
 import { CliExit, CONFIG_EXIT_CODE } from './cli-exit.errors'
 import { formatPlanJson, formatPlanText } from './plan.formatter'
 
-const NO_ROUTER_REASON = 'disabled with --no-router'
+export const NO_ROUTER_REASON = 'disabled with --no-router'
 
 /** Git, the rules and the token ledger of one CLI run. */
-const SessionLive = RulesServiceLive.pipe(
+export const SessionLive = RulesServiceLive.pipe(
 	Layer.provideMerge(GitServiceLive),
 	Layer.provideMerge(TokenLedgerLive)
 )
 
-const planFlags = {
+export const planFlags = {
 	base: Flag.String('base').pipe(
 		Flag.withDescription('Base to compare against, such as main or origin/main')
 	),
@@ -62,10 +62,10 @@ const planFlags = {
 } as const
 
 /** Flags of `mng-review plan` after parsing. */
-type PlanFlags = Command.Command.Config.Infer<typeof planFlags>
+export type PlanFlags = Command.Command.Config.Infer<typeof planFlags>
 
 /** A local run is started by a person, on a branch that is neither a draft nor a fork. */
-function toPullRequestInfo(flags: PlanFlags): PullRequestInfo {
+export function toPullRequestInfo(flags: PlanFlags): PullRequestInfo {
 	const author = Option.getOrUndefined(flags.author)
 	const target = Option.getOrUndefined(flags.target)
 	return {
