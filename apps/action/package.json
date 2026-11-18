@@ -1,0 +1,26 @@
+{
+  "name": "@mng-review/action",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "build": "bun build src/main.ts --target=bun --outdir=dist",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --root ../.. --project @mng-review/action --passWithNoTests"
+  },
+  "dependencies": {
+    "@effect/platform-bun": "catalog:",
+    "@mng-review/domain": "workspace:*",
+    "@mng-review/engine": "workspace:*",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@effect/platform-node-shared": "catalog:",
+    "@effect/vitest": "catalog:",
+    "@mng-review/typescript-config": "workspace:*",
+    "@types/bun": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

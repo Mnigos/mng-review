@@ -8,7 +8,7 @@ const DEFAULT_RUNTIME_RUNNERS = new Set([
 	'runSync',
 	'runSyncExit',
 ])
-/** Platform runtimes whose `runMain` starts the process; only the CLI entry calls it. */
+/** Platform runtimes whose `runMain` starts the process; only an app entry calls it. */
 const PLATFORM_RUNTIMES = new Set(['BunRuntime', 'NodeRuntime'])
 
 /** Local names that refer to `Effect`: the global name and any alias imported from `effect`. */
@@ -31,23 +31,24 @@ function getRunner(node: ESTree.MemberExpression, effectNames: EffectNames) {
 }
 
 /**
- * Forbids running an effect anywhere but the CLI entry: `Effect.runSync`,
+ * Forbids running an effect anywhere but an app entry: `Effect.runSync`,
  * `Effect.runPromise`, `Effect.runFork`, their `Exit` variants,
  * `Effect.runCallback` (including named imports of them from `effect/Effect`)
  * and `BunRuntime.runMain`/`NodeRuntime.runMain`. Library code returns
- * effects, and `apps/cli/src/main.ts` runs them once with every layer
- * provided; that file turns this rule off in `oxlint.conventions.mts`. Specs
+ * effects, and `apps/cli/src/main.ts` and `apps/action/src/main.ts` run them
+ * once with every layer provided; those files turn this rule off in
+ * `oxlint.conventions.mts`. Specs
  * run effects through `@effect/vitest`.
  */
 export const noDefaultRuntimeRule = defineRule({
 	meta: {
 		type: 'problem',
 		docs: {
-			description: 'Effects run only in the CLI entry point.',
+			description: 'Effects run only in an app entry point.',
 		},
 		messages: {
 			defaultRuntime:
-				'{{ name }} runs an effect outside apps/cli/src/main.ts; return the effect and let the entry point run it (AGENTS.md).',
+				'{{ name }} runs an effect outside an app entry (apps/*/src/main.ts); return the effect and let the entry point run it (AGENTS.md).',
 		},
 	},
 	create(context) {
