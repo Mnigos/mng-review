@@ -22,6 +22,16 @@ const ProcessLayer = NodeChildProcessSpawner.layer.pipe(
 	Layer.provide(NodeLayer)
 )
 
+/** Variables that point git at another repository than the fixture's own. */
+const GIT_REPOSITORY_VARIABLES = new Set([
+	'GIT_DIR',
+	'GIT_WORK_TREE',
+	'GIT_COMMON_DIR',
+	'GIT_INDEX_FILE',
+	'GIT_OBJECT_DIRECTORY',
+	'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+])
+
 /** Creates an isolated repository; all fixture commands disable hooks and signing. */
 export function createRepo(name = 'repo') {
 	const parent = realpathSync(mkdtempSync(join(tmpdir(), 'mng-review-spec-')))
@@ -46,7 +56,11 @@ export function createRepo(name = 'repo') {
 				cwd: root,
 				encoding: 'utf-8',
 				env: {
-					...process.env,
+					...Object.fromEntries(
+						Object.entries(process.env).filter(
+							([key]) => !GIT_REPOSITORY_VARIABLES.has(key)
+						)
+					),
 					GIT_CONFIG_GLOBAL: '/dev/null',
 					GIT_CONFIG_NOSYSTEM: '1',
 					GIT_TERMINAL_PROMPT: '0',
