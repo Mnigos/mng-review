@@ -155,19 +155,13 @@ export const InitServiceLive = Layer.effect(
 		const checkTargets = Effect.fn('InitService.checkTargets')(function* (
 			files: readonly RulesFile[]
 		) {
-			const realRoot = yield* fs
-				.realPath(git.root)
-				.pipe(Effect.mapError(toWriteError(RULES_DIR)))
 			for (const relative of getWritePaths(files)) {
-				const target = path.join(git.root, relative)
-				const exists = yield* fs
-					.exists(target)
-					.pipe(Effect.mapError(toWriteError(relative)))
-				if (!exists) continue
-				const real = yield* fs
-					.realPath(target)
-					.pipe(Effect.mapError(toWriteError(relative)))
-				if (real !== path.join(realRoot, relative))
+				// readLink succeeds only on a link, dangling ones included, which exists() would miss.
+				const isLink = yield* fs.readLink(path.join(git.root, relative)).pipe(
+					Effect.as(true),
+					Effect.orElseSucceed(() => false)
+				)
+				if (isLink)
 					return yield* new InitError({
 						reason: `${relative} is a symlink; init writes only plain files and folders inside the repository`,
 					})
