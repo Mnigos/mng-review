@@ -1,4 +1,4 @@
-import { Effect, Layer } from 'effect'
+import { Effect, Layer, Stream } from 'effect'
 import { AiError } from 'effect/ai'
 import { ReviewLimits } from '../../modules/review/application/review-limits.context'
 import { AgentLoopServiceLive } from '../../modules/review/application/services/agent-loop.service'
@@ -11,15 +11,19 @@ import {
 	type ScriptedLlmCall,
 } from '../../platform/llm/scripted-llm.layer'
 import { TokenLedgerLive } from '../../platform/llm/token-ledger.service'
+import { splitCappedLines } from '../../utils/capped-lines.util'
 import { DIFF, LIMITS, SCOPE } from './review-test.helper'
 
-/** Deterministic committed repository port; tests needing git semantics use gitLayer instead. */
+/**
+ * Deterministic committed repository port; tests needing git semantics use gitLayer instead.
+ * `foldLines` folds what `exec` prints.
+ */
 export function gitFixture(
 	overrides: Partial<GitService['Service']> = {}
 ): GitService['Service'] {
-	return {
-		root: '/fixture',
-		exec: args =>
+	const exec: GitService['Service']['exec'] =
+		overrides.exec ??
+		(args =>
 			Effect.succeed({
 				exitCode: 0,
 				stdout:
@@ -29,7 +33,20 @@ export function gitFixture(
 							? 'const balance = 9\ncharge(balance)'
 							: '',
 				stderr: '',
-			}),
+			}))
+	return {
+		root: '/fixture',
+		exec,
+		foldLines: (args, fold) =>
+			exec(args).pipe(
+				Effect.flatMap(({ stdout, ...result }) =>
+					Stream.runFold(
+						splitCappedLines(Stream.make(stdout), fold.maxLineChars),
+						() => fold.initial,
+						fold.step
+					).pipe(Effect.map(state => ({ ...result, state })))
+				)
+			),
 		readDiff: () => Effect.succeed(DIFF),
 		readFileAt: () => Effect.succeed('const balance = 9\ncharge(balance)'),
 		resolveCommit: () => Effect.succeed('head'),
