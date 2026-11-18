@@ -8,7 +8,7 @@ It talks to any OpenAI-compatible chat completions endpoint. You bring the endpo
 
 ## Status
 
-Under construction. The CLI works locally; the GitHub workflow comes later. The design is in [docs/spec.md](docs/spec.md); progress is tracked in the issues.
+Under construction. The CLI works locally; the GitHub workflow runs in shadow mode, writing its findings to the job summary without posting them. The design is in [docs/spec.md](docs/spec.md); progress is tracked in the issues.
 
 ## Usage
 
@@ -86,6 +86,62 @@ mng-review bench bench.yml
 ```
 
 replays the recorded changes in `bench.yml` and compares the findings with the expected ones: real bugs found and missed, noise, unmatched findings, nits, tokens per model and wall time per case, then totals with recall. The file format is in [docs/spec.md](docs/spec.md#benchmark). `--case <id>` runs a subset, `--line-window <n>` sets how far a finding may be from the expected line (default 20), `--concurrency <n>` reviews several cases at once, `--json` prints JSON. It exits 0 when every case ran, whatever the scores.
+
+### GitHub Actions
+
+The reusable workflow `.github/workflows/review.yml` reviews a pull request and writes the result to the job summary. In this stage it posts nothing on the pull request and never fails the job because of findings. Add a caller workflow to your repository and store the endpoint as two repository secrets:
+
+```yaml
+# .github/workflows/mng-review.yml
+name: MNG Review
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+# One run per pull request; a new push cancels the run before it.
+concurrency:
+  group: mng-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    # Pin a full commit SHA of this repository.
+    uses: Mnigos/mng-review/.github/workflows/review.yml@<commit-sha>
+    permissions:
+      contents: read
+      pull-requests: read
+    secrets:
+      llm-url: ${{ secrets.MNG_REVIEW_LLM_URL }}
+      llm-key: ${{ secrets.MNG_REVIEW_LLM_KEY }}
+```
+
+`pull_request_target` is safe here because the workflow and the `.mng/` rules come from the base branch and no code from the pull request is executed: the job checks out the base commit, reads the head commit with `git show` and runs only this repository's engine. It becomes unsafe if you add a step that checks out the head, installs dependencies, builds or runs scripts from the pull request, or interpolates its title, body or branch name into a shell command.
+
+| Input             | Default         | Meaning                                                         |
+| ----------------- | --------------- | --------------------------------------------------------------- |
+| `runner`          | `ubuntu-latest` | Runner label for the job                                        |
+| `tailscale`       | `false`         | Join a tailnet as an ephemeral node to reach a private endpoint |
+| `tailscale-tags`  | `tag:ci`        | Tags for that node; the OAuth client must own them              |
+| `timeout-minutes` | `20`            | Job timeout                                                     |
+
+Secrets: `llm-url` and `llm-key` (required), `tailscale-oauth-client-id` and `tailscale-oauth-secret` (with `tailscale: true`). For an endpoint on a tailnet, add under the job:
+
+```yaml
+with:
+  tailscale: true
+  tailscale-tags: tag:ci-review
+secrets:
+  llm-url: ${{ secrets.MNG_REVIEW_LLM_URL }}
+  llm-key: ${{ secrets.MNG_REVIEW_LLM_KEY }}
+  tailscale-oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+  tailscale-oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+```
+
+Give that tag an access rule that reaches the endpoint and nothing else. Pull requests from forks are skipped. Drafts follow `skip.drafts`. When the endpoint does not answer `GET /models` within 10 seconds, refuses the key, rate limits or fails, the summary says "reviewer offline" and the job passes. An invalid `.mng/` at the base commit fails the job with exit code 2 and names the file and key. ADR 0006 records the trigger and this contract.
 
 ### Exit codes
 

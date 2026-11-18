@@ -13,16 +13,17 @@ Pull request review by one built-in main reviewer and the agents a repository de
 
 ## Boundaries
 
-- Packages: `domain` (Effect `Schema` and pure logic; no services, no layers, no runtime, no I/O) ← `engine` (Effect services) ← `cli` (commands and output). Dependencies point one way: `apps/cli` → `packages/engine` → `packages/domain`. Packages never import an app. ADR 0001.
+- Packages: `domain` (Effect `Schema` and pure logic; no services, no layers, no runtime, no I/O) ← `engine` (Effect services) ← `cli` (commands and output) and `action` (the GitHub workflow entry). Dependencies point one way: `apps/cli` and `apps/action` → `packages/engine` → `packages/domain`. Packages never import an app. ADR 0001.
 - `packages/engine/src/platform/{config,llm,git}`: what every module shares. `config` loads `.mng/` and the endpoint settings, `llm` talks to the endpoint through `effect/ai` and `@effect/ai-openai-compat`, `git` reads the repository through `effect/process`.
 - `packages/engine/src/modules/<module>/` (`routing`, `review`, `validation`, `init`, `bench`): `application/` holds services (`Context.Service`, `*Live` layer, `Effect.fn('Service.method')`), ports and model tools; `infrastructure/` implements ports and holds parsers and adapters to outside systems.
 - `packages/domain/src/<module>/`: schemas, types, tagged errors, constants and helpers the engine and the CLI share. It never imports a service.
 - `apps/cli/src/`: `main.ts` is the only file that runs effects; `presentation/` holds commands (`*.command.ts`) and output formatters (`*.formatter.ts`). The CLI holds no review logic; it calls engine services.
+- `apps/action/src/`: `main.ts` is the only file that runs effects; `application/` holds the shadow run, `infrastructure/` the event parser and the runner client, `presentation/` the job summary formatters. Like the CLI it holds no review logic. ADR 0006.
 - Each layer of a module (`domain`, `application`, `infrastructure`, `presentation`) has one job: `domain` is pure types, tagged errors and helpers; `application` is services and ports; `infrastructure` is adapters; `presentation` is CLI commands and formatters.
 
 ## Code
 
-- File names: `<kebab-name>.<role>.ts` with a role from `base, client, command, config, constants, context, contract, errors, formatter, handler, helper, layer, layers, mapper, middleware, parser, port, prompt, query, repository, router, runtime, schema, schemas, service, tool, toolkit, types, util`. A file that belongs to another carries both roles, the kind last: `finding.schema.types.ts`; each role's folder rule applies. Package entries are `index.ts` and the CLI entry is `main.ts`. (lint-enforced)
+- File names: `<kebab-name>.<role>.ts` with a role from `base, client, command, config, constants, context, contract, errors, formatter, handler, helper, layer, layers, mapper, middleware, parser, port, prompt, query, repository, router, runtime, schema, schemas, service, tool, toolkit, types, util`. A file that belongs to another carries both roles, the kind last: `finding.schema.types.ts`; each role's folder rule applies. Package entries are `index.ts` and the app entries are `main.ts`. (lint-enforced)
 - Role folders: `service`, `port`, `tool` and `toolkit` in `application/` (`service` also in `platform/`); `repository`, `mapper` and `query` in `infrastructure/`; `parser` in `infrastructure/` or the pure `packages/domain` (text in, data out, no IO); `layer` and `client` in `infrastructure/` or `platform/`; `command` and `formatter` in `presentation/`; `util` in `src/utils/`. (lint-enforced, warning)
 - `command` is an `effect/cli` command, `formatter` turns results into CLI output, `prompt` is prompt text kept as a TypeScript constant, `tool` is one `effect/ai` tool and `toolkit` a group of tools with their handlers. ADR 0003.
 - Examples: `review-config.schema.ts`, `agent-file.parser.ts`, `agent-selection.helper.ts`, `finding.errors.ts`, `llm.service.ts`, `llm.layer.ts`, `git.service.ts`, `router.service.ts`, `review.constants.ts`, `review.command.ts`, `main-reviewer.prompt.ts`, `read-file.tool.ts`.
@@ -45,7 +46,7 @@ Pull request review by one built-in main reviewer and the agents a repository de
 - Consecutive single-line module-level `const` declarations stay together without blank lines. (lint-enforced)
 - A type inferred from a schema (`typeof Finding.Type`, `Schema.Schema.Type<typeof findingSchema>`) sits directly under that schema; several types of one schema follow it consecutively. (lint-enforced)
 - Secrets (names with `SECRET`, `PASSWORD`, `TOKEN` or `KEY`, such as `MNG_REVIEW_LLM_KEY`) are read with `Config.Redacted` and unwrapped with `Redacted.value` only where the client that needs them is built. (lint-enforced)
-- Effects run only in `apps/cli/src/main.ts` (`BunRuntime.runMain`). No `Effect.runSync`, `runPromise`, `runFork` or `runMain` anywhere else; library code returns effects and specs run them through `@effect/vitest`. (lint-enforced)
+- Effects run only in `apps/cli/src/main.ts` and `apps/action/src/main.ts` (`BunRuntime.runMain`). No `Effect.runSync`, `runPromise`, `runFork` or `runMain` anywhere else; library code returns effects and specs run them through `@effect/vitest`. (lint-enforced)
 - Retries, timeouts, concurrency limits and token budgets use Effect (`Schedule`, `Effect.timeout`, `Effect.forEach` with `concurrency`, `Semaphore`), never hand-written loops or counters. ADR 0002.
 - Utils are global and domain-agnostic (`src/utils/*.util.ts`); helpers are module-specific and domain-aware (`*.helper.ts`). Both have JSDoc.
 - No trivial one-use pass-through helpers.
