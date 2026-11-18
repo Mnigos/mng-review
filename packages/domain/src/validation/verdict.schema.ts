@@ -2,8 +2,8 @@ import { Schema, SchemaTransformation } from 'effect'
 import { severitySchema } from '../config/review-config.schema'
 
 export const VERDICTS = ['confirm', 'reject'] as const
-/** `path:line` or `path:start-end`, optionally followed by a note. */
-const EVIDENCE_PATTERN = /^[^\s:]+:\d+(?:-\d+)?(?:\s|$)/u
+/** `path:line` or `path:start-end`, optionally followed by a note; the path may hold spaces, not colons. */
+const EVIDENCE_PATTERN = /^[^\s:](?:[^:]*[^\s:])?:\d+(?:-\d+)?(?:\s|$)/u
 
 const evidenceSchema = Schema.Trim.check(
 	Schema.isPattern(EVIDENCE_PATTERN, {

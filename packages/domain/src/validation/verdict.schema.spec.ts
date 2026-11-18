@@ -37,18 +37,20 @@ describe('verdictSchema', () => {
 			['no source location'],
 			['src/charge.ts:abc invalid'],
 			['src/charge.ts:2suffix invalid'],
+			['src/Payment Form.tsx:2suffix invalid'],
 		].map(evidence => ({ evidence }))
 	)('confirmation rejects evidence %j', ({ evidence }) => {
 		expect(Result.isFailure(decode({ ...VERDICT, evidence }))).toBeTruthy()
 	})
-	test.each(['src/charge.ts:2', 'src/charge.ts:2-4 balance update'])(
-		'accepts location %s',
-		evidence => {
-			expect(
-				Result.isSuccess(decode({ ...VERDICT, evidence: [evidence] }))
-			).toBeTruthy()
-		}
-	)
+	test.each([
+		'src/charge.ts:2',
+		'src/charge.ts:2-4 balance update',
+		'src/Payment Form.tsx:12 balance update',
+	])('accepts location %s', evidence => {
+		expect(
+			Result.isSuccess(decode({ ...VERDICT, evidence: [evidence] }))
+		).toBeTruthy()
+	})
 	test.each(['verdict', 'severity', 'reason', 'evidence'])(
 		'requires %s',
 		field => {
