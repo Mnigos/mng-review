@@ -38,9 +38,18 @@ function toBugLines(finding: KeptFinding): string[] {
 		finding.validation?.status !== 'unverified'
 			? ', below the severity floor'
 			: ''
+	const { validation } = finding
+	const judged =
+		validation?.status === 'confirmed' || validation?.status === 'unverified'
+			? validation
+			: undefined
 	return [
 		`- ${toPlace(finding)} ${escapeMarkdown(finding.title)}`,
 		`  - ${escapeMarkdown(finding.agents.join(', '))}; ${toValidationText(finding)}${rerated}${floor}`,
+		...(judged?.loweredBecause
+			? [`  - Lowered because: ${escapeMarkdown(judged.loweredBecause)}`]
+			: []),
+		...(judged?.note ? [`  - Note: ${escapeMarkdown(judged.note)}`] : []),
 		`  - Trigger: ${escapeMarkdown(finding.trigger)}`,
 		`  - Impact: ${escapeMarkdown(finding.impact)}`,
 	]
