@@ -16,7 +16,7 @@ import {
 	NodeTerminal,
 } from '@effect/platform-node-shared'
 import { GitWorkdir } from '@mng-review/engine'
-import { ConfigProvider, Effect, Layer } from 'effect'
+import { ConfigProvider, Effect, Layer, Schema } from 'effect'
 import { Command } from 'effect/cli'
 import { HttpClient, HttpClientResponse } from 'effect/http'
 import { TestConsole } from 'effect/testing'
@@ -79,7 +79,32 @@ export function cleanupRepos() {
 		rmSync(root, { recursive: true, force: true })
 }
 
+/** The request fields the offline provider script uses to identify a conversation. */
+const cliModelRequestSchema = Schema.Struct({
+	model: Schema.String,
+	messages: Schema.Array(
+		Schema.Struct({ role: Schema.String, content: Schema.Unknown })
+	),
+	tools: Schema.optionalKey(
+		Schema.Array(
+			Schema.Struct({ function: Schema.Struct({ name: Schema.String }) })
+		)
+	),
+})
+export type CliModelRequest = typeof cliModelRequestSchema.Type
+
+/** A provider response selected by request content rather than scheduling order. */
+export interface CliModelResponse {
+	readonly content?: unknown
+	readonly status?: number
+}
+
 export interface CliOptions {
+	readonly respond?: (
+		request: CliModelRequest,
+		index: number
+	) => CliModelResponse
+
 	readonly endpoint?: string
 	readonly findings?: readonly unknown[]
 	readonly severity?: string
@@ -93,22 +118,32 @@ export function runReviewCli(
 	options: CliOptions = {}
 ) {
 	const requests: string[] = []
+	const calls: CliModelRequest[] = []
 	const http = HttpClient.make(request =>
-		Effect.sync(() => {
+		Effect.gen(function* () {
 			const index = requests.length
 			requests.push(request.url)
+			if (request.body._tag !== 'Uint8Array')
+				return yield* Effect.die('Expected an encoded provider request')
+			const call = Schema.decodeUnknownSync(
+				Schema.fromJsonString(cliModelRequestSchema)
+			)(new TextDecoder().decode(request.body.body))
+			calls.push(call)
+			const response = options.respond?.(call, index)
+			const status = response?.status ?? options.status
 			const content =
-				index === 0
+				response?.content ??
+				(index === 0
 					? { findings: options.findings ?? [] }
 					: {
 							verdict: 'confirm',
 							severity: options.severity ?? 'medium',
 							reason: 'The duplicate submission charges twice.',
 							evidence: ['src/billing/charge.ts:2'],
-						}
+						})
 			return HttpClientResponse.fromWeb(
 				request,
-				options.status === undefined
+				status === undefined
 					? Response.json({
 							id: 'fixture',
 							object: 'chat.completion',
@@ -137,7 +172,7 @@ export function runReviewCli(
 									type: 'server_error',
 								},
 							},
-							{ status: options.status, headers: { 'retry-after': '0' } }
+							{ status, headers: { 'retry-after': '0' } }
 						)
 			)
 		})
@@ -166,21 +201,32 @@ export function runReviewCli(
 			out: (yield* TestConsole.logLines).map(String).join('\n'),
 			err: (yield* TestConsole.errorLines).map(String).join('\n'),
 			requests,
+			calls,
 		}
 	}).pipe(Effect.provide(services), Effect.provide(TestConsole.layer))
 }
 
 /** One changed source file and one deterministic reviewer, without routing model calls. */
-export function reviewRepo() {
+export function reviewRepo(functions = false) {
 	const repo = createRepo()
 	repo.write(
 		'.mng/review.yml',
 		'models:\n  reviewer: {model: reviewer, effort: high}\n  validator: cross\n'
 	)
-	repo.write('src/billing/charge.ts', 'old\n')
+	const before = functions
+		? `${Array.from({ length: 2 }, (_, index) =>
+				[
+					`export function charge${index}() {`,
+					...Array.from({ length: 10 }, () => '  // fixture context'),
+					'  return "old"',
+					'}',
+				].join('\n')
+			).join('\n\n')}\n`
+		: 'old\n'
+	repo.write('src/billing/charge.ts', before)
 	repo.commit()
 	repo.git('checkout', '-b', 'feature')
-	repo.write('src/billing/charge.ts', 'new\n')
+	repo.write('src/billing/charge.ts', before.replaceAll('old', 'new'))
 	repo.commit()
 	return repo
 }

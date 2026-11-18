@@ -1,6 +1,6 @@
 import { layer } from '@effect/vitest'
 import { Deferred, Effect, Fiber, Layer, Result } from 'effect'
-import { LanguageModel } from 'effect/ai'
+import { AiError, LanguageModel } from 'effect/ai'
 import { LlmError } from '../../../../platform/llm/llm.errors'
 import {
 	makeScriptedLlmLayer,
@@ -61,6 +61,59 @@ describe('getDropReason', () => {
 			)
 		).toBe(expected)
 	})
+})
+
+layer(Layer.empty)('ModelHealthService unknown models', test => {
+	for (const [status, detail] of [
+		[400, 'Unknown MODEL model-a'],
+		[400, 'no such model model-a'],
+		[422, 'invalid model model-a'],
+	] as const)
+		test.effect(`unknown model ${detail} drops and refuses later calls`, () =>
+			Effect.gen(function* () {
+				const health = yield* ModelHealthService
+				expect(
+					yield* health.run(MODEL, generate).pipe(Effect.flip)
+				).toMatchObject({ _tag: 'ModelDroppedError', model: MODEL.model })
+				expect(yield* health.isAvailable(MODEL.model)).toBe(false)
+				expect(
+					yield* health.run(MODEL, generate).pipe(Effect.flip)
+				).toMatchObject({ _tag: 'ModelDroppedError' })
+				expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(1)
+			}).pipe(
+				Effect.provide(
+					healthLayer(() => Effect.fail(providerError(status, detail)))
+				)
+			)
+		)
+	test.effect('provider error without an HTTP status retains the model', () =>
+		Effect.gen(function* () {
+			const health = yield* ModelHealthService
+			expect(
+				yield* health.run(MODEL, generate).pipe(Effect.flip)
+			).toMatchObject({ _tag: 'LlmError' })
+			expect(yield* health.isAvailable(MODEL.model)).toBe(true)
+			expect(yield* health.dropped).toEqual([])
+			yield* health.run(MODEL, generate)
+			expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(2)
+		}).pipe(
+			Effect.provide(
+				healthLayer((_call, index) =>
+					index === 0
+						? Effect.fail(
+								new AiError.AiError({
+									module: 'fixture',
+									method: 'generateText',
+									reason: new AiError.UnknownError({
+										description: 'unknown model',
+									}),
+								})
+							)
+						: Effect.succeed([FINISH])
+				)
+			)
+		)
+	)
 })
 
 layer(Layer.empty)('ModelHealthService', test => {
@@ -219,4 +272,83 @@ layer(Layer.empty)('ModelHealthService', test => {
 				)
 			)
 	)
+
+	test.effect(
+		'exact token limit refuses the next call and preserves the shared ledger',
+		() =>
+			Effect.gen(function* () {
+				const health = yield* ModelHealthService
+				const ledger = yield* TokenLedger
+				yield* health.run(MODEL, generate)
+				const snapshot = yield* ledger.snapshot
+				expect(snapshot).toMatchObject({
+					'model-a': { calls: 1, totalTokens: 5 },
+				})
+				expect(
+					yield* health.run(MODEL, generate).pipe(Effect.flip)
+				).toMatchObject({ _tag: 'TokenBudgetError', spent: 5, limit: 5 })
+				expect(yield* ledger.snapshot).toEqual(snapshot)
+				expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(1)
+			}).pipe(
+				Effect.provide(
+					healthLayer(() => Effect.succeed([FINISH]), { tokensPerRun: 5 })
+				)
+			)
+	)
+	for (const [status, detail] of [
+		[400, 'model model-a not found'],
+		[422, 'model model-a does not exist'],
+		[422, 'model model-a not supported'],
+		[400, 'model model-a unavailable'],
+	] as const)
+		test.effect(`drops unknown-model response ${status}: ${detail}`, () =>
+			Effect.gen(function* () {
+				const health = yield* ModelHealthService
+				expect(
+					getDropReason(
+						new LlmError({
+							model: MODEL.model,
+							status,
+							reason: 'InvalidRequestError',
+							detail,
+							retryable: false,
+						})
+					)
+				).toBe(`unknown model (${status})`)
+				expect(
+					yield* health.run(MODEL, generate).pipe(Effect.flip)
+				).toMatchObject({ _tag: 'ModelDroppedError', model: MODEL.model })
+				expect(yield* health.isAvailable(MODEL.model)).toBe(false)
+				expect(
+					yield* health.run(MODEL, generate).pipe(Effect.flip)
+				).toMatchObject({ _tag: 'ModelDroppedError' })
+				expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(1)
+				expect(yield* health.dropped).toEqual([
+					{ model: MODEL.model, reason: `unknown model (${status})` },
+				])
+			}).pipe(
+				Effect.provide(
+					healthLayer(() => Effect.fail(providerError(status, detail)))
+				)
+			)
+		)
 })
+
+for (const [status, detail] of [
+	[400, 'Unknown MODEL model-a'],
+	[400, 'no such model model-a'],
+	[422, 'invalid model model-a'],
+] as const)
+	test(`classifies ${status}: ${detail} as an unknown model`, () => {
+		expect(
+			getDropReason(
+				new LlmError({
+					model: MODEL.model,
+					status,
+					reason: 'InvalidRequestError',
+					detail,
+					retryable: false,
+				})
+			)
+		).toBe(`unknown model (${status})`)
+	})

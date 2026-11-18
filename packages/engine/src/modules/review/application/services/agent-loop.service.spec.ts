@@ -377,37 +377,38 @@ layer(Layer.empty)('AgentLoopService', test => {
 			)
 		})
 	)
-	test.effect(
-		'endpoint ToolParameterValidationError receives a correction turn',
-		() =>
-			Effect.gen(function* () {
-				const error = new AiError.AiError({
-					module: 'fixture',
-					method: 'generateText',
-					reason: new AiError.ToolParameterValidationError({
-						toolName: 'read_file',
-						description: 'invalid JSON',
-					}),
-				})
-				yield* Effect.gen(function* () {
-					expect(
-						(yield* AgentLoopService.use(loop => loop.run(REQUEST))).turns
-					).toBe(2)
-					expect(
-						JSON.stringify(
-							(yield* ScriptedLlm.use(script => script.calls))[1]?.options
-								.prompt
-						)
-					).toContain('not valid JSON')
-				}).pipe(
-					Effect.provide(
-						loopLayer((_call, index) =>
-							index === 0 ? Effect.fail(error) : Effect.succeed(answer())
+	for (const toolName of ['read_file', 'report_findings'])
+		test.effect(
+			`endpoint invalid JSON arguments for ${toolName} receive a correction turn`,
+			() =>
+				Effect.gen(function* () {
+					const error = new AiError.AiError({
+						module: 'fixture',
+						method: 'generateText',
+						reason: new AiError.ToolParameterValidationError({
+							toolName,
+							description: 'invalid JSON',
+						}),
+					})
+					yield* Effect.gen(function* () {
+						expect(
+							(yield* AgentLoopService.use(loop => loop.run(REQUEST))).turns
+						).toBe(2)
+						expect(
+							JSON.stringify(
+								(yield* ScriptedLlm.use(script => script.calls))[1]?.options
+									.prompt
+							)
+						).toContain('not valid JSON')
+					}).pipe(
+						Effect.provide(
+							loopLayer((_call, index) =>
+								index === 0 ? Effect.fail(error) : Effect.succeed(answer())
+							)
 						)
 					)
-				)
-			})
-	)
+				})
+		)
 	test.effect(
 		'wall deadline forces one finish-only message using the test clock',
 		() =>
@@ -549,6 +550,49 @@ layer(Layer.empty)('AgentLoopService', test => {
 					})
 					expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(0)
 				}).pipe(Effect.provide(loopLayer(() => Effect.succeed(answer()))))
+			})
+	)
+
+	test.effect(
+		'non-dropping model failure propagates without a correction or repository dispatch',
+		() =>
+			Effect.gen(function* () {
+				const callSpy = vi.fn(() => Effect.succeed('unused'))
+				yield* Effect.gen(function* () {
+					expect(
+						yield* AgentLoopService.use(loop => loop.run(REQUEST)).pipe(
+							Effect.flip
+						)
+					).toMatchObject({
+						_tag: 'LlmError',
+						model: MODEL.model,
+						status: 500,
+						detail: expect.stringContaining('fixture failure') as unknown,
+					})
+					expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(1)
+					expect(
+						yield* ModelHealthService.use(health => health.dropped)
+					).toEqual([])
+					expect(callSpy).not.toHaveBeenCalled()
+				}).pipe(
+					Effect.provide(
+						loopLayer(
+							() =>
+								Effect.fail(
+									new AiError.AiError({
+										module: 'fixture',
+										method: 'generateText',
+										reason: new AiError.InternalProviderError({
+											description: 'fixture failure',
+											http: { response: { status: 500, headers: {} } },
+										}),
+									})
+								),
+							{},
+							callSpy
+						)
+					)
+				)
 			})
 	)
 })
