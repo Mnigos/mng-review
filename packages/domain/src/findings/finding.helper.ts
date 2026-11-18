@@ -128,6 +128,19 @@ function absorb(kept: Finding, other: Finding): Finding {
 }
 
 /**
+ * A report joins a group when it has the same root cause as one member and no member from its own
+ * finder (agent and model) reports something else, so a chain of loose matches never folds one
+ * finder's two distinct problems into one.
+ */
+function canJoin(group: readonly Finding[], finding: Finding): boolean {
+	const matches = group.map(member => isSameRootCause(member, finding))
+	if (!matches.includes(true)) return false
+	return group.every(
+		(member, index) => matches[index] || hasOtherReporter(member, finding)
+	)
+}
+
+/**
  * Merges findings with the same root cause. The merged finding keeps the text and the severity of
  * the most severe report and every agent, model and distinct evidence line. Inputs are not modified.
  */
@@ -139,9 +152,7 @@ export function mergeFindings(findings: readonly Finding[]): Finding[] {
 		(a, b) => getSeverityRank(b.severity) - getSeverityRank(a.severity)
 	)
 	for (const finding of bySeverity) {
-		const index = members.findIndex(group =>
-			group.some(member => isSameRootCause(member, finding))
-		)
+		const index = members.findIndex(group => canJoin(group, finding))
 		const match = merged[index]
 		if (match) {
 			merged[index] = absorb(match, finding)

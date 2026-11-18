@@ -323,6 +323,59 @@ const REWORDED_PAIRS = [
 ] as const
 
 describe('description overlap across finders', () => {
+	test.each([
+		{
+			name: 'keeps distinct reports from the same finder separate across a matching bridge',
+			thirdAgent: 'agent-x',
+		},
+		{
+			name: 'merges a description-overlap chain across three different finders',
+			thirdAgent: 'agent-z',
+		},
+	] as const)('$name', ({ thirdAgent }) => {
+		const sessions = finding({
+			path: 'src/auth.ts',
+			line: 20,
+			title: 'Expired sessions remain valid',
+			trigger: 'An expired session reaches the handler.',
+			impact: 'Access continues after expiry.',
+			agents: ['agent-x'],
+			models: ['model-m'],
+		})
+		const bridge = finding({
+			path: sessions.path,
+			line: sessions.line + 1,
+			title: 'Authorization checks allow invalid access',
+			trigger:
+				'An expired session reaches the handler. A caller requests another account record.',
+			impact: 'Access continues after expiry. Private data becomes visible.',
+			agents: ['agent-y'],
+			models: ['model-m'],
+		})
+		const ownership = finding({
+			path: sessions.path,
+			line: sessions.line + NEAR_LINES,
+			title: 'Missing ownership check',
+			trigger: 'A caller requests another account record.',
+			impact: 'Private data becomes visible.',
+			agents: [thirdAgent],
+			models: ['model-m'],
+		})
+		expect(isSameRootCause(sessions, bridge)).toBeTruthy()
+		expect(isSameRootCause(bridge, ownership)).toBeTruthy()
+		expect(isSameRootCause(sessions, ownership)).toBe(false)
+		const merged = mergeFindings([sessions, bridge, ownership])
+		if (thirdAgent === 'agent-x') {
+			expect(merged).toEqual([
+				{ ...sessions, agents: ['agent-x', 'agent-y'] },
+				ownership,
+			])
+			return
+		}
+		expect(merged).toEqual([
+			{ ...sessions, agents: ['agent-x', 'agent-y', 'agent-z'] },
+		])
+	})
 	test.each(REWORDED_PAIRS)(
 		'merges reworded reports in $path and records both agents',
 		pair => {
