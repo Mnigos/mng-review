@@ -16,7 +16,7 @@ import type { AgentFile } from './agent.types'
  * Front matter between two `---` lines at the very start of the file. Each `---` stands on its own
  * line; trailing spaces are allowed.
  */
-const FRONT_MATTER = /^---[ \t]*\n(?:([\s\S]*?)\n)?---[ \t]*(?:\n|$)/u
+const FRONT_MATTER = /^---[ \t]*\n(?:([\s\S]*?)\n)??---[ \t]*(?:\n|$)/u
 
 /** YAML front matter and the Markdown body after it. */
 export interface FrontMatterSplit {
