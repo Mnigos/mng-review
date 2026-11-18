@@ -87,8 +87,9 @@ const expandImport = Effect.fn('RulesService.expandImport')(function* (
 /**
  * Replaces each import line of an agent body with the file or section it names, read through the
  * same reader as the agent. Imported text is inserted as is; imports inside it stay as they are.
+ * A missing file or heading, or a path outside the repository, fails with a `ConfigError`.
  */
-function expandImports(body: string, reader: RepoReader, file: string) {
+export function expandImports(body: string, reader: RepoReader, file: string) {
 	return Effect.forEach(body.split('\n'), line =>
 		expandImport(line, reader, file)
 	).pipe(Effect.map(lines => lines.join('\n')))

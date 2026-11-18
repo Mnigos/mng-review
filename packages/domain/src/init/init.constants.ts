@@ -12,7 +12,7 @@ export const NIT_TOPIC_PATTERN = /\b(?:conventions?|style|styling|hygiene)\b/iu
 export const DOC_DIR_PATTERN = /^(?:docs?|documentation)$/iu
 /** File names of documentation, for the last segment of an `alwaysApprove` glob. */
 export const DOC_FILE_PATTERN =
-	/(?:\.(?:md|mdx|markdown|txt|rst|adoc)$|^(?:readme|changelog|license|contributing)(?:\.|$))/iu
+	/(?:\.(?:md|mdx|markdown|txt|rst|adoc)|^(?:readme|changelog|license|contributing))$/iu
 /** Suffix for an imported agent whose file name is a built-in role or not a valid agent name. */
 export const RENAMED_AGENT_SUFFIX = 'agent'
 

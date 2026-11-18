@@ -146,7 +146,7 @@ models:
 
 ## Init
 
-`mng-review init` writes `review.yml` (extends `mng:default`), `CONTEXT.md` with the headings `Intentional patterns, not bugs` and `Where real bugs tend to hide`, an empty `MEMORY.md`, and two example agents, one `kind: bug` and one `kind: nit`. It refuses an existing `.mng/`; `--force` writes over the files it creates and leaves the others. Every generated `review.yml` and agent file is decoded before anything is written.
+`mng-review init` writes `review.yml` (extends `mng:default`), `CONTEXT.md` with the headings `Intentional patterns, not bugs` and `Where real bugs tend to hide`, an empty `MEMORY.md`, and two example agents, one `kind: bug` and one `kind: nit`. It refuses an existing `.mng/`; `--force` writes over the files it creates and leaves the others. Before anything is written, every generated `review.yml` and agent file is loaded as a review would load it, imports included, and a symlink on the way to any file it writes fails the command.
 
 `mng-review init --from-macroscope` reads `.macroscope/` and leaves it untouched:
 
@@ -164,7 +164,7 @@ models:
 | `model`, `reasoning` | dropped; the agent runs on `models.agents` |
 | `maxRuns`, `maxBudget*` | dropped; `limits` cap runs and tokens |
 | `approvability.md` `neverApprove` | `risk_paths` |
-| its `alwaysApprove` | `skip.paths` for documentation globs only; the rest is reported |
+| its `alwaysApprove` | `skip.paths` for documentation globs only (no `!` globs); the rest is reported |
 | its body | not imported |
 
 Each agent gets `kind: nit` when its title or body mentions conventions, style or hygiene, otherwise `kind: bug`. A file name becomes lowercase with dashes for other characters; a name that is still invalid, names a built-in role or is taken gets a suffix. Line ends become LF. The output lists every dropped, changed or guessed field at the end. Exit codes: 0 when written, 2 when nothing is written.

@@ -1,4 +1,10 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs'
+import {
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	readdirSync,
+	symlinkSync,
+} from 'node:fs'
 import { join } from 'node:path'
 import { layer } from '@effect/vitest'
 import {
@@ -54,6 +60,60 @@ afterEach(() => {
 })
 
 layer(Layer.empty, { excludeTestServices: true })('InitService', test => {
+	test.effect(
+		'force refuses a symlinked target and writes nothing through it',
+		() =>
+			Effect.gen(function* () {
+				const repo = createRepo()
+				repo.write(MACROSCOPE_APPROVABILITY_PATH, 'Original approvability.\n')
+				mkdirSync(join(repo.root, '.mng'))
+				symlinkSync(
+					join(repo.root, MACROSCOPE_APPROVABILITY_PATH),
+					join(repo.root, CONFIG_PATH)
+				)
+				const error = yield* InitService.use(service =>
+					service.init({ ...STARTER_OPTIONS, force: true })
+				).pipe(Effect.provide(initLayer(repo.root)), Effect.flip)
+				expect(error).toBeInstanceOf(InitError)
+				expect(error.message).toContain(`${CONFIG_PATH} is a symlink`)
+				expect(
+					readFileSync(join(repo.root, MACROSCOPE_APPROVABILITY_PATH), 'utf-8')
+				).toBe('Original approvability.\n')
+				expect(readdirSync(join(repo.root, '.mng'))).toEqual(['review.yml'])
+			})
+	)
+
+	test.effect('force refuses a symlinked .mng folder', () =>
+		Effect.gen(function* () {
+			const repo = createRepo()
+			const outside = createRepo('outside')
+			symlinkSync(outside.root, join(repo.root, '.mng'))
+			const error = yield* InitService.use(service =>
+				service.init({ ...STARTER_OPTIONS, force: true })
+			).pipe(Effect.provide(initLayer(repo.root)), Effect.flip)
+			expect(error.message).toContain('.mng is a symlink')
+			expect(existsSync(join(outside.root, 'review.yml'))).toBe(false)
+		})
+	)
+
+	for (const body of ['', '@/docs/missing.md', '@/../outside.md'])
+		test.effect(
+			`refuses an imported agent that would not load, writing nothing: ${JSON.stringify(body)}`,
+			() =>
+				Effect.gen(function* () {
+					const repo = createRepo()
+					repo.write(
+						'.macroscope/check-run-agents/billing.md',
+						`---\ntitle: Billing checks\n---\n${body}\n`
+					)
+					const error = yield* InitService.use(service =>
+						service.init(IMPORT_OPTIONS)
+					).pipe(Effect.provide(initLayer(repo.root)), Effect.flip)
+					expect(error).toBeInstanceOf(ConfigError)
+					expect(existsSync(join(repo.root, '.mng'))).toBe(false)
+				})
+		)
+
 	for (const fromSubdirectory of [false, true])
 		test.effect(
 			`writes all starter files at the git root from ${fromSubdirectory ? 'a subdirectory' : 'the root'}`,
