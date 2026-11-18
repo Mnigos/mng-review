@@ -122,6 +122,28 @@ describe('toFindingsLines', () => {
 			'no validator answer, kept, below the severity floor'
 		)
 	})
+	test('keeps carriage-return image syntax inside the finding path code span', () => {
+		const lines = toFindingsLines({
+			...reviewReport(),
+			bugs: [],
+			nits: [
+				{
+					...bug({
+						path: 'first\r\r![x](https:&#x2f;&#x2f;attacker.example/pixel)\r\rlast',
+						title: 'Path check',
+					}),
+					kind: 'nit',
+				},
+			],
+			rejected: [],
+		})
+		const findingLine = lines.at(-1) ?? ''
+		expect(findingLine).toBe(
+			'- `first ![x](https:&#x2f;&#x2f;attacker.example/pixel) last:2` Path check (reviewer)'
+		)
+		expect(findingLine).not.toMatch(/[\r\n\u2028\u2029]/u)
+		expect(findingLine.replaceAll(/`[^`]*`/gu, '')).not.toMatch(/(?<!\\)!\[/u)
+	})
 	test('empty findings print None and omit optional sections', () => {
 		expect(
 			toFindingsLines({ ...reviewReport(), bugs: [], nits: [], rejected: [] })
