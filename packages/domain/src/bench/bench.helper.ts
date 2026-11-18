@@ -1,9 +1,13 @@
 import { Effect } from 'effect'
 import { ConfigError } from '../config/config.errors'
+import { SAME_DESCRIPTION_OVERLAP } from '../findings/finding.constants'
+import { getWordOverlap } from '../findings/finding.helper'
+import type { KeptFinding } from '../validation/validation.types'
 import type { BenchFile, ExpectedFinding } from './bench-file.schema'
 import type {
 	BenchFinding,
 	BenchMatch,
+	BenchStatus,
 	BenchTotals,
 	CaseCounts,
 	CaseScore,
@@ -21,6 +25,62 @@ export interface MatchInput {
 	readonly expected: readonly ExpectedFinding[]
 	readonly findings: readonly BenchFinding[]
 	readonly lineWindow: number
+}
+
+/** A kept bug as the benchmark reports it; a bug without a validation counts as unvalidated. */
+export function toBenchFinding(finding: KeptFinding): BenchFinding {
+	const status = finding.validation?.status
+	return {
+		path: finding.path,
+		line: finding.line,
+		title: finding.title,
+		severity: finding.severity,
+		trigger: finding.trigger,
+		impact: finding.impact,
+		status:
+			status === undefined || status === 'rejected' ? 'unvalidated' : status,
+	}
+}
+
+/** The directory of a repository path; `''` at the root. */
+function getDirectory(path: string): string {
+	return path.slice(0, Math.max(0, path.lastIndexOf('/')))
+}
+
+/**
+ * True when the finding sits in a sibling file of the entry (another file of the same directory)
+ * and describes the same defect: its title, trigger and impact share at least
+ * `SAME_DESCRIPTION_OVERLAP` of the entry summary's content words, the share at which two reports
+ * count as one problem when merging.
+ */
+function isNearMatch(entry: ExpectedFinding, finding: BenchFinding): boolean {
+	return (
+		finding.path !== entry.path &&
+		getDirectory(finding.path) === getDirectory(entry.path) &&
+		getWordOverlap(
+			entry.summary,
+			[finding.title, finding.trigger, finding.impact].join(' ')
+		) >= SAME_DESCRIPTION_OVERLAP
+	)
+}
+
+/**
+ * Pairs each `real` entry left unmatched with the first unmatched finding near it (`isNearMatch`),
+ * each finding at most once, entries in file order.
+ */
+function getNearMatches(
+	missed: readonly ExpectedFinding[],
+	unmatched: readonly BenchFinding[]
+): BenchMatch[] {
+	const used = new Set<BenchFinding>()
+	return missed.flatMap(expected => {
+		const finding = unmatched.find(
+			candidate => !used.has(candidate) && isNearMatch(expected, candidate)
+		)
+		if (!finding) return []
+		used.add(finding)
+		return [{ expected, finding }]
+	})
 }
 
 /** The cases `ids` names, in file order, or every case when `ids` is empty. An unknown id fails. */
@@ -81,7 +141,8 @@ function toPairs(input: MatchInput): ReadonlyMap<number, number> {
 
 /**
  * Compares the bug findings of one case with its expected entries. A finding matches an entry
- * on the same path within `lineWindow` lines.
+ * on the same path within `lineWindow` lines. A `real` entry left unmatched with a finding near it
+ * (`isNearMatch`) is a near match: neither found nor missed, and its finding is not unmatched.
  */
 export function toCaseScore(input: MatchInput): CaseScore {
 	const pairs = toPairs(input)
@@ -92,13 +153,23 @@ export function toCaseScore(input: MatchInput): CaseScore {
 		return finding ? [{ expected, finding } satisfies BenchMatch] : []
 	})
 	const matchedFindings = new Set(pairs.values())
+	const missed = input.expected.filter(
+		(entry, index) => entry.label === 'real' && !pairs.has(index)
+	)
+	const unmatched = input.findings.filter(
+		(_, index) => !matchedFindings.has(index)
+	)
+	const near = getNearMatches(missed, unmatched)
 	return {
 		found: matches.filter(match => match.expected.label === 'real'),
-		missed: input.expected.filter(
-			(entry, index) => entry.label === 'real' && !pairs.has(index)
+		missed: missed.filter(
+			entry => !near.some(match => match.expected === entry)
 		),
+		near,
 		noise: matches.filter(match => match.expected.label !== 'real'),
-		unmatched: input.findings.filter((_, index) => !matchedFindings.has(index)),
+		unmatched: unmatched.filter(
+			finding => !near.some(match => match.finding === finding)
+		),
 	}
 }
 
@@ -108,15 +179,26 @@ export function toBenchTotals(cases: readonly CaseCounts[]): BenchTotals {
 		cases.reduce((total, entry) => total + count(entry), 0)
 	const found = sum(entry => entry.score.found.length)
 	const missed = sum(entry => entry.score.missed.length)
+	const near = sum(entry => entry.score.near.length)
 	const unmatched = sum(entry => entry.score.unmatched.length)
+	const real = found + missed + near
+	const withStatus = (status: BenchStatus) =>
+		sum(
+			entry =>
+				entry.score.found.filter(match => match.finding.status === status)
+					.length
+		)
 	return {
 		cases: cases.length,
 		found,
+		confirmed: withStatus('confirmed'),
+		unverified: withStatus('unverified'),
 		missed,
+		near,
 		noise: sum(entry => entry.score.noise.length),
 		unmatched,
 		nits: sum(entry => entry.nits),
-		recall: found + missed === 0 ? null : found / (found + missed),
+		recall: real === 0 ? null : found / real,
 		unmatchedPerCase: cases.length === 0 ? null : unmatched / cases.length,
 	}
 }

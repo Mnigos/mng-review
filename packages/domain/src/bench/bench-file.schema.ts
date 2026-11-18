@@ -46,6 +46,10 @@ export const benchCaseSchema = Schema.Struct({
 	head: Schema.NonEmptyString,
 	/** Pull request labels to simulate. */
 	labels: nameListSchema.pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+	/** Pull request title the models see, as `--title` gives it. */
+	title: Schema.optionalKey(Schema.NonEmptyString),
+	/** Pull request description the models see, as `--body` gives it. */
+	body: Schema.optionalKey(Schema.String),
 	expected: Schema.Array(expectedFindingSchema).check(hasUniqueExpectedIds),
 })
 export type BenchCase = typeof benchCaseSchema.Type
