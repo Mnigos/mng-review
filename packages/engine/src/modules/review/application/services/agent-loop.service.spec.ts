@@ -1487,6 +1487,73 @@ layer(Layer.empty)('coverage continuation', test => {
 			)
 		})
 	)
+	for (const name of ['diff', 'read_file'] as const)
+		test.effect(
+			`a ${name === 'diff' ? 'pathless diff' : name} output withheld by the token budget leaves its files unread`,
+			() =>
+				Effect.gen(function* () {
+					const paths =
+						name === 'diff' ? [BILLING_PATH, 'src/other.ts'] : [BILLING_PATH]
+					const params = name === 'diff' ? {} : { path: BILLING_PATH }
+					const conversationTokens = 1000
+					const output = [
+						...(name === 'diff' ? paths.map(path => unifiedDiff(path)) : []),
+						'x'.repeat(CHARS_PER_TOKEN * conversationTokens),
+					].join('\n')
+					const callSpy = vi.fn(() => Effect.succeed(output))
+					yield* Effect.gen(function* () {
+						expect(
+							yield* AgentLoopService.use(loop =>
+								loop.run({
+									...COVERED_REQUEST,
+									coverage: { ...COVERED_REQUEST.coverage, paths },
+									budget: {
+										runTokens: LIMITS.tokensPerRun,
+										conversationTokens,
+									},
+								})
+							)
+						).toEqual({
+							value: { findings: [], dropped: 0 },
+							continued: true,
+							turns: 3,
+							toolCalls: 1,
+						})
+						expect(callSpy).toHaveBeenCalledExactlyOnceWith(SCOPE, name, params)
+						const calls = yield* ScriptedLlm.use(script => script.calls)
+						expect(calls).toHaveLength(3)
+						expect(calls[1]?.options.prompt.content.at(-1)).toMatchObject({
+							role: 'tool',
+							content: [
+								{
+									name,
+									result: `error: token budget reached; call ${REQUEST.finish} now`,
+								},
+							],
+						})
+						expect(calls[2]?.options.prompt.content.at(-1)).toMatchObject({
+							role: 'tool',
+							content: [
+								{
+									name: REQUEST.finish,
+									result: toContinuationMessage(paths, REQUEST.finish),
+								},
+							],
+						})
+					}).pipe(
+						Effect.provide(
+							loopLayer(
+								(_call, index) =>
+									Effect.succeed(
+										index === 0 ? [toolCall(name, params), FINISH] : answer()
+									),
+								{},
+								callSpy
+							)
+						)
+					)
+				})
+		)
 	for (const name of ['read_file', 'diff', 'blame'] as const)
 		test.effect(`successful ${name} counts as reading a normalized path`, () =>
 			Effect.gen(function* () {
