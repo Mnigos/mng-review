@@ -63,7 +63,7 @@ function absentAsUndefined<TValue>(path: string) {
 /**
  * Reads the working tree under `root`. Like git, names are case-exact: every component must
  * appear with that spelling in its directory, even on a case-insensitive file system. A path whose
- * real location (after symlinks) leaves the root reads as missing.
+ * real location (after symlinks) leaves the root is refused with a `ConfigError`.
  */
 export const makeWorktreeReader = Effect.fn('makeWorktreeReader')(function* (
 	root: string
@@ -96,7 +96,11 @@ export const makeWorktreeReader = Effect.fn('makeWorktreeReader')(function* (
 		)
 	}
 
-	/** The real path of a case-exact path inside the root, or `undefined`. */
+	/**
+	 * The real path of a case-exact path inside the root, or `undefined` when it does not exist. A
+	 * path that resolves outside the root fails, so a symlinked `review.yml` never silently gives
+	 * the defaults.
+	 */
 	const resolveInside = (rawPath: string) =>
 		Effect.gen(function* () {
 			const clean = yield* requireRepoPath(rawPath)
@@ -105,8 +109,12 @@ export const makeWorktreeReader = Effect.fn('makeWorktreeReader')(function* (
 				.realPath(path.join(root, clean))
 				.pipe(absentAsUndefined<string>(clean))
 			if (real === undefined) return undefined
-			const inside = real === realRoot || real.startsWith(realRoot + path.sep)
-			return inside ? { clean, real } : undefined
+			if (real !== realRoot && !real.startsWith(realRoot + path.sep))
+				return yield* new ConfigError({
+					source: clean,
+					reason: 'resolves outside the repository (symlink)',
+				})
+			return { clean, real }
 		})
 
 	const readFile = (rawPath: string) =>

@@ -107,6 +107,8 @@ export const LlmServiceLive = Layer.effect(
 				}),
 				Effect.provide(OpenAiLanguageModel.model(model.model)),
 				Effect.provideService(OpenAiClient.OpenAiClient, client),
+				// Provider and HTTP spans record the raw error, URL and host; only this redacted span is kept.
+				Effect.withTracerEnabled(false),
 				Effect.timeout(LLM_CALL_TIMEOUT),
 				Effect.catch(error =>
 					Clock.currentTimeMillis.pipe(
