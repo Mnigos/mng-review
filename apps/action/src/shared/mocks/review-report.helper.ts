@@ -147,6 +147,36 @@ export function reviewReport(): ReviewReport {
 	}
 }
 
+/** Two deep reviewer runs have distinct results and timings for summary row matching. */
+export function deepReviewReport(): ReviewReport {
+	const report = reviewReport()
+	const plan = {
+		...report.planReport.plan,
+		depth: 'deep',
+		depthSource: 'config',
+		runs: report.planReport.plan.runs.flatMap(run =>
+			['model-a', 'model-b'].map(model => ({ ...run, model }))
+		),
+	} as const
+	return {
+		...report,
+		planReport: { ...report.planReport, plan },
+		agents: plan.runs.map((run, index) => ({
+			name: run.name,
+			title: run.title,
+			kind: run.kind,
+			model: run.model,
+			effort: run.effort,
+			status: 'ok',
+			findings: index + 1,
+			toolCalls: index + 3,
+			malformed: 0,
+			wallMillis: (index + 1) * 1200,
+		})),
+		droppedModels: [],
+	}
+}
+
 /** A dependency premise stays visible without producing an inline bug. */
 export function unverifiedBug() {
 	return {

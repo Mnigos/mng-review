@@ -3,7 +3,10 @@ import type {
 	ShadowOutcome,
 } from '../application/shadow-run.types'
 import { BASE_SHA, HEAD_SHA } from '../shared/mocks/pull-request-event.helper'
-import { reviewReport } from '../shared/mocks/review-report.helper'
+import {
+	deepReviewReport,
+	reviewReport,
+} from '../shared/mocks/review-report.helper'
 import { escapeMarkdown } from '../utils/markdown.util'
 import {
 	formatLogLine,
@@ -140,6 +143,76 @@ describe('formatSummary', () => {
 		expect(formatLogLine({ status: 'reviewed', event: EVENT, report })).toBe(
 			`mng-review: ${toVerdictLine(report)}`
 		)
+	})
+	test.each(['planned', 'reversed'])(
+		'matches deep reviewer rows to their model with reports in %s order',
+		order => {
+			const report = deepReviewReport()
+			const text = formatSummary(
+				{
+					status: 'reviewed',
+					event: EVENT,
+					report: {
+						...report,
+						agents:
+							order === 'planned'
+								? report.agents
+								: [...report.agents].toReversed(),
+					},
+				},
+				CONTEXT
+			)
+			expect(text).toContain('Depth deep (config)')
+			expect(
+				text.split('\n').filter(line => line.startsWith('| reviewer |'))
+			).toEqual([
+				'| reviewer | always | model-a high | ok | 1 | 3 | 1.2 s |',
+				'| reviewer | always | model-b high | ok | 2 | 4 | 2.4 s |',
+			])
+		}
+	)
+	test.each(['planned', 'reversed'])(
+		'matches a dropped reviewer model to its fallback with reports in %s order',
+		order => {
+			const report = deepReviewReport()
+			const agents = report.agents.map(agent => ({
+				...agent,
+				model: 'model-a',
+				...(agent.model === 'model-b' ? { fellBackFrom: 'model-b' } : {}),
+			}))
+			const text = formatSummary(
+				{
+					status: 'reviewed',
+					event: EVENT,
+					report: {
+						...report,
+						agents: order === 'planned' ? agents : [...agents].toReversed(),
+						droppedModels: [{ model: 'model-b', reason: 'rate limited (429)' }],
+					},
+				},
+				CONTEXT
+			)
+			expect(
+				text.split('\n').filter(line => line.startsWith('| reviewer |'))
+			).toEqual([
+				'| reviewer | always | model-a high | ok | 1 | 3 | 1.2 s |',
+				'| reviewer | always | model-a \\(for model-b\\) high | ok | 2 | 4 | 2.4 s |',
+			])
+			expect(text).toContain('model model-b dropped: rate limited \\(429\\)')
+		}
+	)
+	test('shows planned reviewer runs without reports as not run', () => {
+		const report = deepReviewReport()
+		const text = formatSummary(
+			{ status: 'reviewed', event: EVENT, report: { ...report, agents: [] } },
+			CONTEXT
+		)
+		expect(
+			text.split('\n').filter(line => line.startsWith('| reviewer |'))
+		).toEqual([
+			'| reviewer | always | model-a high | not run | 0 | 0 |  |',
+			'| reviewer | always | model-b high | not run | 0 | 0 |  |',
+		])
 	})
 	test('escapes every model and rules text in plan, skipped agents, failures and token table', () => {
 		const fixture = reviewReport()
