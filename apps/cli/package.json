@@ -1,0 +1,27 @@
+{
+  "name": "@mng-review/cli",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "bin": {
+    "mng-review": "src/main.ts"
+  },
+  "type": "module",
+  "scripts": {
+    "build": "bun build src/main.ts --target=bun --outdir=dist",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --root ../.. --project @mng-review/cli --passWithNoTests"
+  },
+  "dependencies": {
+    "@effect/platform-bun": "catalog:",
+    "@mng-review/engine": "workspace:*",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@effect/vitest": "catalog:",
+    "@mng-review/typescript-config": "workspace:*",
+    "@types/bun": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}
