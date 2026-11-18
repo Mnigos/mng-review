@@ -75,6 +75,22 @@ function toSelectedBy(run: PlannedRun): string {
 	return run.selectedBy === 'paths' ? 'path rules' : 'always'
 }
 
+/**
+ * The report of one planned run, by name. A deep run plans the main reviewer once per reviewer
+ * model; then the planned model picks the report: its own model, or the model it fell back from.
+ */
+function getAgentReport(
+	run: PlannedRun,
+	agents: readonly AgentRunReport[]
+): AgentRunReport | undefined {
+	const named = agents.filter(agent => agent.name === run.name)
+	if (named.length === 1) return named[0]
+	return (
+		named.find(agent => agent.fellBackFrom === run.model) ??
+		named.find(agent => !agent.fellBackFrom && agent.model === run.model)
+	)
+}
+
 /** One table row per planned run, with how its run went. */
 function toAgentRow(
 	run: PlannedRun,
@@ -100,7 +116,6 @@ function toPlanLines(report: ReviewReport): string[] {
 		plan.router.status === 'ok'
 			? `rated ${plan.router.risk ?? 'normal'}, added ${plan.router.added.length}`
 			: `${plan.router.status}${plan.router.detail ? `, ${escapeMarkdown(plan.router.detail)}` : ''}`
-	const agents = new Map(report.agents.map(agent => [agent.name, agent]))
 	return [
 		'',
 		`Risk **${plan.risk}** (${plan.riskSource}${riskPaths}). Depth ${plan.depth} (${escapeMarkdown(plan.depthSource)}). Router: ${router}.`,
@@ -109,7 +124,9 @@ function toPlanLines(report: ReviewReport): string[] {
 		'',
 		'| Agent | Why | Model | Status | Findings | Tool calls | Time |',
 		'| --- | --- | --- | --- | --- | --- | --- |',
-		...plan.runs.map(run => toAgentRow(run, agents.get(run.name))),
+		...plan.runs.map(run =>
+			toAgentRow(run, getAgentReport(run, report.agents))
+		),
 		...(plan.skips.length === 0
 			? []
 			: [
