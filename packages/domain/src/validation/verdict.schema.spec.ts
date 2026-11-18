@@ -26,6 +26,64 @@ describe('verdictSchema', () => {
 			})
 		)
 	})
+	test.each([
+		'src/charge.ts:2',
+		'src/charge.ts:2-4 balance update',
+		'src/Payment Form.tsx:12 balance update',
+	])(
+		'unverified accepts repository evidence %s and trims its premise',
+		evidence => {
+			expect(
+				decode({
+					...VERDICT,
+					verdict: 'unverified',
+					evidence: [evidence],
+					premise: '  Example SDK retries requests automatically.  ',
+				})
+			).toEqual(
+				Result.succeed({
+					...VERDICT,
+					verdict: 'unverified',
+					evidence: [evidence],
+					premise: 'Example SDK retries requests automatically.',
+				})
+			)
+		}
+	)
+	test.each([undefined, null, '', '   ', 42])(
+		'unverified rejects missing or invalid premise %j',
+		premise => {
+			expect(
+				Result.isFailure(
+					decode({
+						...VERDICT,
+						verdict: 'unverified',
+						...(premise === undefined ? {} : { premise }),
+					})
+				)
+			).toBeTruthy()
+		}
+	)
+	test.each(
+		[
+			[],
+			['no source location'],
+			['src/charge.ts:abc invalid'],
+			['src/charge.ts:2suffix invalid'],
+			['src/Payment Form.tsx:2suffix invalid'],
+		].map(evidence => ({ evidence }))
+	)('unverified rejects evidence %j', ({ evidence }) => {
+		expect(
+			Result.isFailure(
+				decode({
+					...VERDICT,
+					verdict: 'unverified',
+					premise: 'Example SDK retries requests automatically.',
+					evidence,
+				})
+			)
+		).toBeTruthy()
+	})
 	test('rejection permits no evidence', () => {
 		expect(
 			Result.isSuccess(decode({ ...VERDICT, verdict: 'reject', evidence: [] }))

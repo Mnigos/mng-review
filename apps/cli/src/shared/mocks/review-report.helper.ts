@@ -1,4 +1,9 @@
-import { buildPlan, DEFAULT_PRESET, toFinding } from '@mng-review/domain'
+import {
+	buildPlan,
+	DEFAULT_PRESET,
+	type KeptFinding,
+	toFinding,
+} from '@mng-review/domain'
 import { type ReviewReport, toEmptyReviewReport } from '@mng-review/engine'
 import { REPORTED_FINDING } from './review-cli.helper'
 
@@ -130,4 +135,26 @@ export function reviewReport(): ReviewReport {
 		},
 		droppedModels: [{ model: 'model-a', reason: 'rate limited (429)' }],
 	}
+}
+
+/** A dependency premise stays visible without producing an inline bug. */
+export function unverifiedBug() {
+	return {
+		...toFinding(REPORTED_FINDING, {
+			agent: 'reviewer',
+			model: 'model-a',
+			kind: 'bug',
+		}),
+		title: 'Callback receives a full URL',
+		severity: 'high',
+		placement: 'summary',
+		validation: {
+			status: 'unverified',
+			severity: 'high',
+			model: 'model-b',
+			premise: 'Example Router passes a full URL to the callback.',
+			reason: 'The filter only matches a path.',
+			evidence: ['src/filter.ts:2 callback'],
+		},
+	} as const satisfies KeptFinding
 }

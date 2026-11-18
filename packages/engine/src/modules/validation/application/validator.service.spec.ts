@@ -37,6 +37,7 @@ import { AgentLoopService } from '../../review/application/services/agent-loop.s
 import { ModelHealthService } from '../../review/application/services/model-health.service'
 import { RepoToolsService } from '../../review/application/services/repo-tools.service'
 import { TokenBudgetError } from '../../review/domain/review.errors'
+import { VALIDATOR_PROMPT } from './validator.prompt'
 import { ValidatorService, ValidatorServiceLive } from './validator.service'
 
 const CONTEXT = {
@@ -203,6 +204,97 @@ layer(Layer.empty)('ValidatorService', test => {
 				)
 			)
 	)
+	test('validator instructions cover unverified answers and their premise', () => {
+		expect(VALIDATOR_PROMPT).toContain('unverified')
+		expect(VALIDATOR_PROMPT).toContain('premise')
+	})
+	test.effect(
+		'keeps an unverified verdict with its premise and re-rated severity',
+		() =>
+			Effect.gen(function* () {
+				const premise = 'Example Router passes a full URL to the callback.'
+				expect(
+					yield* ValidatorService.use(validator =>
+						validator.validate(finding(), CONTEXT)
+					)
+				).toEqual({
+					status: 'unverified',
+					premise,
+					severity: 'high',
+					reason: verdict().reason,
+					evidence: verdict().evidence,
+					model: 'model-b',
+				})
+				const calls = yield* ScriptedLlm.use(script => script.calls)
+				expect(calls).toHaveLength(1)
+				expect(calls[0]?.options.prompt.content[0]).toMatchObject({
+					role: 'system',
+					content: expect.stringContaining(VALIDATOR_PROMPT) as unknown,
+				})
+			}).pipe(
+				Effect.provide(
+					validatorLayer(() =>
+						Effect.succeed(
+							answer(
+								'report_verdict',
+								verdict({
+									verdict: 'unverified',
+									severity: 'high',
+									premise: 'Example Router passes a full URL to the callback.',
+								})
+							)
+						)
+					)
+				)
+			)
+	)
+	for (const premise of [undefined, '   '])
+		test.effect(
+			`unverified premise ${JSON.stringify(premise)} gets a correction turn`,
+			() =>
+				Effect.gen(function* () {
+					expect(
+						yield* ValidatorService.use(validator =>
+							validator.validate(finding(), CONTEXT)
+						)
+					).toMatchObject({
+						status: 'unverified',
+						premise: 'Example Router passes a URL.',
+					})
+					const calls = yield* ScriptedLlm.use(script => script.calls)
+					expect(calls).toHaveLength(2)
+					expect(calls.map(call => call.model.model)).toEqual([
+						'model-b',
+						'model-b',
+					])
+					expect(calls[1]?.options.prompt.content.at(-1)).toMatchObject({
+						role: 'tool',
+						content: [
+							expect.objectContaining({
+								result: expect.stringContaining('premise') as unknown,
+							}) as unknown,
+						],
+					})
+				}).pipe(
+					Effect.provide(
+						validatorLayer((_call, index) =>
+							Effect.succeed(
+								answer(
+									'report_verdict',
+									verdict({
+										verdict: 'unverified',
+										...(index === 0
+											? premise === undefined
+												? {}
+												: { premise }
+											: { premise: 'Example Router passes a URL.' }),
+									})
+								)
+							)
+						)
+					)
+				)
+		)
 	test.effect(
 		'rejection retains the reason and model and permits empty evidence',
 		() =>

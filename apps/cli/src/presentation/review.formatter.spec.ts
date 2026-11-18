@@ -1,6 +1,9 @@
 import type { ReviewReport } from '@mng-review/engine'
 import { Schema } from 'effect'
-import { reviewReport } from '../shared/mocks/review-report.helper'
+import {
+	reviewReport,
+	unverifiedBug,
+} from '../shared/mocks/review-report.helper'
 import { formatReviewJson, formatReviewText } from './review.formatter'
 
 const decodeJson = Schema.decodeUnknownSync(
@@ -122,6 +125,44 @@ describe('review formatters', () => {
 			endpointError: null,
 			incomplete: null,
 		})
+	})
+	test('unverified bugs have a section after below-floor bugs with their premise and do not increase the Bugs count', () => {
+		const fixture = reviewReport()
+		const unverified = unverifiedBug()
+		const report: ReviewReport = {
+			...fixture,
+			bugs: [...fixture.bugs, unverified],
+		}
+		const text = formatReviewText(report)
+		const heading =
+			"Unverified, resting on a dependency's behaviour, never blocking (1):"
+		expect(text).toContain('Bugs (1):')
+		expect(text).toContain('Below the severity floor (1):')
+		expect(text).toContain(heading)
+		expect(text.indexOf(heading)).toBeGreaterThan(
+			text.indexOf('Below the severity floor (1):')
+		)
+		expect(text.indexOf(heading)).toBeLessThan(text.indexOf('Nits ('))
+		expect(text.indexOf(unverified.title)).toBeGreaterThan(
+			text.indexOf(heading)
+		)
+		expect(text).toContain(
+			`validator (${unverified.validation.model}): unverified, rests on: ${unverified.validation.premise} ${unverified.validation.reason}`
+		)
+		expect(text).toContain(unverified.validation.evidence[0])
+	})
+	test('JSON retains unverified bugs and their validation when they are the only bugs', () => {
+		const fixture = reviewReport()
+		const report: ReviewReport = {
+			...fixture,
+			blocking: false,
+			bugs: [unverifiedBug()],
+		}
+		expect(decodeJson(formatReviewJson(report))).toMatchObject({
+			bugs: report.bugs,
+			blocking: false,
+		})
+		expect(formatReviewText(report)).toContain('Bugs (0):\n  (none)')
 	})
 	test('endpoint error is present in both formats', () => {
 		const report = {

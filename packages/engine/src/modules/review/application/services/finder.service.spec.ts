@@ -36,7 +36,11 @@ import {
 	MAX_INCREMENTAL_DIFF_CHARS,
 } from '../../domain/review.constants'
 import { TokenBudgetError } from '../../domain/review.errors'
-import { NIT_PROMPT } from '../reviewer.prompt'
+import {
+	FINDING_RULES_PROMPT,
+	NIT_PROMPT,
+	REVIEWER_PROMPT,
+} from '../reviewer.prompt'
 import { AgentLoopService, type LoopRequest } from './agent-loop.service'
 import {
 	FinderService,
@@ -126,6 +130,30 @@ layer(Layer.empty)('FinderService', test => {
 					)
 				)
 		)
+	test.effect(
+		'main reviewer system prompt contains the reviewer and finding rules constants',
+		() =>
+			Effect.gen(function* () {
+				expect(
+					yield* FinderService.use(finder =>
+						finder.run(plannedRun(), {
+							scope: SCOPE,
+							rules: { agents: [], context: 'Review the changed callback.' },
+							fanOut: false,
+							fallback: undefined,
+							tokens: { allowance: 10_000, runTokens: 10_000 },
+						})
+					)
+				).toMatchObject({ report: { status: 'ok' } })
+				const calls = yield* ScriptedLlm.use(script => script.calls)
+				expect(calls).toHaveLength(1)
+				for (const prompt of [REVIEWER_PROMPT, FINDING_RULES_PROMPT])
+					expect(calls[0]?.options.prompt.content[0]).toMatchObject({
+						role: 'system',
+						content: expect.stringContaining(prompt) as unknown,
+					})
+			}).pipe(Effect.provide(finderLayer(() => Effect.succeed(answer()))))
+	)
 
 	for (const fanOut of [false, true])
 		test.effect(
