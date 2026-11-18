@@ -38,6 +38,9 @@ function toCaseLines(entry: CaseReport): string[] {
 		...(entry.endpointError
 			? [`    endpoint error  ${entry.endpointError}`]
 			: []),
+		...(entry.incomplete
+			? [`    incomplete  token budget spent: ${entry.incomplete.join('; ')}`]
+			: []),
 		...score.found.map(match => toMatchLine('found', match)),
 		...score.missed.map(
 			expected =>

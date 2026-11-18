@@ -46,6 +46,8 @@ export class ModelHealthService extends Context.Service<
 		) => Effect.Effect<TResponse, ModelCallError>
 		readonly isAvailable: (model: string) => Effect.Effect<boolean>
 		readonly dropped: Effect.Effect<readonly DroppedModel[]>
+		/** Tokens the run has spent so far, every model together. */
+		readonly spent: Effect.Effect<number>
 	}
 >()('mng-review/ModelHealthService') {}
 
@@ -58,20 +60,25 @@ export const ModelHealthServiceLive = Layer.effect(
 		const slots = yield* Semaphore.make(limits.concurrency)
 		const dropped = yield* Ref.make<ReadonlyMap<string, string>>(new Map())
 
+		const spent = ledger.snapshot.pipe(
+			Effect.map(tokens =>
+				Object.values(tokens).reduce((sum, entry) => sum + entry.totalTokens, 0)
+			)
+		)
+
 		const checkCall = Effect.fn('ModelHealthService.checkCall')(function* (
 			model: string
 		) {
 			const reason = (yield* Ref.get(dropped)).get(model)
 			if (reason !== undefined)
 				return yield* new ModelDroppedError({ model, reason })
-			const tokens = Object.values(yield* ledger.snapshot)
-			const spent = tokens.reduce((sum, entry) => sum + entry.totalTokens, 0)
-			if (spent >= limits.tokensPerRun)
+			const total = yield* spent
+			if (total >= limits.tokensPerRun)
 				return yield* new TokenBudgetError({
-					spent,
+					spent: total,
 					limit: limits.tokensPerRun,
 				})
-			return spent
+			return total
 		})
 
 		const drop = (
@@ -116,6 +123,6 @@ export const ModelHealthServiceLive = Layer.effect(
 			)
 		)
 
-		return { run, isAvailable, dropped: droppedModels }
+		return { run, isAvailable, dropped: droppedModels, spent }
 	})
 )

@@ -6,6 +6,11 @@ export const MAX_TOOL_CALLS = 40
 export const MAX_AGENT_WALL_TIME = '8 minutes' satisfies Duration.Input
 /** Extra time a model call may take past the agent's wall time, for its final answer. */
 export const WRAP_UP_GRACE = '1 minute' satisfies Duration.Input
+/**
+ * Share of `limits.tokens_per_run` the finders may spend before each must answer with what it has.
+ * The rest pays for those answers and for validation, so a spent budget never discards finished work.
+ */
+export const FINDER_TOKEN_SHARE = 0.8
 /** Invalid answers the loop corrects before it gives up on an agent. */
 export const MAX_CORRECTIONS = 2
 /** Longest tool output in characters, the cut marker included. */

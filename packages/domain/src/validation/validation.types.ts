@@ -14,6 +14,8 @@ export interface Judgement {
 export interface NoJudgement {
 	readonly status: 'unvalidated'
 	readonly error: string
+	/** The run's token budget was spent before the validator answered. */
+	readonly budgetSpent?: boolean
 }
 
 export type Validation = Judgement | NoJudgement

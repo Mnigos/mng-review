@@ -7,9 +7,13 @@ import {
 	config,
 	finding,
 } from '../../../../shared/mocks/domain-test.helper'
-import { reviewRequest } from '../../../../shared/mocks/review-test.helper'
+import {
+	LIMITS,
+	reviewRequest,
+} from '../../../../shared/mocks/review-test.helper'
 import { ValidatorService } from '../../../validation/application/validator.service'
 import type { DroppedModel } from '../../domain/review-report.types'
+import { ReviewLimits } from '../review-limits.context'
 import { FinderService, type FinderResult } from './finder.service'
 import { ModelHealthService } from './model-health.service'
 import { ReviewService, ReviewServiceLive } from './review.service'
@@ -29,7 +33,9 @@ function reviewLayer(
 					run: () => Effect.die('unexpected model call'),
 					isAvailable: () => Effect.succeed(true),
 					dropped,
+					spent: Effect.succeed(0),
 				}),
+				Layer.succeed(ReviewLimits, LIMITS),
 				TokenLedgerLive
 			)
 		)

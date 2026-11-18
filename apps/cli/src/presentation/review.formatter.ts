@@ -17,6 +17,8 @@ function toValidationLines(finding: KeptFinding): string[] {
 			`    validator (${validation.model}): confirmed. ${validation.reason}`,
 			...validation.evidence.map(line => `      ${line}`),
 		]
+	if (validation?.status === 'unvalidated' && validation.budgetSpent)
+		return ['    validator: not run, token budget spent; kept unvalidated']
 	if (validation?.status === 'unvalidated')
 		return [
 			`    validator: no answer after two attempts, kept (${validation.error})`,
@@ -77,8 +79,11 @@ function toAgentLine(agent: AgentRunReport): string {
 	const fallback = agent.fellBackFrom
 		? `; ${agent.fellBackFrom} was dropped`
 		: ''
+	const unfinished = agent.unfinished
+		? `; did not finish: ${agent.unfinished.join(', ')}`
+		: ''
 	const error = agent.error ? `; ${agent.error}` : ''
-	return `  ${agent.name}  ${agent.status}, ${agent.model} ${agent.effort}, ${agent.toolCalls} tool calls, ${agent.findings} findings${units}${malformed}, ${toSeconds(agent.wallMillis)}${fallback}${error}`
+	return `  ${agent.name}  ${agent.status}, ${agent.model} ${agent.effort}, ${agent.toolCalls} tool calls, ${agent.findings} findings${units}${malformed}, ${toSeconds(agent.wallMillis)}${fallback}${unfinished}${error}`
 }
 
 /** A titled section, left out when it has no lines. */
@@ -119,6 +124,12 @@ function toOutcomeLines(report: ReviewReport): string[] {
 			'Degraded run, models dropped:',
 			report.droppedModels.map(drop => `  ${drop.model}  ${drop.reason}`)
 		),
+		...toSection(
+			report.incomplete
+				? `Incomplete run, ${report.incomplete.reason}; the findings above are partial. Did not finish:`
+				: '',
+			report.incomplete?.unfinished.map(entry => `  ${entry}`) ?? []
+		),
 		'',
 		`Wall time: ${toSeconds(report.wallMillis)}`,
 		...(report.endpointError
@@ -142,6 +153,7 @@ export function formatReviewJson(report: ReviewReport): string {
 			...toPlanJson(planReport),
 			...outcome,
 			endpointError: report.endpointError ?? null,
+			incomplete: report.incomplete ?? null,
 		},
 		null,
 		2

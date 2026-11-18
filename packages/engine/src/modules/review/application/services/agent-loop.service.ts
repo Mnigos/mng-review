@@ -43,6 +43,11 @@ export interface LoopRequest<TValue> {
 	readonly finish: FinishToolName
 	/** Reads the finish tool's arguments or a plain JSON answer. */
 	readonly parse: (answer: unknown) => Effect.Effect<TValue, AnswerProblem>
+	/**
+	 * Share of `limits.tokens_per_run` after which the agent must answer, as after its tool calls run
+	 * out; without it the agent runs until the budget refuses its next call.
+	 */
+	readonly tokenShare?: number
 }
 
 /** An agent's answer and what it took. */
@@ -92,7 +97,8 @@ function toUserMessage(content: string): Prompt.MessageEncoded {
  * calls resolved in parallel by the loop, until the agent calls its finish tool or answers with
  * plain JSON. Tool calls are bounded by `maxToolCalls` (calls in one turn never exceed what is
  * left), wall time by `maxWallTime`; past either, the agent gets only the finish tool and is told to
- * answer. Repository calls a model returns after the wall time are refused. Every model call,
+ * answer; the same happens once the run has spent `tokenShare` of its token budget. Repository calls
+ * a model returns after the wall time are refused. Every model call,
  * corrections included, ends by one fixed deadline: the wall time plus one grace period. An invalid answer gets a correction
  * turn; after `MAX_CORRECTIONS` the agent fails with a `LoopError`.
  */
@@ -192,14 +198,19 @@ export const AgentLoopServiceLive = Layer.effect(
 					// Decided once the call holds a concurrency slot, so time spent queued counts.
 					const turn = Effect.gen(function* () {
 						const now = yield* Clock.currentTimeMillis
+						const overBudget =
+							request.tokenShare !== undefined &&
+							(yield* health.spent) >= limits.tokensPerRun * request.tokenShare
 						const wrapUp =
-							state.toolCalls >= limits.maxToolCalls || now >= deadline
+							state.toolCalls >= limits.maxToolCalls ||
+							now >= deadline ||
+							overBudget
 						const prompt = [
 							...state.pending,
 							...(wrapUp && !state.wrapUpSent
 								? [
 										toUserMessage(
-											`You have used up your tool calls or time. Call ${finish} now with what you have.`
+											`You have used up your tool calls, time or token budget. Call ${finish} now with what you have.`
 										),
 									]
 								: []),

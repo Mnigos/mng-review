@@ -15,6 +15,8 @@ export interface CaseReport {
 	readonly skipped?: string
 	/** Set when a finder failed at the endpoint, or no reviewer model was left. */
 	readonly endpointError?: string
+	/** What the token budget stopped before it answered; the case's findings are partial. */
+	readonly incomplete?: readonly string[]
 }
 
 /** What `mng-review bench` reports: every case, the totals and tokens per model over all cases. */
