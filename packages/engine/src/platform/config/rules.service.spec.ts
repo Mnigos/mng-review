@@ -361,3 +361,63 @@ layer(NodeLayer, { excludeTestServices: true })('RulesService', test => {
 			})
 	)
 })
+
+layer(NodeLayer, { excludeTestServices: true })(
+	'RulesService review notes',
+	test => {
+		for (const ref of [undefined, 'HEAD'])
+			test.effect(
+				`loads uppercase context and memory from ${ref ?? 'working tree'}`,
+				() =>
+					Effect.gen(function* () {
+						const repo = createRepo()
+						repo.write('.mng/CONTEXT.md', 'Committed context.\n')
+						repo.write('.mng/MEMORY.md', 'Committed decisions.\n')
+						repo.commit()
+						repo.write('.mng/CONTEXT.md', 'Worktree context.\n')
+						repo.write('.mng/MEMORY.md', 'Worktree decisions.\n')
+						const rules = yield* RulesService.use(service =>
+							service.load(ref)
+						).pipe(Effect.provide(rulesLayer(repo.root)))
+						expect(rules.context).toBe(
+							ref ? 'Committed context.\n' : 'Worktree context.\n'
+						)
+						expect(rules.memory).toBe(
+							ref ? 'Committed decisions.\n' : 'Worktree decisions.\n'
+						)
+						expect(rules.source).toBe(ref ?? 'working tree')
+					})
+			)
+		for (const ref of [undefined, 'HEAD'])
+			test.effect(`ignores lowercase notes in ${ref ?? 'working tree'}`, () =>
+				Effect.gen(function* () {
+					const repo = createRepo()
+					repo.write('.mng/context.md', 'Lowercase context must not load.')
+					repo.write('.mng/memory.md', 'Lowercase memory must not load.')
+					repo.commit()
+					const rules = yield* RulesService.use(service =>
+						service.load(ref)
+					).pipe(Effect.provide(rulesLayer(repo.root)))
+					expect(rules.context).toBeUndefined()
+					expect(rules.memory).toBeUndefined()
+				})
+			)
+		test.effect('missing optional notes remain absent', () =>
+			Effect.gen(function* () {
+				const repo = createRepo()
+				repo.write('README.md', 'fixture')
+				repo.commit()
+				expect(
+					yield* RulesService.use(service => service.load(undefined)).pipe(
+						Effect.provide(rulesLayer(repo.root))
+					)
+				).toMatchObject({ source: 'working tree' })
+				const rules = yield* RulesService.use(service =>
+					service.load('HEAD')
+				).pipe(Effect.provide(rulesLayer(repo.root)))
+				expect(rules.context).toBeUndefined()
+				expect(rules.memory).toBeUndefined()
+			})
+		)
+	}
+)
