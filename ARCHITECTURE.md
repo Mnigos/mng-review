@@ -47,7 +47,7 @@ One run of `mng-review --base <ref>` goes through these steps. Numbers match the
 5. Route (2): `modules/routing` selects agents by `when` rules, then asks the router model for agents to add and a risk level. A router failure falls back to path selection and `normal`.
 6. Depth (3): the risk level or `depth` picks how many reviewer models run and whether the change is split into units.
 7. Find (4): `modules/review` runs the main reviewer and each selected agent as a tool loop on `effect/ai`, with read-only tools over the repository. Findings with the same root cause merge.
-8. Validate (5): `modules/validation` runs one fresh agent per bug finding to refute it, on a reviewer model that did not report it when `validator: cross`.
+8. Validate (5): `modules/validation` runs one fresh agent per bug finding to refute it, on a reviewer model that did not report it when `validator: cross`. A finding every reviewer model reported, or a run with one reviewer model, is validated once by a reviewer model in a fresh context.
 9. The CLI formats the kept findings as text or JSON.
 
 Publish (6), converse (7) and learn (8) run on GitHub and arrive with `packages/github`.

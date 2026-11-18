@@ -11,7 +11,10 @@ const DEFAULT_RUNTIME_RUNNERS = new Set([
 /** Platform runtimes whose `runMain` starts the process; only the CLI entry calls it. */
 const PLATFORM_RUNTIMES = new Set(['BunRuntime', 'NodeRuntime'])
 
-function getRunner(node: ESTree.MemberExpression) {
+/** Local names that refer to `Effect`: the global name and any alias imported from `effect`. */
+type EffectNames = ReadonlySet<string>
+
+function getRunner(node: ESTree.MemberExpression, effectNames: EffectNames) {
 	if (
 		node.computed ||
 		node.object.type !== 'Identifier' ||
@@ -21,7 +24,7 @@ function getRunner(node: ESTree.MemberExpression) {
 
 	const { name } = node.property
 
-	if (node.object.name === 'Effect' && DEFAULT_RUNTIME_RUNNERS.has(name))
+	if (effectNames.has(node.object.name) && DEFAULT_RUNTIME_RUNNERS.has(name))
 		return `Effect.${name}`
 	if (PLATFORM_RUNTIMES.has(node.object.name) && name === 'runMain')
 		return `${node.object.name}.${name}`
@@ -48,14 +51,24 @@ export const noDefaultRuntimeRule = defineRule({
 		},
 	},
 	create(context) {
+		const effectNames = new Set(['Effect'])
+
 		return {
 			MemberExpression(node) {
-				const name = getRunner(node)
+				const name = getRunner(node, effectNames)
 
 				if (name)
 					context.report({ node, messageId: 'defaultRuntime', data: { name } })
 			},
 			ImportDeclaration(node) {
+				if (node.source.value === 'effect')
+					for (const specifier of node.specifiers)
+						if (
+							specifier.type === 'ImportSpecifier' &&
+							specifier.imported.type === 'Identifier' &&
+							specifier.imported.name === 'Effect'
+						)
+							effectNames.add(specifier.local.name)
 				if (node.source.value !== 'effect/Effect') return
 
 				for (const specifier of node.specifiers)

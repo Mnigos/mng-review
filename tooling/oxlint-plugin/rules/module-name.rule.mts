@@ -12,14 +12,39 @@ function toPascalCase(name: string) {
 		.join('')
 }
 
+/** Classes the file exports, directly (`export class X`) or through a local export list (`export { X }`). */
 function getExportedClassNames(program: ESTree.Program) {
-	return program.body.flatMap(statement =>
-		statement.type === 'ExportNamedDeclaration' &&
-		statement.declaration?.type === 'ClassDeclaration' &&
-		statement.declaration.id
-			? [statement.declaration.id.name]
-			: []
+	const classes = new Set(
+		program.body.flatMap(statement => {
+			const declaration =
+				statement.type === 'ExportNamedDeclaration'
+					? statement.declaration
+					: statement
+
+			return declaration?.type === 'ClassDeclaration' && declaration.id
+				? [declaration.id.name]
+				: []
+		})
 	)
+	const exported = program.body.flatMap(statement => {
+		if (statement.type !== 'ExportNamedDeclaration') return []
+		if (
+			statement.declaration?.type === 'ClassDeclaration' &&
+			statement.declaration.id
+		)
+			return [statement.declaration.id.name]
+		if (statement.source) return []
+
+		return statement.specifiers.flatMap(specifier =>
+			specifier.local.type === 'Identifier' &&
+			specifier.exported.type === 'Identifier' &&
+			classes.has(specifier.local.name)
+				? [specifier.exported.name]
+				: []
+		)
+	})
+
+	return exported
 }
 
 /**
