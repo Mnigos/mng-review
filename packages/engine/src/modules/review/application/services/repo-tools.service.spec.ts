@@ -417,6 +417,50 @@ layer(Layer.empty, { excludeTestServices: true })('RepoToolsService', test => {
 				}).pipe(Effect.provide(toolsLayer(repo.root)))
 			})
 	)
+	for (const path of [undefined, 'src/billing/charge.ts'])
+		for (const offset of [15_000, '15000'])
+			test.effect(
+				`diff pages ${path ?? 'all files'} with offset ${typeof offset}`,
+				() =>
+					Effect.gen(function* () {
+						const repo = fixture()
+						repo.write('src/billing/charge.ts', 'changed line\n'.repeat(5000))
+						repo.commit()
+						yield* Effect.gen(function* () {
+							const input = {
+								change: yield* GitService.use(git =>
+									git.readChange('main', 'HEAD')
+								),
+								pr: pr(),
+							}
+							const tools = yield* RepoToolsService
+							const git = yield* GitService
+							const files = input.change.files.filter(
+								file =>
+									!file.skipped && (path === undefined || file.path === path)
+							)
+							const whole = yield* git.readDiff(input.change, files)
+							expect(whole.length).toBeGreaterThan(MAX_TOOL_OUTPUT_CHARS * 2)
+							const part = yield* tools.call(input, 'diff', {
+								...(path === undefined ? {} : { path }),
+								offset,
+							})
+							const marker =
+								/\n\[more: call diff again with offset=(\d+)\]$/u.exec(part)
+							expect(marker).not.toBeNull()
+							expect(part.length).toBeLessThanOrEqual(MAX_TOOL_OUTPUT_CHARS)
+							expect(part.slice(0, marker?.index)).toBe(
+								whole.slice(Number(offset), Number(marker?.[1]))
+							)
+							expect(
+								yield* tools.call(input, 'diff', {
+									...(path === undefined ? {} : { path }),
+									offset: whole.length + 1,
+								})
+							).toBe(`(no more output; it ends at offset ${whole.length})`)
+						}).pipe(Effect.provide(toolsLayer(repo.root)))
+					})
+			)
 	test.effect('blame requires a range and returns only those lines', () =>
 		Effect.gen(function* () {
 			const repo = fixture()

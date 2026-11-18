@@ -217,6 +217,34 @@ layer(Layer.empty, { excludeTestServices: true })('GitService', test => {
 				}).pipe(Effect.provide(gitLayer(repo.root)))
 			})
 	)
+	test.effect('readDiff keeps gitlink blocks when diff.submodule is log', () =>
+		Effect.gen(function* () {
+			const repo = createRepo()
+			repo.write('example.ts', 'before\n')
+			const first = repo.commit()
+			repo.write('example.ts', 'after\n')
+			const second = repo.commit()
+			repo.git('update-index', '--add', '--cacheinfo', `160000,${first},module`)
+			repo.git('commit', '-m', 'fixture gitlink base')
+			const base = repo.git('rev-parse', 'HEAD')
+			repo.git('update-index', '--cacheinfo', `160000,${second},module`)
+			repo.git('commit', '-m', 'fixture gitlink head')
+			repo.git('config', 'diff.submodule', 'log')
+			expect(repo.git('diff', base, 'HEAD')).toContain('Submodule module')
+			expect(repo.git('diff', base, 'HEAD')).not.toContain('diff --git')
+			yield* Effect.gen(function* () {
+				const git = yield* GitService
+				const change = yield* git.readChange(base, 'HEAD')
+				const diff = yield* git.readDiff(change, change.files)
+				expect(diff).toContain('diff --git a/module b/module')
+				expect(diff).toContain(`-Subproject commit ${first}`)
+				expect(diff).toContain(`+Subproject commit ${second}`)
+				expect(Domain.parseFileDiffs(diff).map(file => file.path)).toEqual([
+					'module',
+				])
+			}).pipe(Effect.provide(gitLayer(repo.root)))
+		})
+	)
 	test.effect('keeps leading and trailing spaces in the repository root', () =>
 		Effect.gen(function* () {
 			const repo = createRepo(' repo with space ')

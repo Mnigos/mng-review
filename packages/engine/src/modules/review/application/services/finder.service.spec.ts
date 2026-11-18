@@ -1,5 +1,6 @@
 import { layer } from '@effect/vitest'
 import { Effect, Layer } from 'effect'
+import { LlmError } from '../../../../platform/llm/llm.errors'
 import {
 	ScriptedLlm,
 	type ScriptedLlmAnswer,
@@ -31,7 +32,9 @@ import {
 	MAX_FULL_DIFF_CHARS,
 	MAX_INCREMENTAL_DIFF_CHARS,
 } from '../../domain/review.constants'
+import { TokenBudgetError } from '../../domain/review.errors'
 import { NIT_PROMPT } from '../reviewer.prompt'
+import { AgentLoopService } from './agent-loop.service'
 import {
 	FinderService,
 	FinderServiceLive,
@@ -60,9 +63,66 @@ function finderLayer(
 	)
 }
 
+const BETWEEN_CAPS = unifiedDiff(
+	BILLING_PATH,
+	Math.ceil((MAX_INCREMENTAL_DIFF_CHARS + MAX_FULL_DIFF_CHARS) / 2 / 7)
+)
 const TWO_UNITS = `${DIFF}@@ -20 +20 @@ export function charge1() {\n-before\n+after\n`
 
 layer(Layer.empty)('FinderService', test => {
+	for (const endpointUnit of ['charge0', 'charge1'])
+		test.effect(
+			`budget stop stays incomplete and retains endpoint error from ${endpointUnit}`,
+			() =>
+				Effect.gen(function* () {
+					const run = yield* FinderService.use(finder =>
+						finder.run(plannedRun(), context({ fanOut: true }))
+					)
+					expect(run.findings).toEqual([])
+					expect(run.report).toMatchObject({
+						status: 'incomplete',
+						units: 2,
+						endpointError: true,
+						error: expect.stringContaining(
+							'fixture endpoint failure'
+						) as unknown,
+						unfinished: [
+							`${BILLING_PATH}: export function ${endpointUnit === 'charge0' ? 'charge1' : 'charge0'}() {`,
+						],
+					})
+				}).pipe(
+					Effect.provide(
+						FinderServiceLive.pipe(
+							Layer.provideMerge(
+								Layer.succeed(AgentLoopService, {
+									run: request =>
+										request.user.includes(`export function ${endpointUnit}() {`)
+											? Effect.fail(
+													new LlmError({
+														model: 'model-a',
+														reason: 'InternalProviderError',
+														detail: 'fixture endpoint failure',
+														retryable: false,
+														status: 500,
+													})
+												)
+											: Effect.fail(
+													new TokenBudgetError({ spent: 100, limit: 100 })
+												),
+								})
+							),
+							Layer.provideMerge(
+								reviewDependencies(
+									() => Effect.succeed(answer()),
+									{},
+									gitFixture({ readDiff: () => Effect.succeed(TWO_UNITS) })
+								)
+							)
+						)
+					)
+				)
+		)
+
 	for (const fanOut of [false, true])
 		test.effect(
 			`finder passes its token share to ${fanOut ? 'unit' : 'whole-change'} conversations`,
@@ -72,9 +132,20 @@ layer(Layer.empty)('FinderService', test => {
 						yield* FinderService.use(finder =>
 							finder.run(plannedRun(), context({ fanOut }))
 						)
-					).toMatchObject({ report: { status: 'ok' } })
+					).toMatchObject({
+						report: { status: 'ok', ...(fanOut ? { units: 2 } : {}) },
+					})
 					const calls = yield* ScriptedLlm.use(script => script.calls)
 					expect(calls.length).toBeGreaterThanOrEqual(2)
+					if (fanOut)
+						for (const unit of ['charge0', 'charge1'])
+							expect(
+								calls.some(call =>
+									userText(call).includes(
+										`${BILLING_PATH}: export function ${unit}() {`
+									)
+								)
+							).toBeTruthy()
 					for (const call of calls.slice(1)) {
 						expect(call.options.tools.map(tool => String(tool.name))).toEqual([
 							'report_findings',
@@ -142,12 +213,14 @@ layer(Layer.empty)('FinderService', test => {
 						(yield* ScriptedLlm.use(script => script.calls))[0]
 					)
 					expect(message).toContain(
-						`- ${BILLING_PATH} (+30000 -1, diff cut to `
+						input === 'incremental'
+							? `- ${BILLING_PATH} (+30000 -1, diff cut to `
+							: `- ${BILLING_PATH} (+30000 -1)`
 					)
 					expect(message).toContain(
 						'Other changed files:\n```text\n- other.ts (+1 -1)\n- skip.ts (+1 -1, left out of the review (too_large))'
 					)
-					expect(message).toContain('`diff(path)`')
+					if (input === 'incremental') expect(message).toContain('`diff(path)`')
 					const diff =
 						message
 							.split('Diff (base to head):\n```text\n')[1]
@@ -159,14 +232,37 @@ layer(Layer.empty)('FinderService', test => {
 							: MAX_FULL_DIFF_CHARS
 					)
 					expect(diff).toContain(unifiedDiff('small.ts'))
+					expect(BETWEEN_CAPS.length).toBeGreaterThan(
+						MAX_INCREMENTAL_DIFF_CHARS
+					)
+					expect(
+						BETWEEN_CAPS.length +
+							unifiedDiff('small.ts').length +
+							unifiedDiff('other.ts').length
+					).toBeLessThan(MAX_FULL_DIFF_CHARS)
+					if (input === 'full_diff') {
+						expect(diff).toContain(unifiedDiff('other.ts'))
+						expect(diff).toContain(BETWEEN_CAPS)
+						expect(diff).not.toContain('[cut:')
+					} else {
+						expect(diff).not.toContain('other.ts')
+						expect(diff).not.toContain(BETWEEN_CAPS)
+						expect(diff).toContain('[cut:')
+					}
 				}).pipe(
 					Effect.provide(
 						finderLayer(
 							() => Effect.succeed(answer()),
 							gitFixture({
-								readDiff: () =>
+								readDiff: (_change, files) =>
 									Effect.succeed(
-										unifiedDiff(BILLING_PATH, 30_000) + unifiedDiff('small.ts')
+										files
+											.map(entry =>
+												entry.path === BILLING_PATH
+													? BETWEEN_CAPS
+													: unifiedDiff(entry.path)
+											)
+											.join('')
 									),
 							})
 						)

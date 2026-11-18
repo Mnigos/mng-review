@@ -5,6 +5,7 @@ import {
 	NEAR_LINES,
 	SAME_TITLE_OVERLAP,
 	SAME_DESCRIPTION_OVERLAP,
+	SAME_FAILURE_OVERLAP,
 } from './finding.constants'
 import {
 	toFingerprint,
@@ -59,7 +60,10 @@ describe('finding identity and merging', () => {
 		],
 		[
 			'far overlapping titles',
-			{ line: 6, title: 'Duplicate charge loses balance twice' },
+			{
+				line: finding().line + NEAR_LINES + 1,
+				title: 'Duplicate charge loses balance twice',
+			},
 			false,
 		],
 		['different file', { path: 'src/billing/refund.ts' }, false],
@@ -323,16 +327,7 @@ const REWORDED_PAIRS = [
 ] as const
 
 describe('description overlap across finders', () => {
-	test.each([
-		{
-			name: 'keeps distinct reports from the same finder separate across a matching bridge',
-			thirdAgent: 'agent-x',
-		},
-		{
-			name: 'merges a description-overlap chain across three different finders',
-			thirdAgent: 'agent-z',
-		},
-	] as const)('$name', ({ thirdAgent }) => {
+	test('keeps distinct reports from the same finder separate across a matching bridge', () => {
 		const sessions = finding({
 			path: 'src/auth.ts',
 			line: 20,
@@ -358,23 +353,79 @@ describe('description overlap across finders', () => {
 			title: 'Missing ownership check',
 			trigger: 'A caller requests another account record.',
 			impact: 'Private data becomes visible.',
-			agents: [thirdAgent],
+			agents: ['agent-x'],
 			models: ['model-m'],
 		})
 		expect(isSameRootCause(sessions, bridge)).toBeTruthy()
 		expect(isSameRootCause(bridge, ownership)).toBeTruthy()
 		expect(isSameRootCause(sessions, ownership)).toBe(false)
-		const merged = mergeFindings([sessions, bridge, ownership])
-		if (thirdAgent === 'agent-x') {
-			expect(merged).toEqual([
-				{ ...sessions, agents: ['agent-x', 'agent-y'] },
-				ownership,
-			])
-			return
-		}
-		expect(merged).toEqual([
-			{ ...sessions, agents: ['agent-x', 'agent-y', 'agent-z'] },
+		expect(mergeFindings([sessions, bridge, ownership])).toEqual([
+			{ ...sessions, agents: ['agent-x', 'agent-y'] },
+			ownership,
 		])
+		const joinedLast = mergeFindings([sessions, ownership, bridge])
+		expect(joinedLast).toHaveLength(2)
+		expect(joinedLast.map(entry => entry.title).toSorted()).toEqual(
+			[sessions.title, ownership.title].toSorted()
+		)
+	})
+	test.each([
+		[0, 1, 2],
+		[0, 2, 1],
+		[1, 0, 2],
+		[1, 2, 0],
+		[2, 0, 1],
+		[2, 1, 0],
+	])(
+		'merges one defect across adjacent reports in order %i, %i, %i',
+		(...order) => {
+			const reports = [
+				finding({
+					line: 20,
+					title: 'Invoice retry duplicates debit',
+					agents: ['agent-x'],
+				}),
+				finding({
+					line: 20 + NEAR_LINES,
+					title: 'Repeated invoice processing charges balance twice',
+					agents: ['agent-y'],
+				}),
+				finding({
+					line: 20 + 2 * NEAR_LINES,
+					title: 'Missing invoice deduplication repeats debit',
+					agents: ['agent-z'],
+				}),
+			] as const
+			expect(isSameRootCause(reports[0], reports[1])).toBeTruthy()
+			expect(isSameRootCause(reports[1], reports[2])).toBeTruthy()
+			expect(isSameRootCause(reports[0], reports[2])).toBe(false)
+			const merged = mergeFindings(order.flatMap(index => reports[index] ?? []))
+			expect(merged).toHaveLength(1)
+			expect(merged[0]?.agents.toSorted()).toEqual([
+				'agent-x',
+				'agent-y',
+				'agent-z',
+			])
+		}
+	)
+	test('a shared retry trigger never merges unrelated failures across finders', () => {
+		const debit = finding({
+			line: 20,
+			title: 'Duplicate debit',
+			trigger: 'Invoice worker retries after timeout',
+			impact: 'Balance charged twice',
+			agents: ['agent-x'],
+		})
+		const receipt = finding({
+			line: 21,
+			title: 'Email receipt missing',
+			trigger: debit.trigger,
+			impact: 'Customer notification disappears',
+			agents: ['agent-y'],
+		})
+		expect(isSameRootCause(debit, receipt)).toBe(false)
+		expect(isSameRootCause(receipt, debit)).toBe(false)
+		expect(mergeFindings([debit, receipt])).toEqual([debit, receipt])
 	})
 	test.each(REWORDED_PAIRS)(
 		'merges reworded reports in $path and records both agents',
@@ -450,22 +501,31 @@ describe('description overlap across finders', () => {
 		})
 		expect(isSameRootCause(first, second)).toBeTruthy()
 	})
-	test('description overlap meets the exported threshold inclusively', () => {
+	test('description and failure overlap meet both exported thresholds inclusively', () => {
 		const first = finding({
 			title: 'alpha',
-			trigger: 'logo export',
-			impact: 'svg',
+			trigger: 'export epsilon zeta',
+			impact: 'logo svg gamma delta',
 		})
 		const second = finding({
 			title: 'beta',
-			trigger: 'logo export',
-			impact: 'viewer',
+			trigger: 'export epsilon iota',
+			impact: 'logo svg eta theta',
 			agents: ['ui'],
 		})
-		expect(SAME_DESCRIPTION_OVERLAP).toBe(2 / 4)
+		expect(SAME_DESCRIPTION_OVERLAP).toBe(4 / 8)
+		expect(SAME_FAILURE_OVERLAP).toBe(2 / 5)
 		expect(isSameRootCause(first, second)).toBeTruthy()
-		expect(isSameRootCause(first, { ...second, trigger: 'logo render' })).toBe(
-			false
-		)
+		expect(isSameRootCause(second, first)).toBeTruthy()
+		expect(
+			isSameRootCause(first, { ...second, trigger: 'export kappa iota' })
+		).toBe(false)
+		expect(
+			isSameRootCause(first, {
+				...second,
+				trigger: 'export epsilon svg',
+				impact: 'logo viewer eta theta',
+			})
+		).toBe(false)
 	})
 })

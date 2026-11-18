@@ -213,3 +213,41 @@ export function unifiedDiff(
 ): string {
 	return `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -1 +1,${lines} @@\n-before\n${`+${content}\n`.repeat(lines)}`
 }
+
+/** Git-quoted paths across modified, deleted and rename-only diff headers. */
+export const QUOTED_FILE_DIFFS = [
+	{ quoted: String.raw`src/a\"b.ts`, path: 'src/a"b.ts' },
+	{ quoted: String.raw`src/a\\b.ts`, path: 'src/a\\b.ts' },
+	{ quoted: String.raw`src/\303\251.ts`, path: 'src/é.ts' },
+	{ quoted: String.raw`src/a\tb.ts`, path: 'src/a\tb.ts' },
+].flatMap(({ quoted, path }) =>
+	(['modified', 'deleted', 'renamed'] as const).map(header => ({
+		header,
+		path,
+		diff: [
+			`diff --git "a/${quoted}" "b/${quoted}"`,
+			...(header === 'renamed'
+				? [
+						'similarity index 100%',
+						'rename from old.ts',
+						`rename to "${quoted}"`,
+					]
+				: header === 'deleted'
+					? [
+							'deleted file mode 100644',
+							`--- "a/${quoted}"`,
+							'+++ /dev/null',
+							'@@ -1 +0,0 @@',
+							'-before',
+						]
+					: [
+							`--- "a/${quoted}"`,
+							`+++ "b/${quoted}"`,
+							'@@ -1 +1 @@',
+							'-before',
+							'+after',
+						]),
+			'',
+		].join('\n'),
+	}))
+)

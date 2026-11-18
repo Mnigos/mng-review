@@ -1,5 +1,5 @@
 import { layer } from '@effect/vitest'
-import { Effect, Layer } from 'effect'
+import { Effect, Layer, Ref } from 'effect'
 import { LanguageModel } from 'effect/ai'
 import {
 	RulesService,
@@ -32,7 +32,9 @@ import {
 	SCOPE,
 	verdict,
 } from '../../../shared/mocks/review-test.helper'
+import { AgentLoopService } from '../../review/application/services/agent-loop.service'
 import { ModelHealthService } from '../../review/application/services/model-health.service'
+import { TokenBudgetError } from '../../review/domain/review.errors'
 import { ValidatorService, ValidatorServiceLive } from './validator.service'
 
 const CONTEXT = {
@@ -52,6 +54,67 @@ function validatorLayer(
 }
 
 layer(Layer.empty)('ValidatorService', test => {
+	for (const dropModel of [false, true])
+		test.effect(
+			`TokenBudgetError ends after one attempt when model drop is ${dropModel}`,
+			() =>
+				Effect.gen(function* () {
+					const attempts = yield* Ref.make(0)
+					const loopLayer = Layer.effect(
+						AgentLoopService,
+						Effect.gen(function* () {
+							const health = yield* ModelHealthService
+							return {
+								run: () =>
+									Effect.gen(function* () {
+										yield* Ref.update(attempts, value => value + 1)
+										if (dropModel)
+											yield* health
+												.run(
+													REVIEWERS[1],
+													LanguageModel.generateText({
+														prompt: 'Fixture model drop.',
+													})
+												)
+												.pipe(Effect.ignore)
+										return yield* new TokenBudgetError({
+											spent: 100,
+											limit: 100,
+										})
+									}),
+							}
+						})
+					)
+					yield* Effect.gen(function* () {
+						expect(
+							yield* ValidatorService.use(validator =>
+								validator.validate(finding(), CONTEXT)
+							)
+						).toMatchObject({
+							status: 'unvalidated',
+							budgetSpent: true,
+							error: 'token budget spent: 100 of limits.tokens_per_run 100',
+						})
+						expect(yield* Ref.get(attempts)).toBe(1)
+						expect(
+							yield* ModelHealthService.use(health => health.dropped)
+						).toHaveLength(dropModel ? 1 : 0)
+						expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(
+							dropModel ? 1 : 0
+						)
+					}).pipe(
+						Effect.provide(
+							ValidatorServiceLive.pipe(
+								Layer.provide(loopLayer),
+								Layer.provideMerge(
+									reviewDependencies(() => Effect.fail(providerError(503)))
+								)
+							)
+						)
+					)
+				})
+		)
+
 	for (const stage of ['before', 'during'] as const)
 		test.effect(
 			`budget spent ${stage} validation keeps it unvalidated and starts no further model call`,

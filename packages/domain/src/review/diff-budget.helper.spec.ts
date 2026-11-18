@@ -1,7 +1,112 @@
-import { unifiedDiff } from '../shared/mocks/domain-test.helper'
+import {
+	QUOTED_FILE_DIFFS,
+	unifiedDiff,
+} from '../shared/mocks/domain-test.helper'
 import { budgetDiff, MIN_FILE_DIFF_CHARS } from './diff-budget.helper'
 
 describe('budgetDiff', () => {
+	test.each(QUOTED_FILE_DIFFS)(
+		'reports the unquoted $header path $path',
+		({ diff, path }) => {
+			expect(budgetDiff(diff, diff.length)).toEqual({
+				text: diff,
+				files: [
+					{ path, chars: diff.length, shownChars: diff.length, shown: 'full' },
+				],
+			})
+		}
+	)
+	test('stays in whole-files-only mode after a share below the minimum', () => {
+		const blocks = [1600, 1700, 1800].map((size, index) => {
+			const header = unifiedDiff(`file-${index}.ts`)
+			return header + '+x\n'.repeat(Math.ceil((size - header.length) / 3))
+		})
+		expect(blocks.every(block => block.length > 1500)).toBeTruthy()
+		const budget = budgetDiff(blocks.join(''), 1500)
+		expect(budget.text).toBe('')
+		expect(budget.files.map(file => file.shown)).toEqual([
+			'none',
+			'none',
+			'none',
+		])
+		expect(budget.files.map(file => file.shownChars)).toEqual([0, 0, 0])
+	})
+	test.each(['full', 'none', 'cut'] as const)(
+		'combines repeated type-change paths as %s',
+		shown => {
+			const deleted =
+				'diff --git a/change.ts b/change.ts\ndeleted file mode 100644\n--- a/change.ts\n+++ /dev/null\n@@ -1 +0,0 @@\n-old\n'
+			const added = unifiedDiff('change.ts', 1000).replace(
+				'--- a/change.ts',
+				'new file mode 100755\n--- /dev/null'
+			)
+			const diff = deleted + added
+			const maxChars =
+				shown === 'full' ? diff.length : shown === 'none' ? 0 : deleted.length
+			const budget = budgetDiff(diff, maxChars)
+			expect(budget.files).toEqual([
+				{
+					path: 'change.ts',
+					chars: diff.length,
+					shownChars:
+						shown === 'full'
+							? diff.length
+							: shown === 'none'
+								? 0
+								: deleted.length,
+					shown,
+				},
+			])
+			expect(budget.text).toBe(
+				shown === 'full' ? diff : shown === 'none' ? '' : deleted
+			)
+		}
+	)
+	test.each([false, true])(
+		'sums repeated-path cut characters in diff order, reversed=%s',
+		reversed => {
+			const small = unifiedDiff('change.ts', 10, 'small change')
+			const large = unifiedDiff('change.ts', 1000, 'large change')
+			const blocks = reversed ? [large, small] : [small, large]
+			const maxChars = 3 * MIN_FILE_DIFF_CHARS
+			const partial = budgetDiff(large, maxChars - small.length)
+			expect(partial.files[0]?.shown).toBe('cut')
+			expect(budgetDiff(blocks.join(''), maxChars)).toEqual({
+				text: reversed ? partial.text + small : small + partial.text,
+				files: [
+					{
+						path: 'change.ts',
+						chars: small.length + large.length,
+						shownChars: small.length + (partial.files[0]?.shownChars ?? 0),
+						shown: 'cut',
+					},
+				],
+			})
+		}
+	)
+	test('two cuts of a repeated path sum their shown characters and keep both blocks', () => {
+		const blocks = [
+			unifiedDiff('change.ts', 1000, 'first'),
+			unifiedDiff('change.ts', 1000, 'second'),
+		]
+		const maxChars = 4 * MIN_FILE_DIFF_CHARS
+		const parts = blocks.map(block => budgetDiff(block, maxChars / 2))
+		expect(parts.map(part => part.files[0]?.shown)).toEqual(['cut', 'cut'])
+		expect(budgetDiff(blocks.join(''), maxChars)).toEqual({
+			text: parts.map(part => part.text).join(''),
+			files: [
+				{
+					path: 'change.ts',
+					chars: blocks.join('').length,
+					shownChars: parts.reduce(
+						(sum, part) => sum + (part.files[0]?.shownChars ?? 0),
+						0
+					),
+					shown: 'cut',
+				},
+			],
+		})
+	})
 	test('keeps every file whole at the exact budget and preserves diff order', () => {
 		const blocks = [unifiedDiff('large.ts', 30), unifiedDiff('small.ts')]
 		const diff = blocks.join('')

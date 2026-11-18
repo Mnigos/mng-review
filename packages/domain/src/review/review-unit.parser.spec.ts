@@ -1,3 +1,4 @@
+import { QUOTED_FILE_DIFFS } from '../shared/mocks/domain-test.helper'
 import {
 	MAX_REVIEW_UNITS,
 	parseFileDiffs,
@@ -10,6 +11,18 @@ function diff(path = 'src/charge.ts', count = 2, context = 'charge') {
 }
 
 describe('parseFileDiffs and splitReviewUnits', () => {
+	test.each(QUOTED_FILE_DIFFS)(
+		'unquotes $header header for $path',
+		({ diff: text, path }) => {
+			const files = parseFileDiffs(text)
+			expect(files).toHaveLength(1)
+			expect(files[0]?.path).toBe(path)
+			expect(
+				files[0]?.header +
+					(files[0]?.hunks.map(hunk => hunk.text).join('') ?? '')
+			).toBe(text)
+		}
+	)
 	test('function contexts retain headers and changed-line sizes', () => {
 		const text = diff()
 		const files = parseFileDiffs(text)
