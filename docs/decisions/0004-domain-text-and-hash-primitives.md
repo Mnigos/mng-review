@@ -10,6 +10,7 @@
 ## Decision
 
 - YAML: `Yaml.parse` from `effect/encoding` (Effect 4.1.4, behaviour based on `yaml` 2.9). It throws a `SyntaxError`, which the domain turns into a `ConfigError` naming the file. Unsupported YAML (compact nested sequences, tags, document streams, complex keys) is not needed for `review.yml` or front matter.
+- Writing YAML: Effect 4.1.4 has no YAML writer. `toYamlText` in `domain/src/utils` writes the block subset `mng-review init` needs (mappings, lists, strings, numbers, booleans) and quotes a string whenever a plain scalar would read back differently. `init` decodes every file it writes with the rule schemas before writing.
 - Globs: `Glob.make` and `Glob.match` from `effect`, compiled once per pattern with `dot: true`, so `src/**` covers `src/.env` as `Bun.Glob` did. The domain adds two rules on top: `dir/**` matches `dir` itself, and a pattern without `/` matches the file name in any directory, as in `.gitignore`.
 - Fingerprints: SHA-256 from `node:crypto`, cut to 16 hex characters. It is synchronous and pure, runs on Node and Bun, and gives the same value on every machine, which the hidden block of a thread needs to recognise a finding on a later run. `@types/node` (catalog, Node 22 line) is a dev dependency of `domain` instead of `@types/bun`, so Bun globals do not typecheck there.
 

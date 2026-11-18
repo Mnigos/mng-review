@@ -167,7 +167,7 @@ models:
 | its `alwaysApprove` | `skip.paths` for documentation globs only; the rest is reported |
 | its body | not imported |
 
-Each agent gets `kind: nit` when its title or body mentions conventions, style or hygiene, otherwise `kind: bug`. A file name that is not a valid agent name, or names a built-in role, gets a suffix. The output lists every dropped, changed or guessed field at the end. Exit codes: 0 when written, 2 when nothing is written.
+Each agent gets `kind: nit` when its title or body mentions conventions, style or hygiene, otherwise `kind: bug`. A file name becomes lowercase with dashes for other characters; a name that is still invalid, names a built-in role or is taken gets a suffix. Line ends become LF. The output lists every dropped, changed or guessed field at the end. Exit codes: 0 when written, 2 when nothing is written.
 
 ## Stages
 
