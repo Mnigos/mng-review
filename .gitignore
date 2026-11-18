@@ -1,7 +1,11 @@
 node_modules/
+.turbo/
+.cache/
 dist/
+coverage/
+*.tsbuildinfo
+*.log
 .env
 .env.*
-*.log
+!.env.example
 .DS_Store
-coverage/

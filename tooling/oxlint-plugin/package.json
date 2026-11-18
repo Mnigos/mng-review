@@ -1,0 +1,19 @@
+{
+  "name": "@mng-review/oxlint-plugin",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --root ../.. --project @mng-review/oxlint-plugin"
+  },
+  "devDependencies": {
+    "@mng-review/typescript-config": "workspace:*",
+    "@oxlint/plugins": "1.86.0",
+    "@types/bun": "catalog:",
+    "oxfmt": "0.71.0",
+    "oxlint": "1.86.0",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}
