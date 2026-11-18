@@ -6,7 +6,13 @@ A built-in main reviewer hunts for bugs on every code change. Agents you write a
 
 It talks to any OpenAI-compatible chat completions endpoint. You bring the endpoint and the key.
 
-Status: under construction. The design is in [docs/spec.md](docs/spec.md); progress is tracked in the issues.
+## Status
+
+Under construction. The design is in [docs/spec.md](docs/spec.md); progress is tracked in the issues. Usage instructions arrive with the CLI.
+
+## Development
+
+A Bun workspace on Effect 4: `packages/domain` (schemas and pure logic), `packages/engine` (services) and `apps/cli` (the `mng-review` binary). [CONTRIBUTING.md](CONTRIBUTING.md) lists the commands; [ARCHITECTURE.md](ARCHITECTURE.md) maps the code.
 
 ## License
 
