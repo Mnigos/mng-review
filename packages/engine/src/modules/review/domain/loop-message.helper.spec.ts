@@ -1,5 +1,11 @@
 import { Response } from 'effect/ai'
-import { getCallPath, toContinuationMessage } from './loop-message.helper'
+import { unifiedDiff } from '../../../shared/mocks/domain-test.helper'
+import { BILLING_PATH } from '../../../shared/mocks/review-test.helper'
+import {
+	getCallPath,
+	getReadPaths,
+	toContinuationMessage,
+} from './loop-message.helper'
 import { MAX_LISTED_UNTOUCHED } from './review.constants'
 
 describe('getCallPath', () => {
@@ -36,6 +42,55 @@ describe('getCallPath', () => {
 			)
 		).toBeUndefined()
 	})
+})
+
+describe('getReadPaths', () => {
+	test('a pathless diff counts every file header in its output', () => {
+		const paths = [BILLING_PATH, 'src/other.ts']
+		expect(
+			getReadPaths(
+				Response.makePart('tool-call', {
+					id: 'diff',
+					providerExecuted: false,
+					name: 'diff',
+					params: {},
+				}),
+				paths.map(path => unifiedDiff(path)).join('\n'),
+				true
+			)
+		).toEqual(paths)
+	})
+	test('an error counts neither the call path nor diff headers as read', () => {
+		expect(
+			getReadPaths(
+				Response.makePart('tool-call', {
+					id: 'diff',
+					providerExecuted: false,
+					name: 'diff',
+					params: { path: BILLING_PATH },
+				}),
+				`error: unavailable\n${unifiedDiff('src/other.ts')}`,
+				true
+			)
+		).toEqual([])
+	})
+	test.each(['read_file', 'blame'])(
+		'%s counts only its normalized path even when its output contains diff headers',
+		name => {
+			expect(
+				getReadPaths(
+					Response.makePart('tool-call', {
+						id: name,
+						providerExecuted: false,
+						name,
+						params: { path: `./${BILLING_PATH}` },
+					}),
+					unifiedDiff('src/other.ts'),
+					false
+				)
+			).toEqual([BILLING_PATH])
+		}
+	)
 })
 
 describe('toContinuationMessage', () => {

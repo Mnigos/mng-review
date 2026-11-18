@@ -1078,6 +1078,47 @@ layer(Layer.empty)('ValidatorService.validateAll', test => {
 			)
 	)
 	test.effect(
+		'a rejection kept as unverified absorbs nothing and validates its named neighbor independently',
+		() =>
+			Effect.gen(function* () {
+				const bugs = [
+					finding({ severity: 'high' }),
+					finding({ agents: ['agent-b'], title: 'Other failure' }),
+				]
+				const output = yield* ValidatorService.use(validator =>
+					validator.validateAll(bugs, CONTEXT)
+				)
+				expect(output.bugs).toEqual(bugs)
+				expect(output.validations).toMatchObject([
+					{ status: 'unverified', severity: 'high', evidence: [] },
+					{ status: 'confirmed', severity: 'medium' },
+				])
+				const calls = yield* ScriptedLlm.use(script => script.calls)
+				expect(calls).toHaveLength(2)
+				expect(userText(calls[0])).toContain('"number": 1')
+				expect(userText(calls[0])).toContain('Other failure')
+				expect(userText(calls[1])).toContain('Other failure')
+				expect(userText(calls[1])).not.toContain(
+					'Nearby findings from other reviewers'
+				)
+			}).pipe(
+				Effect.provide(
+					validatorLayer((_call, index) =>
+						Effect.succeed(
+							answer(
+								'report_verdict',
+								verdict(
+									index === 0
+										? { verdict: 'reject', evidence: [], same_root_cause: [1] }
+										: {}
+								)
+							)
+						)
+					)
+				)
+			)
+	)
+	test.effect(
 		'an unvalidated first report leaves its neighbor for an independent validation',
 		() =>
 			Effect.gen(function* () {
