@@ -46,7 +46,9 @@ jobs:
     name: MNG Review (shadow)
     # Only a pull request from this repository gets the job, its secrets and the tailnet; the entry
     # skips forks and other events too.
-    if: github.event.pull_request != null && github.event.pull_request.head.repo.full_name == github.repository
+    if: >-
+      (github.event_name == 'pull_request' || github.event_name == 'pull_request_target') &&
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ${{ inputs.runner }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
