@@ -4,12 +4,14 @@ import {
 	featureFiles,
 } from '../../shared/mocks/domain-test.helper'
 import {
+	MECHANICAL_CONDITIONS,
+	MECHANICAL_REWRITE_MIN_LINES,
 	MECHANICAL_MIN_FILES,
 	MECHANICAL_MIN_SMALL_SHARE,
 	MECHANICAL_MAX_NET_SHARE,
 	SMALL_EDIT_MAX_LINES,
 } from '../routing.constants'
-import { isMechanicalChange } from './change-shape.helper'
+import { getChangeShape, isMechanicalChange } from './change-shape.helper'
 
 /** Balanced file edits isolate the small-edit share from the net-change ratio. */
 function edits(small: number, count = MECHANICAL_MIN_FILES) {
@@ -102,19 +104,32 @@ describe('mechanical changes', () => {
 		).toBe(false)
 	})
 
-	test('every risky file must fit the small-edit boundary', () => {
-		const files = edits(MECHANICAL_MIN_FILES)
-		const hits = files.map(entry => entry.path)
-		expect(isMechanicalChange(files, hits)).toBe(true)
-		expect(
-			isMechanicalChange(
-				files.map((entry, index) =>
-					index === 0 ? { ...entry, additions: entry.additions + 1 } : entry
-				),
-				hits
-			)
-		).toBe(false)
-	})
+	test.each([
+		SMALL_EDIT_MAX_LINES + 1,
+		MECHANICAL_REWRITE_MIN_LINES - 1,
+		MECHANICAL_REWRITE_MIN_LINES,
+	])(
+		'a risky edit of %i lines breaks shape only at the rewrite boundary',
+		lines => {
+			const files = [
+				...edits(MECHANICAL_MIN_FILES),
+				file('config.ts', {
+					additions: Math.ceil(lines / 2),
+					deletions: Math.floor(lines / 2),
+				}),
+			]
+			const rewritten = lines >= MECHANICAL_REWRITE_MIN_LINES
+			expect(getChangeShape(files, ['config.ts'])).toEqual({
+				files: files.length,
+				smallShare: MECHANICAL_MIN_FILES / files.length,
+				netShare:
+					(lines % 2) / (MECHANICAL_MIN_FILES * SMALL_EDIT_MAX_LINES + lines),
+				riskyRewrites: rewritten ? ['config.ts'] : [],
+				failed: rewritten ? ['risky_rewrite'] : [],
+			})
+			expect(isMechanicalChange(files, ['config.ts'])).toBe(!rewritten)
+		}
+	)
 	test('fifty small risky edits cannot hide one balanced risky rewrite', () => {
 		const files = [
 			...edits(MECHANICAL_MIN_FILES),
@@ -175,4 +190,128 @@ describe('mechanical changes', () => {
 				[]
 			)
 		).toBe(true))
+})
+
+describe('getChangeShape', () => {
+	test('reports every failed condition in constant order', () => {
+		const files = [
+			file('config.ts', {
+				additions: MECHANICAL_REWRITE_MIN_LINES,
+				deletions: 0,
+			}),
+		]
+		expect(getChangeShape(files, ['config.ts'])).toEqual({
+			files: 1,
+			smallShare: 0,
+			netShare: 1,
+			riskyRewrites: ['config.ts'],
+			failed: MECHANICAL_CONDITIONS,
+		})
+	})
+	test('empty input has finite zero shares and only count and small-share failures', () => {
+		expect(getChangeShape([], [])).toEqual({
+			files: 0,
+			smallShare: 0,
+			netShare: 0,
+			riskyRewrites: [],
+			failed: ['files', 'small_share'],
+		})
+	})
+	test('measures only reviewable files and reports rewrites once in file order', () => {
+		const files = [
+			...edits(MECHANICAL_MIN_FILES),
+			file('b.ts', {
+				additions: MECHANICAL_REWRITE_MIN_LINES / 2,
+				deletions: MECHANICAL_REWRITE_MIN_LINES / 2,
+			}),
+			file('a.ts', {
+				additions: MECHANICAL_REWRITE_MIN_LINES / 2,
+				deletions: MECHANICAL_REWRITE_MIN_LINES / 2,
+			}),
+			file('ignored.ts', {
+				skipped: 'too_large',
+				additions: 100_000,
+				deletions: 0,
+			}),
+		]
+		expect(
+			getChangeShape(files, [
+				'ignored.ts',
+				'a.ts',
+				'b.ts',
+				'a.ts',
+				'missing.ts',
+			])
+		).toEqual({
+			files: MECHANICAL_MIN_FILES + 2,
+			smallShare: MECHANICAL_MIN_FILES / (MECHANICAL_MIN_FILES + 2),
+			netShare: 0,
+			riskyRewrites: ['b.ts', 'a.ts'],
+			failed: ['risky_rewrite'],
+		})
+	})
+	test.each([MECHANICAL_MIN_FILES - 1, MECHANICAL_MIN_FILES])(
+		'measures the file-count boundary at %i',
+		count => {
+			const shape = getChangeShape(edits(count, count), [])
+			expect(shape).toEqual({
+				files: count,
+				smallShare: 1,
+				netShare: 0,
+				riskyRewrites: [],
+				failed: count < MECHANICAL_MIN_FILES ? ['files'] : [],
+			})
+			expect(isMechanicalChange(edits(count, count), [])).toBe(
+				shape.failed.length === 0
+			)
+		}
+	)
+	test.each([0, 1])(
+		'measures the small-share boundary with %i fewer small files',
+		fewer => {
+			const small = MECHANICAL_MIN_FILES * MECHANICAL_MIN_SMALL_SHARE - fewer
+			expect(getChangeShape(edits(small), [])).toEqual({
+				files: MECHANICAL_MIN_FILES,
+				smallShare: small / MECHANICAL_MIN_FILES,
+				netShare: 0,
+				riskyRewrites: [],
+				failed: fewer ? ['small_share'] : [],
+			})
+		}
+	)
+	test.each([0, 1])(
+		'measures the net-share boundary with %i excess lines',
+		excess => {
+			const total = 400
+			const additions = (total * (1 + MECHANICAL_MAX_NET_SHARE)) / 2 + excess
+			const deletions = (total * (1 - MECHANICAL_MAX_NET_SHARE)) / 2 - excess
+			const files = [
+				...edits(MECHANICAL_MIN_FILES - 1, MECHANICAL_MIN_FILES - 1).map(
+					entry => ({ ...entry, additions: 0, deletions: 0 })
+				),
+				file('large.ts', { additions, deletions }),
+			]
+			for (const reversed of [false, true]) {
+				const shape = getChangeShape(
+					files.map(entry =>
+						reversed
+							? {
+									...entry,
+									additions: entry.deletions,
+									deletions: entry.additions,
+								}
+							: entry
+					),
+					[]
+				)
+				expect(shape).toEqual({
+					files: MECHANICAL_MIN_FILES,
+					smallShare: (MECHANICAL_MIN_FILES - 1) / MECHANICAL_MIN_FILES,
+					netShare: (total * MECHANICAL_MAX_NET_SHARE + 2 * excess) / total,
+					riskyRewrites: [],
+					failed: excess ? ['net_share'] : [],
+				})
+			}
+		}
+	)
 })

@@ -1,22 +1,22 @@
 import { layer } from '@effect/vitest'
 import { Effect, Layer } from 'effect'
 import { ConfigError } from '../config/config.errors'
-import { finding } from '../shared/mocks/domain-test.helper'
-import type { BenchFile, ExpectedFinding } from './bench-file.schema'
+import { SAME_DESCRIPTION_OVERLAP } from '../findings/finding.constants'
+import { getWordOverlap } from '../findings/finding.helper'
+import {
+	benchFinding as finding,
+	expectedFinding as expected,
+} from '../shared/mocks/bench-test.helper'
+import { finding as domainFinding } from '../shared/mocks/domain-test.helper'
+import type { KeptFinding } from '../validation/validation.types'
+import type { BenchFile } from './bench-file.schema'
 import { BENCH_FILE_VERSION, DEFAULT_LINE_WINDOW } from './bench.constants'
-import { getBenchCases, toBenchTotals, toCaseScore } from './bench.helper'
-
-/** Allocates independent expected entries for matching tests. */
-function expected(overrides: Partial<ExpectedFinding> = {}): ExpectedFinding {
-	return {
-		id: 'duplicate-charge',
-		path: 'src/billing/charge.ts',
-		line: 81,
-		label: 'real',
-		summary: 'A retry charges twice.',
-		...overrides,
-	}
-}
+import {
+	getBenchCases,
+	toBenchFinding,
+	toBenchTotals,
+	toCaseScore,
+} from './bench.helper'
 
 const FILE = {
 	version: BENCH_FILE_VERSION,
@@ -76,6 +76,7 @@ describe('toCaseScore', () => {
 			).toEqual({
 				found: [{ expected: entry, finding: bug }],
 				missed: [],
+				near: [],
 				noise: [],
 				unmatched: [],
 			})
@@ -90,18 +91,30 @@ describe('toCaseScore', () => {
 					findings: [bug],
 					lineWindow: DEFAULT_LINE_WINDOW,
 				})
-			).toEqual({ found: [], missed: [entry], noise: [], unmatched: [bug] })
+			).toEqual({
+				found: [],
+				missed: [entry],
+				near: [],
+				noise: [],
+				unmatched: [bug],
+			})
 		})
-	test('different paths never match even at the same line', () => {
+	test('different directories never match even at the same line', () => {
 		const entry = expected()
-		const bug = finding({ path: 'src/billing/refund.ts', line: entry.line })
+		const bug = finding({ path: 'src/refunds/refund.ts', line: entry.line })
 		expect(
 			toCaseScore({
 				expected: [entry],
 				findings: [bug],
 				lineWindow: DEFAULT_LINE_WINDOW,
 			})
-		).toEqual({ found: [], missed: [entry], noise: [], unmatched: [bug] })
+		).toEqual({
+			found: [],
+			missed: [entry],
+			near: [],
+			noise: [],
+			unmatched: [bug],
+		})
 	})
 	test('one entry consumes only the closest finding', () => {
 		const entry = expected({ line: 10 })
@@ -116,6 +129,7 @@ describe('toCaseScore', () => {
 		).toEqual({
 			found: [{ expected: entry, finding: near }],
 			missed: [],
+			near: [],
 			noise: [],
 			unmatched: [far],
 		})
@@ -133,6 +147,7 @@ describe('toCaseScore', () => {
 		).toEqual({
 			found: [{ expected: near, finding: bug }],
 			missed: [far],
+			near: [],
 			noise: [],
 			unmatched: [],
 		})
@@ -162,6 +177,7 @@ describe('toCaseScore', () => {
 		).toEqual({
 			found: [{ expected: first, finding: bug }],
 			missed: [second],
+			near: [],
 			noise: [],
 			unmatched: [],
 		})
@@ -219,6 +235,7 @@ describe('toCaseScore', () => {
 		).toEqual({
 			found: [{ expected: entry, finding: exact }],
 			missed: [],
+			near: [],
 			noise: [],
 			unmatched: [adjacent],
 		})
@@ -227,6 +244,7 @@ describe('toCaseScore', () => {
 		expect(toCaseScore({ expected: [], findings: [], lineWindow: 0 })).toEqual({
 			found: [],
 			missed: [],
+			near: [],
 			noise: [],
 			unmatched: [],
 		})
@@ -257,6 +275,9 @@ describe('toBenchTotals', () => {
 		).toEqual({
 			cases: 2,
 			found: 2,
+			confirmed: 0,
+			unverified: 0,
+			near: 0,
 			missed: 1,
 			noise: 1,
 			unmatched: 3,
@@ -274,6 +295,9 @@ describe('toBenchTotals', () => {
 		expect(toBenchTotals([{ score, nits: 1 }])).toEqual({
 			cases: 1,
 			found: 0,
+			confirmed: 0,
+			unverified: 0,
+			near: 0,
 			missed: 0,
 			noise: 1,
 			unmatched: 1,
@@ -286,12 +310,338 @@ describe('toBenchTotals', () => {
 		expect(toBenchTotals([])).toEqual({
 			cases: 0,
 			found: 0,
+			confirmed: 0,
+			unverified: 0,
+			near: 0,
 			missed: 0,
 			noise: 0,
 			unmatched: 0,
 			nits: 0,
 			recall: null,
 			unmatchedPerCase: null,
+		})
+	})
+})
+
+describe('toBenchFinding', () => {
+	test.each([
+		'confirmed',
+		'unverified',
+		'unvalidated',
+		'missing',
+		'rejected',
+	] as const)(
+		'maps %s validation and retains the scored fields only',
+		status => {
+			const validation =
+				status === 'missing'
+					? {}
+					: {
+							validation:
+								status === 'unvalidated'
+									? ({ status, error: 'No usable answer' } as const)
+									: ({
+											status,
+											severity: 'high',
+											reason: 'Repository evidence',
+											evidence: ['src/billing/charge.ts:2'],
+											model: 'validator',
+											premise: 'Dependency behaviour',
+										} as const),
+						}
+			const bug = {
+				...domainFinding(),
+				severity: 'high',
+				placement: 'summary',
+				...validation,
+			} as const satisfies KeptFinding
+			expect(toBenchFinding(bug)).toEqual({
+				path: bug.path,
+				line: bug.line,
+				title: bug.title,
+				severity: bug.severity,
+				trigger: bug.trigger,
+				impact: bug.impact,
+				status:
+					status === 'missing' || status === 'rejected'
+						? 'unvalidated'
+						: status,
+			})
+		}
+	)
+})
+
+describe('near matches', () => {
+	test('accepts exactly the description-overlap threshold using title, trigger and impact together', () => {
+		const entry = expected({ summary: 'invoice retry duplicate balance' })
+		const bug = finding({
+			path: 'src/billing/refund.ts',
+			line: 10_000,
+			title: 'invoice',
+			trigger: 'retry',
+			impact: 'ledger timeout',
+		})
+		expect(
+			getWordOverlap(
+				entry.summary,
+				[bug.title, bug.trigger, bug.impact].join(' ')
+			)
+		).toBe(SAME_DESCRIPTION_OVERLAP)
+		expect(
+			toCaseScore({ expected: [entry], findings: [bug], lineWindow: 0 })
+		).toEqual({
+			found: [],
+			missed: [],
+			near: [{ expected: entry, finding: bug }],
+			noise: [],
+			unmatched: [],
+		})
+	})
+	test.each([
+		{ title: 'invoice', trigger: 'ledger', impact: 'timeout network' },
+		{
+			title: 'Cache entry expires',
+			trigger: 'Concurrent eviction',
+			impact: 'Stale session',
+		},
+		{ title: 'the', trigger: 'and', impact: 'or' },
+	])(
+		'rejects sibling findings with too little shared description: %j',
+		description => {
+			const entry = expected({ summary: 'invoice retry duplicate balance' })
+			const bug = finding({ path: 'src/billing/refund.ts', ...description })
+			expect(
+				getWordOverlap(
+					entry.summary,
+					[bug.title, bug.trigger, bug.impact].join(' ')
+				)
+			).toBeLessThan(SAME_DESCRIPTION_OVERLAP)
+			expect(
+				toCaseScore({
+					expected: [entry],
+					findings: [bug],
+					lineWindow: DEFAULT_LINE_WINDOW,
+				})
+			).toEqual({
+				found: [],
+				missed: [entry],
+				near: [],
+				noise: [],
+				unmatched: [bug],
+			})
+		}
+	)
+	test.each([
+		['charge.ts', 'refund.ts', true],
+		['charge.ts', 'src/refund.ts', false],
+		['src/billing/charge.ts', 'src/billing/nested/refund.ts', false],
+		['src/billing/charge.ts', 'src/billing-other/refund.ts', false],
+		['src/billing/charge.ts', 'src/refund.ts', false],
+		['src/billing/charge.ts', 'src/billing/charge.ts', false],
+	] as const)(
+		'directory rule for %s and %s gives near=%s',
+		(path, otherPath, near) => {
+			const entry = expected({
+				path,
+				summary: 'invoice retry duplicate balance',
+			})
+			const bug = finding({
+				path: otherPath,
+				line: entry.line + DEFAULT_LINE_WINDOW + 1,
+				title: entry.summary,
+				trigger: '',
+				impact: '',
+			})
+			expect(
+				toCaseScore({
+					expected: [entry],
+					findings: [bug],
+					lineWindow: DEFAULT_LINE_WINDOW,
+				})
+			).toEqual({
+				found: [],
+				missed: near ? [] : [entry],
+				near: near ? [{ expected: entry, finding: bug }] : [],
+				noise: [],
+				unmatched: near ? [] : [bug],
+			})
+		}
+	)
+	test('uses the first unmatched sibling and never consumes one finding for two entries', () => {
+		const first = expected({
+			id: 'first',
+			summary: 'invoice retry duplicate balance',
+		})
+		const second = expected({
+			id: 'second',
+			path: 'src/billing/retry.ts',
+			summary: first.summary,
+		})
+		const bug = finding({ path: 'src/billing/refund.ts', title: first.summary })
+		expect(
+			toCaseScore({ expected: [first, second], findings: [bug], lineWindow: 0 })
+		).toEqual({
+			found: [],
+			missed: [second],
+			near: [{ expected: first, finding: bug }],
+			noise: [],
+			unmatched: [],
+		})
+		const later = finding({ ...bug, path: 'src/billing/ledger.ts' })
+		expect(
+			toCaseScore({ expected: [first], findings: [bug, later], lineWindow: 0 })
+		).toEqual({
+			found: [],
+			missed: [],
+			near: [{ expected: first, finding: bug }],
+			noise: [],
+			unmatched: [later],
+		})
+	})
+	test.each(['real', 'intentional', 'false'] as const)(
+		'direct %s matches take precedence over a near match',
+		label => {
+			const near = expected({ summary: 'invoice retry duplicate balance' })
+			const direct = expected({
+				id: 'direct',
+				path: 'src/billing/refund.ts',
+				label,
+				summary: near.summary,
+			})
+			const bug = finding({
+				path: direct.path,
+				line: direct.line,
+				title: near.summary,
+			})
+			const match = { expected: direct, finding: bug }
+			expect(
+				toCaseScore({
+					expected: [near, direct],
+					findings: [bug],
+					lineWindow: 0,
+				})
+			).toEqual({
+				found: label === 'real' ? [match] : [],
+				missed: [near],
+				near: [],
+				noise: label === 'real' ? [] : [match],
+				unmatched: [],
+			})
+		}
+	)
+	test.each(['intentional', 'false'] as const)(
+		'never creates near matches for %s entries',
+		label => {
+			const entry = expected({
+				label,
+				summary: 'invoice retry duplicate balance',
+			})
+			const bug = finding({
+				path: 'src/billing/refund.ts',
+				title: entry.summary,
+			})
+			expect(
+				toCaseScore({ expected: [entry], findings: [bug], lineWindow: 0 })
+			).toEqual({
+				found: [],
+				missed: [],
+				near: [],
+				noise: [],
+				unmatched: [bug],
+			})
+		}
+	)
+	test('near matches move entries out of missed and findings out of unmatched without increasing recall', () => {
+		const direct = expected({ id: 'direct', line: 10 })
+		const near = expected({
+			id: 'near',
+			summary: 'invoice retry duplicate balance',
+		})
+		const missed = expected({ id: 'missed', path: 'elsewhere/charge.ts' })
+		const exact = finding({ line: direct.line, status: 'confirmed' })
+		const sibling = finding({
+			path: 'src/billing/refund.ts',
+			title: near.summary,
+			status: 'unverified',
+		})
+		const input = {
+			expected: [direct, near, missed],
+			findings: [exact],
+			lineWindow: 0,
+		}
+		const before = toBenchTotals([{ score: toCaseScore(input), nits: 0 }])
+		const after = toBenchTotals([
+			{ score: toCaseScore({ ...input, findings: [exact, sibling] }), nits: 0 },
+		])
+		expect(before).toMatchObject({
+			found: 1,
+			missed: 2,
+			near: 0,
+			recall: 1 / 3,
+		})
+		expect(after).toMatchObject({
+			found: 1,
+			confirmed: 1,
+			unverified: 0,
+			missed: 1,
+			near: 1,
+			unmatched: 0,
+			recall: before.recall,
+		})
+		expect(
+			toBenchTotals([
+				{
+					score: toCaseScore({
+						expected: [near],
+						findings: [sibling],
+						lineWindow: 0,
+					}),
+					nits: 0,
+				},
+			])
+		).toMatchObject({ found: 0, near: 1, missed: 0, recall: 0 })
+	})
+	test('totals split found statuses across cases without counting noise, near or unmatched statuses', () => {
+		const entry = expected({ summary: 'invoice retry duplicate balance' })
+		const cases = (['confirmed', 'unverified', 'unvalidated'] as const).map(
+			status => ({
+				nits: 1,
+				score: toCaseScore({
+					expected: [
+						entry,
+						expected({ id: 'noise', line: 10, label: 'false' }),
+						expected({
+							id: 'near',
+							path: 'src/billing/near.ts',
+							summary: entry.summary,
+						}),
+					],
+					findings: [
+						finding({ line: entry.line, status }),
+						finding({ line: 10, status: 'confirmed' }),
+						finding({
+							path: 'src/billing/sibling.ts',
+							title: entry.summary,
+							status: 'unverified',
+						}),
+						finding({ path: 'elsewhere/a.ts', status: 'confirmed' }),
+					],
+					lineWindow: 0,
+				}),
+			})
+		)
+		expect(toBenchTotals(cases)).toEqual({
+			cases: 3,
+			found: 3,
+			confirmed: 1,
+			unverified: 1,
+			near: 3,
+			missed: 0,
+			noise: 3,
+			unmatched: 3,
+			nits: 3,
+			recall: 0.5,
+			unmatchedPerCase: 1,
 		})
 	})
 })

@@ -29,6 +29,48 @@ layer(Layer.empty)('parseBenchFile', test => {
 			})
 		})
 	)
+
+	for (const metadata of [
+		{ title: 'Fix checkout retries' },
+		{ body: 'Retry the charge.\nPreserve idempotency.' },
+		{ title: 'Fix checkout retries', body: '' },
+	] as const)
+		test.effect(
+			`preserves optional metadata ${JSON.stringify(metadata)} in version 1`,
+			() =>
+				Effect.gen(function* () {
+					expect(
+						yield* parseBenchFile(
+							JSON.stringify({ ...FILE, cases: [{ ...CASE, ...metadata }] }),
+							SOURCE
+						)
+					).toEqual({ ...FILE, cases: [{ ...CASE, ...metadata, labels: [] }] })
+				})
+		)
+	for (const key of ['title', 'body'] as const)
+		for (const value of [null, false, 123, [], {}])
+			test.effect(
+				`rejects ${key} type ${JSON.stringify(value)} naming its key`,
+				() =>
+					Effect.gen(function* () {
+						const error = yield* parseBenchFile(
+							JSON.stringify({ ...FILE, cases: [{ ...CASE, [key]: value }] }),
+							SOURCE
+						).pipe(Effect.flip)
+						expect(error).toBeInstanceOf(ConfigError)
+						expect(error.source).toBe(SOURCE)
+						expect(error.reason).toContain(`cases.0.${key}`)
+					})
+			)
+	test.effect('rejects an empty title naming its key', () =>
+		Effect.gen(function* () {
+			const error = yield* parseBenchFile(
+				JSON.stringify({ ...FILE, cases: [{ ...CASE, title: '' }] }),
+				SOURCE
+			).pipe(Effect.flip)
+			expect(error.reason).toContain('cases.0.title')
+		})
+	)
 	for (const label of [...EXPECTED_LABELS, false] as const)
 		test.effect(`decodes label ${JSON.stringify(label)}`, () =>
 			Effect.gen(function* () {

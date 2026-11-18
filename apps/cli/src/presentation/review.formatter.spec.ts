@@ -1,4 +1,8 @@
-import type { Judgement, Unverified } from '@mng-review/domain'
+import {
+	MECHANICAL_CONDITIONS,
+	type Judgement,
+	type Unverified,
+} from '@mng-review/domain'
 import type { ReviewReport } from '@mng-review/engine'
 import { Schema } from 'effect'
 import {
@@ -301,4 +305,53 @@ test('review text omits lowering and note labels when the validator supplied nei
 	const text = formatReviewText(reviewReport())
 	expect(text).not.toContain('lowered because:')
 	expect(text).not.toContain('note:')
+})
+
+for (const failed of [[], MECHANICAL_CONDITIONS] as const)
+	test(`review text and JSON reuse the plan shape with failures ${failed.join(', ')}`, () => {
+		const fixture = reviewReport()
+		const shape = {
+			...fixture.planReport.plan.shape,
+			files: 1,
+			smallShare: 1,
+			netShare: 0,
+			riskyRewrites: [],
+			failed,
+		}
+		const report = {
+			...fixture,
+			planReport: {
+				...fixture.planReport,
+				plan: {
+					...fixture.planReport.plan,
+					riskPathHits: ['src/billing/charge.ts'],
+					shape,
+				},
+			},
+		}
+		expect(formatReviewText(report)).toContain('Change shape:')
+		expect(formatReviewText(report)).toContain(
+			failed.length
+				? `not mechanical, failed: ${failed.join(', ')}`
+				: ': mechanical'
+		)
+		expect(decodeJson(formatReviewJson(report))).toMatchObject({
+			risk: { shape: { ...shape, mechanical: failed.length === 0 } },
+		})
+	})
+
+test('review omits shape text without risk-path hits and uses null JSON when shape is absent', () => {
+	const fixture = reviewReport()
+	const report = {
+		...fixture,
+		planReport: {
+			...fixture.planReport,
+			plan: { ...fixture.planReport.plan, shape: undefined },
+		},
+	}
+	expect(formatReviewText(report)).not.toContain('Change shape:')
+	expect(decodeJson(formatReviewJson(report))).toMatchObject({
+		risk: { shape: null },
+	})
+	expect(formatReviewText(fixture)).not.toContain('Change shape:')
 })
