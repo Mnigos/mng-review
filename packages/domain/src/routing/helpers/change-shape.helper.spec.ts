@@ -6,7 +6,6 @@ import {
 import {
 	MECHANICAL_MIN_FILES,
 	MECHANICAL_MIN_SMALL_SHARE,
-	MECHANICAL_MIN_RISKY_SMALL_SHARE,
 	MECHANICAL_MAX_NET_SHARE,
 	SMALL_EDIT_MAX_LINES,
 } from '../routing.constants'
@@ -103,17 +102,35 @@ describe('mechanical changes', () => {
 		).toBe(false)
 	})
 
-	test('requires the small-edit share independently within risk paths', () => {
-		const files = edits(40)
-		const count = 10
-		const small = count * MECHANICAL_MIN_RISKY_SMALL_SHARE
-		const hits = [
-			...files.slice(0, small),
-			...files.slice(40, 40 + count - small),
-		].map(entry => entry.path)
+	test('every risky file must fit the small-edit boundary', () => {
+		const files = edits(MECHANICAL_MIN_FILES)
+		const hits = files.map(entry => entry.path)
 		expect(isMechanicalChange(files, hits)).toBe(true)
 		expect(
-			isMechanicalChange(files, [...hits.slice(1), 'src/file-42.ts'])
+			isMechanicalChange(
+				files.map((entry, index) =>
+					index === 0 ? { ...entry, additions: entry.additions + 1 } : entry
+				),
+				hits
+			)
+		).toBe(false)
+	})
+	test('fifty small risky edits cannot hide one balanced risky rewrite', () => {
+		const files = [
+			...edits(MECHANICAL_MIN_FILES),
+			file('src/billing/rewrite.ts', { additions: 1000, deletions: 1000 }),
+		]
+		expect(
+			isMechanicalChange(
+				files,
+				files.slice(0, -1).map(entry => entry.path)
+			)
+		).toBe(true)
+		expect(
+			isMechanicalChange(
+				files,
+				files.map(entry => entry.path)
+			)
 		).toBe(false)
 	})
 	test('includes the net-share boundary in either direction and rejects exceeding it', () => {

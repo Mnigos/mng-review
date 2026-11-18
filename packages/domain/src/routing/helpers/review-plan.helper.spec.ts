@@ -9,7 +9,7 @@ import {
 	planInput,
 	pr,
 } from '../../shared/mocks/domain-test.helper'
-import { REVIEWER_NAME } from '../routing.constants'
+import { MECHANICAL_MIN_FILES, REVIEWER_NAME } from '../routing.constants'
 import { buildPlan, getPlanRouting } from './review-plan.helper'
 
 describe('plan routing and construction', () => {
@@ -496,6 +496,29 @@ describe('mechanical plan depth', () => {
 			riskSource: 'mechanical',
 			depth: 'balanced',
 		}))
+	test('fifty small risky edits cannot cap the risk of one risky rewrite', () => {
+		const files = [
+			...Array.from({ length: MECHANICAL_MIN_FILES }, (_, index) =>
+				file(`src/billing/small-${index}.ts`)
+			),
+			file('src/billing/rewrite.ts', { additions: 1000, deletions: 1000 }),
+		]
+		expect(
+			buildPlan(
+				planInput({
+					files,
+					config: config({ risk_paths: ['src/billing/**'], depth: 'quick' }),
+				}),
+				{ ...NORMAL_ROUTER, risk: 'trivial' }
+			)
+		).toMatchObject({
+			risk: 'risky',
+			riskSource: 'risk_paths',
+			depth: 'deep',
+			depthSource: 'risk_paths',
+			riskPathHits: files.map(entry => entry.path),
+		})
+	})
 	test('feature changes under risk paths remain risky and deep', () =>
 		expect(
 			buildPlan(
