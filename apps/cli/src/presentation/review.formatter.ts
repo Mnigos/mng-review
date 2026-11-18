@@ -1,4 +1,8 @@
-import type { KeptFinding, RejectedFinding } from '@mng-review/domain'
+import type {
+	Judgement,
+	KeptFinding,
+	RejectedFinding,
+} from '@mng-review/domain'
 import type { AgentRunReport, ReviewReport } from '@mng-review/engine'
 import { formatPlanText, toPlanJson } from './plan.formatter'
 import { toModelTokenLines, toSourceTokenLines } from './tokens.formatter'
@@ -10,17 +14,31 @@ function toSeconds(millis: number): string {
 	return `${(millis / MILLIS_PER_SECOND).toFixed(1)} s`
 }
 
+/** Why the validator lowered the severity and what the engine changed in its answer. */
+function toJudgementNotes(
+	validation: Pick<Judgement, 'loweredBecause' | 'note'>
+): string[] {
+	return [
+		...(validation.loweredBecause
+			? [`      lowered because: ${validation.loweredBecause}`]
+			: []),
+		...(validation.note ? [`      note: ${validation.note}`] : []),
+	]
+}
+
 /** The validator's answer under a kept bug. */
 function toValidationLines(finding: KeptFinding): string[] {
 	const { validation } = finding
 	if (validation?.status === 'confirmed')
 		return [
 			`    validator (${validation.model}): confirmed. ${validation.reason}`,
+			...toJudgementNotes(validation),
 			...validation.evidence.map(line => `      ${line}`),
 		]
 	if (validation?.status === 'unverified')
 		return [
 			`    validator (${validation.model}): unverified, rests on: ${validation.premise} ${validation.reason}`,
+			...toJudgementNotes(validation),
 			...validation.evidence.map(line => `      ${line}`),
 		]
 	if (validation?.status === 'unvalidated' && validation.budgetSpent)
