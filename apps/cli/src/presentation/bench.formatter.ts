@@ -1,5 +1,6 @@
 import type { BenchFinding, BenchMatch } from '@mng-review/domain'
-import type { BenchReport, CaseReport, TokensByModel } from '@mng-review/engine'
+import type { BenchReport, CaseReport } from '@mng-review/engine'
+import { toModelTokenLines, toSourceTokenLines } from './tokens.formatter'
 
 const MILLIS_PER_SECOND = 1000
 const PERCENT = 100
@@ -17,14 +18,6 @@ function toFindingText(finding: BenchFinding): string {
 /** A matched entry with the finding that matched it. */
 function toMatchLine(kind: string, match: BenchMatch): string {
 	return `    ${kind}  ${match.expected.id} (${match.expected.label})  ${toFindingText(match.finding)}`
-}
-
-/** One line per model: total, input, output and calls. */
-function toTokenLines(tokens: TokensByModel, indent: string): string[] {
-	return Object.entries(tokens).map(
-		([model, entry]) =>
-			`${indent}${model}  ${entry.totalTokens} (${entry.inputTokens} in, ${entry.outputTokens} out, ${entry.calls} call(s))`
-	)
 }
 
 /** The counts of one case, then each match, miss, noise and unmatched finding, then its tokens. */
@@ -50,7 +43,8 @@ function toCaseLines(entry: CaseReport): string[] {
 		...score.unmatched.map(
 			finding => `    unmatched  ${toFindingText(finding)}`
 		),
-		...toTokenLines(entry.tokens, '    tokens  '),
+		...toModelTokenLines(entry.tokens, '    tokens  '),
+		...toSourceTokenLines(entry.tokenSources, '    source  '),
 	]
 }
 
@@ -74,7 +68,7 @@ export function formatBenchText(report: BenchReport): string {
 		`Unmatched per case: ${totals.unmatchedPerCase === null ? 'n/a' : totals.unmatchedPerCase.toFixed(2)}`,
 		...(Object.keys(report.tokens).length === 0
 			? []
-			: ['Tokens:', ...toTokenLines(report.tokens, '  ')]),
+			: ['Tokens:', ...toModelTokenLines(report.tokens, '  ')]),
 		`Wall time: ${toSeconds(report.wallMillis)}`,
 	].join('\n')
 }

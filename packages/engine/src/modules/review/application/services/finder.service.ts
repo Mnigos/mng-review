@@ -13,13 +13,18 @@ import type { Rules } from '../../../../platform/config/rules.service'
 import { GitService } from '../../../../platform/git/git.service'
 import { fenceData } from '../../../../utils/fence.util'
 import {
+	getFirstDiffChars,
+	getUnitCount,
+	getUnitsToReview,
+	toFinderStatus,
+} from '../../domain/finder-budget.helper'
+import {
 	toChangeMessage,
 	toContextNotes,
 	toUnitMessage,
 } from '../../domain/finder-message.helper'
 import type { AgentRunReport } from '../../domain/review-report.types'
 import {
-	FINDER_TOKEN_SHARE,
 	MAX_FULL_DIFF_CHARS,
 	MAX_INCREMENTAL_DIFF_CHARS,
 } from '../../domain/review.constants'
@@ -49,6 +54,17 @@ export interface FinderContext {
 	readonly fanOut: boolean
 	/** Models to switch to, in order, when the run's model is dropped; `undefined` keeps the model. */
 	readonly fallback: readonly ModelSetting[] | undefined
+	readonly tokens: FinderTokens
+	/** At deep depth, review only the units that touch one of these paths; `undefined` reviews all. */
+	readonly unitPaths?: readonly string[]
+}
+
+/** Tokens one planned finder may spend. */
+export interface FinderTokens {
+	/** This run's share of the finders' tokens, split evenly over its units. */
+	readonly allowance: number
+	/** Every finder answers once the whole run has spent this many tokens. */
+	readonly runTokens: number
 }
 
 /** A finder's report and its findings, `max_findings` applied. */
@@ -64,25 +80,16 @@ interface FinderJob {
 	readonly tools: readonly RepoToolName[]
 	/** The unit's label when a deep review splits the change. */
 	readonly unit?: string
-}
-
-/**
- * `incomplete` when the token budget stopped a job, else `failed` when no job answered and one
- * failed, else `ok`.
- */
-function toFinderStatus(
-	failedAll: boolean,
-	unfinished: number
-): AgentRunReport['status'] {
-	if (unfinished > 0) return 'incomplete'
-	return failedAll ? 'failed' : 'ok'
+	/** Tokens this conversation may spend. */
+	readonly tokens: number
 }
 
 /**
  * Runs one planned finder: the main reviewer (split into units at deep depth) or a declared agent
  * (`kind`, `input` and `max_findings` from its front matter). A job whose model is dropped moves to
- * the next available fallback model. Each job answers with what it has once the run spent
- * `FINDER_TOKEN_SHARE` of its budget; a job the budget stops before it answers is listed as
+ * the next available fallback model. Each job answers with what it has once its share of the run's
+ * planned tokens runs out (`tokens`); a deep review splits into as many units as its share pays
+ * for, and `unitPaths` narrows them to the risky ones. A job the budget stops before it answers is listed as
  * unfinished and the others' findings stay. It never fails: a failure is the report's status.
  */
 export class FinderService extends Context.Service<
@@ -123,8 +130,13 @@ export const FinderServiceLive = Layer.effect(
 				FINDING_RULES_PROMPT,
 			].join('\n\n')
 			const diff = yield* readDiff(context.scope)
-			const units = context.fanOut ? splitReviewUnits(diff) : []
-			if (units.length > 1)
+			const { allowance } = context.tokens
+			const split = context.fanOut
+				? splitReviewUnits(diff, getUnitCount(allowance))
+				: []
+			if (split.length > 1) {
+				const units = getUnitsToReview(split, context.unitPaths)
+				const tokens = Math.floor(allowance / Math.max(1, units.length))
 				return units.map(unit => ({
 					unit: unit.label,
 					system: `${system}\n\n${UNIT_PROMPT}`,
@@ -132,10 +144,12 @@ export const FinderServiceLive = Layer.effect(
 						unit,
 						files: context.scope.change.files,
 						pr,
-						maxChars: MAX_INCREMENTAL_DIFF_CHARS,
+						maxChars: getFirstDiffChars(tokens, MAX_INCREMENTAL_DIFF_CHARS),
 					}),
 					tools: ALL_REPO_TOOLS,
+					tokens,
 				}))
+			}
 			return [
 				{
 					system,
@@ -144,9 +158,10 @@ export const FinderServiceLive = Layer.effect(
 						scope: run.files,
 						pr,
 						diff,
-						maxChars: MAX_FULL_DIFF_CHARS,
+						maxChars: getFirstDiffChars(allowance, MAX_FULL_DIFF_CHARS),
 					}),
 					tools: ALL_REPO_TOOLS,
+					tokens: allowance,
 				},
 			]
 		})
@@ -179,6 +194,7 @@ export const FinderServiceLive = Layer.effect(
 						system,
 						user: fenceData('Change metadata:', metadata),
 						tools: METADATA_REPO_TOOLS,
+						tokens: context.tokens.allowance,
 					},
 				]
 			}
@@ -192,9 +208,13 @@ export const FinderServiceLive = Layer.effect(
 						scope: run.files,
 						pr,
 						diff,
-						maxChars: full ? MAX_FULL_DIFF_CHARS : MAX_INCREMENTAL_DIFF_CHARS,
+						maxChars: getFirstDiffChars(
+							context.tokens.allowance,
+							full ? MAX_FULL_DIFF_CHARS : MAX_INCREMENTAL_DIFF_CHARS
+						),
 					}),
 					tools: ALL_REPO_TOOLS,
+					tokens: context.tokens.allowance,
 				},
 			]
 		})
@@ -245,7 +265,11 @@ export const FinderServiceLive = Layer.effect(
 					tools: job.tools,
 					finish: ReportFindingsTool.name,
 					parse: parseFindingsAnswer,
-					tokenShare: FINDER_TOKEN_SHARE,
+					budget: {
+						runTokens: context.tokens.runTokens,
+						conversationTokens: job.tokens,
+					},
+					source: run.name,
 				})
 				.pipe(
 					Effect.map(result => ({

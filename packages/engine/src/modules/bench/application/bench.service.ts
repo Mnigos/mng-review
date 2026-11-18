@@ -109,6 +109,7 @@ const reviewCase = Effect.fn('BenchService.reviewCase')(function* (
 		}),
 		nits: report.nits.length,
 		tokens: report.tokens,
+		tokenSources: report.tokenSources,
 		wallMillis: report.wallMillis,
 		...(plan.skippedRun ? { skipped: plan.skippedRun } : {}),
 		...(report.endpointError ? { endpointError: report.endpointError } : {}),

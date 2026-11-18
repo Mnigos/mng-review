@@ -42,13 +42,19 @@ function toChangeLines({ change, rulesSource }: PlanReport): string[] {
 	]
 }
 
+/** Which rule decided the risk, with the risky paths it saw. */
+function toRiskSourceText(plan: PlanReport['plan']): string {
+	if (plan.riskSource === 'risk_paths')
+		return `risk_paths: ${plan.riskPathHits.join(', ')}`
+	if (plan.riskSource === 'mechanical' && plan.riskPathHits.length > 0)
+		return `mechanical change, so ${plan.riskPathHits.length} file(s) under risk_paths do not make it risky`
+	return plan.riskSource
+}
+
 /** Run and skip lines, then tokens per model when the router spent any. */
 function toPlanBodyLines(report: PlanReport): string[] {
 	const { plan, tokens } = report
-	const riskFrom =
-		plan.riskSource === 'risk_paths'
-			? `risk_paths: ${plan.riskPathHits.join(', ')}`
-			: plan.riskSource
+	const riskFrom = toRiskSourceText(plan)
 	const tokenEntries = Object.entries(tokens)
 	return [
 		'',

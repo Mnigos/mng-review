@@ -18,6 +18,7 @@ export function toEmptyReviewReport(
 		planReport,
 		agents: [],
 		tokens: planReport.tokens,
+		tokenSources: {},
 		droppedModels: [],
 		wallMillis,
 		blocking: false,

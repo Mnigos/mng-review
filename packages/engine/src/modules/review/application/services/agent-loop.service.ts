@@ -1,7 +1,14 @@
 import type { ModelSetting } from '@mng-review/domain'
 import { Clock, Context, Duration, Effect, Layer, Result } from 'effect'
 import { Chat, type Prompt, type Response, Toolkit } from 'effect/ai'
+import { TokenLedger } from '../../../../platform/llm/token-ledger.service'
 import { fenceData } from '../../../../utils/fence.util'
+import {
+	type CallStop,
+	isOutOfTokens,
+	type LoopBudget,
+	toEstimatedTokens,
+} from '../../domain/loop-budget.helper'
 import {
 	MAX_CORRECTIONS,
 	TOOL_OUTPUT_LABEL,
@@ -43,11 +50,10 @@ export interface LoopRequest<TValue> {
 	readonly finish: FinishToolName
 	/** Reads the finish tool's arguments or a plain JSON answer. */
 	readonly parse: (answer: unknown) => Effect.Effect<TValue, AnswerProblem>
-	/**
-	 * Share of `limits.tokens_per_run` after which the agent must answer, as after its tool calls run
-	 * out; without it the agent runs until the budget refuses its next call.
-	 */
-	readonly tokenShare?: number
+	/** When the agent must answer for tokens; without it, only `limits.tokens_per_run` stops it. */
+	readonly budget?: LoopBudget
+	/** Who the turns' tokens count for in the ledger, a finder's name or `validator`; none counts none. */
+	readonly source?: string
 }
 
 /** An agent's answer and what it took. */
@@ -65,6 +71,12 @@ interface LoopState {
 	readonly turn: number
 	/** Messages the next turn sends: tool results and corrections. */
 	readonly pending: readonly Prompt.MessageEncoded[]
+	/** Input tokens of the conversation's first call, once it answered. */
+	readonly firstMessageTokens?: number
+	/** Tokens this conversation has spent. */
+	readonly spentTokens: number
+	/** Input tokens of the conversation's last call, or the first message's estimate before it. */
+	readonly lastInputTokens: number
 }
 
 type ToolCall = Response.ToolCallPart<string, unknown>
@@ -97,8 +109,8 @@ function toUserMessage(content: string): Prompt.MessageEncoded {
  * calls resolved in parallel by the loop, until the agent calls its finish tool or answers with
  * plain JSON. Tool calls are bounded by `maxToolCalls` (calls in one turn never exceed what is
  * left), wall time by `maxWallTime`; past either, the agent gets only the finish tool and is told to
- * answer; the same happens once the run has spent `tokenShare` of its token budget. Repository calls
- * a model returns after the wall time are refused. Every model call,
+ * answer; the same happens when the request's `budget` runs out for the run or the conversation.
+ * Repository calls a model returns after the wall time are refused. Every model call,
  * corrections included, ends by one fixed deadline: the wall time plus one grace period. An invalid answer gets a correction
  * turn; after `MAX_CORRECTIONS` the agent fails with a `LoopError`.
  */
@@ -117,6 +129,7 @@ export const AgentLoopServiceLive = Layer.effect(
 		const health = yield* ModelHealthService
 		const repoTools = yield* RepoToolsService
 		const limits = yield* ReviewLimits
+		const ledger = yield* TokenLedger
 		const wallMillis = Duration.toMillis(
 			Duration.fromInputUnsafe(limits.maxWallTime)
 		)
@@ -156,9 +169,10 @@ export const AgentLoopServiceLive = Layer.effect(
 			const resolveCalls = (
 				calls: readonly ToolCall[],
 				state: LoopState,
-				wrapUp: boolean,
+				stop: CallStop,
 				now: number
 			) => {
+				const { wrapUp } = stop
 				const allowed = calls.filter(
 					call => !wrapUp && request.tools.some(name => name === call.name)
 				)
@@ -172,6 +186,10 @@ export const AgentLoopServiceLive = Layer.effect(
 					call => {
 						if (!allowed.includes(call))
 							return Effect.succeed(`error: tool ${call.name} is not available`)
+						if (stop.outOfTokens)
+							return Effect.succeed(
+								`error: token budget reached; call ${finish} now`
+							)
 						if (!runnable.has(call.id))
 							return Effect.succeed(
 								`error: tool call limit reached; call ${finish}`
@@ -199,8 +217,9 @@ export const AgentLoopServiceLive = Layer.effect(
 					const turn = Effect.gen(function* () {
 						const now = yield* Clock.currentTimeMillis
 						const overBudget =
-							request.tokenShare !== undefined &&
-							(yield* health.spent) >= limits.tokensPerRun * request.tokenShare
+							request.budget !== undefined &&
+							(isOutOfTokens(request.budget, state) ||
+								(yield* health.spent) >= request.budget.runTokens)
 						const wrapUp =
 							state.toolCalls >= limits.maxToolCalls ||
 							now >= deadline ||
@@ -254,7 +273,25 @@ export const AgentLoopServiceLive = Layer.effect(
 						return yield* Effect.fail(error)
 					}
 					const { response, wrapUp, expired } = attempt.success
-					const sent = { ...state, wrapUpSent: state.wrapUpSent || wrapUp }
+					const firstMessageTokens =
+						state.firstMessageTokens ?? response.usage.inputTokens.total ?? 0
+					if (request.source !== undefined)
+						yield* ledger.recordTurn(request.source, {
+							usage: response.usage,
+							firstMessageTokens,
+							first: state.firstMessageTokens === undefined,
+						})
+					const inputTokens = response.usage.inputTokens.total ?? 0
+					const sent = {
+						...state,
+						wrapUpSent: state.wrapUpSent || wrapUp,
+						firstMessageTokens,
+						spentTokens:
+							state.spentTokens +
+							inputTokens +
+							(response.usage.outputTokens.total ?? 0),
+						lastInputTokens: inputTokens,
+					}
 					const calls: readonly ToolCall[] = response.toolCalls
 					const finishCall = calls.find(call => call.name === finish)
 					if (finishCall || calls.length === 0) {
@@ -296,7 +333,10 @@ export const AgentLoopServiceLive = Layer.effect(
 					const outputs = yield* resolveCalls(
 						calls,
 						state,
-						wrapUp || expired,
+						{
+							wrapUp: wrapUp || expired,
+							outOfTokens: isOutOfTokens(request.budget, sent),
+						},
 						yield* Clock.currentTimeMillis
 					)
 					const message = toToolMessage(
@@ -323,6 +363,8 @@ export const AgentLoopServiceLive = Layer.effect(
 				wrapUpSent: false,
 				turn: 1,
 				pending: [],
+				spentTokens: 0,
+				lastInputTokens: toEstimatedTokens(request.system + request.user),
 			})
 		})
 
