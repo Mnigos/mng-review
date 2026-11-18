@@ -338,22 +338,26 @@ export const AgentLoopServiceLive = Layer.effect(
 						},
 						yield* Clock.currentTimeMillis
 					)
-					yield* Ref.update(touched, paths => {
-						const read = calls.flatMap((call, index) =>
-							getReadPaths(
-								call,
-								outputs[index] ?? '',
-								call.name === DiffTool.name
-							)
-						)
-						return new Set([...paths, ...read])
-					})
+					const refusal = `error: token budget reached; call ${finish} now`
 					const fenced = toAffordableOutputs(
 						outputs.map(output => fenceData(TOOL_OUTPUT_LABEL, output)),
 						request.budget,
 						sent,
-						`error: token budget reached; call ${finish} now`
+						refusal
 					)
+					// Only an output the model receives counts as read.
+					yield* Ref.update(touched, paths => {
+						const read = calls.flatMap((call, index) =>
+							fenced[index] === refusal
+								? []
+								: getReadPaths(
+										call,
+										outputs[index] ?? '',
+										call.name === DiffTool.name
+									)
+						)
+						return new Set([...paths, ...read])
+					})
 					const message = toToolMessage(calls, fenced)
 					const next = {
 						...sent,
