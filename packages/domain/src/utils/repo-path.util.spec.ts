@@ -1,6 +1,13 @@
 import { normalizeRepoPath } from './repo-path.util'
 
 describe('normalizeRepoPath', () => {
+	test('rejects drive paths exposed by normalization and preserves relative paths and root', () => {
+		expect(normalizeRepoPath('./C:/outside.md')).toBeUndefined()
+		expect(normalizeRepoPath('a/../C:/outside.md')).toBeUndefined()
+		expect(normalizeRepoPath('./a/../b')).toBe('b')
+		expect(normalizeRepoPath('')).toBe('.')
+		expect(normalizeRepoPath('.')).toBe('.')
+	})
 	test.each([
 		'/a',
 		'../x',

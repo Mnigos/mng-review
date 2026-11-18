@@ -69,6 +69,18 @@ describe('extractSection', () => {
 		expect(extractSection(MARKDOWN, 'Other')).toBe('## Other\nDo not import.')
 		expect(extractSection(MARKDOWN, 'Missing')).toBeUndefined()
 	})
+	test('up to three spaces allow section headings while four spaces do not', () => {
+		for (const indent of [' ', '  ', '   '])
+			expect(
+				extractSection(`${indent}## Rules\nText\n   ## End`, 'Rules')
+			).toBe(`${indent}## Rules\nText`)
+		expect(
+			extractSection('    ## Rules\nText\n## End', 'Rules')
+		).toBeUndefined()
+		expect(extractSection('## Rules\nText\n    ## End\nKept', 'Rules')).toBe(
+			'## Rules\nText\n    ## End\nKept'
+		)
+	})
 	test('supports CRLF and strips trailing blank lines', () => {
 		expect(extractSection('## Rules\r\nText\r\n\r\n## End', 'Rules')).toBe(
 			'## Rules\nText'

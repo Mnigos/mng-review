@@ -112,6 +112,45 @@ describe('plan routing and construction', () => {
 			])
 		})
 
+	test('ignores failed router risk while retaining successful risk and risk path precedence', () => {
+		const input = planInput({ config: config({ depth: 'auto' }) })
+		const failedRouter = {
+			status: 'failed',
+			risk: 'trivial',
+			added: [],
+		} as const
+		const plan = buildPlan(input, failedRouter)
+		expect(plan).toMatchObject({
+			risk: 'normal',
+			riskSource: 'default',
+			depth: 'balanced',
+		})
+		expect(plan.runs).toMatchObject([
+			{ name: REVIEWER_NAME, role: 'reviewer', files: [file().path] },
+		])
+		expect(buildPlan(input, { ...failedRouter, status: 'ok' })).toMatchObject({
+			risk: 'trivial',
+			riskSource: 'router',
+			depth: 'quick',
+			runs: [],
+		})
+		for (const status of ['failed', 'ok'] as const)
+			expect(
+				buildPlan(
+					{
+						...input,
+						config: config({ depth: 'auto', risk_paths: [file().path] }),
+					},
+					{ ...failedRouter, status }
+				)
+			).toMatchObject({
+				risk: 'risky',
+				riskSource: 'risk_paths',
+				riskPathHits: [file().path],
+				depth: 'deep',
+			})
+	})
+
 	test('a successful router that omits a candidate records why it was skipped', () => {
 		const input = planInput({
 			agents: [
