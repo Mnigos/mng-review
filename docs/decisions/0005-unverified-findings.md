@@ -9,9 +9,10 @@ The validator tries to refute each bug finding and answered confirm or reject. I
 
 ## Decision
 
-- The validator has a third verdict, `unverified`, besides `confirm` and `reject`. It may use it only when every premise about the repository's code holds and it checked them, and the finding also rests on a dependency's documented behaviour. The answer names that behaviour in `premise`, one sentence naming the package, and cites the repository lines it checked as `evidence`.
-- Type declarations, `package.json` versions and lockfile entries present in the repository count as evidence about a dependency.
-- A finding that rests on dependency behaviour that is unlikely, or whose repository premise fails, is still rejected.
+- The validator has a third verdict, `unverified`, besides `confirm` and `reject`. It may use it only when every premise about the repository's code holds and it checked them, and the finding also rests on a dependency's behaviour that the repository neither shows nor rules out. The answer names that behaviour in `premise`, one sentence naming the package, and cites the repository lines it checked as `evidence`.
+- Type declarations, manifest versions, lockfile entries, vendored code or documentation, and tests or call sites present in the repository count as evidence about a dependency. The validator's memory of a library does not.
+- A finding whose repository premise fails, or whose dependency premise the repository contradicts, is rejected, with those lines as evidence.
+- A rejection whose evidence names no file of the repository (at the head, the merge base, or the rules files) is kept as unverified at the reported severity, with a note. The engine enforces this, so a refutation from recollection cannot drop a finding.
 - An unverified finding is kept at the validator's severity, reported after confirmed and unvalidated findings, and placed in the summary: it never gets an inline thread and never counts as blocking.
 
 ## Consequences
@@ -19,6 +20,7 @@ The validator tries to refute each bug finding and answered confirm or reject. I
 - Real bugs that depend on a framework's or client library's behaviour reach the report instead of disappearing in validation, at the cost of some findings a reader has to check against the dependency's documentation.
 - Blocking stays tied to what the repository proves.
 - The benchmark counts unverified findings as kept, so they score as found when they match an expected entry.
+- Amended on 2026-11-18: the first version also rejected findings that rest on dependency behaviour the repository does not document. A benchmark showed the validator refuting a real defect from what it recalled of a library, with only the repository's own files as evidence; such a premise now ends as `unverified`.
 - Rejected: reading `node_modules` (not in git, differs per machine, and the change under review could ship its own copy), and keeping such findings unvalidated (that status means the validator gave no answer, which hides the reason).
 
 ## Related
