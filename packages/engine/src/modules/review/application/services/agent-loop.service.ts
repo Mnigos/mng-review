@@ -144,8 +144,8 @@ export const AgentLoopServiceLive = Layer.effect(
 
 			/**
 			 * Runs the turn's repository calls; the first calls up to the allowance run, the rest get an
-			 * error. Each call ends at the hard deadline with an error result, so a stalled git process
-			 * cannot hold the agent past its wall time.
+			 * error. Each call ends at the wall deadline with an error result, so a stalled git process
+			 * cannot hold the agent and the grace period stays free for the finish answer.
 			 */
 			const resolveCalls = (
 				calls: readonly ToolCall[],
@@ -172,7 +172,7 @@ export const AgentLoopServiceLive = Layer.effect(
 							)
 						return repoTools.call(request.scope, call.name, call.params).pipe(
 							Effect.timeoutOrElse({
-								duration: Math.max(0, hardDeadline - now),
+								duration: Math.max(0, deadline - now),
 								orElse: () =>
 									Effect.succeed(
 										`error: tool ${call.name} ran past the agent's wall time`
