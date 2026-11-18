@@ -24,3 +24,16 @@ export const SMALL_EDIT_MAX_LINES = 10
 export const MECHANICAL_MIN_SMALL_SHARE = 0.6
 /** Most a mechanical change's added and removed lines may differ, as a share of both. */
 export const MECHANICAL_MAX_NET_SHARE = 0.25
+/** The conditions a mechanical change meets, in the order `plan` reports them. */
+export const MECHANICAL_CONDITIONS = [
+	'files',
+	'small_share',
+	'net_share',
+	'risky_rewrite',
+] as const
+/**
+ * Changed lines (added plus removed) from which an edit to a file under `risk_paths` counts as a
+ * rewrite. A lint or format migration often touches configuration under `risk_paths` with a few
+ * dozen lines; a rewrite of a risky file keeps the change risky.
+ */
+export const MECHANICAL_REWRITE_MIN_LINES = 50

@@ -12,7 +12,7 @@ import type {
 import { REVIEWER_NAME, REVIEWER_TITLE } from '../routing.constants'
 import type { Depth, Risk, RouterReport } from '../routing.types'
 import { getRiskPathHits, selectByRules } from './agent-selection.helper'
-import { isMechanicalChange } from './change-shape.helper'
+import { getChangeShape } from './change-shape.helper'
 import { resolveDepth } from './depth.helper'
 import { gateRun, isFeatureActive } from './run-gate.helper'
 
@@ -172,7 +172,7 @@ function getRiskSource(
  * Builds the plan from its inputs and the router's report, or the skip report from
  * `getPlanRouting`. The router adds agents and rates the risk; it never removes an agent. A change
  * under `risk_paths` is risky whatever the router says, unless the change is mechanical (see
- * `isMechanicalChange`), which caps the risk at `normal`; and without a rating the risk is `normal`,
+ * `getChangeShape`), which caps the risk at `normal`; and without a rating the risk is `normal`,
  * or `trivial` when no file is reviewable.
  */
 export function buildPlan(input: PlanInput, router: RouterReport): Plan {
@@ -195,7 +195,8 @@ export function buildPlan(input: PlanInput, router: RouterReport): Plan {
 	const reviewable = getReviewableFiles(files)
 	const fallbackRisk: Risk = reviewable.length > 0 ? 'normal' : 'trivial'
 	const routerRisk = router.status === 'ok' ? router.risk : undefined
-	const mechanical = isMechanicalChange(files, riskPathHits)
+	const shape = getChangeShape(files, riskPathHits)
+	const mechanical = shape.failed.length === 0
 	const forcedRisky = riskPathHits.length > 0 && !mechanical
 	const risk = getRisk(forcedRisky, mechanical, routerRisk ?? fallbackRisk)
 	const { depth, source } = resolveDepth(
@@ -218,6 +219,7 @@ export function buildPlan(input: PlanInput, router: RouterReport): Plan {
 		risk,
 		riskSource: getRiskSource(forcedRisky, mechanical, routerRisk),
 		riskPathHits,
+		shape,
 		depth,
 		depthSource: source,
 		router,

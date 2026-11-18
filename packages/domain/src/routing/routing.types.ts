@@ -1,4 +1,4 @@
-import type { RISK_LEVELS } from './routing.constants'
+import type { MECHANICAL_CONDITIONS, RISK_LEVELS } from './routing.constants'
 
 /** `manual`: started by a person (CLI, command); `auto`: started by an event. */
 export type RunTrigger = 'auto' | 'manual'
@@ -55,4 +55,21 @@ export interface RouterReport {
 	readonly detail?: string
 	readonly risk?: Risk
 	readonly added: readonly RouterAddition[]
+}
+
+/** A mechanical-change condition: enough files, mostly small edits, balanced lines, no risky rewrite. */
+export type MechanicalCondition = (typeof MECHANICAL_CONDITIONS)[number]
+
+/** A change measured against the mechanical conditions (`getChangeShape`). */
+export interface ChangeShape {
+	/** Reviewable files. */
+	readonly files: number
+	/** Share of reviewable files that are small edits. */
+	readonly smallShare: number
+	/** How far added and removed lines differ, as a share of both. */
+	readonly netShare: number
+	/** Files under `risk_paths` with an edit large enough to count as a rewrite. */
+	readonly riskyRewrites: readonly string[]
+	/** The conditions the change fails; empty for a mechanical change. */
+	readonly failed: readonly MechanicalCondition[]
 }
