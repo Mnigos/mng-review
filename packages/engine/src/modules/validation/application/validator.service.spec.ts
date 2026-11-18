@@ -470,6 +470,49 @@ layer(Layer.empty)('ValidatorService', test => {
 					)
 				})
 		)
+	for (const path of ['.mng/MEMORY.md', '.mng/CONTEXT.md'])
+		test.effect(
+			`rejection citing ${path} that was not supplied is checked in git and kept unverified`,
+			() =>
+				Effect.gen(function* () {
+					const getFilesAtSpy = vi.fn<GitService['Service']['getFilesAt']>(() =>
+						Effect.succeed(new Set<string>())
+					)
+					const context = {
+						...CONTEXT,
+						rules: { ...CONTEXT.rules, context: '', memory: '  ' },
+					}
+					yield* Effect.gen(function* () {
+						expect(
+							yield* ValidatorService.use(validator =>
+								validator.validate(finding(), context)
+							)
+						).toMatchObject({ status: 'unverified' })
+						expect(getFilesAtSpy).toHaveBeenCalledTimes(2)
+					}).pipe(
+						Effect.provide(
+							ValidatorServiceLive.pipe(
+								Layer.provideMerge(
+									reviewDependencies(
+										() =>
+											Effect.succeed(
+												answer(
+													'report_verdict',
+													verdict({
+														verdict: 'reject',
+														evidence: [`${path}:1 intentional`],
+													})
+												)
+											),
+										{},
+										gitFixture({ getFilesAt: getFilesAtSpy })
+									)
+								)
+							)
+						)
+					)
+				})
+		)
 	test.effect(
 		'a git file lookup failure keeps a rejection unverified without retrying the model',
 		() =>

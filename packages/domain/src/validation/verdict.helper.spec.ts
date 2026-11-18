@@ -4,8 +4,14 @@ import {
 	toValidation,
 	UNNAMED_PREMISE,
 } from './verdict.helper'
+import { type Verdict, VERDICTS } from './verdict.schema'
 
 const MODEL = 'validator-model'
+const STATUS_BY_VERDICT = {
+	confirm: 'confirmed',
+	reject: 'rejected',
+	unverified: 'unverified',
+} as const satisfies Record<Verdict['verdict'], string>
 
 describe('getEvidencePaths', () => {
 	test('extracts paths with lines, ranges, spaces and notes, normalizes and deduplicates them', () => {
@@ -41,17 +47,12 @@ describe('getEvidencePaths', () => {
 })
 
 describe('toValidation', () => {
-	for (const verdictName of ['confirm', 'reject', 'unverified'] as const) {
+	for (const verdictName of VERDICTS) {
 		const premise =
 			verdictName === 'unverified'
 				? 'Example SDK retries automatically.'
 				: undefined
-		const status =
-			verdictName === 'confirm'
-				? 'confirmed'
-				: verdictName === 'reject'
-					? 'rejected'
-					: 'unverified'
+		const status = STATUS_BY_VERDICT[verdictName]
 		test(`${verdictName} preserves equal severity, reason, evidence and model without notes`, () => {
 			const answer = verdict({
 				verdict: verdictName,
