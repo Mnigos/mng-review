@@ -4,6 +4,7 @@ import {
 	getBenchCases,
 	parseBenchFile,
 	type PullRequestInfo,
+	toBenchFinding,
 	toBenchTotals,
 	toCaseScore,
 } from '@mng-review/domain'
@@ -42,9 +43,19 @@ interface CaseInput {
 	readonly lineWindow: number
 }
 
-/** A local run on a recorded change: no draft, no fork, started by a person, with the case's labels. */
+/**
+ * A local run on a recorded change: no draft, no fork, started by a person, with the case's labels
+ * and its title and description when the file gives them.
+ */
 function toCasePullRequest(entry: BenchCase): PullRequestInfo {
-	return { labels: entry.labels, draft: false, fork: false, trigger: 'manual' }
+	return {
+		labels: entry.labels,
+		draft: false,
+		fork: false,
+		trigger: 'manual',
+		...(entry.title ? { title: entry.title } : {}),
+		...(entry.body ? { body: entry.body } : {}),
+	}
 }
 
 /**
@@ -68,9 +79,19 @@ const reviewCase = Effect.fn('BenchService.reviewCase')(function* (
 		head: entry.head,
 		score: toCaseScore({
 			expected: entry.expected,
-			findings: report.bugs,
+			findings: report.bugs.map(toBenchFinding),
 			lineWindow,
 		}),
+		depth: { level: plan.depth, source: plan.depthSource },
+		risk: plan.risk,
+		rejected: report.rejected.map(finding => ({
+			path: finding.path,
+			line: finding.line,
+			title: finding.title,
+			severity: finding.severity,
+			reason: finding.reason,
+			validatedBy: finding.validatedBy,
+		})),
 		nits: report.nits.length,
 		tokens: report.tokens,
 		tokenSources: report.tokenSources,

@@ -1,8 +1,20 @@
-import type { BenchTotals, CaseScore } from '@mng-review/domain'
+import type {
+	BenchTotals,
+	CaseScore,
+	Depth,
+	RejectedFinding,
+	Risk,
+} from '@mng-review/domain'
 import type {
 	TokensByModel,
 	TokensBySource,
 } from '../../../platform/llm/token-ledger.service'
+
+/** A bug the validator rejected in a case, with its reason. */
+export type BenchRejected = Pick<
+	RejectedFinding,
+	'path' | 'line' | 'title' | 'severity' | 'reason' | 'validatedBy'
+>
 
 /** How one case of a benchmark went. */
 export interface CaseReport {
@@ -10,6 +22,11 @@ export interface CaseReport {
 	readonly base: string
 	readonly head: string
 	readonly score: CaseScore
+	/** The depth the plan chose, and why. */
+	readonly depth: { readonly level: Depth; readonly source: string }
+	readonly risk: Risk
+	/** Bugs the validator refuted, with its reason. */
+	readonly rejected: readonly BenchRejected[]
 	/** Nits the review kept; they never match expected entries. */
 	readonly nits: number
 	readonly tokens: TokensByModel

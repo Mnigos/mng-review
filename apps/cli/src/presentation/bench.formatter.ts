@@ -10,9 +10,9 @@ function toSeconds(millis: number): string {
 	return `${(millis / MILLIS_PER_SECOND).toFixed(1)} s`
 }
 
-/** A finding as `path:line severity title`. */
+/** A finding as `path:line severity status title`. */
 function toFindingText(finding: BenchFinding): string {
-	return `${finding.path}:${finding.line} ${finding.severity} ${finding.title}`
+	return `${finding.path}:${finding.line} ${finding.severity} ${finding.status} ${finding.title}`
 }
 
 /** A matched entry with the finding that matched it. */
@@ -23,8 +23,8 @@ function toMatchLine(kind: string, match: BenchMatch): string {
 /** The counts of one case, then each match, miss, noise and unmatched finding, then its tokens. */
 function toCaseLines(entry: CaseReport): string[] {
 	const { score } = entry
-	const real = score.found.length + score.missed.length
-	const header = `${entry.id}  real ${score.found.length}/${real} found, ${score.missed.length} missed, noise ${score.noise.length}, unmatched ${score.unmatched.length}, nits ${entry.nits}, ${toSeconds(entry.wallMillis)}`
+	const real = score.found.length + score.missed.length + score.near.length
+	const header = `${entry.id}  ${entry.depth.level}  real ${score.found.length}/${real} found, ${score.near.length} near, ${score.missed.length} missed, noise ${score.noise.length}, unmatched ${score.unmatched.length}, rejected ${entry.rejected.length}, nits ${entry.nits}, ${toSeconds(entry.wallMillis)}`
 	return [
 		header,
 		...(entry.skipped ? [`    skipped  ${entry.skipped}`] : []),
@@ -39,10 +39,16 @@ function toCaseLines(entry: CaseReport): string[] {
 			expected =>
 				`    missed  ${expected.id}  ${expected.path}:${expected.line}  ${expected.summary}`
 		),
+		...score.near.map(match => toMatchLine('near', match)),
 		...score.noise.map(match => toMatchLine('noise', match)),
 		...score.unmatched.map(
 			finding => `    unmatched  ${toFindingText(finding)}`
 		),
+		...entry.rejected.map(
+			finding =>
+				`    rejected  ${finding.path}:${finding.line} ${finding.severity} ${finding.title} (${finding.validatedBy}: ${finding.reason})`
+		),
+		`    depth  ${entry.depth.level} (${entry.depth.source}), risk ${entry.risk}`,
 		...toModelTokenLines(entry.tokens, '    tokens  '),
 		...toSourceTokenLines(entry.tokenSources, '    source  '),
 	]
@@ -50,7 +56,7 @@ function toCaseLines(entry: CaseReport): string[] {
 
 /** Recall as a percentage with the counts behind it. */
 function toRecallText({ totals }: BenchReport): string {
-	const real = totals.found + totals.missed
+	const real = totals.found + totals.missed + totals.near
 	if (totals.recall === null) return 'n/a (no real entries)'
 	return `${(totals.recall * PERCENT).toFixed(1)}% (${totals.found} of ${real} real)`
 }
@@ -63,7 +69,7 @@ export function formatBenchText(report: BenchReport): string {
 		'',
 		...report.cases.flatMap(toCaseLines),
 		'',
-		`Totals (${totals.cases} case(s)): real found ${totals.found}, missed ${totals.missed}, noise ${totals.noise}, unmatched ${totals.unmatched}, nits ${totals.nits}`,
+		`Totals (${totals.cases} case(s)): real found ${totals.found} (${totals.confirmed} confirmed, ${totals.unverified} unverified), near ${totals.near}, missed ${totals.missed}, noise ${totals.noise}, unmatched ${totals.unmatched}, nits ${totals.nits}`,
 		`Recall: ${toRecallText(report)}`,
 		`Unmatched per case: ${totals.unmatchedPerCase === null ? 'n/a' : totals.unmatchedPerCase.toFixed(2)}`,
 		...(Object.keys(report.tokens).length === 0
