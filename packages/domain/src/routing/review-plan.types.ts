@@ -3,6 +3,7 @@ import type { DeclaredAgent } from '../agents/agent.types'
 import type { ChangedFile } from '../change/change.types'
 import type { Effort, ReviewConfig } from '../config/review-config.schema'
 import type {
+	ChangeShape,
 	Depth,
 	PullRequestInfo,
 	Risk,
@@ -66,6 +67,8 @@ export interface Plan {
 	/** `mechanical`: a repo-wide mechanical change, kept at `normal` or below. */
 	readonly riskSource: 'risk_paths' | 'mechanical' | 'router' | 'default'
 	readonly riskPathHits: readonly string[]
+	/** The change against the mechanical conditions; unset when the run is skipped. */
+	readonly shape?: ChangeShape
 	readonly depth: Depth
 	readonly depthSource: string
 	readonly router: RouterReport
