@@ -18,18 +18,7 @@ import {
 	type TokenLedger,
 	TokenLedgerLive,
 } from '../../../platform/llm/token-ledger.service'
-import { ReviewService } from '../../review/application/services/review.service'
-import { toEmptyReviewReport } from '../../review/domain/review-report.helper'
-import {
-	MAX_AGENT_WALL_TIME,
-	MAX_TOOL_CALLS,
-} from '../../review/domain/review.constants'
-import { makeReviewLayer } from '../../review/infrastructure/review.layers'
-import {
-	PlanService,
-	PlanServiceLive,
-} from '../../routing/application/plan.service'
-import { makeRouterLayer } from '../../routing/infrastructure/router.layers'
+import { reviewChange } from '../../review/application/services/review-run.service'
 import { toTokenTotals } from '../domain/bench-report.helper'
 import type { BenchReport, CaseReport } from '../domain/bench-report.types'
 
@@ -66,38 +55,13 @@ const reviewCase = Effect.fn('BenchService.reviewCase')(function* (
 	input: CaseInput
 ) {
 	const { rules, entry, lineWindow } = input
-	const startedAt = yield* Clock.currentTimeMillis
-	const pr = toCasePullRequest(entry)
-	const { limits } = rules.config
-	const planReport = yield* PlanService.use(service =>
-		service.plan({ rules, baseRef: entry.base, headRef: entry.head, pr })
-	).pipe(
-		Effect.provide(
-			PlanServiceLive.pipe(
-				Layer.provide(makeRouterLayer({ concurrency: limits.concurrency }))
-			)
-		)
-	)
-	const { plan } = planReport
-	const report =
-		plan.skippedRun || plan.runs.length === 0
-			? toEmptyReviewReport(
-					planReport,
-					(yield* Clock.currentTimeMillis) - startedAt
-				)
-			: yield* ReviewService.use(service =>
-					service.review({ rules, planReport, pr, startedAt })
-				).pipe(
-					Effect.provide(
-						makeReviewLayer({
-							concurrency: limits.concurrency,
-							tokensPerRun: limits.tokens_per_run,
-							maxFileKb: limits.max_file_kb,
-							maxToolCalls: MAX_TOOL_CALLS,
-							maxWallTime: MAX_AGENT_WALL_TIME,
-						})
-					)
-				)
+	const report = yield* reviewChange({
+		rules,
+		baseRef: entry.base,
+		headRef: entry.head,
+		pr: toCasePullRequest(entry),
+	})
+	const { plan } = report.planReport
 	return {
 		id: entry.id,
 		base: entry.base,
