@@ -16,20 +16,53 @@ describe('budgetDiff', () => {
 			})
 		}
 	)
-	test('stays in whole-files-only mode after a share below the minimum', () => {
-		const blocks = [1600, 1700, 1800].map((size, index) => {
+	test('uses leftover excerpts for the smallest omitted files after a share below the minimum', () => {
+		const blocks = [1800, 1600, 1700].map((size, index) => {
 			const header = unifiedDiff(`file-${index}.ts`)
 			return header + '+x\n'.repeat(Math.ceil((size - header.length) / 3))
 		})
 		expect(blocks.every(block => block.length > 1500)).toBeTruthy()
+		expect(Math.floor(1500 / blocks.length)).toBeLessThan(MIN_FILE_DIFF_CHARS)
 		const budget = budgetDiff(blocks.join(''), 1500)
-		expect(budget.text).toBe('')
-		expect(budget.files.map(file => file.shown)).toEqual([
-			'none',
-			'none',
-			'none',
-		])
-		expect(budget.files.map(file => file.shownChars)).toEqual([0, 0, 0])
+		expect(budget.files.map(file => file.shown)).toEqual(['none', 'cut', 'cut'])
+		expect(budget.files[0]?.shownChars).toBe(0)
+		for (const file of budget.files.filter(entry => entry.shown === 'cut')) {
+			const marker = `[cut: ${file.chars - file.shownChars} more characters of this file's diff]\n`
+			// The marker and up to two characters of line-boundary rounding use the allowance.
+			expect(file.shownChars).toBeGreaterThanOrEqual(
+				MIN_FILE_DIFF_CHARS - marker.length - 2
+			)
+			expect(budget.text).toContain(marker)
+		}
+		expect(budget.text).toBe(
+			budget.files
+				.map((file, index) =>
+					file.shown === 'none'
+						? ''
+						: `${blocks[index]?.slice(0, file.shownChars)}[cut: ${file.chars - file.shownChars} more characters of this file's diff]\n`
+				)
+				.join('')
+		)
+		expect(budget.text.length).toBeLessThanOrEqual(1500)
+	})
+	test('shows excerpts when 41 file diffs each exceed a 24,000 character budget', () => {
+		const maxChars = 24_000
+		const blocks = Array.from({ length: 41 }, (_, index) =>
+			unifiedDiff(`file-${String(index).padStart(2, '0')}.ts`, 4000)
+		)
+		expect(blocks.every(block => block.length > maxChars)).toBeTruthy()
+		const budget = budgetDiff(blocks.join(''), maxChars)
+		expect(budget.text.length).toBeGreaterThan(0)
+		expect(budget.text.length).toBeLessThanOrEqual(maxChars)
+		expect(budget.files).toHaveLength(blocks.length)
+		expect(budget.files.filter(file => file.shown === 'cut')).toHaveLength(
+			Math.floor(maxChars / MIN_FILE_DIFF_CHARS)
+		)
+		expect(budget.files.at(-1)).toMatchObject({
+			path: 'file-40.ts',
+			shown: 'none',
+			shownChars: 0,
+		})
 	})
 	test.each(['full', 'none', 'cut'] as const)(
 		'combines repeated type-change paths as %s',
