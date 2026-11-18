@@ -7,7 +7,7 @@ Reject the finding when:
 
 - the trigger it names cannot happen in this repository, or it does not name one;
 - a premise about this repository's code is wrong, for example a caller, a guard, a type or a test already handles the case;
-- it rests on how a library, service or framework behaves, and that behaviour is neither documented nor plausible from what the repository shows;
+- it rests on how a library, service or framework behaves, and neither that dependency's documentation nor its types in the repository support that behaviour, however plausible it sounds;
 - the repository's context notes or memory describe the behaviour as intentional;
 - it is about style, naming or formatting rather than behaviour.
 
