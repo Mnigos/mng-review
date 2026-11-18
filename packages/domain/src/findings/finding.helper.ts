@@ -5,6 +5,7 @@ import {
 	FINGERPRINT_LENGTH,
 	NEAR_LINES,
 	SAME_DESCRIPTION_OVERLAP,
+	SAME_FAILURE_OVERLAP,
 	SAME_TITLE_OVERLAP,
 	STOP_WORDS,
 } from './finding.constants'
@@ -70,12 +71,9 @@ function toWordStem(word: string): string {
 		: word
 }
 
-/** Distinct stemmed content words of a finding's title, trigger and impact. */
-function getDescriptionWords(
-	finding: Pick<Finding, 'title' | 'trigger' | 'impact'>
-): Set<string> {
-	const text = `${finding.title} ${finding.trigger} ${finding.impact}`
-	return new Set(getTitleWords(text).map(toWordStem))
+/** Distinct stemmed content words of the given texts. */
+function getStemmedWords(...texts: readonly string[]): Set<string> {
+	return new Set(getTitleWords(texts.join(' ')).map(toWordStem))
 }
 
 /** Shared words over the smaller set's size; 0 when either set is empty. */
@@ -96,7 +94,8 @@ function hasOtherReporter(a: Finding, b: Finding): boolean {
  * Same root cause: same kind and file, and the same fingerprint, or lines at most `NEAR_LINES`
  * apart with title word overlap (Jaccard) of at least `SAME_TITLE_OVERLAP`. Nearby reports from
  * different finders also merge when their descriptions share `SAME_DESCRIPTION_OVERLAP` of the
- * shorter one's words, since two finders word one defect differently. The same line alone is not
+ * shorter one's words and their titles and impacts `SAME_FAILURE_OVERLAP`, since two finders word
+ * one defect differently. The same line alone is not
  * enough, and a bug never merges with a nit.
  */
 export function isSameRootCause(a: Finding, b: Finding): boolean {
@@ -108,10 +107,17 @@ export function isSameRootCause(a: Finding, b: Finding): boolean {
 	const union = new Set([...wordsA, ...wordsB]).size
 	const shared = [...wordsA].filter(word => wordsB.has(word)).length
 	if (union > 0 && shared / union >= SAME_TITLE_OVERLAP) return true
+	if (!hasOtherReporter(a, b)) return false
+	const description = getOverlap(
+		getStemmedWords(a.title, a.trigger, a.impact),
+		getStemmedWords(b.title, b.trigger, b.impact)
+	)
+	const failure = getOverlap(
+		getStemmedWords(a.title, a.impact),
+		getStemmedWords(b.title, b.impact)
+	)
 	return (
-		hasOtherReporter(a, b) &&
-		getOverlap(getDescriptionWords(a), getDescriptionWords(b)) >=
-			SAME_DESCRIPTION_OVERLAP
+		description >= SAME_DESCRIPTION_OVERLAP && failure >= SAME_FAILURE_OVERLAP
 	)
 }
 
@@ -140,29 +146,50 @@ function canJoin(group: readonly Finding[], finding: Finding): boolean {
 	)
 }
 
-/**
- * Merges findings with the same root cause. The merged finding keeps the text and the severity of
- * the most severe report and every agent, model and distinct evidence line. Inputs are not modified.
- */
-export function mergeFindings(findings: readonly Finding[]): Finding[] {
-	const merged: Finding[] = []
-	/** Every report absorbed into each merged finding, so later reports match any of them. */
-	const members: Finding[][] = []
-	const bySeverity = findings.toSorted(
+/** The reports, most severe first. */
+function toBySeverity(findings: readonly Finding[]): Finding[] {
+	return findings.toSorted(
 		(a, b) => getSeverityRank(b.severity) - getSeverityRank(a.severity)
 	)
-	for (const finding of bySeverity) {
-		const index = members.findIndex(group => canJoin(group, finding))
-		const match = merged[index]
-		if (match) {
-			merged[index] = absorb(match, finding)
-			members[index]?.push(finding)
-			continue
-		}
-		merged.push(finding)
-		members.push([finding])
-	}
-	return merged
+}
+
+/**
+ * Adds one report to the groups: a new group when it joins none, every group it joins when they
+ * can be one group, else the first group it joins.
+ */
+function addToGroups(groups: Finding[][], finding: Finding): Finding[][] {
+	const joined = groups.filter(group => canJoin(group, finding))
+	const [first] = joined
+	if (!first) return [...groups, [finding]]
+	const combined = [...joined.flat(), finding]
+	if (isConsistentGroup(combined))
+		return [...groups.filter(group => !joined.includes(group)), combined]
+	return groups.map(group => (group === first ? [...group, finding] : group))
+}
+
+/** True when no two reports of one finder in the group are left without a match between them. */
+function isConsistentGroup(group: readonly Finding[]): boolean {
+	return group.every((member, index) =>
+		group
+			.slice(index + 1)
+			.every(
+				other =>
+					hasOtherReporter(member, other) || isSameRootCause(member, other)
+			)
+	)
+}
+
+/**
+ * Merges findings with the same root cause. The merged finding keeps the text and the severity of
+ * the most severe report and every agent, model and distinct evidence line. A report that matches
+ * several groups joins them all when no finder would end up with two distinct reports in one group,
+ * so the result does not depend on the order of the reports. Inputs are not modified.
+ */
+export function mergeFindings(findings: readonly Finding[]): Finding[] {
+	const groups = toBySeverity(findings).reduce<Finding[][]>(addToGroups, [])
+	return groups.map(group =>
+		toBySeverity(group).reduce((kept, other) => absorb(kept, other))
+	)
 }
 
 /** Most severe first, then by path and line. The input is not modified. */

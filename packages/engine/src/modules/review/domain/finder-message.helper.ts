@@ -51,7 +51,7 @@ function toMissingNote(budgeted: readonly BudgetedFile[]): string[] {
 	const missing = budgeted.filter(file => file.shown !== 'full').length
 	if (missing === 0) return []
 	return [
-		`The diff above cuts or leaves out ${missing} of ${budgeted.length} files; the file list marks them. They are part of the change. Read each one you have not seen with \`diff(path)\` or \`read_file\` before you answer; do not assume they are fine.`,
+		`The diff above cuts or leaves out ${missing} of ${budgeted.length} files; the file list marks them. They are part of the change. Read each one you have not seen with \`diff(path)\` (a long diff comes in parts; pass the offset its end names) or \`read_file\` before you answer; do not assume they are fine.`,
 	]
 }
 

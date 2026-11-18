@@ -52,10 +52,24 @@ export const ListDirTool = Tool.make('list_dir', {
 	success: Schema.String,
 })
 
+/**
+ * A character offset into a long tool output; models sometimes send it as a string. No bounds in
+ * the schema, since providers refuse them; the tool clamps it.
+ */
+const offsetSchema = Schema.optionalKey(
+	Schema.Union([Schema.Number, Schema.NumberFromString])
+).annotate({
+	description:
+		'Character offset to start from, for the next part of a long diff.',
+})
+
 export const DiffTool = Tool.make('diff', {
 	description:
-		'Unified diff of the change, for one file or for all reviewable files.',
-	parameters: Schema.Struct({ path: Schema.optionalKey(pathSchema) }),
+		'Unified diff of the change, for one file or for all reviewable files. A long diff comes in parts; the end of each part names the offset of the next.',
+	parameters: Schema.Struct({
+		path: Schema.optionalKey(pathSchema),
+		offset: offsetSchema,
+	}),
 	success: Schema.String,
 })
 

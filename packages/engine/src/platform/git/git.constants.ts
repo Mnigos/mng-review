@@ -14,7 +14,8 @@ export const GIT_ENV = {
 } as const satisfies Record<string, string>
 /**
  * Diff options that never run a program from the repository's config, with the `a/` and `b/`
- * prefixes the diff parser reads paths from, whatever `diff.noprefix` says.
+ * prefixes the diff parser reads paths from, whatever `diff.noprefix` says, and submodule updates as
+ * patches whatever `diff.submodule` says.
  */
 export const SAFE_DIFF = [
 	'-M',
@@ -23,6 +24,7 @@ export const SAFE_DIFF = [
 	'--no-color',
 	'--src-prefix=a/',
 	'--dst-prefix=b/',
+	'--submodule=short',
 ] as const
 /** Paths per `ls-tree` call, to stay far below the argument length limit. */
 export const PATHS_PER_CALL = 200
