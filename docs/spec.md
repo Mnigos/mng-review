@@ -139,10 +139,35 @@ models:
 
 ## Running it
 
-- **CLI:** `mng-review --base <ref>` reviews the current branch and prints findings as text or JSON (`--json`). `mng-review plan --base <ref>` prints which agents would run, which are skipped and why, the router's additions and the risk level, without a review. Locally, `.mng/` is read from the working tree; `--rules-ref <ref>` reads it from a commit instead, as CI does. `mng-review init` writes a starter `.mng/`. `mng-review bench <file>` replays recorded changes against expected findings.
+- **CLI:** `mng-review --base <ref>` reviews the current branch and prints findings as text or JSON (`--json`). `mng-review plan --base <ref>` prints which agents would run, which are skipped and why, the router's additions and the risk level, without a review. Locally, `.mng/` is read from the working tree; `--rules-ref <ref>` reads it from a commit instead, as CI does. `mng-review init` writes a starter `.mng/`; `--from-macroscope` builds it from `.macroscope/` (see Init). `mng-review bench <file>` replays recorded changes against expected findings.
 - **Endpoint:** `MNG_REVIEW_LLM_URL` and `MNG_REVIEW_LLM_KEY`. Nothing else about the provider is assumed.
 - **CI:** a reusable workflow; the caller keeps its triggers and concurrency and passes the endpoint and key as secrets. Rules are read from the base commit, so a pull request cannot change the rules it is judged by. Fork pull requests are skipped.
 - **Commands** in a pull request comment, from the repository owner: `/mng-review`, `/mng-review deep`, `/mng-review <agent>`.
+
+## Init
+
+`mng-review init` writes `review.yml` (extends `mng:default`), `CONTEXT.md` with the headings `Intentional patterns, not bugs` and `Where real bugs tend to hide`, an empty `MEMORY.md`, and two example agents, one `kind: bug` and one `kind: nit`. It refuses an existing `.mng/`; `--force` writes over the files it creates and leaves the others. Every generated `review.yml` and agent file is decoded before anything is written.
+
+`mng-review init --from-macroscope` reads `.macroscope/` and leaves it untouched:
+
+| Macroscope | `.mng/` |
+|---|---|
+| `correctness/correctness.md` body | `CONTEXT.md` (the starter when missing or empty) |
+| its `exclude` | `skip.paths` |
+| its `requires` | `needs` of every generated agent |
+| `check-run-agents/<name>.md` | `agents/<name>.md`, body and `@/path` imports as they are |
+| `title` | `title` |
+| `include`, `exclude`, `labels`, `authors`, `targets` | `when.paths`, `when.exclude`, `when.labels`, `when.authors`, `when.targets` |
+| `input: pr_metadata`, `incremental`, `full_diff` | `metadata`, `incremental`, `full_diff` |
+| `input: code_object` | `full_diff`, with a warning |
+| `requires` | `needs` |
+| `model`, `reasoning` | dropped; the agent runs on `models.agents` |
+| `maxRuns`, `maxBudget*` | dropped; `limits` cap runs and tokens |
+| `approvability.md` `neverApprove` | `risk_paths` |
+| its `alwaysApprove` | `skip.paths` for documentation globs only; the rest is reported |
+| its body | not imported |
+
+Each agent gets `kind: nit` when its title or body mentions conventions, style or hygiene, otherwise `kind: bug`. A file name that is not a valid agent name, or names a built-in role, gets a suffix. The output lists every dropped, changed or guessed field at the end. Exit codes: 0 when written, 2 when nothing is written.
 
 ## Stages
 
