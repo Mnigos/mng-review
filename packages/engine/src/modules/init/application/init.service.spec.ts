@@ -83,6 +83,26 @@ layer(Layer.empty, { excludeTestServices: true })('InitService', test => {
 			})
 	)
 
+	test.effect(
+		'force refuses a dangling symlink and creates nothing at its target',
+		() =>
+			Effect.gen(function* () {
+				const repo = createRepo()
+				mkdirSync(join(repo.root, '.mng'))
+				symlinkSync(
+					join(repo.root, MACROSCOPE_APPROVABILITY_PATH),
+					join(repo.root, CONFIG_PATH)
+				)
+				const error = yield* InitService.use(service =>
+					service.init({ ...STARTER_OPTIONS, force: true })
+				).pipe(Effect.provide(initLayer(repo.root)), Effect.flip)
+				expect(error.message).toContain(`${CONFIG_PATH} is a symlink`)
+				expect(existsSync(join(repo.root, MACROSCOPE_APPROVABILITY_PATH))).toBe(
+					false
+				)
+			})
+	)
+
 	test.effect('force refuses a symlinked .mng folder', () =>
 		Effect.gen(function* () {
 			const repo = createRepo()
