@@ -9,6 +9,7 @@ import {
 	file,
 	plannedRun,
 	rawFinding,
+	unifiedDiff,
 } from '../../../../shared/mocks/domain-test.helper'
 import {
 	gitFixture,
@@ -20,9 +21,16 @@ import {
 	answer,
 	BILLING_PATH,
 	DIFF,
+	finishWithUsage,
 	REVIEWERS,
 	SCOPE,
+	toolCall,
 } from '../../../../shared/mocks/review-test.helper'
+import {
+	FINDER_TOKEN_SHARE,
+	MAX_FULL_DIFF_CHARS,
+	MAX_INCREMENTAL_DIFF_CHARS,
+} from '../../domain/review.constants'
 import { NIT_PROMPT } from '../reviewer.prompt'
 import {
 	FinderService,
@@ -55,6 +63,116 @@ function finderLayer(
 const TWO_UNITS = `${DIFF}@@ -20 +20 @@ export function charge1() {\n-before\n+after\n`
 
 layer(Layer.empty)('FinderService', test => {
+	for (const fanOut of [false, true])
+		test.effect(
+			`finder passes its token share to ${fanOut ? 'unit' : 'whole-change'} conversations`,
+			() =>
+				Effect.gen(function* () {
+					expect(
+						yield* FinderService.use(finder =>
+							finder.run(plannedRun(), context({ fanOut }))
+						)
+					).toMatchObject({ report: { status: 'ok' } })
+					const calls = yield* ScriptedLlm.use(script => script.calls)
+					expect(calls.length).toBeGreaterThanOrEqual(2)
+					for (const call of calls.slice(1)) {
+						expect(call.options.tools.map(tool => String(tool.name))).toEqual([
+							'report_findings',
+						])
+						expect(call.options.toolChoice).toEqual({
+							oneOf: ['report_findings'],
+							mode: 'required',
+						})
+						expect(JSON.stringify(call.options.prompt)).toContain(
+							'Call report_findings now with what you have'
+						)
+					}
+				}).pipe(
+					Effect.provide(
+						finderLayer(
+							(_call, index) =>
+								Effect.succeed(
+									index === 0
+										? [
+												toolCall('read_file', { path: BILLING_PATH }),
+												finishWithUsage(100 * FINDER_TOKEN_SHARE),
+											]
+										: answer()
+								),
+							gitFixture({
+								readDiff: () => Effect.succeed(fanOut ? TWO_UNITS : DIFF),
+							}),
+							{ tokensPerRun: 100 }
+						)
+					)
+				)
+		)
+	for (const input of ['incremental', 'full_diff'] as const)
+		test.effect(
+			`${input} budgets the first message and lists other and skipped files`,
+			() =>
+				Effect.gen(function* () {
+					const scope = {
+						...SCOPE,
+						change: {
+							...SCOPE.change,
+							files: [
+								file(BILLING_PATH, { additions: 30_000, deletions: 1 }),
+								file('small.ts'),
+								file('other.ts'),
+								file('skip.ts', { skipped: 'too_large' }),
+							],
+						},
+					}
+					yield* FinderService.use(finder =>
+						finder.run(
+							plannedRun({
+								role: 'agent',
+								name: 'billing',
+								input,
+								files: [BILLING_PATH, 'small.ts'],
+							}),
+							context({
+								scope,
+								rules: { agents: [agent('billing', { input })] },
+							})
+						)
+					)
+					const message = userText(
+						(yield* ScriptedLlm.use(script => script.calls))[0]
+					)
+					expect(message).toContain(
+						`- ${BILLING_PATH} (+30000 -1, diff cut to `
+					)
+					expect(message).toContain(
+						'Other changed files:\n```text\n- other.ts (+1 -1)\n- skip.ts (+1 -1, left out of the review (too_large))'
+					)
+					expect(message).toContain('`diff(path)`')
+					const diff =
+						message
+							.split('Diff (base to head):\n```text\n')[1]
+							?.split('\n```')[0] ?? ''
+					expect(diff.length).toBeGreaterThan(0)
+					expect(diff.length).toBeLessThanOrEqual(
+						input === 'incremental'
+							? MAX_INCREMENTAL_DIFF_CHARS
+							: MAX_FULL_DIFF_CHARS
+					)
+					expect(diff).toContain(unifiedDiff('small.ts'))
+				}).pipe(
+					Effect.provide(
+						finderLayer(
+							() => Effect.succeed(answer()),
+							gitFixture({
+								readDiff: () =>
+									Effect.succeed(
+										unifiedDiff(BILLING_PATH, 30_000) + unifiedDiff('small.ts')
+									),
+							})
+						)
+					)
+				)
+		)
 	test.effect(
 		'main reviewer receives context, fenced PR, files and diff, with provenance',
 		() =>
@@ -77,7 +195,7 @@ layer(Layer.empty)('FinderService', test => {
 					) as unknown,
 				})
 				expect(userText(calls[0])).toContain(
-					`Files in your scope:\n\`\`\`text\n- ${BILLING_PATH}\n\`\`\``
+					`Files in your scope:\n\`\`\`text\n- ${BILLING_PATH} (+1 -1)\n\`\`\``
 				)
 				expect(userText(calls[0])).toContain(
 					'```text\nAdjust cents\n\nKeep ledger entries.\n```'
@@ -112,7 +230,7 @@ ${DIFF}`)
 						`Your unit:\n\`\`\`text\n${BILLING_PATH}: export function charge${index}() {\n\`\`\``
 					)
 					expect(userText(call)).toContain(
-						`All changed files:\n\`\`\`text\n- ${BILLING_PATH}\n\`\`\``
+						`All changed files:\n\`\`\`text\n- ${BILLING_PATH} (+1 -1)\n\`\`\``
 					)
 					expect(userText(call).match(/^@@/gmu)).toHaveLength(1)
 				}
@@ -174,7 +292,13 @@ ${DIFF}`)
 				yield* FinderService.use(finder =>
 					finder.run(
 						plannedRun({ files: [maliciousPath] }),
-						context({ fanOut: true })
+						context({
+							fanOut: true,
+							scope: {
+								...SCOPE,
+								change: { ...SCOPE.change, files: [file(maliciousPath)] },
+							},
+						})
 					)
 				)
 				for (const call of yield* ScriptedLlm.use(script => script.calls)) {
@@ -182,7 +306,7 @@ ${DIFF}`)
 						content: expect.not.stringContaining(instruction) as unknown,
 					})
 					expect(userText(call)).toContain(
-						'All changed files:\n````text\n- src/```file.ts\n````'
+						'All changed files:\n````text\n- src/```file.ts (+1 -1)\n````'
 					)
 					expect(
 						userText(call).replaceAll(/^(`{3,})text\n[\s\S]*?^\1$/gmu, '')
@@ -209,7 +333,7 @@ ${DIFF}`)
 		test.effect(`${input} passes the correct reviewable files to git`, () =>
 			Effect.gen(function* () {
 				const readDiffSpy = vi.fn<ReturnType<typeof gitFixture>['readDiff']>(
-					() => Effect.succeed('scoped data')
+					() => Effect.succeed(unifiedDiff(BILLING_PATH, 1, 'scoped data'))
 				)
 				yield* Effect.gen(function* () {
 					const scope = {
@@ -343,15 +467,22 @@ ${DIFF}`)
 					)
 					expect(run).toMatchObject({
 						report: {
-							status: 'ok',
+							status: failure === 'budget' ? 'incomplete' : 'ok',
 							units: 2,
 							findings: 1,
-							error: expect.stringContaining('1 of 2 units failed:') as unknown,
+							error: expect.stringContaining(
+								'1 of 2 units did not finish:'
+							) as unknown,
 						},
 						findings: [{ title: rawFinding().title }],
 					})
 					expect(run.report.endpointError).toBe(
 						failure === 'endpoint' ? true : undefined
+					)
+					expect(run.report.unfinished).toEqual(
+						failure === 'budget'
+							? [`${BILLING_PATH}: export function charge1() {`]
+							: undefined
 					)
 				}).pipe(
 					Effect.provide(
@@ -410,7 +541,12 @@ ${DIFF}`)
 						finder.run(plannedRun(), context())
 					)
 					expect(run.findings).toEqual([])
-					expect(run.report.status).toBe('failed')
+					expect(run.report.status).toBe(
+						failure === 'budget' ? 'incomplete' : 'failed'
+					)
+					expect(run.report.unfinished).toEqual(
+						failure === 'budget' ? ['reviewer'] : undefined
+					)
 					expect(run.report.error).toContain(
 						failure === 'endpoint'
 							? 'fixture failure'
@@ -422,7 +558,7 @@ ${DIFF}`)
 						failure === 'endpoint' ? true : undefined
 					)
 					expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(
-						failure === 'budget' ? 0 : failure === 'loop' ? 3 : 1
+						failure === 'loop' ? 3 : 1
 					)
 				}).pipe(
 					Effect.provide(
@@ -432,7 +568,7 @@ ${DIFF}`)
 									? Effect.fail(providerError(500))
 									: Effect.succeed(answer('report_findings', {})),
 							gitFixture(),
-							failure === 'budget' ? { tokensPerRun: 0 } : {}
+							failure === 'budget' ? { tokensPerRun: 5 } : {}
 						)
 					)
 				)

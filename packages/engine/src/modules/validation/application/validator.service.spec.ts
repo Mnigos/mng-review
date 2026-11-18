@@ -25,6 +25,8 @@ import {
 import {
 	answer,
 	BILLING_PATH,
+	finishWithUsage,
+	MODEL,
 	REVIEWERS,
 	reviewRequest,
 	SCOPE,
@@ -40,13 +42,57 @@ const CONTEXT = {
 } as const
 
 /** Uses the actual parser and loop so schema corrections are observable provider turns. */
-function validatorLayer(script: ScriptedLlmAnswer) {
+function validatorLayer(
+	script: ScriptedLlmAnswer,
+	limits: Parameters<typeof reviewDependencies>[1] = {}
+) {
 	return ValidatorServiceLive.pipe(
-		Layer.provideMerge(reviewDependencies(script))
+		Layer.provideMerge(reviewDependencies(script, limits))
 	)
 }
 
 layer(Layer.empty)('ValidatorService', test => {
+	for (const stage of ['before', 'during'] as const)
+		test.effect(
+			`budget spent ${stage} validation keeps it unvalidated and starts no further model call`,
+			() =>
+				Effect.gen(function* () {
+					if (stage === 'before')
+						yield* ModelHealthService.use(health =>
+							health.run(
+								MODEL,
+								LanguageModel.generateText({
+									prompt: 'Spend the fixture budget.',
+								})
+							)
+						)
+					expect(
+						yield* ValidatorService.use(validator =>
+							validator.validate(finding(), CONTEXT)
+						)
+					).toMatchObject({
+						status: 'unvalidated',
+						budgetSpent: true,
+						error: expect.stringContaining('token budget spent') as unknown,
+					})
+					expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(1)
+				}).pipe(
+					Effect.provide(
+						validatorLayer(
+							() =>
+								Effect.succeed(
+									stage === 'before'
+										? [finishWithUsage(100)]
+										: [
+												{ type: 'text', text: 'not a verdict' },
+												finishWithUsage(100),
+											]
+								),
+							{ tokensPerRun: 100 }
+						)
+					)
+				)
+		)
 	test.effect(
 		'confirms a re-rated severity on the other reviewer model with fenced source and notes',
 		() =>

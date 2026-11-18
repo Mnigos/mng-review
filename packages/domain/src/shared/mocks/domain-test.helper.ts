@@ -204,3 +204,12 @@ export function plannedRun(overrides: Partial<PlannedRun> = {}): PlannedRun {
 export function functionSource(value: number, count = 2): string {
 	return `${Array.from({ length: count }, (_, index) => [`export function charge${index}() {`, ...Array.from({ length: 10 }, () => '  // fixture context'), `  return ${value}`, '}'].join('\n')).join('\n\n')}\n`
 }
+
+/** A unified diff with complete headers and one replacement hunk. */
+export function unifiedDiff(
+	path: string,
+	lines = 1,
+	content = 'after'
+): string {
+	return `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -1 +1,${lines} @@\n-before\n${`+${content}\n`.repeat(lines)}`
+}

@@ -15,6 +15,12 @@ const decodeReport = Schema.decodeUnknownSync(
 		Schema.Struct({
 			blocking: Schema.Boolean,
 			endpointError: Schema.NullOr(Schema.String),
+			incomplete: Schema.NullOr(
+				Schema.Struct({
+					reason: Schema.String,
+					unfinished: Schema.Array(Schema.String),
+				})
+			),
 			bugs: Schema.Array(Schema.Unknown),
 			agents: Schema.Array(Schema.Unknown),
 			rejected: Schema.Array(Schema.Unknown),
@@ -334,7 +340,7 @@ layer(Layer.empty, { excludeTestServices: true })('review CLI', test => {
 					],
 					bugs: [{ title: REPORTED_FINDING.title }],
 					endpointError: expect.stringContaining(
-						'1 of 2 units failed:'
+						'1 of 2 units did not finish:'
 					) as unknown,
 				})
 				expect(
@@ -573,6 +579,13 @@ layer(Layer.empty, { excludeTestServices: true })('review CLI', test => {
 					const report = decodeReport(invocation.out)
 					expect(report.endpointError).toBeNull()
 					expect(report.droppedModels).toEqual([])
+					expect(report.incomplete).toEqual({
+						reason: `limits.tokens_per_run (${limit}) reached`,
+						unfinished:
+							stage === 'routing'
+								? ['reviewer']
+								: ['validation of 1 finding(s)'],
+					})
 					expect(invocation.calls.map(call => call.model)).toEqual(
 						stage === 'routing' ? ['router'] : ['router', 'reviewer']
 					)
@@ -584,7 +597,8 @@ layer(Layer.empty, { excludeTestServices: true })('review CLI', test => {
 					if (stage === 'routing') {
 						expect(report.agents).toMatchObject([
 							{
-								status: 'failed',
+								status: 'incomplete',
+								unfinished: ['reviewer'],
 								error: expect.stringContaining('token budget spent') as unknown,
 							},
 						])
@@ -595,6 +609,7 @@ layer(Layer.empty, { excludeTestServices: true })('review CLI', test => {
 						{
 							validation: {
 								status: 'unvalidated',
+								budgetSpent: true,
 								error: expect.stringContaining('token budget spent') as unknown,
 							},
 						},
