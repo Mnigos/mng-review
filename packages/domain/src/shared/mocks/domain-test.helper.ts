@@ -16,7 +16,7 @@ import type {
 import { toFinding } from '../../findings/finding.helper'
 import type { ReportedFinding } from '../../findings/finding.schema'
 import type { Finding } from '../../findings/finding.types'
-import type { PlanInput } from '../../routing/review-plan.types'
+import type { PlannedRun, PlanInput } from '../../routing/review-plan.types'
 import type { PullRequestInfo, RouterReport } from '../../routing/routing.types'
 
 /** Nested fixture overrides retain complete reviewer and validator model entries. */
@@ -183,3 +183,24 @@ export const NORMAL_ROUTER = {
 	risk: 'normal',
 	added: [],
 } as const satisfies RouterReport
+
+/** A planned finder with explicit overrides for agent and model cases. */
+export function plannedRun(overrides: Partial<PlannedRun> = {}): PlannedRun {
+	return {
+		name: 'reviewer',
+		title: 'Main reviewer',
+		role: 'reviewer',
+		kind: 'bug',
+		input: 'incremental',
+		model: 'model-a',
+		effort: 'high',
+		files: ['src/billing/charge.ts'],
+		selectedBy: 'default',
+		...overrides,
+	}
+}
+
+/** Separated functions make Git emit independent hunk contexts. */
+export function functionSource(value: number, count = 2): string {
+	return `${Array.from({ length: count }, (_, index) => [`export function charge${index}() {`, ...Array.from({ length: 10 }, () => '  // fixture context'), `  return ${value}`, '}'].join('\n')).join('\n\n')}\n`
+}

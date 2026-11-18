@@ -56,6 +56,7 @@ function gitFixture(
 ): GitService['Service'] {
 	return {
 		root: '/fixture',
+		exec: () => Effect.die('unexpected exec'),
 		readDiff,
 		resolveCommit: () => Effect.die('unexpected resolve'),
 		mergeBase: () => Effect.die('unexpected merge'),
