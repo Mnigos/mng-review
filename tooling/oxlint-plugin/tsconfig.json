@@ -1,0 +1,9 @@
+{
+  "extends": "@mng-review/typescript-config/base.json",
+  "compilerOptions": {
+    "lib": ["ESNext"],
+    "allowImportingTsExtensions": true,
+    "types": ["bun", "vitest/globals"]
+  },
+  "include": ["**/*.mts", "**/*.ts"]
+}

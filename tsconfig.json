@@ -1,0 +1,8 @@
+{
+  "extends": "@mng-review/typescript-config/base.json",
+  "compilerOptions": {
+    "types": ["bun"],
+    "allowImportingTsExtensions": true
+  },
+  "include": ["*.ts", "*.mts"]
+}
