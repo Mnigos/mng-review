@@ -57,6 +57,7 @@ function report(overrides: Partial<Plan> = {}): PlanReport {
 			'router-a': {
 				calls: 1,
 				inputTokens: 3,
+				cachedInputTokens: 0,
 				outputTokens: 2,
 				reasoningTokens: 0,
 				totalTokens: 5,
@@ -167,4 +168,19 @@ test('empty runs, absent tokens and unavailable router are explicit', () => {
 	expect(text).toContain('Risk: normal (default)')
 	expect(text).not.toContain('Tokens:')
 	expect(text).not.toContain('Skipped (')
+})
+
+test('mechanical risk source explains the count of files under risk paths in text and JSON', () => {
+	const input = report({
+		risk: 'normal',
+		riskSource: 'mechanical',
+		riskPathHits: ['src/billing/a.ts', 'src/billing/b.ts'],
+		depth: 'balanced',
+	})
+	expect(formatPlanText(input)).toContain(
+		'Risk: normal (mechanical change, so 2 file(s) under risk_paths do not make it risky)'
+	)
+	expect(JSON.parse(formatPlanJson(input))).toMatchObject({
+		risk: { source: 'mechanical', riskPaths: input.plan.riskPathHits },
+	})
 })

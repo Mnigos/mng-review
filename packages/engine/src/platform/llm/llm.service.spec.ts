@@ -37,6 +37,7 @@ const DEFAULT_USAGE = {
 const METERED = {
 	calls: 1,
 	inputTokens: 7,
+	cachedInputTokens: 0,
 	outputTokens: 3,
 	reasoningTokens: 1,
 	totalTokens: 10,
@@ -756,6 +757,7 @@ layer(Layer.empty)('LlmService HTTP', test => {
 						'model-a': {
 							calls: 2,
 							inputTokens: 8,
+							cachedInputTokens: 0,
 							outputTokens: 4,
 							reasoningTokens: 0,
 							totalTokens: 12,
@@ -763,6 +765,7 @@ layer(Layer.empty)('LlmService HTTP', test => {
 						'model-b': {
 							calls: 1,
 							inputTokens: 4,
+							cachedInputTokens: 0,
 							outputTokens: 2,
 							reasoningTokens: 0,
 							totalTokens: 6,
@@ -809,6 +812,7 @@ layer(Layer.empty)('LlmService HTTP', test => {
 					'model-a': {
 						calls: 1,
 						inputTokens: 0,
+						cachedInputTokens: 0,
 						outputTokens: 0,
 						reasoningTokens: 0,
 						totalTokens: 0,
@@ -888,5 +892,26 @@ layer(Layer.empty)('LlmService HTTP', test => {
 					expect(active).toEqual([])
 				}).pipe(Effect.provide(http.layer))
 			})
+	)
+})
+
+layer(Layer.empty)('cached endpoint usage', test => {
+	test.effect('maps prompt cache-read usage to cachedInputTokens', () =>
+		Effect.gen(function* () {
+			const http = harness(() =>
+				Effect.succeed(
+					completion({
+						...DEFAULT_USAGE,
+						prompt_tokens_details: { cached_tokens: 4 },
+					})
+				)
+			)
+			yield* Effect.gen(function* () {
+				yield* LlmService.use(llm => llm.run(MODEL, generate))
+				expect(yield* TokenLedger.use(ledger => ledger.snapshot)).toEqual({
+					'model-a': { ...METERED, cachedInputTokens: 4 },
+				})
+			}).pipe(Effect.provide(http.layer))
+		})
 	)
 })

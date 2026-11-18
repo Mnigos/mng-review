@@ -251,3 +251,30 @@ export const QUOTED_FILE_DIFFS = [
 		].join('\n'),
 	}))
 )
+
+/** Neutral lint migration: 588 files, +5325/-4746, including 22 billing files. */
+export function mechanicalFiles(): ChangedFile[] {
+	return Array.from({ length: 588 }, (_, index) =>
+		file(
+			index < 22
+				? `src/billing/file-${index}.ts`
+				: `src/module/file-${index}.ts`,
+			index < 500
+				? { additions: 3, deletions: 3 }
+				: {
+						additions: 43 + (index < 541 ? 1 : 0),
+						deletions: 36 + (index < 578 ? 1 : 0),
+					}
+		)
+	)
+}
+
+/** Neutral feature: 42 files, +3286/-702, including billing changes. */
+export function featureFiles(): ChangedFile[] {
+	return Array.from({ length: 42 }, (_, index) =>
+		file(`src/billing/feature-${index}.ts`, {
+			additions: 78 + (index < 10 ? 1 : 0),
+			deletions: 16 + (index < 30 ? 1 : 0),
+		})
+	)
+}

@@ -117,10 +117,12 @@ export function reviewReport(): ReviewReport {
 				error: 'fixture endpoint failure',
 			},
 		],
+		tokenSources: {},
 		tokens: {
 			'model-b': {
 				calls: 2,
 				inputTokens: 6,
+				cachedInputTokens: 0,
 				outputTokens: 4,
 				reasoningTokens: 1,
 				totalTokens: 10,

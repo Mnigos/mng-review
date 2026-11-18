@@ -5,6 +5,7 @@ const FIRST = {
 	reviewer: {
 		calls: 2,
 		inputTokens: 10,
+		cachedInputTokens: 2,
 		outputTokens: 5,
 		reasoningTokens: 2,
 		totalTokens: 15,
@@ -12,6 +13,7 @@ const FIRST = {
 	router: {
 		calls: 1,
 		inputTokens: 3,
+		cachedInputTokens: 0,
 		outputTokens: 2,
 		reasoningTokens: 1,
 		totalTokens: 5,
@@ -21,6 +23,7 @@ const SECOND = {
 	reviewer: {
 		calls: 3,
 		inputTokens: 20,
+		cachedInputTokens: 3,
 		outputTokens: 8,
 		reasoningTokens: 4,
 		totalTokens: 28,
@@ -28,6 +31,7 @@ const SECOND = {
 	validator: {
 		calls: 1,
 		inputTokens: 7,
+		cachedInputTokens: 0,
 		outputTokens: 3,
 		reasoningTokens: 0,
 		totalTokens: 10,
@@ -40,6 +44,7 @@ describe('toTokenTotals', () => {
 			reviewer: {
 				calls: 5,
 				inputTokens: 30,
+				cachedInputTokens: 5,
 				outputTokens: 13,
 				reasoningTokens: 6,
 				totalTokens: 43,

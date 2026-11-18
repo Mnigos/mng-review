@@ -54,6 +54,7 @@ const tokensSchema = Schema.Record(
 	Schema.Struct({
 		calls: Schema.Number,
 		inputTokens: Schema.Number,
+		cachedInputTokens: Schema.Number,
 		outputTokens: Schema.Number,
 		reasoningTokens: Schema.Number,
 		totalTokens: Schema.Number,
@@ -73,6 +74,15 @@ const decodeReport = Schema.decodeUnknownSync(
 					score: scoreSchema,
 					nits: Schema.Number,
 					tokens: tokensSchema,
+					tokenSources: Schema.Record(
+						Schema.String,
+						Schema.Struct({
+							calls: Schema.Number,
+							conversations: Schema.Number,
+							firstMessageTokens: Schema.Number,
+							historyTokens: Schema.Number,
+						})
+					),
 					wallMillis: Schema.Number,
 					skipped: Schema.optionalKey(Schema.String),
 					endpointError: Schema.optionalKey(Schema.String),
@@ -116,6 +126,7 @@ const CASE_TOKENS = {
 	router: {
 		calls: 1,
 		inputTokens: 3,
+		cachedInputTokens: 0,
 		outputTokens: 2,
 		reasoningTokens: 0,
 		totalTokens: 5,
@@ -123,6 +134,7 @@ const CASE_TOKENS = {
 	reviewer: {
 		calls: 3,
 		inputTokens: 9,
+		cachedInputTokens: 0,
 		outputTokens: 6,
 		reasoningTokens: 0,
 		totalTokens: 15,
@@ -132,6 +144,7 @@ const TOTAL_TOKENS = {
 	router: {
 		calls: 2,
 		inputTokens: 6,
+		cachedInputTokens: 0,
 		outputTokens: 4,
 		reasoningTokens: 0,
 		totalTokens: 10,
@@ -139,6 +152,7 @@ const TOTAL_TOKENS = {
 	reviewer: {
 		calls: 6,
 		inputTokens: 18,
+		cachedInputTokens: 0,
 		outputTokens: 12,
 		reasoningTokens: 0,
 		totalTokens: 30,
@@ -395,6 +409,21 @@ layer(Layer.empty, { excludeTestServices: true })('bench CLI', test => {
 					cases: report.cases.map(entry => entry.tokens),
 					tokens: report.tokens,
 				}).toEqual({ cases: [CASE_TOKENS, CASE_TOKENS], tokens: TOTAL_TOKENS })
+				for (const entry of report.cases)
+					expect(entry.tokenSources).toEqual({
+						reviewer: {
+							calls: 1,
+							conversations: 1,
+							firstMessageTokens: 3,
+							historyTokens: 0,
+						},
+						validator: {
+							calls: 2,
+							conversations: 2,
+							firstMessageTokens: 6,
+							historyTokens: 0,
+						},
+					})
 			})
 	)
 	test.effect(

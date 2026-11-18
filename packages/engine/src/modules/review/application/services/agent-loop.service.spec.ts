@@ -8,7 +8,10 @@ import {
 	ScriptedLlm,
 	type ScriptedLlmAnswer,
 } from '../../../../platform/llm/scripted-llm.layer'
-import { TokenLedgerLive } from '../../../../platform/llm/token-ledger.service'
+import {
+	TokenLedger,
+	TokenLedgerLive,
+} from '../../../../platform/llm/token-ledger.service'
 import { reviewDependencies } from '../../../../shared/mocks/review-layer.helper'
 import {
 	answer,
@@ -21,6 +24,7 @@ import {
 	toolCall,
 } from '../../../../shared/mocks/review-test.helper'
 import {
+	CHARS_PER_TOKEN,
 	FINDER_TOKEN_SHARE,
 	WRAP_UP_GRACE,
 } from '../../domain/review.constants'
@@ -65,7 +69,7 @@ const REQUEST = {
 layer(Layer.empty)('AgentLoopService', test => {
 	for (const offset of [-1, 0, 1])
 		test.effect(
-			`token share boundary ${offset} selects the available tools using recorded usage`,
+			`run budget boundary ${offset} selects the available tools using recorded usage`,
 			() =>
 				Effect.gen(function* () {
 					const tokensPerRun = 100
@@ -73,7 +77,13 @@ layer(Layer.empty)('AgentLoopService', test => {
 					yield* Effect.gen(function* () {
 						expect(
 							yield* AgentLoopService.use(loop =>
-								loop.run({ ...REQUEST, tokenShare: FINDER_TOKEN_SHARE })
+								loop.run({
+									...REQUEST,
+									budget: {
+										runTokens: 100 * FINDER_TOKEN_SHARE,
+										conversationTokens: 10_000,
+									},
+								})
 							)
 						).toMatchObject({ turns: 2, toolCalls: 1 })
 						const calls = yield* ScriptedLlm.use(script => script.calls)
@@ -120,7 +130,7 @@ layer(Layer.empty)('AgentLoopService', test => {
 				})
 		)
 	test.effect(
-		'without a token share the loop keeps repository tools below the whole budget',
+		'without a run budget the loop keeps repository tools below the whole budget',
 		() =>
 			Effect.gen(function* () {
 				yield* AgentLoopService.use(loop => loop.run(REQUEST))
@@ -155,7 +165,13 @@ layer(Layer.empty)('AgentLoopService', test => {
 			Effect.gen(function* () {
 				expect(
 					yield* AgentLoopService.use(loop =>
-						loop.run({ ...REQUEST, tokenShare: FINDER_TOKEN_SHARE })
+						loop.run({
+							...REQUEST,
+							budget: {
+								runTokens: 100 * FINDER_TOKEN_SHARE,
+								conversationTokens: 10_000,
+							},
+						})
 					).pipe(Effect.flip)
 				).toMatchObject({ _tag: 'TokenBudgetError', spent: 100, limit: 100 })
 				expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(1)
@@ -180,7 +196,13 @@ layer(Layer.empty)('AgentLoopService', test => {
 					loop.run({ ...REQUEST, model: { ...MODEL, model: 'model-b' } })
 				)
 				yield* AgentLoopService.use(loop =>
-					loop.run({ ...REQUEST, tokenShare: FINDER_TOKEN_SHARE })
+					loop.run({
+						...REQUEST,
+						budget: {
+							runTokens: 100 * FINDER_TOKEN_SHARE,
+							conversationTokens: 10_000,
+						},
+					})
 				)
 				const calls = yield* ScriptedLlm.use(script => script.calls)
 				expect(calls.map(call => call.model.model)).toEqual([
@@ -896,5 +918,154 @@ layer(Layer.empty)('AgentLoopService', test => {
 					)
 				)
 			})
+	)
+})
+
+layer(Layer.empty)('conversation token budget and sources', test => {
+	for (const offset of [-1, 0, 1])
+		test.effect(
+			`first message at half-share boundary ${offset} controls the first call`,
+			() =>
+				Effect.gen(function* () {
+					yield* AgentLoopService.use(loop =>
+						loop.run({
+							...REQUEST,
+							system: 'x'.repeat(CHARS_PER_TOKEN * 30),
+							user: 'y'.repeat(CHARS_PER_TOKEN * 20),
+							budget: { runTokens: 1000, conversationTokens: 100 + offset },
+						})
+					)
+					const calls = yield* ScriptedLlm.use(script => script.calls)
+					expect(calls).toHaveLength(1)
+					expect(
+						calls[0]?.options.tools.map(tool => String(tool.name))
+					).toEqual(
+						offset > 0 ? [...REQUEST.tools, REQUEST.finish] : [REQUEST.finish]
+					)
+					if (offset <= 0)
+						expect(calls[0]?.options.toolChoice).toEqual({
+							oneOf: [REQUEST.finish],
+							mode: 'required',
+						})
+				}).pipe(Effect.provide(loopLayer(() => Effect.succeed(answer()))))
+		)
+	test.effect(
+		'refuses the response repository calls when conversation tokens run out, then wraps up',
+		() =>
+			Effect.gen(function* () {
+				const callSpy = vi.fn(() => Effect.succeed('unused'))
+				yield* Effect.gen(function* () {
+					yield* AgentLoopService.use(loop =>
+						loop.run({
+							...REQUEST,
+							budget: { runTokens: 1000, conversationTokens: 100 },
+						})
+					)
+					expect(callSpy).not.toHaveBeenCalled()
+					const calls = yield* ScriptedLlm.use(script => script.calls)
+					expect(calls).toHaveLength(2)
+					expect(JSON.stringify(calls[1]?.options.prompt)).toContain(
+						'error: token budget reached; call report_findings now'
+					)
+					expect(
+						calls[1]?.options.tools.map(tool => String(tool.name))
+					).toEqual([REQUEST.finish])
+				}).pipe(
+					Effect.provide(
+						loopLayer(
+							(_call, index) =>
+								Effect.succeed(
+									index === 0
+										? [toolCall('read_file'), finishWithUsage(34)]
+										: answer()
+								),
+							{},
+							callSpy
+						)
+					)
+				)
+			})
+	)
+	test.effect('keeps repository calls below the conversation boundary', () =>
+		Effect.gen(function* () {
+			const callSpy = vi.fn(() => Effect.succeed('source'))
+			yield* Effect.gen(function* () {
+				yield* AgentLoopService.use(loop =>
+					loop.run({
+						...REQUEST,
+						budget: { runTokens: 1000, conversationTokens: 100 },
+					})
+				)
+				expect(callSpy).toHaveBeenCalledTimes(1)
+				expect(
+					(yield* ScriptedLlm.use(
+						script => script.calls
+					))[1]?.options.tools.map(tool => String(tool.name))
+				).toEqual([...REQUEST.tools, REQUEST.finish])
+			}).pipe(
+				Effect.provide(
+					loopLayer(
+						(_call, index) =>
+							Effect.succeed(
+								index === 0
+									? [toolCall('read_file'), finishWithUsage(33)]
+									: answer()
+							),
+						{},
+						callSpy
+					)
+				)
+			)
+		})
+	)
+	test.effect(
+		'records first input once per call, history and conversations per source',
+		() =>
+			Effect.gen(function* () {
+				yield* AgentLoopService.use(loop =>
+					loop.run({ ...REQUEST, source: 'reviewer' })
+				)
+				yield* AgentLoopService.use(loop =>
+					loop.run({ ...REQUEST, source: 'reviewer' })
+				)
+				expect(yield* TokenLedger.use(ledger => ledger.sources)).toMatchObject({
+					reviewer: {
+						calls: 3,
+						conversations: 2,
+						inputTokens: 70,
+						firstMessageTokens: 60,
+						historyTokens: 10,
+						cachedInputTokens: 6,
+						outputTokens: 0,
+						totalTokens: 70,
+					},
+				})
+			}).pipe(
+				Effect.provide(
+					loopLayer((_call, index) =>
+						Effect.succeed([
+							index === 0
+								? toolCall('read_file')
+								: toolCall('report_findings', { findings: [] }),
+							{
+								...FINISH,
+								usage: {
+									inputTokens: {
+										total: index === 0 ? 20 : index === 1 ? 30 : 20,
+										cacheRead: 2,
+									},
+									outputTokens: { total: 0 },
+								},
+							},
+						])
+					)
+				)
+			)
+	)
+	test.effect('without source no source usage is recorded', () =>
+		Effect.gen(function* () {
+			yield* AgentLoopService.use(loop => loop.run(REQUEST))
+			expect(yield* TokenLedger.use(ledger => ledger.sources)).toEqual({})
+		}).pipe(Effect.provide(loopLayer(() => Effect.succeed(answer()))))
 	)
 })

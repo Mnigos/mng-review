@@ -99,7 +99,7 @@ describe('review formatters', () => {
 			'reviewer  ok, model-b high, 3 tool calls, 2 findings, 2 units, 1 malformed dropped, 1.2 s; model-a was dropped',
 			'agent  failed',
 			'fixture endpoint failure',
-			'model-b  10 (6 in, 4 out, 2 call(s))',
+			'model-b  10 (6 in, 0 cached, 4 out, 2 call(s))',
 			'Degraded run, models dropped:\n  model-a  rate limited (429)',
 			'Wall time: 1.2 s',
 		])
@@ -190,5 +190,33 @@ describe('review formatters', () => {
 			'Incomplete run',
 		])
 			expect(text).not.toContain(part)
+	})
+})
+
+test('review text and JSON carry source token accounting', () => {
+	const fixture = reviewReport()
+	const entry = {
+		calls: 2,
+		inputTokens: 100,
+		cachedInputTokens: 40,
+		outputTokens: 10,
+		reasoningTokens: 0,
+		totalTokens: 110,
+		conversations: 1,
+		firstMessageTokens: 60,
+		historyTokens: 40,
+	} as const
+	const report = {
+		...fixture,
+		tokenSources: {
+			reviewer: entry,
+			validator: { ...entry, conversations: 2 },
+		},
+	}
+	expect(formatReviewText(report)).toContain(
+		'Tokens by finder and validator:\n  reviewer  110 (60 first messages, 40 history, 40 cached, 10 out, 2 call(s), 1 conversation(s))\n  validator  110 (60 first messages, 40 history, 40 cached, 10 out, 2 call(s), 2 conversation(s))'
+	)
+	expect(decodeJson(formatReviewJson(report))).toMatchObject({
+		tokenSources: report.tokenSources,
 	})
 })
