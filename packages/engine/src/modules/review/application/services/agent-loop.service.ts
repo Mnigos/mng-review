@@ -9,7 +9,7 @@ import {
 	toEstimatedTokens,
 } from '../../domain/loop-budget.helper'
 import {
-	getCallPath,
+	getReadPaths,
 	toContinuationMessage,
 	toToolMessage,
 	toUserMessage,
@@ -22,7 +22,7 @@ import {
 import { LoopError } from '../../domain/review.errors'
 import { parseAnswerJson } from '../../infrastructure/answer-json.parser'
 import type { LoopRequest, LoopResult, LoopState } from '../agent-loop.types'
-import { REPO_TOOLS } from '../repo.toolkit'
+import { DiffTool, REPO_TOOLS } from '../repo.toolkit'
 import { ReportFindingsTool } from '../report-findings.tool'
 import { ReportVerdictTool } from '../report-verdict.tool'
 import { ReviewLimits } from '../review-limits.context'
@@ -97,13 +97,12 @@ export const AgentLoopServiceLive = Layer.effect(
 					)
 				)
 
-			/** Files of `coverage` the answer leaves unread, when a continuation turn still fits. */
+			/** Files of `coverage` the answer leaves unread, when tool calls and time allow a turn. */
 			const getUnread = (state: LoopState, value: TValue, wrapUp: boolean) =>
 				Effect.gen(function* () {
 					if (!coverage || wrapUp || (yield* Ref.get(kept))) return []
 					if (state.toolCalls >= limits.maxToolCalls) return []
 					if ((yield* Clock.currentTimeMillis) >= deadline) return []
-					if (yield* isSpent(state)) return []
 					const read = new Set([
 						...(yield* Ref.get(touched)),
 						...coverage.answered(value),
@@ -131,11 +130,16 @@ export const AgentLoopServiceLive = Layer.effect(
 						}
 					const unread = yield* getUnread(next, answer.value, wrapUp)
 					if (unread.length === 0) return answer
-					yield* Ref.set(kept, { ...answer, continued: true })
-					return yield* step({
+					const text = toContinuationMessage(unread, finish)
+					const continued = {
 						...next,
-						pending: [reply(toContinuationMessage(unread, finish))],
-					})
+						nextInputTokens: next.nextInputTokens + toEstimatedTokens(text),
+						pending: [reply(text)],
+					}
+					// The continuation must leave room for a call after it, as any turn does.
+					if (yield* isSpent(continued)) return answer
+					yield* Ref.set(kept, { ...answer, continued: true })
+					return yield* step(continued)
 				})
 
 			/** A correction turn; out of tokens, an invalid answer gets one, not the usual allowance. */
@@ -335,10 +339,13 @@ export const AgentLoopServiceLive = Layer.effect(
 						yield* Clock.currentTimeMillis
 					)
 					yield* Ref.update(touched, paths => {
-						const read = calls.flatMap((call, index) => {
-							const path = getCallPath(call)
-							return path && !outputs[index]?.startsWith('error:') ? [path] : []
-						})
+						const read = calls.flatMap((call, index) =>
+							getReadPaths(
+								call,
+								outputs[index] ?? '',
+								call.name === DiffTool.name
+							)
+						)
 						return new Set([...paths, ...read])
 					})
 					const fenced = toAffordableOutputs(
