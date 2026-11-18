@@ -1,4 +1,4 @@
-import { normalizeRepoPath } from '@mng-review/domain'
+import { normalizeRepoPath, parseFileDiffs } from '@mng-review/domain'
 import { Predicate } from 'effect'
 import type { Prompt, Response } from 'effect/ai'
 import { MAX_LISTED_UNTOUCHED } from './review.constants'
@@ -34,6 +34,22 @@ export function getCallPath(call: ToolCall): string | undefined {
 	if (!Predicate.hasProperty(params, 'path')) return undefined
 	if (!Predicate.isString(params.path)) return undefined
 	return normalizeRepoPath(params.path)
+}
+
+/**
+ * The files a successful tool call showed the agent: its `path`, and for a diff every file whose
+ * header the output carries, so a `diff()` of the whole change counts for each file in it. An
+ * `error:` output shows nothing.
+ */
+export function getReadPaths(
+	call: ToolCall,
+	output: string,
+	isDiff: boolean
+): string[] {
+	if (output.startsWith('error:')) return []
+	const path = getCallPath(call)
+	const shown = isDiff ? parseFileDiffs(output).map(file => file.path) : []
+	return [...(path ? [path] : []), ...shown]
 }
 
 /**

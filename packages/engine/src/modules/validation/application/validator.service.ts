@@ -253,7 +253,11 @@ export const ValidatorServiceLive = Layer.effect(
 				})
 				return {
 					validation,
-					sameAs: (value.same_root_cause ?? []).map(number => number - 1),
+					// A rejection merges nothing, even one kept as unverified for want of evidence.
+					sameAs:
+						value.verdict === 'reject'
+							? []
+							: (value.same_root_cause ?? []).map(number => number - 1),
 				} satisfies Judged
 			})
 
