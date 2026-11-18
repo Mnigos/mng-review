@@ -30,4 +30,13 @@ layer(Layer.empty)('splitCappedLines', test => {
 			).toEqual(['abcd', 'xyz1'])
 		})
 	)
+	test.effect('keeps a NUL from the cut part as one trailing NUL', () =>
+		Effect.gen(function* () {
+			expect(
+				yield* Stream.runCollect(
+					splitCappedLines(Stream.make('abcdef', 'g\0h', 'ij\0\nok'), 4)
+				)
+			).toEqual(['abcd\0', 'ok'])
+		})
+	)
 })
