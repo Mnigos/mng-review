@@ -49,10 +49,13 @@ export function answer(
 }
 
 /** Usage charged by a scripted turn, including turns without a final report. */
-export function finishWithUsage(tokens: number) {
+export function finishWithUsage(tokens: number, outputTokens = 0) {
 	return {
 		...FINISH,
-		usage: { inputTokens: { total: tokens }, outputTokens: { total: 0 } },
+		usage: {
+			inputTokens: { total: tokens },
+			outputTokens: { total: outputTokens },
+		},
 	}
 }
 

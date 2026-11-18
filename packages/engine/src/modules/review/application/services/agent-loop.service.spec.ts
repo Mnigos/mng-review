@@ -23,9 +23,13 @@ import {
 	SCOPE,
 	toolCall,
 } from '../../../../shared/mocks/review-test.helper'
+import { fenceData } from '../../../../utils/fence.util'
+import { toEstimatedTokens } from '../../domain/loop-budget.helper'
 import {
 	CHARS_PER_TOKEN,
 	FINDER_TOKEN_SHARE,
+	MAX_CORRECTIONS,
+	TOOL_OUTPUT_LABEL,
 	WRAP_UP_GRACE,
 } from '../../domain/review.constants'
 import { ReviewLimits } from '../review-limits.context'
@@ -986,6 +990,43 @@ layer(Layer.empty)('conversation token budget and sources', test => {
 				)
 			})
 	)
+	test.effect(
+		'counts last output tokens when deciding whether repository calls can run',
+		() =>
+			Effect.gen(function* () {
+				const callSpy = vi.fn(() => Effect.succeed('unused'))
+				yield* Effect.gen(function* () {
+					yield* AgentLoopService.use(loop =>
+						loop.run({
+							...REQUEST,
+							budget: { runTokens: 1000, conversationTokens: 250 },
+						})
+					)
+					expect(callSpy).not.toHaveBeenCalled()
+					const calls = yield* ScriptedLlm.use(script => script.calls)
+					expect(calls).toHaveLength(2)
+					expect(
+						calls[1]?.options.tools.map(tool => String(tool.name))
+					).toEqual([REQUEST.finish])
+					expect(JSON.stringify(calls[1]?.options.prompt)).toContain(
+						'error: token budget reached; call report_findings now'
+					)
+				}).pipe(
+					Effect.provide(
+						loopLayer(
+							(_call, index) =>
+								Effect.succeed(
+									index === 0
+										? [toolCall('read_file'), finishWithUsage(50, 50)]
+										: answer()
+								),
+							{},
+							callSpy
+						)
+					)
+				)
+			})
+	)
 	test.effect('keeps repository calls below the conversation boundary', () =>
 		Effect.gen(function* () {
 			const callSpy = vi.fn(() => Effect.succeed('source'))
@@ -1008,7 +1049,7 @@ layer(Layer.empty)('conversation token budget and sources', test => {
 						(_call, index) =>
 							Effect.succeed(
 								index === 0
-									? [toolCall('read_file'), finishWithUsage(33)]
+									? [toolCall('read_file'), finishWithUsage(10)]
 									: answer()
 							),
 						{},
@@ -1017,6 +1058,229 @@ layer(Layer.empty)('conversation token budget and sources', test => {
 				)
 			)
 		})
+	)
+	test.effect(
+		'caps a large batch after fencing and wraps up for the pending results',
+		() =>
+			Effect.gen(function* () {
+				const conversationTokens = 4000
+				const output = 'x'.repeat(CHARS_PER_TOKEN * 700)
+				const fenced = fenceData(TOOL_OUTPUT_LABEL, output)
+				const refusal = 'error: token budget reached; call report_findings now'
+				const outputs = [fenced, fenced, refusal, refusal, refusal]
+				const nextInputTokens = 1100 + toEstimatedTokens(outputs.join(''))
+				const callSpy = vi.fn(() => Effect.succeed(output))
+				yield* Effect.gen(function* () {
+					expect(
+						yield* AgentLoopService.use(loop =>
+							loop.run({
+								...REQUEST,
+								source: 'reviewer',
+								budget: { runTokens: 10_000, conversationTokens },
+							})
+						)
+					).toEqual({
+						value: { findings: [], dropped: 0 },
+						toolCalls: 5,
+						turns: 2,
+					})
+					expect(callSpy).toHaveBeenCalledTimes(5)
+					const calls = yield* ScriptedLlm.use(script => script.calls)
+					expect(calls).toHaveLength(2)
+					expect(
+						calls[0]?.options.tools.map(tool => String(tool.name))
+					).toEqual([...REQUEST.tools, REQUEST.finish])
+					expect(calls[1]?.options.prompt.content).toContainEqual(
+						expect.objectContaining({
+							role: 'tool',
+							content: outputs.map(
+								(result, index) =>
+									expect.objectContaining({
+										id: `read-${index}`,
+										result,
+									}) as unknown
+							),
+						})
+					)
+					expect(
+						calls[1]?.options.tools.map(tool => String(tool.name))
+					).toEqual([REQUEST.finish])
+					expect(calls[1]?.options.toolChoice).toEqual({
+						oneOf: [REQUEST.finish],
+						mode: 'required',
+					})
+					expect(
+						JSON.stringify(calls[1]?.options.prompt).match(
+							/Call report_findings now with what you have/gu
+						)
+					).toHaveLength(1)
+					expect(
+						yield* TokenLedger.use(ledger => ledger.sources)
+					).toMatchObject({
+						reviewer: {
+							calls: 2,
+							inputTokens: 1000 + nextInputTokens,
+							outputTokens: 150,
+							totalTokens: 1150 + nextInputTokens,
+						},
+					})
+					expect(
+						yield* ModelHealthService.use(health => health.spent)
+					).toBeLessThanOrEqual(conversationTokens + 50)
+				}).pipe(
+					Effect.provide(
+						loopLayer(
+							(_call, index) =>
+								Effect.succeed(
+									index === 0
+										? [
+												...Array.from({ length: 5 }, (_, number) =>
+													toolCall('read_file', {}, `read-${number}`)
+												),
+												finishWithUsage(1000, 100),
+											]
+										: [
+												toolCall(REQUEST.finish, { findings: [] }),
+												finishWithUsage(nextInputTokens, 50),
+											]
+								),
+							{ maxToolCalls: 20 },
+							callSpy
+						)
+					)
+				)
+			})
+	)
+	for (const conversationTokens of [100, 10_000])
+		test.effect(
+			`invalid finish answers use the correction allowance for a ${conversationTokens} token share`,
+			() =>
+				Effect.gen(function* () {
+					const callSpy = vi.fn(() => Effect.succeed('unused'))
+					yield* Effect.gen(function* () {
+						const run = AgentLoopService.use(loop =>
+							loop.run({
+								...REQUEST,
+								budget: { runTokens: 10_000, conversationTokens },
+							})
+						)
+						if (conversationTokens === 100)
+							expect(yield* run.pipe(Effect.flip)).toMatchObject({
+								_tag: 'LoopError',
+								reason: 'agent gave no valid report_findings answer',
+							})
+						else
+							expect(yield* run).toMatchObject({
+								turns: MAX_CORRECTIONS + 1,
+								value: { findings: [], dropped: 0 },
+							})
+						const calls = yield* ScriptedLlm.use(script => script.calls)
+						expect(calls).toHaveLength(
+							conversationTokens === 100 ? 2 : MAX_CORRECTIONS + 1
+						)
+						expect(calls[1]?.options.prompt.content).toContainEqual(
+							expect.objectContaining({
+								role: 'tool',
+								content: [
+									expect.objectContaining({
+										name: REQUEST.finish,
+										result: expect.stringContaining('error:') as unknown,
+									}),
+								],
+							})
+						)
+						expect(
+							calls[1]?.options.tools.map(tool => String(tool.name))
+						).toEqual(
+							conversationTokens === 100
+								? [REQUEST.finish]
+								: [...REQUEST.tools, REQUEST.finish]
+						)
+						expect(callSpy).not.toHaveBeenCalled()
+					}).pipe(
+						Effect.provide(
+							loopLayer(
+								(_call, index) =>
+									Effect.succeed([
+										toolCall(
+											REQUEST.finish,
+											index < MAX_CORRECTIONS ? {} : { findings: [] }
+										),
+										finishWithUsage(40),
+									]),
+								{},
+								callSpy
+							)
+						)
+					)
+				})
+		)
+	test.effect(
+		'an exhausted conversation can still finish successfully after one correction',
+		() =>
+			Effect.gen(function* () {
+				expect(
+					yield* AgentLoopService.use(loop =>
+						loop.run({
+							...REQUEST,
+							budget: { runTokens: 10_000, conversationTokens: 100 },
+						})
+					)
+				).toMatchObject({ turns: 2, value: { findings: [], dropped: 0 } })
+				expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(2)
+			}).pipe(
+				Effect.provide(
+					loopLayer((_call, index) =>
+						Effect.succeed([
+							toolCall(REQUEST.finish, index === 0 ? {} : { findings: [] }),
+							finishWithUsage(40),
+						])
+					)
+				)
+			)
+	)
+	test.effect(
+		'a smaller finish-only input never records negative history',
+		() =>
+			Effect.gen(function* () {
+				yield* AgentLoopService.use(loop =>
+					loop.run({ ...REQUEST, source: 'reviewer' })
+				)
+				const calls = yield* ScriptedLlm.use(script => script.calls)
+				expect(calls).toHaveLength(2)
+				expect(calls[0]?.options.tools.map(tool => String(tool.name))).toEqual([
+					...REQUEST.tools,
+					REQUEST.finish,
+				])
+				expect(calls[1]?.options.tools.map(tool => String(tool.name))).toEqual([
+					REQUEST.finish,
+				])
+				expect(yield* TokenLedger.use(ledger => ledger.sources)).toMatchObject({
+					reviewer: {
+						calls: 2,
+						conversations: 1,
+						inputTokens: 1800,
+						firstMessageTokens: 1800,
+						historyTokens: 0,
+						totalTokens: 1800,
+					},
+				})
+			}).pipe(
+				Effect.provide(
+					loopLayer(
+						(_call, index) =>
+							Effect.succeed(
+								index === 0
+									? [toolCall('read_file'), finishWithUsage(1000)]
+									: [
+											toolCall(REQUEST.finish, { findings: [] }),
+											finishWithUsage(800),
+										]
+							),
+						{ maxToolCalls: 1 }
+					)
+				)
+			)
 	)
 	test.effect(
 		'records first input once per call, history and conversations per source',
