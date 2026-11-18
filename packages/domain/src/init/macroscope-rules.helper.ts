@@ -46,9 +46,10 @@ const EMPTY_PART = {
 
 /**
  * True for a glob that only covers documentation: a segment such as `docs/`, or a last segment
- * such as `*.md` or `README`.
+ * such as `*.md` or `README`. A negated glob (`!…`) never counts.
  */
 export function isDocGlob(glob: string): boolean {
+	if (glob.startsWith('!')) return false
 	const segments = glob.split('/')
 	const last = segments.at(-1) ?? ''
 	return (

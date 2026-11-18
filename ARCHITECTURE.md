@@ -54,7 +54,7 @@ Publish (6), converse (7) and learn (8) run on GitHub and arrive with `packages/
 
 ## Init
 
-`mng-review init` writes `.mng/` at the repository root. The starter files and the conversion from `.macroscope/` are pure functions in `domain/src/init`; `modules/init` reads `.macroscope/` through the same confined working-tree reader as the rules, decodes every generated `review.yml` and agent file with the rule schemas, and only then writes. It never runs a model.
+`mng-review init` writes `.mng/` at the repository root. The starter files and the conversion from `.macroscope/` are pure functions in `domain/src/init`; `modules/init` reads `.macroscope/` through the same confined working-tree reader as the rules, loads every generated `review.yml` and agent file as `RulesService` does (imports expanded), refuses symlinks on the way to its targets, and only then writes. It never runs a model.
 
 ## Model endpoint
 

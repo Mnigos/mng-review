@@ -13,6 +13,7 @@ import {
 	type RulesDraft,
 	type RulesFile,
 	STARTER_FILES,
+	toDeclaredAgent,
 	toMacroscopeRules,
 } from '@mng-review/domain'
 import {
@@ -27,6 +28,7 @@ import {
 	makeWorktreeReader,
 	type RepoReader,
 } from '../../../platform/config/repo-reader.client'
+import { expandImports } from '../../../platform/config/rules.service'
 import type { GitError } from '../../../platform/git/git.errors'
 import { GitService } from '../../../platform/git/git.service'
 import type { InitReport, WrittenFile } from '../domain/init-report.types'
@@ -98,21 +100,40 @@ const readMacroscope = Effect.fn('InitService.readMacroscope')(function* (
 	}
 })
 
-/** Decodes every generated `review.yml` and agent file, so `init` never writes rules that fail to load. */
+/**
+ * Loads every generated `review.yml` and agent file as `RulesService` would, imports expanded
+ * from the working tree, so `init` never writes rules that fail to load.
+ */
 const checkDraft = Effect.fn('InitService.checkDraft')(function* (
-	draft: RulesDraft
+	draft: RulesDraft,
+	reader: RepoReader
 ) {
 	for (const file of draft.files) {
 		if (file.path === CONFIG_PATH)
 			yield* parseReviewConfig(file.text, file.path)
-		if (file.path.startsWith(`${AGENTS_DIR}/`))
-			yield* parseAgentFile(
+		if (file.path.startsWith(`${AGENTS_DIR}/`)) {
+			const agentFile = yield* parseAgentFile(
 				file.path.slice(AGENTS_DIR.length + 1, -MARKDOWN_EXTENSION.length),
 				file.text,
 				file.path
 			)
+			yield* toDeclaredAgent(
+				agentFile,
+				yield* expandImports(agentFile.body, reader, file.path)
+			)
+		}
 	}
 })
+
+/** `.mng`, `.mng/agents` and the file itself for each file `init` writes, without repeats. */
+function getWritePaths(files: readonly RulesFile[]): string[] {
+	const paths = files.flatMap(file =>
+		file.path
+			.split('/')
+			.map((_, index, parts) => parts.slice(0, index + 1).join('/'))
+	)
+	return [...new Set(paths)]
+}
 
 /** Turns a file system failure on `target` into an `InitError` naming it. */
 function toWriteError(target: string) {
@@ -126,6 +147,33 @@ export const InitServiceLive = Layer.effect(
 		const git = yield* GitService
 		const fs = yield* FileSystem.FileSystem
 		const path = yield* Path.Path
+
+		/**
+		 * Refuses a symlink anywhere on the way to a file `init` writes, so `--force` never writes
+		 * through a link into `.macroscope/` or out of the repository.
+		 */
+		const checkTargets = Effect.fn('InitService.checkTargets')(function* (
+			files: readonly RulesFile[]
+		) {
+			const realRoot = yield* fs
+				.realPath(git.root)
+				.pipe(Effect.mapError(toWriteError(RULES_DIR)))
+			for (const relative of getWritePaths(files)) {
+				const target = path.join(git.root, relative)
+				const exists = yield* fs
+					.exists(target)
+					.pipe(Effect.mapError(toWriteError(relative)))
+				if (!exists) continue
+				const real = yield* fs
+					.realPath(target)
+					.pipe(Effect.mapError(toWriteError(relative)))
+				if (real !== path.join(realRoot, relative))
+					return yield* new InitError({
+						reason: `${relative} is a symlink; init writes only plain files and folders inside the repository`,
+					})
+			}
+			return yield* Effect.void
+		})
 
 		const writeFile = Effect.fn('InitService.writeFile')(function* (
 			file: RulesFile
@@ -156,15 +204,15 @@ export const InitServiceLive = Layer.effect(
 				return yield* new InitError({
 					reason: `${RULES_DIR}/ already exists; pass --force to write over its files`,
 				})
+			const reader = yield* makeWorktreeReader(git.root).pipe(
+				Effect.provideService(FileSystem.FileSystem, fs),
+				Effect.provideService(Path.Path, path)
+			)
 			const draft: RulesDraft = options.fromMacroscope
-				? yield* makeWorktreeReader(git.root).pipe(
-						Effect.provideService(FileSystem.FileSystem, fs),
-						Effect.provideService(Path.Path, path),
-						Effect.flatMap(readMacroscope),
-						Effect.flatMap(toMacroscopeRules)
-					)
+				? yield* readMacroscope(reader).pipe(Effect.flatMap(toMacroscopeRules))
 				: { files: STARTER_FILES, agents: [], notes: [] }
-			yield* checkDraft(draft)
+			yield* checkDraft(draft, reader)
+			yield* checkTargets(draft.files)
 			const files = yield* Effect.all(draft.files.map(file => writeFile(file)))
 			return {
 				root: git.root,

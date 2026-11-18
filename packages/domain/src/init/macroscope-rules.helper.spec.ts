@@ -45,6 +45,9 @@ for (const glob of [
 	'docs-helper/**',
 	'src/documentation.ts',
 	'**/readme-helper.ts',
+	'**/README.ts',
+	'!**/*.md',
+	'!docs/**',
 	'*',
 	'',
 ])
