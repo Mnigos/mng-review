@@ -1,0 +1,144 @@
+/** Most units one deep reviewer splits a change into; they run in parallel. */
+export const MAX_REVIEW_UNITS = 8
+
+/** A part of the change one deep-review sub-agent reviews: a function, handler or file group. */
+export interface ReviewUnit {
+	readonly label: string
+	readonly paths: readonly string[]
+	readonly diff: string
+	/** Changed lines, used to balance groups. */
+	readonly size: number
+}
+
+/** One hunk of a file diff and the function context git printed after its `@@` header. */
+interface DiffHunk {
+	readonly context: string
+	readonly text: string
+	readonly size: number
+}
+
+/** One file of a unified diff: its header lines and hunks. */
+export interface FileDiff {
+	readonly path: string
+	readonly header: string
+	readonly hunks: readonly DiffHunk[]
+}
+
+const FILE_START = /^(?=diff --git )/mu
+const HUNK_CONTEXT = /^@@[^@]*@@ ?(.*)$/u
+const GIT_HEADER_PATH = /^diff --git a\/.* b\/(.*)$/u
+
+/** The file a diff block is about: the head path, else the base path or the rename target. */
+function getHeaderPath(lines: readonly string[]): string {
+	const plus = lines.find(line => line.startsWith('+++ b/'))
+	if (plus) return plus.slice('+++ b/'.length).trimEnd()
+	const minus = lines.find(line => line.startsWith('--- a/'))
+	if (minus) return minus.slice('--- a/'.length).trimEnd()
+	const renamed = lines.find(line => line.startsWith('rename to '))
+	if (renamed) return renamed.slice('rename to '.length).trimEnd()
+	return GIT_HEADER_PATH.exec(lines[0]?.trimEnd() ?? '')?.[1] ?? 'unknown'
+}
+
+/** Splits hunk lines into hunks, counting `+` and `-` lines. */
+function toHunks(lines: readonly string[]): DiffHunk[] {
+	const hunks: DiffHunk[] = []
+	for (const line of lines) {
+		if (line.startsWith('@@')) {
+			const context = HUNK_CONTEXT.exec(line.trimEnd())?.[1]?.trim() ?? ''
+			hunks.push({ context, text: line, size: 0 })
+			continue
+		}
+		const last = hunks.pop()
+		if (!last) continue
+		const changed = line.startsWith('+') || line.startsWith('-')
+		hunks.push({
+			...last,
+			text: last.text + line,
+			size: last.size + (changed ? 1 : 0),
+		})
+	}
+	return hunks
+}
+
+/** Parses `git diff` output into files with their hunks. */
+export function parseFileDiffs(diff: string): FileDiff[] {
+	return diff
+		.split(FILE_START)
+		.filter(block => block.startsWith('diff --git '))
+		.map(block => {
+			const lines = block.split(/(?<=\n)/u)
+			const firstHunk = lines.findIndex(line => line.startsWith('@@'))
+			const headerLines = firstHunk === -1 ? lines : lines.slice(0, firstHunk)
+			return {
+				path: getHeaderPath(headerLines),
+				header: headerLines.join(''),
+				hunks: firstHunk === -1 ? [] : toHunks(lines.slice(firstHunk)),
+			}
+		})
+}
+
+/** A whole file as one unit. */
+function toFileUnit(file: FileDiff): ReviewUnit {
+	return {
+		label: file.path,
+		paths: [file.path],
+		diff: file.header + file.hunks.map(hunk => hunk.text).join(''),
+		size: file.hunks.reduce((sum, hunk) => sum + hunk.size, 0),
+	}
+}
+
+/** One unit per function context in the file; hunks without one become their own unit. */
+function toFunctionUnits(file: FileDiff): ReviewUnit[] {
+	const groups = new Map<string, DiffHunk[]>()
+	for (const [index, hunk] of file.hunks.entries()) {
+		const key = hunk.context || `#${index}`
+		groups.set(key, [...(groups.get(key) ?? []), hunk])
+	}
+	if (groups.size === 0) return [toFileUnit(file)]
+	return [...groups].map(([key, hunks]) => ({
+		label: key.startsWith('#') ? file.path : `${file.path}: ${key}`,
+		paths: [file.path],
+		diff: file.header + hunks.map(hunk => hunk.text).join(''),
+		size: hunks.reduce((sum, hunk) => sum + hunk.size, 0),
+	}))
+}
+
+/** Packs file units into `max` groups, the largest first, each into the smallest group so far. */
+function packUnits(units: readonly ReviewUnit[], max: number): ReviewUnit[] {
+	const bySize = units.toSorted((a, b) => b.size - a.size)
+	const groups = bySize.slice(0, max)
+	for (const unit of bySize.slice(max)) {
+		const smallest = groups.reduce(
+			(min, group, index) =>
+				group.size < (groups[min]?.size ?? 0) ? index : min,
+			0
+		)
+		const group = groups[smallest]
+		if (!group) continue
+		const paths = [...group.paths, ...unit.paths]
+		groups[smallest] = {
+			label: `${paths.length} files`,
+			paths,
+			diff: group.diff + unit.diff,
+			size: group.size + unit.size,
+		}
+	}
+	return groups
+}
+
+/**
+ * Splits a unified diff into at most `max` units: one per enclosing function (the context after a
+ * hunk's `@@` header), then one per file when there are too many, then files packed into `max`
+ * groups by size.
+ */
+export function splitReviewUnits(
+	diff: string,
+	max: number = MAX_REVIEW_UNITS
+): ReviewUnit[] {
+	const files = parseFileDiffs(diff)
+	const byFunction = files.flatMap(toFunctionUnits)
+	if (byFunction.length <= max) return byFunction
+	const byFile = files.map(toFileUnit)
+	if (byFile.length <= max) return byFile
+	return packUnits(byFile, max)
+}

@@ -86,29 +86,30 @@ export function formatPlanText(report: PlanReport): string {
 	return [...header, ...toPlanBodyLines(report)].join('\n')
 }
 
+/** The plan as a JSON value. */
+export function toPlanJson(report: PlanReport) {
+	const { change, plan } = report
+	return {
+		base: change.base,
+		head: change.head,
+		mergeBase: change.mergeBase,
+		rules: report.rulesSource,
+		skipped: plan.skippedRun ?? null,
+		risk: {
+			level: plan.risk,
+			source: plan.riskSource,
+			riskPaths: plan.riskPathHits,
+		},
+		depth: { level: plan.depth, source: plan.depthSource },
+		router: plan.router,
+		runs: plan.runs,
+		skips: plan.skips,
+		files: change.files,
+		tokens: report.tokens,
+	}
+}
+
 /** The plan as a JSON document. */
 export function formatPlanJson(report: PlanReport): string {
-	const { change, plan } = report
-	return JSON.stringify(
-		{
-			base: change.base,
-			head: change.head,
-			mergeBase: change.mergeBase,
-			rules: report.rulesSource,
-			skipped: plan.skippedRun ?? null,
-			risk: {
-				level: plan.risk,
-				source: plan.riskSource,
-				riskPaths: plan.riskPathHits,
-			},
-			depth: { level: plan.depth, source: plan.depthSource },
-			router: plan.router,
-			runs: plan.runs,
-			skips: plan.skips,
-			files: change.files,
-			tokens: report.tokens,
-		},
-		null,
-		2
-	)
+	return JSON.stringify(toPlanJson(report), null, 2)
 }

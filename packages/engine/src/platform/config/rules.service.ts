@@ -2,8 +2,10 @@ import {
 	AGENTS_DIR,
 	CONFIG_PATH,
 	ConfigError,
+	CONTEXT_PATH,
 	type DeclaredAgent,
 	extractSection,
+	MEMORY_PATH,
 	parseAgentFile,
 	parseImportLine,
 	parseReviewConfig,
@@ -25,6 +27,10 @@ const AGENT_EXTENSION = '.md'
 export interface Rules {
 	readonly config: ReviewConfig
 	readonly agents: readonly DeclaredAgent[]
+	/** `.mng/CONTEXT.md`, when the repository has one. */
+	readonly context?: string
+	/** `.mng/MEMORY.md`, when the repository has one. */
+	readonly memory?: string
 	/** `working tree` or the rules ref. */
 	readonly source: string
 }
@@ -147,7 +153,15 @@ export const RulesServiceLive = Layer.effect(
 			const configText = yield* readNamed(reader, CONFIG_PATH, CONFIG_PATH)
 			const config = yield* parseReviewConfig(configText, CONFIG_PATH)
 			const agents = yield* loadAgents(reader)
-			return { config, agents, source: reader.source }
+			const context = yield* readNamed(reader, CONTEXT_PATH, CONTEXT_PATH)
+			const memory = yield* readNamed(reader, MEMORY_PATH, MEMORY_PATH)
+			return {
+				config,
+				agents,
+				source: reader.source,
+				...(context === undefined ? {} : { context }),
+				...(memory === undefined ? {} : { memory }),
+			}
 		})
 
 		return { load }
