@@ -134,8 +134,9 @@ export const FinderServiceLive = Layer.effect(
 			const split = context.fanOut
 				? splitReviewUnits(diff, getUnitCount(allowance))
 				: []
+			const units = getUnitsToReview(split, context.unitPaths)
+			if (split.length > 0 && units.length === 0) return []
 			if (split.length > 1) {
-				const units = getUnitsToReview(split, context.unitPaths)
 				const tokens = Math.floor(allowance / Math.max(1, units.length))
 				return units.map(unit => ({
 					unit: unit.label,
