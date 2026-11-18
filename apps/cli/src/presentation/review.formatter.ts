@@ -24,6 +24,12 @@ function toValidationLines(finding: KeptFinding): string[] {
 	return []
 }
 
+/** The suggested fix, its later lines indented under the first. */
+function toSuggestionLines(finding: KeptFinding): string[] {
+	if (!finding.suggestion) return []
+	return [`    suggestion: ${finding.suggestion.replaceAll('\n', '\n      ')}`]
+}
+
 /** A kept bug: severity, place, title, who reported it, trigger, impact, evidence and validation. */
 function toBugLines(finding: KeptFinding): string[] {
 	const was = finding.reportedSeverity
@@ -36,9 +42,19 @@ function toBugLines(finding: KeptFinding): string[] {
 		`    impact: ${finding.impact}`,
 		...finding.evidence.map(line => `    evidence: ${line}`),
 		...toValidationLines(finding),
-		...(finding.suggestion
-			? [`    suggestion: ${finding.suggestion.replaceAll('\n', '\n      ')}`]
-			: []),
+		...toSuggestionLines(finding),
+	]
+}
+
+/** A nit: place, title, agents and placement, then what it asks for and why. */
+function toNitLines(finding: KeptFinding): string[] {
+	const summary = finding.placement === 'summary' ? ' (summary)' : ''
+	return [
+		`  ${finding.path}:${finding.line}  ${finding.title} [${finding.agents.join(', ')}]${summary}`,
+		`    trigger: ${finding.trigger}`,
+		`    impact: ${finding.impact}`,
+		...finding.evidence.map(line => `    evidence: ${line}`),
+		...toSuggestionLines(finding),
 	]
 }
 
@@ -85,10 +101,7 @@ function toOutcomeLines(report: ReviewReport): string[] {
 		),
 		...toSection(
 			`Nits (${inlineNits.length} inline, ${report.nits.length - inlineNits.length} in the summary):`,
-			report.nits.map(
-				nit =>
-					`  ${nit.path}:${nit.line}  ${nit.title} [${nit.agents.join(', ')}]${nit.placement === 'summary' ? ' (summary)' : ''}`
-			)
+			report.nits.flatMap(toNitLines)
 		),
 		...toSection(
 			`Rejected by the validator (${report.rejected.length}):`,

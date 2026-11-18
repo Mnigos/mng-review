@@ -71,6 +71,7 @@ export function reviewReport(): ReviewReport {
 				kind: 'nit',
 				title: 'Use repository convention',
 				placement: 'inline',
+				suggestion: 'Rename to chargeInvoice.',
 			},
 			{
 				...finding,
