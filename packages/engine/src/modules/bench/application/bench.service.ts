@@ -167,7 +167,8 @@ export const BenchServiceLive = Layer.effect(
 				entries,
 				entry =>
 					reviewCase({ rules, entry, lineWindow: request.lineWindow }).pipe(
-						Effect.provide(TokenLedgerLive),
+						// A plain provide reuses the memoized ledger, so every case would share one budget.
+						Effect.provide(Layer.fresh(TokenLedgerLive)),
 						Effect.provideContext(caseServices)
 					),
 				{ concurrency: request.concurrency }
