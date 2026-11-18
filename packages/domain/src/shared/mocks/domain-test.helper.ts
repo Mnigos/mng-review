@@ -18,6 +18,7 @@ import type { ReportedFinding } from '../../findings/finding.schema'
 import type { Finding } from '../../findings/finding.types'
 import type { PlannedRun, PlanInput } from '../../routing/review-plan.types'
 import type { PullRequestInfo, RouterReport } from '../../routing/routing.types'
+import type { Verdict } from '../../validation/verdict.schema'
 
 /** Nested fixture overrides retain complete reviewer and validator model entries. */
 interface ConfigOverrides extends Partial<
@@ -277,4 +278,15 @@ export function featureFiles(): ChangedFile[] {
 			deletions: 16 + (index < 30 ? 1 : 0),
 		})
 	)
+}
+
+/** A decoded validator answer with repository evidence, without model or git services. */
+export function verdict(overrides: Partial<Verdict> = {}): Verdict {
+	return {
+		verdict: 'confirm',
+		severity: 'medium',
+		reason: 'Duplicate charge.',
+		evidence: ['src/charge.ts:2 balance'],
+		...overrides,
+	}
 }

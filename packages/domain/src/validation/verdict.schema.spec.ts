@@ -1,12 +1,8 @@
 import { Schema, Result } from 'effect'
+import { verdict } from '../shared/mocks/domain-test.helper'
 import { verdictSchema } from './verdict.schema'
 
-const VERDICT = {
-	verdict: 'confirm',
-	severity: 'medium',
-	reason: 'Duplicate charge.',
-	evidence: ['src/charge.ts:2 balance'],
-} as const
+const VERDICT = verdict()
 const decode = Schema.decodeUnknownResult(verdictSchema)
 describe('verdictSchema', () => {
 	test('normalizes severity and trims the reason and evidence', () => {
@@ -82,6 +78,27 @@ describe('verdictSchema', () => {
 					evidence,
 				})
 			)
+		).toBeTruthy()
+	})
+	test('lowered_because may be omitted', () => {
+		expect(decode(VERDICT)).toEqual(Result.succeed(VERDICT))
+	})
+	test.each([
+		null,
+		'',
+		'   ',
+		'  medium does not meet its recovery criterion.  ',
+	])('decodes and trims lowered_because %j', loweredBecause => {
+		expect(decode({ ...VERDICT, lowered_because: loweredBecause })).toEqual(
+			Result.succeed({
+				...VERDICT,
+				lowered_because: loweredBecause?.trim() ?? null,
+			})
+		)
+	})
+	test('rejects a non-string lowered_because', () => {
+		expect(
+			Result.isFailure(decode({ ...VERDICT, lowered_because: 42 }))
 		).toBeTruthy()
 	})
 	test('rejection permits no evidence', () => {
