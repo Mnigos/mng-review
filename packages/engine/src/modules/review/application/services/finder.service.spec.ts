@@ -230,9 +230,7 @@ layer(Layer.empty)('FinderService', test => {
 						(yield* ScriptedLlm.use(script => script.calls))[0]
 					)
 					expect(message).toContain(
-						input === 'incremental'
-							? `- ${BILLING_PATH} (+30000 -1, diff cut to `
-							: `- ${BILLING_PATH} (+30000 -1)`
+						`- ${BILLING_PATH} (+30000 -1, diff cut to `
 					)
 					expect(message).toContain(
 						'Other changed files:\n```text\n- other.ts (+1 -1)\n- skip.ts (+1 -1, left out of the review (too_large))'
@@ -260,15 +258,11 @@ layer(Layer.empty)('FinderService', test => {
 							unifiedDiff('small.ts').length +
 							unifiedDiff('other.ts').length
 					).toBeLessThan(MAX_FULL_DIFF_CHARS)
-					if (input === 'full_diff') {
+					expect(diff).not.toContain(BETWEEN_CAPS)
+					expect(diff).toContain('[cut:')
+					if (input === 'full_diff')
 						expect(diff).toContain(unifiedDiff('other.ts'))
-						expect(diff).toContain(BETWEEN_CAPS)
-						expect(diff).not.toContain('[cut:')
-					} else {
-						expect(diff).not.toContain('other.ts')
-						expect(diff).not.toContain(BETWEEN_CAPS)
-						expect(diff).toContain('[cut:')
-					}
+					else expect(diff).not.toContain('other.ts')
 				}).pipe(
 					Effect.provide(
 						finderLayer(

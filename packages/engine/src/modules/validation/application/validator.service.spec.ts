@@ -35,8 +35,8 @@ import {
 } from '../../../shared/mocks/review-test.helper'
 import { AgentLoopService } from '../../review/application/services/agent-loop.service'
 import { ModelHealthService } from '../../review/application/services/model-health.service'
-import { TokenBudgetError } from '../../review/domain/review.errors'
 import { RepoToolsService } from '../../review/application/services/repo-tools.service'
+import { TokenBudgetError } from '../../review/domain/review.errors'
 import { ValidatorService, ValidatorServiceLive } from './validator.service'
 
 const CONTEXT = {

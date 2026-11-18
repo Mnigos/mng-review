@@ -68,7 +68,7 @@ describe('finder budgets', () => {
 		))
 	for (const [failed, unfinished, status] of [
 		[true, 0, 'failed'],
-		[true, 2, 'failed'],
+		[true, 2, 'incomplete'],
 		[false, 1, 'incomplete'],
 		[false, 0, 'ok'],
 	] as const)
