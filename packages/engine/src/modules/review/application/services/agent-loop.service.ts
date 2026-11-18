@@ -173,43 +173,43 @@ export const AgentLoopServiceLive = Layer.effect(
 				state: LoopState
 			): Effect.Effect<LoopResult<TValue>, LoopError | ModelCallError> =>
 				Effect.gen(function* () {
-					const now = yield* Clock.currentTimeMillis
-					const wrapUp =
-						state.toolCalls >= limits.maxToolCalls || now >= deadline
-					const prompt = [
-						...state.pending,
-						...(wrapUp && !state.wrapUpSent
-							? [
-									toUserMessage(
-										`You have used up your tool calls or time. Call ${finish} now with what you have.`
-									),
-								]
-							: []),
-					]
-					const sent = { ...state, wrapUpSent: state.wrapUpSent || wrapUp }
-					const attempt = yield* Effect.result(
-						health
-							.run(
-								request.model,
-								chat.generateText({
-									prompt,
-									toolkit: AGENT_TOOLKIT,
-									toolChoice: wrapUp
-										? { oneOf: [finish], mode: 'required' }
-										: { oneOf: [...request.tools, finish] },
-									disableToolCallResolution: true,
-									toolCallValidation: 'deferred',
-								})
-							)
-							.pipe(
-								Effect.timeoutOrElse({
-									duration: Math.max(0, deadline - now) + graceMillis,
-									orElse: () =>
-										Effect.fail(
-											new LoopError({ reason: 'agent ran past its wall time' })
+					const queuedAt = yield* Clock.currentTimeMillis
+					// Decided once the call holds a concurrency slot, so time spent queued counts.
+					const turn = Effect.gen(function* () {
+						const now = yield* Clock.currentTimeMillis
+						const wrapUp =
+							state.toolCalls >= limits.maxToolCalls || now >= deadline
+						const prompt = [
+							...state.pending,
+							...(wrapUp && !state.wrapUpSent
+								? [
+										toUserMessage(
+											`You have used up your tool calls or time. Call ${finish} now with what you have.`
 										),
-								})
-							)
+									]
+								: []),
+						]
+						const response = yield* chat.generateText({
+							prompt,
+							toolkit: AGENT_TOOLKIT,
+							toolChoice: wrapUp
+								? { oneOf: [finish], mode: 'required' }
+								: { oneOf: [...request.tools, finish] },
+							disableToolCallResolution: true,
+							toolCallValidation: 'deferred',
+						})
+						return { usage: response.usage, response, wrapUp }
+					})
+					const attempt = yield* Effect.result(
+						health.run(request.model, turn).pipe(
+							Effect.timeoutOrElse({
+								duration: Math.max(0, deadline - queuedAt) + graceMillis,
+								orElse: () =>
+									Effect.fail(
+										new LoopError({ reason: 'agent ran past its wall time' })
+									),
+							})
+						)
 					)
 					if (Result.isFailure(attempt)) {
 						const error = attempt.failure
@@ -218,15 +218,16 @@ export const AgentLoopServiceLive = Layer.effect(
 							error._tag === 'LlmError' &&
 							error.reason === 'ToolParameterValidationError'
 						)
-							return yield* correct(sent, [
-								...prompt,
+							return yield* correct(state, [
+								...state.pending,
 								toUserMessage(
 									'Your last tool call arguments were not valid JSON. Call the tool again.'
 								),
 							])
 						return yield* Effect.fail(error)
 					}
-					const response = attempt.success
+					const { response, wrapUp } = attempt.success
+					const sent = { ...state, wrapUpSent: state.wrapUpSent || wrapUp }
 					const calls: readonly ToolCall[] = response.toolCalls
 					const finishCall = calls.find(call => call.name === finish)
 					if (finishCall || calls.length === 0) {

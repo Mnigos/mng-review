@@ -263,6 +263,7 @@ export const RepoToolsServiceLive = Layer.effect(
 				})
 			return yield* gitText([
 				'blame',
+				'--no-textconv',
 				'--date=short',
 				'-L',
 				`${range.start},${range.end}`,
@@ -352,8 +353,8 @@ export const RepoToolsServiceLive = Layer.effect(
 			params: unknown
 		) {
 			return yield* dispatch(scope, name, params).pipe(
-				Effect.map(output => truncateText(output, MAX_TOOL_OUTPUT_CHARS)),
-				Effect.catch(error => Effect.succeed(`error: ${error.message}`))
+				Effect.catch(error => Effect.succeed(`error: ${error.message}`)),
+				Effect.map(output => truncateText(output, MAX_TOOL_OUTPUT_CHARS))
 			)
 		})
 
