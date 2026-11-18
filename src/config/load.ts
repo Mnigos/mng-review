@@ -20,9 +20,20 @@ export function parseConfig(text: string | null, source = configPath): Config {
       `${source}: "extends" must be one of ${Object.keys(presets).join(', ')}, got ${JSON.stringify(extendsName)}`,
     )
   }
-  const result = configSchema.safeParse(deepMerge(preset, raw ?? {}))
+  const result = configSchema.safeParse(deepMerge(preset, inheritReviewer(raw ?? {}, preset)))
   if (!result.success) throw configErrorFromIssues(source, result.error.issues)
   return result.data
+}
+
+/**
+ * A single `models.reviewer` object replaces the preset list, so fill its missing keys from the
+ * preset's first reviewer, as other partial model entries inherit theirs.
+ */
+function inheritReviewer(raw: Record<string, unknown>, preset: Config): Record<string, unknown> {
+  const models = raw.models
+  if (!isPlainObject(models) || !isPlainObject(models.reviewer)) return raw
+  const reviewer = deepMerge(preset.models.reviewer[0], models.reviewer)
+  return { ...raw, models: { ...models, reviewer } }
 }
 
 export async function loadConfig(reader: RepoReader): Promise<Config> {

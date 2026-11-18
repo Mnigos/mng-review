@@ -14,7 +14,7 @@ The conductor is code. Models do five jobs:
 | Validator | engine | tries to refute each bug finding before it is posted |
 | Verdict | engine | `ready`, `needs fixes` or `needs owner` |
 
-The router model only routes. Every other role runs on `gpt-6.1-sol` or `claude-opus-5-5` at high effort, and by default on both. All models go through the same OpenAI-compatible endpoint.
+The router model only routes. The main reviewer and the validator run on the reviewer models, by default `gpt-6.1-sol` and `claude-opus-5-5` at high effort. Declared agents run on `models.agents`, by default `gpt-6.1-sol` at high effort. All models go through the same OpenAI-compatible endpoint.
 
 ## `.mng/` layout
 
