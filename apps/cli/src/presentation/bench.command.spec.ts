@@ -348,7 +348,7 @@ layer(Layer.empty, { excludeTestServices: true })('bench CLI', test => {
 			})
 	)
 
-	test.effect.fails(
+	test.effect(
 		'each case has an independent token ledger and totals count every response once',
 		() =>
 			Effect.gen(function* () {
@@ -366,7 +366,7 @@ layer(Layer.empty, { excludeTestServices: true })('bench CLI', test => {
 				}).toEqual({ cases: [CASE_TOKENS, CASE_TOKENS], tokens: TOTAL_TOKENS })
 			})
 	)
-	test.effect.fails(
+	test.effect(
 		'each case receives the full token budget regardless of case concurrency',
 		() =>
 			Effect.gen(function* () {
