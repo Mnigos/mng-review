@@ -112,6 +112,28 @@ describe('finding identity and merging', () => {
 		])
 		expect([low, high]).toEqual(originals)
 	})
+	test('keeps a critical merged finding before an unrelated low finding in either input order', () => {
+		const critical = finding({ severity: 'critical', agents: ['agent-x'] })
+		const unrelated = finding({
+			severity: 'low',
+			line: critical.line + NEAR_LINES + 1,
+			title: 'Missing ownership guard',
+			trigger: 'A caller supplies another account identifier.',
+			impact: 'Private records become visible without authorization.',
+		})
+		const duplicate = finding({
+			severity: 'low',
+			line: critical.line + NEAR_LINES,
+			title: 'Duplicate charge loses balance twice',
+			agents: ['agent-y'],
+		})
+		const expected = [
+			{ ...critical, agents: ['agent-x', 'agent-y'] },
+			unrelated,
+		]
+		expect(mergeFindings([critical, unrelated, duplicate])).toEqual(expected)
+		expect(mergeFindings([critical, duplicate, unrelated])).toEqual(expected)
+	})
 	test('merges a third report through an absorbed report and keeps the highest severity text', () => {
 		const high = finding({
 			severity: 'high',
