@@ -62,6 +62,7 @@ describe('formatLogLine', () => {
 	for (const command of [
 		'::add-mask::x',
 		'::error::failure',
+		':::error::',
 		'::stop-commands::t',
 		'##[error]',
 		'\u001B[31merror\u001B[0m',
