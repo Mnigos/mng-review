@@ -60,6 +60,26 @@ const REPORT = {
 } as const satisfies BenchReport
 
 describe('formatBenchText', () => {
+	test('text and JSON retain scores and identify unfinished work for an incomplete case', () => {
+		const entry: CaseReport = {
+			...CASE,
+			incomplete: [
+				'reviewer: src/viewer.ts: close()',
+				'validation of 1 finding(s)',
+			],
+		}
+		const report = { ...REPORT, cases: [entry] }
+		const text = formatBenchText(report)
+		expect(text).toContain(
+			'    incomplete  token budget spent: reviewer: src/viewer.ts: close(); validation of 1 finding(s)'
+		)
+		expect(text).toContain('real 1/2 found, 1 missed')
+		expect(text).toContain(
+			`    found  duplicate-charge (real)  ${REPORTED_FINDING.path}:2 medium ${REPORTED_FINDING.title}`
+		)
+		expect(JSON.parse(formatBenchJson(report))).toEqual(report)
+		expect(formatBenchText(REPORT)).not.toContain('incomplete')
+	})
 	test('lists each case and every finding category, totals, percentage recall and tokens', () => {
 		const second = { ...CASE, id: 'checkout-retry' }
 		const text = formatBenchText({

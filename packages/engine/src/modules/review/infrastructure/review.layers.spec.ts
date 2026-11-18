@@ -509,6 +509,13 @@ layer(Layer.empty)('ReviewPipelineLive', test => {
 					)
 					expect(report.endpointError).toBeUndefined()
 					expect(report.droppedModels).toEqual([])
+					expect(report.incomplete).toEqual({
+						reason: 'limits.tokens_per_run (5) reached',
+						unfinished:
+							stage === 'before finding'
+								? ['reviewer']
+								: ['validation of 1 finding(s)'],
+					})
 					expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(
 						stage === 'before finding' ? 0 : 1
 					)
@@ -517,6 +524,7 @@ layer(Layer.empty)('ReviewPipelineLive', test => {
 							{
 								validation: {
 									status: 'unvalidated',
+									budgetSpent: true,
 									error: expect.stringContaining(
 										'token budget spent'
 									) as unknown,
@@ -527,7 +535,8 @@ layer(Layer.empty)('ReviewPipelineLive', test => {
 					} else
 						expect(report.agents).toMatchObject([
 							{
-								status: 'failed',
+								status: 'incomplete',
+								unfinished: ['reviewer'],
 								error: expect.stringContaining('token budget spent') as unknown,
 							},
 						])

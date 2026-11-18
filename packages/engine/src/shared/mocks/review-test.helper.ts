@@ -48,6 +48,14 @@ export function answer(
 	return [toolCall(name, params), FINISH]
 }
 
+/** Usage charged by a scripted turn, including turns without a final report. */
+export function finishWithUsage(tokens: number) {
+	return {
+		...FINISH,
+		usage: { inputTokens: { total: tokens }, outputTokens: { total: 0 } },
+	}
+}
+
 /** A validator answer with concrete source evidence. */
 export function verdict(overrides: Record<string, unknown> = {}) {
 	return {

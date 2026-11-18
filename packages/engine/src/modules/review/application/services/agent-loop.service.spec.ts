@@ -9,15 +9,21 @@ import {
 	type ScriptedLlmAnswer,
 } from '../../../../platform/llm/scripted-llm.layer'
 import { TokenLedgerLive } from '../../../../platform/llm/token-ledger.service'
+import { reviewDependencies } from '../../../../shared/mocks/review-layer.helper'
 import {
 	answer,
+	BILLING_PATH,
 	FINISH,
+	finishWithUsage,
 	LIMITS,
 	MODEL,
 	SCOPE,
 	toolCall,
 } from '../../../../shared/mocks/review-test.helper'
-import { WRAP_UP_GRACE } from '../../domain/review.constants'
+import {
+	FINDER_TOKEN_SHARE,
+	WRAP_UP_GRACE,
+} from '../../domain/review.constants'
 import { ReviewLimits } from '../review-limits.context'
 import {
 	AgentLoopService,
@@ -57,6 +63,150 @@ const REQUEST = {
 } as const satisfies LoopRequest<unknown>
 
 layer(Layer.empty)('AgentLoopService', test => {
+	for (const offset of [-1, 0, 1])
+		test.effect(
+			`token share boundary ${offset} selects the available tools using recorded usage`,
+			() =>
+				Effect.gen(function* () {
+					const tokensPerRun = 100
+					const spent = tokensPerRun * FINDER_TOKEN_SHARE + offset
+					yield* Effect.gen(function* () {
+						expect(
+							yield* AgentLoopService.use(loop =>
+								loop.run({ ...REQUEST, tokenShare: FINDER_TOKEN_SHARE })
+							)
+						).toMatchObject({ turns: 2, toolCalls: 1 })
+						const calls = yield* ScriptedLlm.use(script => script.calls)
+						expect(calls).toHaveLength(2)
+						expect(
+							calls[0]?.options.tools.map(tool => String(tool.name))
+						).toEqual([...REQUEST.tools, REQUEST.finish])
+						expect(
+							calls[1]?.options.tools.map(tool => String(tool.name))
+						).toEqual(
+							offset < 0 ? [...REQUEST.tools, REQUEST.finish] : [REQUEST.finish]
+						)
+						expect(calls[1]?.options.toolChoice).toEqual(
+							offset < 0
+								? { oneOf: [...REQUEST.tools, REQUEST.finish] }
+								: { oneOf: [REQUEST.finish], mode: 'required' }
+						)
+						expect(
+							JSON.stringify(calls[1]?.options.prompt).match(
+								/Call report_findings now with what you have/gu
+							) ?? []
+						).toHaveLength(offset < 0 ? 0 : 1)
+						expect(yield* ModelHealthService.use(health => health.spent)).toBe(
+							spent +
+								FINISH.usage.inputTokens.total +
+								FINISH.usage.outputTokens.total
+						)
+					}).pipe(
+						Effect.provide(
+							reviewDependencies(
+								(_call, index) =>
+									Effect.succeed(
+										index === 0
+											? [
+													toolCall('read_file', { path: BILLING_PATH }),
+													finishWithUsage(spent),
+												]
+											: answer()
+									),
+								{ tokensPerRun }
+							)
+						)
+					)
+				})
+		)
+	test.effect(
+		'without a token share the loop keeps repository tools below the whole budget',
+		() =>
+			Effect.gen(function* () {
+				yield* AgentLoopService.use(loop => loop.run(REQUEST))
+				const calls = yield* ScriptedLlm.use(script => script.calls)
+				expect(calls[1]?.options.tools.map(tool => String(tool.name))).toEqual([
+					...REQUEST.tools,
+					REQUEST.finish,
+				])
+				expect(JSON.stringify(calls[1]?.options.prompt)).not.toContain(
+					'Call report_findings now'
+				)
+			}).pipe(
+				Effect.provide(
+					reviewDependencies(
+						(_call, index) =>
+							Effect.succeed(
+								index === 0
+									? [
+											toolCall('read_file', { path: BILLING_PATH }),
+											finishWithUsage(90),
+										]
+									: answer()
+							),
+						{ tokensPerRun: 100 }
+					)
+				)
+			)
+	)
+	test.effect(
+		'the whole token budget refuses the next call even during wrap-up',
+		() =>
+			Effect.gen(function* () {
+				expect(
+					yield* AgentLoopService.use(loop =>
+						loop.run({ ...REQUEST, tokenShare: FINDER_TOKEN_SHARE })
+					).pipe(Effect.flip)
+				).toMatchObject({ _tag: 'TokenBudgetError', spent: 100, limit: 100 })
+				expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(1)
+			}).pipe(
+				Effect.provide(
+					reviewDependencies(
+						() =>
+							Effect.succeed([
+								toolCall('read_file', { path: BILLING_PATH }),
+								finishWithUsage(100),
+							]),
+						{ tokensPerRun: 100 }
+					)
+				)
+			)
+	)
+	test.effect(
+		'tokens spent by another model force wrap-up in a new conversation',
+		() =>
+			Effect.gen(function* () {
+				yield* AgentLoopService.use(loop =>
+					loop.run({ ...REQUEST, model: { ...MODEL, model: 'model-b' } })
+				)
+				yield* AgentLoopService.use(loop =>
+					loop.run({ ...REQUEST, tokenShare: FINDER_TOKEN_SHARE })
+				)
+				const calls = yield* ScriptedLlm.use(script => script.calls)
+				expect(calls.map(call => call.model.model)).toEqual([
+					'model-b',
+					MODEL.model,
+				])
+				expect(calls[1]?.options.tools.map(tool => String(tool.name))).toEqual([
+					REQUEST.finish,
+				])
+			}).pipe(
+				Effect.provide(
+					reviewDependencies(
+						(_call, index) =>
+							Effect.succeed(
+								index === 0
+									? [
+											toolCall('report_findings', { findings: [] }),
+											finishWithUsage(100 * FINDER_TOKEN_SHARE),
+										]
+									: answer()
+							),
+						{ tokensPerRun: 100 }
+					)
+				)
+			)
+	)
 	test.effect(
 		'finish answer ends without repository calls and records requested model and tools',
 		() =>
@@ -164,7 +314,7 @@ layer(Layer.empty)('AgentLoopService', test => {
 						mode: 'required',
 					})
 					expect(
-						prompt.match(/used up your tool calls or time/gu)
+						prompt.match(/used up your tool calls, time or token budget/gu)
 					).toHaveLength(1)
 				}).pipe(
 					Effect.provide(
@@ -201,7 +351,7 @@ layer(Layer.empty)('AgentLoopService', test => {
 					const calls = yield* ScriptedLlm.use(script => script.calls)
 					expect(
 						JSON.stringify(calls.at(-1)?.options.prompt).match(
-							/used up your tool calls or time/gu
+							/used up your tool calls, time or token budget/gu
 						)
 					).toHaveLength(1)
 					expect(JSON.stringify(calls.at(-1)?.options.prompt)).toContain(
@@ -669,7 +819,7 @@ layer(Layer.empty)('AgentLoopService', test => {
 					})
 					expect(
 						JSON.stringify(calls[0]?.options.prompt).match(
-							/used up your tool calls or time/gu
+							/used up your tool calls, time or token budget/gu
 						)
 					).toHaveLength(1)
 				}).pipe(Effect.provide(loopLayer(() => Effect.succeed(answer()))))

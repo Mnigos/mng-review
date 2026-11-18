@@ -1,3 +1,4 @@
+import type { ReviewReport } from '@mng-review/engine'
 import { Schema } from 'effect'
 import { reviewReport } from '../shared/mocks/review-report.helper'
 import { formatReviewJson, formatReviewText } from './review.formatter'
@@ -7,6 +8,49 @@ const decodeJson = Schema.decodeUnknownSync(
 )
 
 describe('review formatters', () => {
+	test('text and JSON keep partial findings, name unfinished work and distinguish budget-stopped validation', () => {
+		const fixture = reviewReport()
+		const report: ReviewReport = {
+			...fixture,
+			bugs: fixture.bugs.map(bug => ({
+				...bug,
+				validation: {
+					status: 'unvalidated',
+					budgetSpent: true,
+					error: 'token budget spent',
+				},
+			})),
+			agents: fixture.agents.map(agent => ({
+				...agent,
+				status: 'incomplete',
+				unfinished: ['src/viewer.ts: close()'],
+			})),
+			incomplete: {
+				reason: 'limits.tokens_per_run (100) reached',
+				unfinished: [
+					'reviewer: src/viewer.ts: close()',
+					'validation of 2 finding(s)',
+				],
+			},
+		}
+		const text = formatReviewText(report)
+		expect(text).toContain(fixture.bugs[0]?.title ?? '')
+		expect(text).toContain(
+			'validator: not run, token budget spent; kept unvalidated'
+		)
+		expect(text).not.toContain('no answer after two attempts')
+		expect(text).toContain('reviewer  incomplete')
+		expect(text).toContain('; did not finish: src/viewer.ts: close()')
+		expect(text).toContain(
+			'Incomplete run, limits.tokens_per_run (100) reached; the findings above are partial. Did not finish:\n  reviewer: src/viewer.ts: close()\n  validation of 2 finding(s)'
+		)
+		expect(decodeJson(formatReviewJson(report))).toMatchObject({
+			bugs: report.bugs,
+			agents: report.agents,
+			incomplete: report.incomplete,
+			endpointError: null,
+		})
+	})
 	test('text shows bug provenance, validation, severity re-rating and suggestions', () => {
 		const report = reviewReport()
 		for (const text of [
@@ -76,6 +120,7 @@ describe('review formatters', () => {
 			wallMillis: report.wallMillis,
 			blocking: true,
 			endpointError: null,
+			incomplete: null,
 		})
 	})
 	test('endpoint error is present in both formats', () => {
@@ -142,6 +187,7 @@ describe('review formatters', () => {
 			'Degraded run',
 			'Agents:',
 			'Tokens:',
+			'Incomplete run',
 		])
 			expect(text).not.toContain(part)
 	})

@@ -65,6 +65,61 @@ function finderResult(
 }
 
 layer(Layer.empty)('ReviewService', test => {
+	test.effect(
+		'keeps finished findings and reports unfinished units and skipped validations together',
+		() =>
+			Effect.gen(function* () {
+				const found = finding()
+				const done = finderResult([found])
+				const report = yield* ReviewService.use(review =>
+					review.review(reviewRequest())
+				).pipe(
+					Effect.provide(
+						reviewLayer(
+							() =>
+								Effect.succeed({
+									...done,
+									report: {
+										...done.report,
+										status: 'incomplete',
+										units: 2,
+										unfinished: ['src/viewer.ts: close()'],
+									},
+								}),
+							() =>
+								Effect.succeed({
+									status: 'unvalidated',
+									error: 'token budget spent',
+									budgetSpent: true,
+								})
+						)
+					)
+				)
+				expect(report.bugs).toMatchObject([
+					{
+						title: found.title,
+						fingerprint: found.fingerprint,
+						validation: { status: 'unvalidated', budgetSpent: true },
+					},
+				])
+				expect(report.agents).toMatchObject([
+					{
+						status: 'incomplete',
+						findings: 1,
+						unfinished: ['src/viewer.ts: close()'],
+					},
+				])
+				expect(report.incomplete).toEqual({
+					reason: `limits.tokens_per_run (${LIMITS.tokensPerRun}) reached`,
+					unfinished: [
+						'reviewer: src/viewer.ts: close()',
+						'validation of 1 finding(s)',
+					],
+				})
+				expect(report.endpointError).toBeUndefined()
+				expect(report.blocking).toBe(true)
+			})
+	)
 	test.effect('validates merged bugs once and never validates nits', () =>
 		Effect.gen(function* () {
 			const validateSpy = vi.fn<ValidatorService['Service']['validate']>(() =>
@@ -158,12 +213,14 @@ layer(Layer.empty)('ReviewService', test => {
 										[
 											finding({
 												kind: 'nit',
+												path: `src/${run.name}.ts`,
 												agents: [run.name],
 												severity: 'high',
 												title: `${run.name} convention`,
 											}),
 											finding({
 												kind: 'nit',
+												path: `src/${run.name}.ts`,
 												agents: [run.name],
 												severity: 'low',
 												line: 50,

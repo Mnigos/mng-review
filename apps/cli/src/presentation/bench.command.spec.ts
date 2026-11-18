@@ -76,6 +76,7 @@ const decodeReport = Schema.decodeUnknownSync(
 					wallMillis: Schema.Number,
 					skipped: Schema.optionalKey(Schema.String),
 					endpointError: Schema.optionalKey(Schema.String),
+					incomplete: Schema.optionalKey(Schema.Array(Schema.String)),
 				})
 			),
 			totals: Schema.Struct({
@@ -186,6 +187,36 @@ function benchRepo() {
 afterEach(cleanupRepos)
 
 layer(Layer.empty, { excludeTestServices: true })('bench CLI', test => {
+	test.effect(
+		'case reports retain scored findings when the token budget stops validation',
+		() =>
+			Effect.gen(function* () {
+				const repo = benchRepo()
+				repo.write(
+					'.mng/review.yml',
+					RULES.replace('tokens_per_run: 100', 'tokens_per_run: 10')
+				)
+				const invocation = yield* runReviewCli(
+					repo.root,
+					['bench', BENCH_FILE, '--json'],
+					OPTIONS
+				)
+				expect(invocation.outcome._tag).toBe('Success')
+				const report = decodeReport(invocation.out)
+				for (const entry of report.cases) {
+					expect(entry.incomplete).toEqual(['validation of 2 finding(s)'])
+					expect(entry.endpointError).toBeUndefined()
+				}
+				expect(report.cases[0]?.score.found).toHaveLength(1)
+				expect(report.cases[1]?.score.noise).toHaveLength(1)
+				expect(invocation.requests).toHaveLength(4)
+				expect(
+					invocation.calls.some(call =>
+						call.tools?.some(tool => tool.function.name === 'report_verdict')
+					)
+				).toBe(false)
+			})
+	)
 	test.effect(
 		'runs both changes, scores kept bugs, and succeeds regardless of missed and noisy findings',
 		() =>
