@@ -32,6 +32,12 @@ export const verdictSchema = Schema.Struct({
 	premise: Schema.optionalKey(Schema.NullOr(Schema.Trim)),
 	/** Which part of the reported severity's criterion fails; required to lower the severity. */
 	lowered_because: Schema.optionalKey(Schema.NullOr(Schema.Trim)),
+	/** Numbers of the listed nearby findings that describe the same defect as this one. */
+	same_root_cause: Schema.optionalKey(
+		Schema.NullOr(
+			Schema.Array(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)))
+		)
+	),
 }).check(
 	Schema.makeFilter(
 		answer =>

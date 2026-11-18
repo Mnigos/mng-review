@@ -1,9 +1,12 @@
 import {
+	absorb,
 	CONTEXT_PATH,
 	type Finding,
 	formatSchemaIssue,
 	getEvidencePaths,
+	getNearGroups,
 	getValidatorChoices,
+	isNearDuplicate,
 	MEMORY_PATH,
 	type ReviewConfig,
 	toValidation,
@@ -71,6 +74,26 @@ export interface ValidatorContext {
 	readonly rules: Pick<Rules, 'context' | 'memory'>
 	/** Tokens each validation may spend; without it only `limits.tokens_per_run` stops it. */
 	readonly budget?: LoopBudget
+	/** Other finders' reports near this finding; the validator names those with its root cause. */
+	readonly nearby?: readonly Finding[]
+}
+
+/** A validation and the nearby findings (by index) the validator judged to be the same defect. */
+interface Judged {
+	readonly validation: Validation
+	readonly sameAs: readonly number[]
+}
+
+/** A finding and the near duplicates merged into it. */
+interface Merged {
+	readonly finding: Finding
+	readonly absorbed: readonly Finding[]
+}
+
+/** Validated bugs, near duplicates the validator judged to be one defect merged; index by index. */
+export interface ValidatedBugs {
+	readonly bugs: readonly Finding[]
+	readonly validations: readonly Validation[]
 }
 
 /** Reads a `report_verdict` answer; the schema's reasons go back to the model. */
@@ -94,6 +117,10 @@ export class ValidatorService extends Context.Service<
 			finding: Finding,
 			context: ValidatorContext
 		) => Effect.Effect<Validation>
+		readonly validateAll: (
+			bugs: readonly Finding[],
+			context: ValidatorContext
+		) => Effect.Effect<ValidatedBugs>
 	}
 >()('mng-review/ValidatorService') {}
 
@@ -156,8 +183,23 @@ export const ValidatorServiceLive = Layer.effect(
 					evidence: finding.evidence,
 					...(finding.suggestion ? { suggestion: finding.suggestion } : {}),
 				}
+				const nearby = (context.nearby ?? []).map((other, index) => ({
+					number: index + 1,
+					line: other.line,
+					title: other.title,
+					trigger: other.trigger,
+					impact: other.impact,
+				}))
 				return [
 					fenceData('The finding to check:', JSON.stringify(reported, null, 2)),
+					...(nearby.length > 0
+						? [
+								fenceData(
+									`Nearby findings from other reviewers in ${finding.path}:`,
+									JSON.stringify(nearby, null, 2)
+								),
+							]
+						: []),
 					fenceData(
 						`${finding.path} at head, lines around the finding (read more with read_file):`,
 						truncateText(file, MAX_FILE_CHARS)
@@ -201,7 +243,7 @@ export const ValidatorServiceLive = Layer.effect(
 						...(context.budget ? { budget: context.budget } : {}),
 					})
 					.pipe(Effect.tapError(error => Ref.set(lastError, error)))
-				return toValidation({
+				const validation = toValidation({
 					verdict: value,
 					reported: finding.severity,
 					model: model.model,
@@ -209,9 +251,13 @@ export const ValidatorServiceLive = Layer.effect(
 						value.verdict !== 'reject' ||
 						(yield* hasRepositoryEvidence(value, context)),
 				})
+				return {
+					validation,
+					sameAs: (value.same_root_cause ?? []).map(number => number - 1),
+				} satisfies Judged
 			})
 
-		const validate = Effect.fn('ValidatorService.validate')(function* (
+		const judge = Effect.fn('ValidatorService.judge')(function* (
 			finding: Finding,
 			context: ValidatorContext
 		) {
@@ -226,18 +272,80 @@ export const ValidatorServiceLive = Layer.effect(
 				}),
 				Effect.catch(error =>
 					Ref.get(lastError).pipe(
-						Effect.map((last): Validation => ({
-							status: 'unvalidated',
-							error: last?.message ?? error.message,
-							...(last?._tag === 'TokenBudgetError'
-								? { budgetSpent: true }
-								: {}),
+						Effect.map((last): Judged => ({
+							validation: {
+								status: 'unvalidated',
+								error: last?.message ?? error.message,
+								...(last?._tag === 'TokenBudgetError'
+									? { budgetSpent: true }
+									: {}),
+							},
+							sameAs: [],
 						}))
 					)
 				)
 			)
 		})
 
-		return { validate }
+		const validate = (finding: Finding, context: ValidatorContext) =>
+			judge(finding, context).pipe(Effect.map(judged => judged.validation))
+
+		/**
+		 * Validates one group of near duplicates in order: the first is validated with the others as
+		 * nearby findings, the ones its validator names as the same defect merge into it unvalidated,
+		 * and the rest go on the same way. A rejected or unvalidated finding merges nothing.
+		 */
+		const validateGroup = (
+			group: readonly Finding[],
+			context: ValidatorContext
+		): Effect.Effect<readonly (readonly [Finding, Validation])[]> =>
+			Effect.gen(function* () {
+				const [first, ...rest] = group
+				if (!first) return []
+				const nearby = rest.filter(other => isNearDuplicate(first, other))
+				const { validation, sameAs } = yield* judge(first, {
+					...context,
+					nearby,
+				})
+				const kept =
+					validation.status === 'confirmed' ||
+					validation.status === 'unverified'
+				const named = kept
+					? nearby.filter((_, index) => sameAs.includes(index))
+					: []
+				const merged = named.reduce<Merged>(
+					(state, other) =>
+						isNearDuplicate(state.finding, other)
+							? {
+									finding: absorb(state.finding, other),
+									absorbed: [...state.absorbed, other],
+								}
+							: state,
+					{ finding: first, absorbed: [] }
+				)
+				const left = rest.filter(other => !merged.absorbed.includes(other))
+				return [
+					[merged.finding, validation] as const,
+					...(yield* validateGroup(left, context)),
+				]
+			})
+
+		const validateAll = Effect.fn('ValidatorService.validateAll')(function* (
+			bugs: readonly Finding[],
+			context: ValidatorContext
+		) {
+			const groups = yield* Effect.forEach(
+				getNearGroups(bugs),
+				group => validateGroup(group, context),
+				{ concurrency: 'unbounded' }
+			)
+			const pairs = groups.flat()
+			return {
+				bugs: pairs.map(([bug]) => bug),
+				validations: pairs.map(([, validation]) => validation),
+			} satisfies ValidatedBugs
+		})
+
+		return { validate, validateAll }
 	})
 )
