@@ -63,3 +63,16 @@ test('folds real multi-file, multi-hunk diffs without confusing added headers or
 	expect(state.lines.get('src/b.ts')?.has(3)).toBe(false)
 	expect(createCommentableLinesFold().initial.lines.size).toBe(0)
 })
+
+test('reads the path of a file whose name has a space without the tab git adds', () => {
+	const repo = createRepo()
+	repo.write('src/a b.ts', 'one\ntwo')
+	const base = repo.commit()
+	repo.write('src/a b.ts', 'one\nchanged')
+	const head = repo.commit()
+	const diff = repo.git('diff', '--no-ext-diff', '--no-textconv', base, head)
+	const fold = createCommentableLinesFold()
+	const state = diff.split('\n').reduce(fold.step, fold.initial)
+	expect([...state.lines.keys()]).toEqual(['src/a b.ts'])
+	expect([...(state.lines.get('src/a b.ts') ?? [])]).toEqual([1, 2])
+})

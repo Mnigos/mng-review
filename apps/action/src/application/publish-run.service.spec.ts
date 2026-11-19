@@ -42,7 +42,7 @@ function setup(fail = false) {
 			? Effect.fail(
 					new GitHubApiError({ operation: 'status', reason: 'offline' })
 				)
-			: Effect.void
+			: Effect.succeed(true)
 	)
 	const service = PublishRunServiceLive.pipe(
 		Layer.provide(
@@ -93,6 +93,7 @@ layer(Layer.empty)('PublishRunService', test => {
 			).toEqual({
 				status: 'status-only',
 				reason: 'Reviewer offline: no endpoint. Nothing was reviewed.',
+				posted: true,
 			})
 			expect(fixture.publishSpy).not.toHaveBeenCalled()
 			expect(fixture.publishStatusSpy).toHaveBeenCalledExactlyOnceWith({

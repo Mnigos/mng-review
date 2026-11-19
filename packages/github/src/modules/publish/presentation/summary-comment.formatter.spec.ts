@@ -248,6 +248,23 @@ describe('formatSummaryComment', () => {
 				.find(line => line.startsWith('|') && line.includes('octocat')) ?? ''
 		expect(row.match(/(?<!\\)\|/gu)).toHaveLength(4)
 	})
+	test('says how many findings outside the diff the summary leaves out', () => {
+		const fixture = input()
+		const [finding] = fixture.report.bugs
+		expect(finding).toBeDefined()
+		if (!finding) return
+		const outside = Array.from({ length: 30 }, () => ({
+			finding,
+			kind: 'bug' as const,
+			place: 'summary' as const,
+		}))
+		const text = formatSummaryComment({
+			...fixture,
+			plan: { ...fixture.plan, threads: outside },
+		})
+		expect(text).toContain('Not in the diff (30):')
+		expect(text).toContain('- and 5 more')
+	})
 	test('hundreds of rejected findings stay bounded and preserve verdict and marker', () => {
 		const fixture = input()
 		const [rejected] = fixture.report.rejected
