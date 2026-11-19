@@ -19,6 +19,7 @@ import {
 	getSeverityRank,
 	isAtLeast,
 	getTitleWords,
+	getWordCoverage,
 } from './finding.helper'
 
 describe('finding identity and merging', () => {
@@ -618,5 +619,35 @@ describe('judged duplicate candidates', () => {
 				.suggestion
 		).toBe('Keep this suggestion.')
 		expect(first.evidence).toEqual(['shared', 'first'])
+	})
+})
+
+describe('getWordCoverage', () => {
+	test.each(['', 'the and or', '123 456'])(
+		'empty reference content %j gives zero',
+		reference => {
+			expect(getWordCoverage(reference, 'invoice retry')).toBe(0)
+		}
+	)
+	test('excludes stop words from both texts', () => {
+		expect(getWordCoverage('the invoice and retry', 'an invoice or the')).toBe(
+			1 / 2
+		)
+		expect(getWordCoverage('invoice retry', 'the and or')).toBe(0)
+	})
+	test('stems plurals and counts distinct content words once', () => {
+		expect(getWordCoverage('Invoices invoice retries', 'invoice')).toBe(1 / 2)
+		expect(getWordCoverage('invoices charges', 'invoice charge')).toBe(1)
+	})
+	test('uses the reference denominator even when the other text is shorter', () => {
+		const summary =
+			'invoice retry duplicate balance ledger timeout cache session'
+		const short = 'invoice retry duplicate'
+		expect(getWordCoverage(summary, short)).toBe(3 / 8)
+		expect(getWordCoverage(short, summary)).toBe(1)
+	})
+	test('returns zero when the other text is empty or disjoint', () => {
+		expect(getWordCoverage('invoice retry', '')).toBe(0)
+		expect(getWordCoverage('invoice retry', 'cache session')).toBe(0)
 	})
 })

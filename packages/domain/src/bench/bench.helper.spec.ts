@@ -2,7 +2,7 @@ import { layer } from '@effect/vitest'
 import { Effect, Layer } from 'effect'
 import { ConfigError } from '../config/config.errors'
 import { SAME_DESCRIPTION_OVERLAP } from '../findings/finding.constants'
-import { getWordOverlap } from '../findings/finding.helper'
+import { getWordCoverage } from '../findings/finding.helper'
 import {
 	benchFinding as finding,
 	expectedFinding as expected,
@@ -331,7 +331,7 @@ describe('toBenchFinding', () => {
 		'missing',
 		'rejected',
 	] as const)(
-		'maps %s validation and retains the scored fields only',
+		'maps %s validation and retains every kept finding field',
 		status => {
 			const validation =
 				status === 'missing'
@@ -350,18 +350,19 @@ describe('toBenchFinding', () => {
 										} as const),
 						}
 			const bug = {
-				...domainFinding(),
+				...domainFinding({
+					evidence: ['src/billing/charge.ts:2 retry'],
+					suggestion: 'Deduplicate invoice retries.',
+					agents: ['reviewer', 'billing'],
+					models: ['model-a', 'model-b'],
+				}),
+				reportedSeverity: 'medium',
 				severity: 'high',
 				placement: 'summary',
 				...validation,
 			} as const satisfies KeptFinding
 			expect(toBenchFinding(bug)).toEqual({
-				path: bug.path,
-				line: bug.line,
-				title: bug.title,
-				severity: bug.severity,
-				trigger: bug.trigger,
-				impact: bug.impact,
+				...bug,
 				status:
 					status === 'missing' || status === 'rejected'
 						? 'unvalidated'
@@ -372,6 +373,32 @@ describe('toBenchFinding', () => {
 })
 
 describe('near matches', () => {
+	test('rejects a short finding that covers only three of eight summary words', () => {
+		const entry = expected({
+			summary: 'invoice retry duplicate balance ledger timeout cache session',
+		})
+		const bug = finding({
+			path: 'src/billing/refund.ts',
+			title: 'invoice',
+			trigger: 'retry',
+			impact: 'duplicate',
+		})
+		expect(
+			getWordCoverage(
+				entry.summary,
+				[bug.title, bug.trigger, bug.impact].join(' ')
+			)
+		).toBe(3 / 8)
+		expect(
+			toCaseScore({ expected: [entry], findings: [bug], lineWindow: 0 })
+		).toEqual({
+			found: [],
+			missed: [entry],
+			near: [],
+			noise: [],
+			unmatched: [bug],
+		})
+	})
 	test('accepts exactly the description-overlap threshold using title, trigger and impact together', () => {
 		const entry = expected({ summary: 'invoice retry duplicate balance' })
 		const bug = finding({
@@ -382,7 +409,7 @@ describe('near matches', () => {
 			impact: 'ledger timeout',
 		})
 		expect(
-			getWordOverlap(
+			getWordCoverage(
 				entry.summary,
 				[bug.title, bug.trigger, bug.impact].join(' ')
 			)
@@ -411,7 +438,7 @@ describe('near matches', () => {
 			const entry = expected({ summary: 'invoice retry duplicate balance' })
 			const bug = finding({ path: 'src/billing/refund.ts', ...description })
 			expect(
-				getWordOverlap(
+				getWordCoverage(
 					entry.summary,
 					[bug.title, bug.trigger, bug.impact].join(' ')
 				)
