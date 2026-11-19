@@ -123,3 +123,21 @@ export const createdSchema = Schema.Struct({ id: Schema.Number })
 
 /** GitHub's error body. */
 export const errorBodySchema = Schema.Struct({ message: Schema.String })
+
+/** An open pull request as the sweep needs it: its number and head commit. */
+export const openPullRequestSchema = Schema.Struct({
+	number: Schema.Number,
+	head: Schema.Struct({ sha: Schema.String }),
+})
+export type OpenPullRequest = typeof openPullRequestSchema.Type
+
+/** One commit status with who set it. */
+export const commitStatusSchema = Schema.Struct({
+	state: Schema.String,
+	context: Schema.String,
+	description: Schema.NullOr(Schema.String),
+	creator: Schema.NullOr(
+		Schema.Struct({ login: Schema.String, type: Schema.String })
+	),
+})
+export type CommitStatus = typeof commitStatusSchema.Type

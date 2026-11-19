@@ -21,7 +21,8 @@ packages/
     src/modules/           routing, review, validation, init, bench
   github/                  @mng-review/github: the GitHub API and publishing, used only by the action
     src/platform/          config, the REST and GraphQL client on effect/http
-    src/modules/publish/   which findings get a thread, comment and summary text, posting
+    src/modules/publish/   which findings get a thread, comment and summary text, posting, re-check
+    src/modules/status/    check runs, the MNG Review commit status, the status sweep
 tooling/
   typescript-config/       @mng-review/typescript-config: the strict tsconfig preset
   oxlint-plugin/           @mng-review/oxlint-plugin: the mng-review/* lint rules
@@ -68,7 +69,7 @@ Publish (6) runs in the workflow's publish mode through `packages/github`; conve
 
 `.github/workflows/review.yml` checks out the caller's base commit (history only; the head commit is fetched as objects, never checked out) and this repository at the workflow's own commit, installs it with `--production --ignore-scripts`, optionally joins a tailnet, and runs `apps/action/src/main.ts` in the caller's checkout. `ShadowRunService` reads the event, skips forks before anything else, loads `.mng/` from the base commit, applies `skip`, asks `EndpointProbeService` for `GET /models`, and reviews base..head through `ReviewRunService`. The summary formatter escapes every text that came from a model or the repository. The result formatter writes the same outcome as JSON, with the review document `mng-review --json` prints (`toReviewJson` in the engine), and the workflow uploads it as the `mng-review-result` artifact. Nothing is posted. ADR 0006.
 
-`review-publish.yml` runs the same steps (both use `.github/actions/review`) with `pull-requests: write` and the job token. In publish mode (`MNG_REVIEW_MODE=publish`) `PublishRunService` hands a reviewed outcome to `PublishService` in `packages/github`: it reads the bot's threads and sticky summary through `GitHubApiService`, folds `git diff` of merge base..head into the lines GitHub accepts comments on, plans the threads with the pure helpers in `modules/publish/domain` (published findings, duplicates, places), posts them, and edits the summary. A comment someone else edited is no longer the bot's. The GitHub layer is built only in publish mode, so a shadow run never reads a token. ADR 0007.
+`review-publish.yml` runs the same steps (both use `.github/actions/review`) with `pull-requests: write` and the job token. In publish mode (`MNG_REVIEW_MODE=publish`) `PublishRunService` hands a reviewed outcome to `PublishService` in `packages/github`: it reads the bot's threads and sticky summary through `GitHubApiService`, folds `git diff` of merge base..head into the lines GitHub accepts comments on, plans the threads with the pure helpers in `modules/publish/domain` (published findings, duplicates, places), posts them, and edits the summary. Before planning, `ThreadRecheckService` hands the bot's open threads whose file changed to the engine's `RecheckService` (the validator over the change from the thread's commit) and resolves the ones it rejects. `StatusReportService` then writes a check run per agent and the commit status. In publish mode the entry reads the summary's marker before the review, for `limits.max_runs_per_pr` and incremental input. `status-sweep.yml` runs the entry with `MNG_REVIEW_MODE=sweep`, which only refreshes statuses. A comment someone else edited is no longer the bot's. The GitHub layer is built only in publish mode, so a shadow run never reads a token. ADR 0007.
 
 ## Init
 
@@ -93,3 +94,4 @@ Publish (6) runs in the workflow's publish mode through `packages/github`; conve
 | [0005](docs/decisions/0005-unverified-findings.md)             | A third verdict, `unverified`, for findings that rest on a dependency's behaviour |
 | [0006](docs/decisions/0006-ci-shadow-mode.md)                  | `pull_request_target` with the base checked out only; shadow mode posts nothing   |
 | [0007](docs/decisions/0007-publish-mode.md)                    | Publish mode: its own workflow, comments only, marked threads, no duplicates      |
+| [0008](docs/decisions/0008-thread-resolution-and-status.md)    | The bot resolves its fixed threads; the status counts open bug threads            |

@@ -1,6 +1,7 @@
 # Reusable review workflow, publish mode: like review.yml, and it also comments on the pull request
-# as github-actions[bot]: threads for findings and a sticky summary, never an approval. The caller
-# grants pull-requests: write; the two files share their steps in .github/actions/review.
+# as github-actions[bot]: threads for findings, a sticky summary, a check run per agent and the
+# MNG Review commit status, never an approval. The caller grants pull-requests, checks and statuses
+# write; the two files share their steps in .github/actions/review.
 # The caller owns the trigger and the concurrency; see "GitHub Actions" in README.md.
 # Nothing from the caller's repository is installed, built or run: its base commit is checked out
 # only so git can read the change, and the rules come from that base commit.
@@ -42,6 +43,8 @@ on:
 permissions:
   contents: read
   pull-requests: write
+  checks: write
+  statuses: write
 
 jobs:
   review:
@@ -55,6 +58,8 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
+      checks: write
+      statuses: write
     timeout-minutes: ${{ inputs.timeout-minutes }}
     env:
       BASE_SHA: ${{ github.event.pull_request.base.sha }}

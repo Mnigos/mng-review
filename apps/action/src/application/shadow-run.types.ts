@@ -4,16 +4,31 @@ import type { Effect } from 'effect'
 
 /** The pull request a workflow run reviews: its number, the two commits and what the engine sees. */
 export interface PullRequestEvent {
+	/** The event's action, such as `synchronize` or `ready_for_review`. */
+	readonly action?: string
 	readonly number: number
 	readonly baseSha: string
 	readonly headSha: string
 	readonly pr: PullRequestInfo
 }
 
+/** What an earlier run on the pull request left: how many runs there were and the head it reviewed. */
+export interface PriorRun {
+	readonly runs: number
+	readonly head: string
+}
+
 /** What the workflow entry is given: the event's name and how to read its payload, read only for a pull request event. */
 export interface ShadowRunInput {
 	readonly eventName: string
 	readonly readEvent: Effect.Effect<string, ConfigError>
+	/**
+	 * Publish mode only: the earlier runs on the pull request, read before any model call, for
+	 * `limits.max_runs_per_pr` and incremental input. Unset or `undefined`: no earlier run is known.
+	 */
+	readonly readPrior?: (
+		event: PullRequestEvent
+	) => Effect.Effect<PriorRun | undefined>
 }
 
 /** Nothing was reviewed: not a pull request, a fork, or a `skip` rule at the base commit. */

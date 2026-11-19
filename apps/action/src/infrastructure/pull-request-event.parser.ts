@@ -55,6 +55,7 @@ export function parsePullRequestEvent(
 				})
 		),
 		Effect.map(payload => ({
+			...(payload.action === undefined ? {} : { action: payload.action }),
 			number: payload.pull_request.number,
 			baseSha: payload.pull_request.base.sha,
 			headSha: payload.pull_request.head.sha,

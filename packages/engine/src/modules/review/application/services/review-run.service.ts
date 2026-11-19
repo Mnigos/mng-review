@@ -1,11 +1,18 @@
-import type { ConfigError, PullRequestInfo } from '@mng-review/domain'
+import {
+	type ConfigError,
+	type PullRequestInfo,
+	toIncrementalPlan,
+} from '@mng-review/domain'
 import { Clock, Context, Effect, Layer } from 'effect'
 import type { Rules } from '../../../../platform/config/rules.service'
+import { SAFE_DIFF } from '../../../../platform/git/git.constants'
 import type { GitError } from '../../../../platform/git/git.errors'
+import { GitService } from '../../../../platform/git/git.service'
 import {
 	PlanService,
 	PlanServiceLive,
 } from '../../../routing/application/plan.service'
+import type { PlanReport } from '../../../routing/domain/plan-report.types'
 import { makeRouterLayer } from '../../../routing/infrastructure/router.layers'
 import { toEmptyReviewReport } from '../../domain/review-report.helper'
 import type { ReviewReport } from '../../domain/review-report.types'
@@ -24,7 +31,34 @@ export interface ReviewRunRequest {
 	readonly pr: PullRequestInfo
 	/** Set to plan without the router model; the plan names this reason. */
 	readonly routerDisabledReason?: string
+	/**
+	 * The commit an earlier run reviewed. When it is an ancestor of the head, agents with
+	 * `input: incremental` review only the files changed since; otherwise it is ignored.
+	 */
+	readonly since?: string
 }
+
+/**
+ * The plan narrowed to the files changed since an earlier review, when that commit is an ancestor
+ * of the head and differs from it; the plan unchanged otherwise, or when git cannot tell.
+ */
+const toIncrementalReport = Effect.fn('ReviewRunService.toIncrementalReport')(
+	function* (report: PlanReport, since: string | undefined) {
+		const head = report.change.head.commit
+		if (!since || since === head || report.plan.skippedRun) return report
+		const git = yield* GitService
+		const ancestor = yield* git
+			.exec(['merge-base', '--is-ancestor', since, head])
+			.pipe(Effect.option)
+		if (ancestor._tag === 'None' || ancestor.value.exitCode !== 0) return report
+		const changed = yield* git
+			.exec(['diff', '--name-only', '-z', ...SAFE_DIFF, since, head])
+			.pipe(Effect.option)
+		if (changed._tag === 'None' || changed.value.exitCode !== 0) return report
+		const paths = new Set(changed.value.stdout.split('\0').filter(Boolean))
+		return { ...report, plan: toIncrementalPlan(report.plan, paths, since) }
+	}
+)
 
 /**
  * Plans the change and reviews it unless the gate skipped it or nothing is planned. The router and
@@ -42,7 +76,7 @@ export const reviewChange = Effect.fn('ReviewRunService.reviewChange')(
 				? {}
 				: { disabledReason: request.routerDisabledReason }),
 		})
-		const planReport = yield* PlanService.use(service =>
+		const planned = yield* PlanService.use(service =>
 			service.plan({
 				rules,
 				baseRef: request.baseRef,
@@ -50,6 +84,7 @@ export const reviewChange = Effect.fn('ReviewRunService.reviewChange')(
 				pr,
 			})
 		).pipe(Effect.provide(PlanServiceLive.pipe(Layer.provide(routerLayer))))
+		const planReport = yield* toIncrementalReport(planned, request.since)
 		const { plan } = planReport
 		if (plan.skippedRun || plan.runs.length === 0)
 			return toEmptyReviewReport(

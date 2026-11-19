@@ -27,6 +27,8 @@ const headSchema = Schema.Struct({
  * ignored. Title, body and labels are written by the pull request's author and stay untrusted.
  */
 export const pullRequestEventSchema = Schema.Struct({
+	/** `opened`, `synchronize`, `ready_for_review` and so on. */
+	action: Schema.optionalKey(Schema.String),
 	pull_request: Schema.Struct({
 		number: Schema.Number,
 		title: Schema.String,

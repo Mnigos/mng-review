@@ -149,7 +149,7 @@ On a public repository anyone can read the job summary and download the artifact
 
 ### Publish mode
 
-`review-publish.yml` also comments on the pull request as `github-actions[bot]`: one thread per bug with its evidence, unverified findings marked as such, nits in the same review, and a summary comment with the verdict that is edited on every run. A finding already in an open thread is not posted twice. The bot only comments; it never approves or requests changes. It takes the same inputs and secrets as `review.yml`; grant the job `pull-requests: write`:
+`review-publish.yml` also comments on the pull request as `github-actions[bot]`: one thread per bug with its evidence, unverified findings marked as such, nits in the same review, and a summary comment with the verdict that is edited on every run. A finding already in an open thread is not posted twice. The bot only comments; it never approves or requests changes. It takes the same inputs and secrets as `review.yml`; grant the job `pull-requests`, `checks` and `statuses` write:
 
 ```yaml
 jobs:
@@ -158,12 +158,36 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
+      checks: write
+      statuses: write
     secrets:
       llm-url: ${{ secrets.MNG_REVIEW_LLM_URL }}
       llm-key: ${{ secrets.MNG_REVIEW_LLM_KEY }}
 ```
 
-`review.yml` never gets write access, whatever the caller grants. ADR 0007 records the rules.
+`review.yml` never gets write access, whatever the caller grants. On every run the bot checks its open threads again whose file changed and resolves the ones the validator no longer finds, writes a check run per agent, and sets the commit status `MNG Review`: `failure` while bug threads of the bot are open, `success` when none are, `error` when the run did not finish. Require that status in branch protection to gate merges on it. After `limits.max_runs_per_pr` runs, pushes are no longer reviewed. Agents with `input: incremental` review only what changed since the last run. ADRs 0007 and 0008 record the rules.
+
+To count threads resolved by hand without waiting for the next push, run the status sweep on a schedule. It runs no model and needs no secret:
+
+```yaml
+# .github/workflows/mng-review-sweep.yml
+name: MNG Review status sweep
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  sweep:
+    uses: Mnigos/mng-review/.github/workflows/status-sweep.yml@<commit-sha>
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: write
+```
 
 ### Exit codes
 
