@@ -1,4 +1,5 @@
 import { REDACTED, toReviewJson } from '@mng-review/engine'
+import { Predicate } from 'effect'
 import type {
 	PullRequestEvent,
 	ShadowOutcome,
@@ -61,11 +62,35 @@ function toRedacted(text: string, masked: readonly string[]): string {
 		.reduce((out, value) => out.replaceAll(value, REDACTED), text)
 }
 
+/** Maps keyed by names from the configuration (model names), whose keys are data, not schema. */
+const DATA_KEYED_MAPS = new Set(['tokens', 'tokenSources'])
+
+/**
+ * A JSON value with the masked values replaced in strings and in the keys of the maps keyed by
+ * model names. Schema keys, numbers, booleans and arrays pass through; `JSON.stringify` visits
+ * the members.
+ */
+function toRedactedValue(
+	key: string,
+	value: unknown,
+	masked: readonly string[]
+): unknown {
+	if (Predicate.isString(value)) return toRedacted(value, masked)
+	if (!DATA_KEYED_MAPS.has(key) || !Predicate.isObject(value)) return value
+	return Object.fromEntries(
+		Object.entries(value).map(([name, member]) => [
+			toRedacted(name, masked),
+			member,
+		])
+	)
+}
+
 /**
  * The result file the workflow uploads as an artifact, so real runs can be analysed through the
  * API: the status, the run and pull request, wall time, tokens per model and, for a reviewed run,
  * the document `mng-review --json` prints. Every string in it has the endpoint's masked values
- * replaced; numbers and other values stay as they are.
+ * replaced, in values and in the model names that key the token maps; numbers and other values
+ * stay as they are.
  */
 export function formatResult(
 	outcome: ShadowOutcome,
@@ -88,8 +113,7 @@ export function formatResult(
 			wallMillis: context.wallMillis,
 			...toOutcomeJson(outcome),
 		},
-		(_key, value: unknown) =>
-			typeof value === 'string' ? toRedacted(value, masked) : value,
+		(key, value: unknown) => toRedactedValue(key, value, masked),
 		2
 	)
 }

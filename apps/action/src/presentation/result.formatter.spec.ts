@@ -263,14 +263,7 @@ describe('formatResult', () => {
 					...CONTEXT,
 					wallMillis: RESULT_VERSION,
 					runAttempt: String(RESULT_VERSION),
-					masked: [
-						'',
-						String(RESULT_VERSION),
-						'true',
-						'version',
-						'draft',
-						'model-b',
-					],
+					masked: ['', String(RESULT_VERSION), 'true', 'version', 'draft'],
 				}
 			)
 		)
@@ -283,11 +276,38 @@ describe('formatResult', () => {
 			source: null,
 			review: {
 				blocking: report.blocking,
-				agents: report.agents.map(agent => ({ ...agent, model: REDACTED })),
+				agents: report.agents,
 			},
 		})
 		expect(json).toHaveProperty('tokens', report.tokens)
 		expect(json).toHaveProperty('review.tokens', report.tokens)
+	})
+
+	test('redacts a masked value inside model names that key the token maps', () => {
+		const host = 'inference.example.com'
+		const model = `${host}/model-b`
+		const usage = {
+			calls: 1,
+			inputTokens: 3,
+			cachedInputTokens: 0,
+			outputTokens: 2,
+			reasoningTokens: 0,
+			totalTokens: 5,
+		}
+		const text = formatResult(
+			{
+				status: 'reviewed',
+				event: EVENT,
+				report: { ...reviewReport(), tokens: { [model]: usage } },
+			},
+			{ ...CONTEXT, masked: [host] }
+		)
+		expect(text).not.toContain(host)
+		expect(decodeJson(text)).toMatchObject({
+			version: RESULT_VERSION,
+			tokens: { [`${REDACTED}/model-b`]: usage },
+			review: { tokens: { [`${REDACTED}/model-b`]: usage } },
+		})
 	})
 
 	for (const outcome of UNREVIEWED)
