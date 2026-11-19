@@ -9,9 +9,9 @@ apps/
   cli/                     @mng-review/cli: the mng-review binary
     src/main.ts            the only file that runs effects (BunRuntime.runMain)
     src/presentation/      effect/cli commands and output formatters
-  action/                  @mng-review/action: the GitHub workflow entry, shadow mode
+  action/                  @mng-review/action: the GitHub workflow entry, shadow and publish mode
     src/main.ts            the only other file that runs effects
-    src/application/       the shadow run: event, gate, probe, review
+    src/application/       the shadow run (event, gate, probe, review) and the publish run
     src/infrastructure/    event parser, runner client (summary, masks)
     src/presentation/      job summary formatters
 packages/
@@ -19,6 +19,9 @@ packages/
   engine/                  @mng-review/engine: Effect services
     src/platform/          config, llm, git
     src/modules/           routing, review, validation, init, bench
+  github/                  @mng-review/github: the GitHub API and publishing, used only by the action
+    src/platform/          config, the REST and GraphQL client on effect/http
+    src/modules/publish/   which findings get a thread, comment and summary text, posting
 tooling/
   typescript-config/       @mng-review/typescript-config: the strict tsconfig preset
   oxlint-plugin/           @mng-review/oxlint-plugin: the mng-review/* lint rules
@@ -27,18 +30,19 @@ docs/
   decisions/               architecture decision records
 ```
 
-`packages/github` (threads, summary, checks and commands) arrives with stage 4. `.github/workflows/review.yml` is the reusable workflow that runs `apps/action`.
+`.github/workflows/review.yml` is the reusable workflow that runs `apps/action`.
 
 ## Package layering
 
-Dependencies point one way: `apps/cli` and `apps/action` → `packages/engine` → `packages/domain`. A package never imports an app, and an app never imports another app.
+Dependencies point one way: `apps/cli` and `apps/action` → `packages/engine` → `packages/domain`, and `apps/action` → `packages/github` → `packages/engine`. A package never imports an app, and an app never imports another app.
 
 | Package  | May use                                                                   | Never                                     |
 | -------- | ------------------------------------------------------------------------- | ----------------------------------------- |
 | `domain` | `effect` (`Schema`, `Data`, `Predicate`, pure modules)                    | services, layers, I/O, a runtime          |
 | `engine` | `domain`, `effect` and its `cli`-free modules, `@effect/ai-openai-compat` | running effects, printing to the terminal |
 | `cli`    | `engine`, `domain`, `effect/cli`, `@effect/platform-bun`                  | review logic                              |
-| `action` | `engine`, `domain`, `@effect/platform-bun`                                | review logic, posting to GitHub (stage 4) |
+| `github` | `engine`, `domain`, `effect/http`                                         | review logic, running effects             |
+| `action` | `engine`, `domain`, `github`, `@effect/platform-bun`                      | review logic, GitHub API calls of its own |
 
 Inside `engine`, `platform/` holds what every module shares and `modules/<module>/` holds one stage of the pipeline, split into `application/` (services, ports, model tools) and `infrastructure/` (adapters and parsers). ADR 0001 records the layout and ADR 0003 the file names.
 
@@ -58,11 +62,13 @@ One run of `mng-review --base <ref>` goes through these steps. Numbers match the
 
 Steps 2 to 8 run through `ReviewRunService` in `modules/review`, so the CLI, the benchmark and the workflow entry review a change the same way.
 
-Publish (6), converse (7) and learn (8) run on GitHub and arrive with `packages/github`.
+Publish (6) runs in the workflow's publish mode through `packages/github`; converse (7) and learn (8) follow.
 
-## GitHub workflow, shadow mode
+## GitHub workflows, shadow and publish mode
 
 `.github/workflows/review.yml` checks out the caller's base commit (history only; the head commit is fetched as objects, never checked out) and this repository at the workflow's own commit, installs it with `--production --ignore-scripts`, optionally joins a tailnet, and runs `apps/action/src/main.ts` in the caller's checkout. `ShadowRunService` reads the event, skips forks before anything else, loads `.mng/` from the base commit, applies `skip`, asks `EndpointProbeService` for `GET /models`, and reviews base..head through `ReviewRunService`. The summary formatter escapes every text that came from a model or the repository. The result formatter writes the same outcome as JSON, with the review document `mng-review --json` prints (`toReviewJson` in the engine), and the workflow uploads it as the `mng-review-result` artifact. Nothing is posted. ADR 0006.
+
+`review-publish.yml` runs the same steps (both use `.github/actions/review`) with `pull-requests: write` and the job token. In publish mode (`MNG_REVIEW_MODE=publish`) `PublishRunService` hands a reviewed outcome to `PublishService` in `packages/github`: it reads the bot's threads and sticky summary through `GitHubApiService`, folds `git diff` of merge base..head into the lines GitHub accepts comments on, plans the threads with the pure helpers in `modules/publish/domain` (published findings, duplicates, places), posts them, and edits the summary. A comment someone else edited is no longer the bot's. The GitHub layer is built only in publish mode, so a shadow run never reads a token. ADR 0007.
 
 ## Init
 
@@ -86,3 +92,4 @@ Publish (6), converse (7) and learn (8) run on GitHub and arrive with `packages/
 | [0004](docs/decisions/0004-domain-text-and-hash-primitives.md) | Effect's `Yaml` and `Glob` and `node:crypto` in `domain`; no third-party parsers  |
 | [0005](docs/decisions/0005-unverified-findings.md)             | A third verdict, `unverified`, for findings that rest on a dependency's behaviour |
 | [0006](docs/decisions/0006-ci-shadow-mode.md)                  | `pull_request_target` with the base checked out only; shadow mode posts nothing   |
+| [0007](docs/decisions/0007-publish-mode.md)                    | Publish mode: its own workflow, comments only, marked threads, no duplicates      |

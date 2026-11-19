@@ -1,5 +1,6 @@
 # Reusable review workflow, shadow mode: the result goes to the job summary and to the
-# mng-review-result artifact, and nothing is posted.
+# mng-review-result artifact, and nothing is posted. review-publish.yml also comments on the pull
+# request; the two files share their steps in .github/actions/review and differ in permissions.
 # The caller owns the trigger and the concurrency; see "GitHub Actions" in README.md.
 # Nothing from the caller's repository is installed, built or run: its base commit is checked out
 # only so git can read the change, and the rules come from that base commit.
@@ -51,10 +52,10 @@ jobs:
       (github.event_name == 'pull_request' || github.event_name == 'pull_request_target') &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ${{ inputs.runner }}
-    timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
       contents: read
       pull-requests: read
+    timeout-minutes: ${{ inputs.timeout-minutes }}
     env:
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -97,55 +98,15 @@ jobs:
           path: .mng-review-engine
           persist-credentials: false
 
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version-file: .mng-review-engine/package.json
-          no-cache: true
-
-      - name: Install MNG Review
-        working-directory: .mng-review-engine
-        run: bun install --frozen-lockfile --production --ignore-scripts
-
-      - name: Join the tailnet
-        if: inputs.tailscale
-        uses: tailscale/github-action@064b10558093f38325e838ddea35486bdc6b1d5c # v4.4.0
-        with:
-          oauth-client-id: ${{ secrets.tailscale-oauth-client-id }}
-          oauth-secret: ${{ secrets.tailscale-oauth-secret }}
-          tags: ${{ inputs.tailscale-tags }}
-          # No inbound connections to the runner.
-          args: --shields-up
-          use-cache: 'false'
-          log-mode: quiet
-
-      # The action always passes --accept-routes, and the CLI refuses the flag twice, so routes go off here.
-      - name: Turn off subnet routes
-        if: inputs.tailscale
-        run: sudo tailscale set --accept-routes=false
-
-      # Bun starts in the engine's directory and loads no .env file, so no bunfig.toml, .env or
-      # tsconfig.json of the reviewed repository is read; git runs in MNG_REVIEW_REPO_DIR.
+      # Keep the steps above in step with review-publish.yml; the rest is shared.
       - name: Review
-        working-directory: .mng-review-engine
-        env:
-          MNG_REVIEW_LLM_URL: ${{ secrets.llm-url }}
-          MNG_REVIEW_LLM_KEY: ${{ secrets.llm-key }}
-          MNG_REVIEW_ENGINE_COMMIT: ${{ job.workflow_sha }}
-          MNG_REVIEW_REPO_DIR: ${{ github.workspace }}/repo
-          MNG_REVIEW_RESULT_PATH: ${{ runner.temp }}/mng-review-result/result.json
-        run: |
-          mkdir -p "$RUNNER_TEMP/mng-review-result"
-          bun --no-env-file apps/action/src/main.ts
-
-      # The review result as JSON, for analysis through the API; the job summary is not exposed there.
-      # Also after a failed review step, which still writes the file for an invalid configuration.
-      - name: Upload the result
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        uses: ./.mng-review-engine/.github/actions/review
         with:
-          name: mng-review-result
-          path: ${{ runner.temp }}/mng-review-result/result.json
-          retention-days: 14
-          if-no-files-found: warn
-          overwrite: true
+          mode: shadow
+          engine-commit: ${{ job.workflow_sha }}
+          llm-url: ${{ secrets.llm-url }}
+          llm-key: ${{ secrets.llm-key }}
+          tailscale: ${{ inputs.tailscale }}
+          tailscale-tags: ${{ inputs.tailscale-tags }}
+          tailscale-oauth-client-id: ${{ secrets.tailscale-oauth-client-id }}
+          tailscale-oauth-secret: ${{ secrets.tailscale-oauth-secret }}

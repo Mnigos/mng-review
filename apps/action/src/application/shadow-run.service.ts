@@ -53,7 +53,7 @@ export const ShadowRunServiceLive = Layer.effect(
 				headRef: event.headSha,
 				pr: event.pr,
 			})
-			return { status: 'reviewed', event, report } as const
+			return { status: 'reviewed', event, report, rules } as const
 		})
 
 		const run = Effect.fn('ShadowRunService.run')(function* (

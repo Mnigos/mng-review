@@ -1,0 +1,33 @@
+import { countSchema, severitySchema } from '@mng-review/domain'
+import { Schema } from 'effect'
+import { MARKER_VERSION } from './publish.constants'
+
+export const THREAD_KINDS = ['bug', 'unverified', 'nit'] as const
+
+/**
+ * The hidden marker at the end of each finding comment: who reported what, so a later run finds
+ * its own threads and never posts a finding twice.
+ */
+export const findingMarkerSchema = Schema.Struct({
+	v: Schema.Literal(MARKER_VERSION),
+	id: Schema.String,
+	kind: Schema.Literals(THREAD_KINDS),
+	agent: Schema.String,
+	severity: severitySchema,
+	fingerprint: Schema.String,
+	title: Schema.String,
+	/** The finding's line at the commit it was posted on, also for a comment on the file. */
+	line: Schema.Int,
+	/** The engine commit that posted it; `null` outside the workflow. */
+	engine: Schema.NullOr(Schema.String),
+})
+export type FindingMarker = typeof findingMarkerSchema.Type
+export type ThreadKind = FindingMarker['kind']
+
+/** The hidden marker of the sticky summary: how many runs reviewed the pull request, and the last head. */
+export const summaryMarkerSchema = Schema.Struct({
+	v: Schema.Literal(MARKER_VERSION),
+	runs: countSchema,
+	head: Schema.String,
+})
+export type SummaryMarker = typeof summaryMarkerSchema.Type

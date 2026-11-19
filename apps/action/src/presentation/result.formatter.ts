@@ -1,5 +1,6 @@
 import { REDACTED, toReviewJson } from '@mng-review/engine'
 import { Predicate } from 'effect'
+import type { PublishReport } from '../application/publish-run.service'
 import type {
 	PullRequestEvent,
 	ShadowOutcome,
@@ -16,10 +17,12 @@ export interface ResultContext {
 	readonly eventName: string
 	readonly runId: string | undefined
 	readonly runAttempt: string | undefined
-	/** From the start of the entry to the outcome, endpoint probe and rules included. */
+	/** From the start of the entry to the outcome, endpoint probe, rules and publishing included. */
 	readonly wallMillis: number
 	/** The endpoint's masked values, replaced in every string of the file. */
 	readonly masked: readonly string[]
+	/** Set in publish mode: what was posted. */
+	readonly publish?: PublishReport
 }
 
 /** The pull request's number, commits and the metadata the plan used; no title or body. */
@@ -117,6 +120,8 @@ export function formatResult(
 			},
 			pullRequest: toPullRequestJson(event),
 			wallMillis: context.wallMillis,
+			mode: context.publish ? 'publish' : 'shadow',
+			publish: context.publish ?? null,
 			...toOutcomeJson(outcome),
 		},
 		(key, value: unknown) => toRedactedValue(key, value, masked),

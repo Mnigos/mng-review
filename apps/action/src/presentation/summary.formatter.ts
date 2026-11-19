@@ -6,7 +6,13 @@ import {
 	type PlannedRun,
 } from '@mng-review/domain'
 import type { AgentRunReport, ReviewReport } from '@mng-review/engine'
-import { escapeMarkdown, toCodeSpan, toLogText } from '@mng-review/github'
+import {
+	escapeMarkdown,
+	getAgentReport,
+	toCodeSpan,
+	toLogText,
+} from '@mng-review/github'
+import type { PublishReport } from '../application/publish-run.service'
 import type {
 	PullRequestEvent,
 	ReviewedRun,
@@ -15,6 +21,7 @@ import type {
 import { toFindingsLines } from './findings-summary.formatter'
 
 export const SUMMARY_TITLE = '## MNG Review (shadow mode)'
+export const PUBLISH_SUMMARY_TITLE = '## MNG Review (publish mode)'
 const SHORT_SHA_LENGTH = 8
 const MILLIS_PER_SECOND = 1000
 const PERCENT = 100
@@ -23,6 +30,8 @@ const PERCENT = 100
 export interface SummaryContext {
 	/** The commit of the engine that ran, from the reusable workflow. */
 	readonly engineCommit: string | undefined
+	/** Set in publish mode: what was posted on the pull request. */
+	readonly publish?: PublishReport
 }
 
 /** Milliseconds as seconds with one decimal. */
@@ -80,22 +89,6 @@ function toSelectedBy(run: PlannedRun): string {
 	if (run.selectedBy === 'router')
 		return `router: ${escapeMarkdown(run.reason ?? '')}`
 	return run.selectedBy === 'paths' ? 'path rules' : 'always'
-}
-
-/**
- * The report of one planned run, by name. A deep run plans the main reviewer once per reviewer
- * model; then the planned model picks the report: its own model, or the model it fell back from.
- */
-function getAgentReport(
-	run: PlannedRun,
-	agents: readonly AgentRunReport[]
-): AgentRunReport | undefined {
-	const named = agents.filter(agent => agent.name === run.name)
-	if (named.length === 1) return named[0]
-	return (
-		named.find(agent => agent.fellBackFrom === run.model) ??
-		named.find(agent => !agent.fellBackFrom && agent.model === run.model)
-	)
 }
 
 /** One table row per planned run, with how its run went. */
@@ -205,9 +198,10 @@ function toTokenLines(report: ReviewReport): string[] {
 }
 
 /** The body of a reviewed run: verdict, plan, findings, what did not finish and tokens. */
-function toReviewedLines(outcome: ReviewedRun): string[] {
+function toReviewedLines(outcome: ReviewedRun, posted: boolean): string[] {
 	const { report, event } = outcome
-	const verdict = `**Verdict, not posted:** ${escapeMarkdown(toVerdictLine(report))}`
+	const label = posted ? 'This run' : 'Verdict, not posted'
+	const verdict = `**${label}:** ${escapeMarkdown(toVerdictLine(report))}`
 	if (
 		report.planReport.plan.skippedRun ||
 		report.planReport.plan.runs.length === 0
@@ -227,7 +221,7 @@ function toReviewedLines(outcome: ReviewedRun): string[] {
 }
 
 /** The body for every outcome. */
-function toOutcomeLines(outcome: ShadowOutcome): string[] {
+function toOutcomeLines(outcome: ShadowOutcome, posted: boolean): string[] {
 	if (outcome.status === 'skipped')
 		return [`Skipped: ${escapeMarkdown(outcome.reason)}.`]
 	if (outcome.status === 'offline')
@@ -240,7 +234,23 @@ function toOutcomeLines(outcome: ShadowOutcome): string[] {
 		]
 	if (outcome.status === 'failed')
 		return [`**Failed:** ${escapeMarkdown(outcome.reason)}`]
-	return toReviewedLines(outcome)
+	return toReviewedLines(outcome, posted)
+}
+
+/** What publish mode did on the pull request, in one line of plain text. */
+function toPublishText(report: PublishReport): string {
+	if (report.status === 'failed') return `publishing failed: ${report.reason}`
+	if (report.status === 'not-published')
+		return `nothing posted: ${report.reason}`
+	if (report.status === 'status-only')
+		return 'posted the status to the summary comment'
+	const { result } = report
+	return `posted run ${result.run}: verdict ${result.verdict}, ${result.openBugs} open bug thread(s); new threads: ${result.onLine} on lines, ${result.onFile} on files, ${result.inSummary} in the summary comment, ${result.unposted} not posted; ${result.repeated} already had a thread`
+}
+
+/** The publish line of the job log; a GitHub message in it can never act as a workflow command. */
+export function formatPublishLogLine(report: PublishReport): string {
+	return toLogText(`mng-review: ${toPublishText(report)}`)
 }
 
 /**
@@ -254,10 +264,19 @@ export function formatSummary(
 	const engine = context.engineCommit
 		? `Engine ${toShortSha(context.engineCommit)}.`
 		: 'Engine commit unknown.'
+	if (context.publish)
+		return [
+			PUBLISH_SUMMARY_TITLE,
+			'',
+			...toOutcomeLines(outcome, true),
+			'',
+			`Publish mode: ${escapeMarkdown(toPublishText(context.publish))}. ${engine}`,
+			'',
+		].join('\n')
 	return [
 		SUMMARY_TITLE,
 		'',
-		...toOutcomeLines(outcome),
+		...toOutcomeLines(outcome, false),
 		'',
 		`Shadow mode: nothing is posted to the pull request. ${engine}`,
 		'',

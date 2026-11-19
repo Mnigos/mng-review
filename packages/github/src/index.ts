@@ -1,4 +1,14 @@
-/** The GitHub package: the API on effect/http and the Markdown escaping for what is posted. */
+/** The GitHub package: the API on effect/http and publishing a review on its pull request. */
+export * from './modules/publish/application/publish.service'
+export * from './modules/publish/domain/bot-thread.helper'
+export * from './modules/publish/domain/diff-hunk.parser'
+export * from './modules/publish/domain/publish-marker.parser'
+export * from './modules/publish/domain/publish-marker.schema'
+export * from './modules/publish/domain/publish-plan.helper'
+export * from './modules/publish/domain/publish.constants'
+export type * from './modules/publish/domain/publish.types'
+export * from './modules/publish/presentation/summary-comment.formatter'
+export * from './modules/publish/presentation/thread-comment.formatter'
 export * from './platform/github-api.constants'
 export * from './platform/github-api.schema'
 export * from './platform/github-api.service'

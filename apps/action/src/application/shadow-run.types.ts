@@ -1,5 +1,5 @@
 import type { ConfigError, PullRequestInfo } from '@mng-review/domain'
-import type { ReviewReport } from '@mng-review/engine'
+import type { ReviewReport, Rules } from '@mng-review/engine'
 import type { Effect } from 'effect'
 
 /** The pull request a workflow run reviews: its number, the two commits and what the engine sees. */
@@ -51,6 +51,8 @@ export interface ReviewedRun {
 	readonly status: 'reviewed'
 	readonly event: PullRequestEvent
 	readonly report: ReviewReport
+	/** The rules at the base commit, which publishing applies to the findings. */
+	readonly rules: Rules
 }
 
 export type ShadowOutcome =
