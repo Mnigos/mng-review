@@ -35,6 +35,8 @@ export const summaryMarkerSchema = Schema.Struct({
 	v: Schema.Literal(MARKER_VERSION),
 	runs: countSchema,
 	head: Schema.optionalKey(Schema.String),
+	/** Whether the last run finished; the status sweep reads it, never the status text. */
+	finished: Schema.optionalKey(Schema.Boolean),
 })
 export type SummaryMarker = typeof summaryMarkerSchema.Type
 
