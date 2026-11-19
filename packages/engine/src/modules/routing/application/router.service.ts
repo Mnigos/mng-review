@@ -29,7 +29,8 @@ export interface RouterRequest {
 }
 
 /**
- * Asks the router model for agents to add and a risk level. It never fails: a diff that cannot be
+ * Asks the router model for agents to add and the risk signals of the change; the risk level
+ * follows from the signals by rule. It never fails: a diff that cannot be
  * read, an endpoint error or an unusable answer comes back as a `failed` report, and the plan goes
  * on with path selection and risk `normal`.
  */
@@ -85,11 +86,10 @@ export const RouterServiceLive = Layer.effect(
 			const routeCall = response.toolCalls.find(
 				call => call.name === RouteTool.name
 			)
-			return yield* parseRouterAnswer(
-				routeCall?.params,
-				response.text,
-				request.candidates
-			)
+			return yield* parseRouterAnswer(routeCall?.params, response.text, {
+				candidates: request.candidates,
+				paths: request.files.map(file => file.path),
+			})
 		})
 
 		const route = Effect.fn('RouterService.route')(function* (

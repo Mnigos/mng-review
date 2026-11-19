@@ -40,6 +40,13 @@ function toRouterText({ plan }: PlanReport): string {
 	return `${router.status}${router.detail ? `: ${router.detail}` : ''}`
 }
 
+/** One line per risk signal the router gave: category, file and reason. */
+function toSignalLines({ plan }: PlanReport): string[] {
+	return (plan.router.signals ?? []).map(
+		signal => `  ${signal.category}  ${signal.path}: ${signal.reason}`
+	)
+}
+
 /** Header lines: the refs and the changed files, with the ones left out. */
 function toChangeLines({ change, rulesSource }: PlanReport): string[] {
 	const left = change.files.filter(file => file.skipped)
@@ -100,6 +107,7 @@ function toPlanBodyLines(report: PlanReport): string[] {
 		...toShapeLines(plan),
 		`Depth: ${plan.depth} (${plan.depthSource})`,
 		`Router: ${toRouterText(report)}`,
+		...toSignalLines(report),
 		'',
 		`Will run (${plan.runs.length}):`,
 		...(plan.runs.length === 0 ? ['  (nothing)'] : plan.runs.map(toRunLine)),

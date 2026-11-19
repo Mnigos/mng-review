@@ -1,9 +1,13 @@
 import {
 	decideOutcome,
+	getFocusPaths,
+	getFocusShare,
 	getPlannedTokens,
+	getReviewableFiles,
 	toRunAllowances,
 	hasBlockingBug,
 	mergeFindings,
+	type PlannedRun,
 	type PullRequestInfo,
 } from '@mng-review/domain'
 import { Clock, Context, Effect, Layer } from 'effect'
@@ -32,7 +36,9 @@ export interface ReviewRequest {
  * Finds, validates and places the findings of a planned run. The run plans to spend
  * `limits.tokens_by_depth` for its depth (never more than `limits.tokens_per_run`):
  * `FINDER_TOKEN_SHARE` of it split over the finders by weight, the rest over the validations. At
- * deep depth under `risk_paths`, reviewer models after the first review only the risky units. The main reviewer and the selected
+ * deep depth under `risk_paths`, or when the router's signals made the change risky, reviewer models
+ * after the first review only the units of those files and plan tokens for their changed lines
+ * (`getFocusShare`). The main reviewer and the selected
  * agents run at once; bug findings with the same root cause merge, each merged bug is validated
  * once, then the severity floor and the nit caps place them. A dropped model is reported; with no
  * reviewer model left after finding, or a finder that failed at the endpoint, the report carries
@@ -68,21 +74,35 @@ export const ReviewServiceLive = Layer.effect(
 			const runTokens = Math.floor(plannedTokens * FINDER_TOKEN_SHARE)
 			const allowances = toRunAllowances(plan.runs, runTokens)
 			const [firstReviewer] = reviewerRuns
+			const focusPaths = getFocusPaths(plan)
+			const focusShare = getFocusShare(
+				getReviewableFiles(change.files),
+				focusPaths
+			)
+			/** A later reviewer model at deep depth reviews only the focus files. */
+			const isNarrowed = (run: PlannedRun) =>
+				run.role === 'reviewer' &&
+				run !== firstReviewer &&
+				focusPaths.length > 0
 			const results = yield* Effect.forEach(
 				plan.runs,
-				(run, index) =>
-					finder.run(run, {
+				(run, index) => {
+					const allowance = allowances[index] ?? 0
+					const narrowed = isNarrowed(run)
+					return finder.run(run, {
 						scope,
 						rules,
 						fanOut: plan.depth === 'deep',
 						fallback: run.role === 'reviewer' ? reviewerFallback : reviewers,
-						tokens: { allowance: allowances[index] ?? 0, runTokens },
-						...(run.role === 'reviewer' &&
-						run !== firstReviewer &&
-						plan.riskPathHits.length > 0
-							? { unitPaths: plan.riskPathHits }
-							: {}),
-					}),
+						tokens: {
+							allowance: narrowed
+								? Math.floor(allowance * focusShare)
+								: allowance,
+							runTokens,
+						},
+						...(narrowed ? { unitPaths: focusPaths } : {}),
+					})
+				},
 				{ concurrency: 'unbounded' }
 			)
 			const found = results.flatMap(result => result.findings)
