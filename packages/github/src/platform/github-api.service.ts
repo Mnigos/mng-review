@@ -15,19 +15,17 @@ import {
 } from 'effect/http'
 import {
 	API_VERSION,
-	MAX_PAGES,
-	PAGE_SIZE,
 	PULL_REQUEST_COMMENTS_QUERY,
-	READ_RETRIES,
-	READ_RETRY,
+	REPLY_TO_THREAD_MUTATION,
 	REQUEST_TIMEOUT,
+	RESOLVE_THREAD_MUTATION,
 	REVIEW_THREADS_QUERY,
-	SERVER_ERROR_STATUS,
 } from './github-api.constants'
+import { collect, getGraphqlErrors, read } from './github-api.helper'
 import {
-	type ConnectionPage,
 	createdSchema,
 	errorBodySchema,
+	mutationAnswerSchema,
 	type PullRequestComment,
 	pullRequestCommentsAnswerSchema,
 	type ReviewThread,
@@ -84,81 +82,16 @@ export class GitHubApiService extends Context.Service<
 			commentId: number,
 			body: string
 		) => Effect.Effect<void, GitHubApiError>
+		/** Replies in a review thread by its GraphQL node id. */
+		readonly replyToThread: (
+			threadId: string,
+			body: string
+		) => Effect.Effect<void, GitHubApiError>
+		readonly resolveThread: (
+			threadId: string
+		) => Effect.Effect<void, GitHubApiError>
 	}
 >()('mng-review/GitHubApiService') {}
-
-/** True for a failure worth reading again: no answer, or a 5xx. */
-function isTransient(error: GitHubApiError): boolean {
-	return error.status === undefined || error.status >= SERVER_ERROR_STATUS
-}
-
-/** A read with retries on transient failures. */
-function read<TValue>(
-	effect: Effect.Effect<TValue, GitHubApiError>
-): Effect.Effect<TValue, GitHubApiError> {
-	return effect.pipe(
-		Effect.retry({
-			schedule: READ_RETRY,
-			times: READ_RETRIES,
-			while: isTransient,
-		})
-	)
-}
-
-/** The answer's GraphQL errors joined, or `undefined` when it has none. */
-function getGraphqlErrors(
-	errors: readonly { readonly message: string }[] | undefined
-): string | undefined {
-	if (!errors || errors.length === 0) return undefined
-	return errors.map(error => error.message).join('; ')
-}
-
-/**
- * Every node of a connection, page by page. A missing pull request or more than `MAX_PAGES`
- * pages fails, so a partial list is never taken for the whole; nodes GitHub could not resolve
- * are left out.
- */
-function collect<TNode>(
-	operation: string,
-	fetchPage: (
-		cursor: string | null
-	) => Effect.Effect<ConnectionPage<TNode> | undefined, GitHubApiError>,
-	cursor: string | null,
-	page: number
-): Effect.Effect<readonly TNode[], GitHubApiError> {
-	return fetchPage(cursor).pipe(
-		Effect.flatMap(connection => {
-			if (!connection)
-				return Effect.fail(
-					new GitHubApiError({
-						operation,
-						reason:
-							'the repository or pull request is not visible to the token',
-					})
-				)
-			const nodes = connection.nodes.filter(Predicate.isNotNull)
-			const { hasNextPage, endCursor } = connection.pageInfo
-			if (!hasNextPage) return Effect.succeed(nodes)
-			if (!endCursor)
-				return Effect.fail(
-					new GitHubApiError({
-						operation,
-						reason: 'more pages without a cursor',
-					})
-				)
-			if (page + 1 >= MAX_PAGES)
-				return Effect.fail(
-					new GitHubApiError({
-						operation,
-						reason: `more than ${MAX_PAGES * PAGE_SIZE} entries`,
-					})
-				)
-			return collect(operation, fetchPage, endCursor, page + 1).pipe(
-				Effect.map(rest => [...nodes, ...rest])
-			)
-		})
-	)
-}
 
 export const GitHubApiServiceLive = Layer.effect(
 	GitHubApiService,
@@ -237,8 +170,8 @@ export const GitHubApiServiceLive = Layer.effect(
 				})
 			)
 
-		/** A GraphQL query; errors beside data, or no data, fail the read. */
-		const query = <
+		/** A GraphQL request, sent once; errors beside data fail it. */
+		const graphql = <
 			TAnswer extends {
 				readonly errors?: readonly { readonly message: string }[] | undefined
 			},
@@ -248,14 +181,12 @@ export const GitHubApiServiceLive = Layer.effect(
 			variables: Record<string, unknown>,
 			schema: Schema.Decoder<TAnswer>
 		): Effect.Effect<TAnswer, GitHubApiError> =>
-			read(
-				sendJson(
-					operation,
-					HttpClientRequest.post(config.graphqlUrl).pipe(
-						HttpClientRequest.bodyJsonUnsafe({ query: text, variables })
-					),
-					schema
-				)
+			sendJson(
+				operation,
+				HttpClientRequest.post(config.graphqlUrl).pipe(
+					HttpClientRequest.bodyJsonUnsafe({ query: text, variables })
+				),
+				schema
 			).pipe(
 				Effect.flatMap(answer => {
 					const errors = getGraphqlErrors(answer.errors)
@@ -266,6 +197,19 @@ export const GitHubApiServiceLive = Layer.effect(
 							)
 				})
 			)
+
+		/** A GraphQL query, retried like every read. */
+		const query = <
+			TAnswer extends {
+				readonly errors?: readonly { readonly message: string }[] | undefined
+			},
+		>(
+			operation: string,
+			text: string,
+			variables: Record<string, unknown>,
+			schema: Schema.Decoder<TAnswer>
+		): Effect.Effect<TAnswer, GitHubApiError> =>
+			read(graphql(operation, text, variables, schema))
 
 		/** The variables every pull request query takes. */
 		const toVariables = (pullNumber: number, cursor: string | null) => ({
@@ -386,7 +330,31 @@ export const GitHubApiServiceLive = Layer.effect(
 			}
 		)
 
+		const replyToThread = Effect.fn('GitHubApiService.replyToThread')(
+			function* (threadId: string, body: string) {
+				yield* graphql(
+					'replyToThread',
+					REPLY_TO_THREAD_MUTATION,
+					{ thread: threadId, body },
+					mutationAnswerSchema
+				)
+			}
+		)
+
+		const resolveThread = Effect.fn('GitHubApiService.resolveThread')(
+			function* (threadId: string) {
+				yield* graphql(
+					'resolveThread',
+					RESOLVE_THREAD_MUTATION,
+					{ thread: threadId },
+					mutationAnswerSchema
+				)
+			}
+		)
+
 		return {
+			replyToThread,
+			resolveThread,
 			listReviewThreads,
 			listComments,
 			createReview,

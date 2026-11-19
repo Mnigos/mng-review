@@ -112,6 +112,12 @@ export const pullRequestCommentsAnswerSchema = Schema.Struct({
 export type PullRequestCommentsAnswer =
 	typeof pullRequestCommentsAnswerSchema.Type
 
+/** The answer to a mutation: GitHub's errors, if any; the data is not needed. */
+export const mutationAnswerSchema = Schema.Struct({
+	errors: graphqlErrorsSchema,
+})
+export type MutationAnswer = typeof mutationAnswerSchema.Type
+
 /** What a create call answers with that the caller needs: the new object's id. */
 export const createdSchema = Schema.Struct({ id: Schema.Number })
 

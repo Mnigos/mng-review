@@ -2,6 +2,8 @@ import { Option, Schema } from 'effect'
 import {
 	type FindingMarker,
 	findingMarkerSchema,
+	type ReplyMarker,
+	replyMarkerSchema,
 	type SummaryMarker,
 	summaryMarkerSchema,
 } from './publish-marker.schema'
@@ -9,7 +11,7 @@ import { MARKER_PREFIX } from './publish.constants'
 
 /** The marker comment that ends a body: `<!-- mng-review:<name> <json> -->`, its JSON on one line. */
 const MARKER_PATTERN = new RegExp(
-	String.raw`<!-- ${MARKER_PREFIX}(finding|summary) (\{[^\n]*\}) -->\s*$`,
+	String.raw`<!-- ${MARKER_PREFIX}(finding|summary|reply) (\{[^\n]*\}) -->\s*$`,
 	'u'
 )
 const decodeFinding = Schema.decodeUnknownOption(
@@ -18,12 +20,15 @@ const decodeFinding = Schema.decodeUnknownOption(
 const decodeSummary = Schema.decodeUnknownOption(
 	Schema.fromJsonString(summaryMarkerSchema)
 )
+const decodeReply = Schema.decodeUnknownOption(
+	Schema.fromJsonString(replyMarkerSchema)
+)
+
+/** The kinds of hidden marker the bot writes. */
+type MarkerName = 'finding' | 'summary' | 'reply'
 
 /** The JSON of the marker of that name that ends the body; the bot always writes its marker last. */
-function getLastMarkerJson(
-	body: string,
-	name: 'finding' | 'summary'
-): string | undefined {
+function getLastMarkerJson(body: string, name: MarkerName): string | undefined {
 	const match = MARKER_PATTERN.exec(body)
 	return match?.[1] === name ? match[2] : undefined
 }
@@ -42,4 +47,12 @@ export function parseSummaryMarker(body: string): SummaryMarker | undefined {
 	return json === undefined
 		? undefined
 		: Option.getOrUndefined(decodeSummary(json))
+}
+
+/** The reply marker of a comment body, or `undefined` when it has none or it does not decode. */
+export function parseReplyMarker(body: string): ReplyMarker | undefined {
+	const json = getLastMarkerJson(body, 'reply')
+	return json === undefined
+		? undefined
+		: Option.getOrUndefined(decodeReply(json))
 }

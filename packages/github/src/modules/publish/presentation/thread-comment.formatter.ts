@@ -103,7 +103,7 @@ function toAttribution(finding: KeptFinding): string {
 
 /** The hidden marker: JSON on one line with `<`, `>` and `&` escaped, so it cannot close the comment. */
 export function toMarkerComment(
-	name: 'finding' | 'summary',
+	name: 'finding' | 'summary' | 'reply',
 	data: object
 ): string {
 	const json = JSON.stringify(data)
@@ -128,6 +128,8 @@ export function toFindingMarker(
 		fingerprint: finding.fingerprint,
 		title: toShort(finding.title, MAX_TITLE_CHARS),
 		line: finding.line,
+		trigger: finding.trigger,
+		impact: finding.impact,
 		engine: links.engineCommit ?? null,
 	}
 }
@@ -196,4 +198,18 @@ export function toKindLabel(kind: ThreadKind, severity: Severity): string {
 	if (kind === 'nit') return 'Nit'
 	if (kind === 'unverified') return `Unverified, ${severity}`
 	return toSeverityLabel(severity)
+}
+
+/** The bot's reply when it resolves its thread: the head the finding no longer holds at, and why. */
+export function formatResolvedReply(reason: string, links: BlobLinks): string {
+	const head = toCodeSpan(links.head.slice(0, SHORT_SHA_LENGTH))
+	return [
+		`Resolved: this no longer holds at ${head}. ${escapeMarkdown(reason)}`,
+		'',
+		toMarkerComment('reply', {
+			v: MARKER_VERSION,
+			action: 'resolved',
+			commit: links.head,
+		}),
+	].join('\n')
 }

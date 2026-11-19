@@ -40,3 +40,17 @@ export const PULL_REQUEST_COMMENTS_QUERY = `query($owner: String!, $name: String
     }
   }
 }`
+
+/** Replies in a review thread. */
+export const REPLY_TO_THREAD_MUTATION = `mutation($thread: ID!, $body: String!) {
+  addPullRequestReviewThreadReply(input: { pullRequestReviewThreadId: $thread, body: $body }) {
+    comment { databaseId }
+  }
+}`
+
+/** Marks a review thread resolved. */
+export const RESOLVE_THREAD_MUTATION = `mutation($thread: ID!) {
+  resolveReviewThread(input: { threadId: $thread }) {
+    thread { id isResolved }
+  }
+}`

@@ -1,9 +1,4 @@
-import {
-	GitService,
-	type ReviewReport,
-	type Rules,
-	SAFE_DIFF,
-} from '@mng-review/engine'
+import { GitService, type ReviewReport, SAFE_DIFF } from '@mng-review/engine'
 import { Context, Effect, Layer } from 'effect'
 import { GitHubApiService } from '../../../platform/github-api.service'
 import { GitHubConfig } from '../../../platform/github.config'
@@ -37,52 +32,24 @@ import type {
 import {
 	formatStatusComment,
 	formatSummaryComment,
-	type Verdict,
 } from '../presentation/summary-comment.formatter'
 import {
 	type BlobLinks,
 	formatThreadComment,
 } from '../presentation/thread-comment.formatter'
+import type {
+	PublishInput,
+	PublishResult,
+	PublishTarget,
+	StatusInput,
+} from './publish.service.types'
+import { ThreadRecheckService } from './thread-recheck.service'
 
 /** Git reads that run at once when checking resolved threads. */
 const GIT_CONCURRENCY = 4
 const NOT_FOUND_STATUS = 404
 /** Marks each commit line of `git log -L`, so commits are counted without parsing patches. */
 const COMMIT_MARK = 'mng-review-commit:'
-
-/** The pull request and commits a publish call is about. */
-export interface PublishTarget {
-	readonly pullNumber: number
-	/** The reviewed head commit; threads are posted on it. */
-	readonly head: string
-	readonly engineCommit: string | undefined
-}
-
-/** A reviewed run to publish on its pull request. */
-export interface PublishInput extends PublishTarget {
-	readonly report: ReviewReport
-	readonly rules: Pick<Rules, 'config' | 'agents'>
-}
-
-/** A run that did not review, shown in the sticky summary only when there is none yet. */
-export interface StatusInput extends PublishTarget {
-	readonly status: string
-}
-
-/** What a publish run did. */
-export interface PublishResult {
-	readonly verdict: Verdict
-	readonly openBugs: number
-	readonly onLine: number
-	readonly onFile: number
-	readonly inSummary: number
-	/** Threads whose write failed with no answer or a server error; whether GitHub stored them is unknown. */
-	readonly unposted: number
-	readonly repeated: number
-	/** Findings found again under threads resolved without a code change since. */
-	readonly dismissed: number
-	readonly run: number
-}
 
 /**
  * Posts a run's findings on its pull request as the job token's bot: one inline thread per new
@@ -110,6 +77,7 @@ export const PublishServiceLive = Layer.effect(
 		const api = yield* GitHubApiService
 		const git = yield* GitService
 		const config = yield* GitHubConfig
+		const rechecker = yield* ThreadRecheckService
 
 		/** Links to the repository at the target's head. */
 		const toLinks = (target: PublishTarget): BlobLinks => ({
@@ -324,8 +292,28 @@ export const PublishServiceLive = Layer.effect(
 		) {
 			const { report, pullNumber } = input
 			const links = toLinks(input)
-			const threads = (yield* api.listReviewThreads(pullNumber)).flatMap(
+			const found = (yield* api.listReviewThreads(pullNumber)).flatMap(
 				thread => toBotThread(thread) ?? []
+			)
+			const agents = new Map(
+				input.rules.agents.map(agent => [agent.name, agent])
+			)
+			const recheck = yield* rechecker.recheck({
+				pr: input.pr,
+				rules: input.rules,
+				links,
+				threads: found,
+				published: getPublishedFindings({
+					outcome: report,
+					config: input.rules.config,
+					agents,
+				}),
+			})
+			const resolvedIds = new Set(
+				recheck.resolved.map(entry => entry.thread.id)
+			)
+			const threads = found.map(thread =>
+				resolvedIds.has(thread.id) ? { ...thread, resolved: true } : thread
 			)
 			const summary = yield* readSummary(pullNumber)
 			const marker: SummaryMarker = {
@@ -336,11 +324,7 @@ export const PublishServiceLive = Layer.effect(
 			const lines = yield* readCommentableLines(report, input.head)
 			const changedPlaces = yield* getChangedPlaces(input, threads)
 			const planned = planPublish(
-				{
-					outcome: report,
-					config: input.rules.config,
-					agents: new Map(input.rules.agents.map(agent => [agent.name, agent])),
-				},
+				{ outcome: report, config: input.rules.config, agents },
 				{ threads, lines, changedPlaces }
 			)
 			const posted = yield* postThreads(input, planned.threads)
@@ -358,6 +342,8 @@ export const PublishServiceLive = Layer.effect(
 					marker,
 					maxRuns: input.rules.config.limits.max_runs_per_pr,
 					links,
+					resolved: recheck.resolved,
+					tokens: recheck.tokens ?? report.tokens,
 				})
 			)
 			const count = (place: PlannedThread['place']) =>
@@ -371,6 +357,8 @@ export const PublishServiceLive = Layer.effect(
 				unposted: count('unposted'),
 				repeated: plan.repeated.length,
 				dismissed: plan.dismissed.length,
+				rechecked: recheck.checked,
+				resolved: recheck.resolved.length,
 				run: marker.runs,
 			} satisfies PublishResult
 		})

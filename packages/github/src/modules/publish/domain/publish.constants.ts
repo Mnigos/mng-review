@@ -7,3 +7,5 @@ export const MARKER_VERSION = 1
 export const SHORT_SHA_LENGTH = 8
 /** Lines either side of a finding where a change since a resolved thread counts as touching its place. */
 export const THREAD_PLACE_LINES = 6
+/** Open threads the bot checks again in one run, most recently changed first; the rest wait for the next run. */
+export const MAX_RECHECKS = 8

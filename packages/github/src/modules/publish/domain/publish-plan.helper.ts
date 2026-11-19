@@ -72,7 +72,7 @@ function getTitleOverlap(a: string, b: string): number {
  * on a file, or an outdated one whose line left the diff, matches by fingerprint only, since its
  * old line number says nothing about the head.
  */
-function isSameProblem(finding: Finding, thread: BotThread): boolean {
+export function isSameProblem(finding: Finding, thread: BotThread): boolean {
 	if (thread.marker.fingerprint === finding.fingerprint) return true
 	if (thread.onFile || thread.path !== finding.path) return false
 	if (
