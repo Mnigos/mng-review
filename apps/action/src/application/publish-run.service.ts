@@ -10,7 +10,12 @@ export interface PublishContext {
 /** What publishing did with an outcome. */
 export type PublishReport =
 	| { readonly status: 'published'; readonly result: PublishResult }
-	| { readonly status: 'status-only'; readonly reason: string }
+	| {
+			readonly status: 'status-only'
+			readonly reason: string
+			/** `false` when an existing summary comment was kept as it was. */
+			readonly posted: boolean
+	  }
 	| { readonly status: 'not-published'; readonly reason: string }
 	| { readonly status: 'failed'; readonly reason: string }
 
@@ -60,13 +65,13 @@ export const PublishRunServiceLive = Layer.effect(
 			}
 			if (outcome.status === 'offline') {
 				const reason = `Reviewer offline: ${outcome.reason}. Nothing was reviewed.`
-				yield* publisher.publishStatus({
+				const posted = yield* publisher.publishStatus({
 					pullNumber: outcome.event.number,
 					status: reason,
 					head: outcome.event.headSha,
 					engineCommit: context.engineCommit,
 				})
-				return { status: 'status-only', reason } satisfies PublishReport
+				return { status: 'status-only', reason, posted } satisfies PublishReport
 			}
 			return {
 				status: 'not-published',

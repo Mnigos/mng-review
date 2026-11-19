@@ -89,7 +89,8 @@ export interface PublishResult {
  * finding, in one `COMMENT` review, a file comment when the line is outside the diff, and the
  * sticky summary, edited in place. A finding that already has an open thread of the bot, or only
  * resolved ones whose code did not change, is not posted again. A comment the bot wrote but
- * someone else edited no longer counts as the bot's.
+ * someone else edited no longer counts as the bot's. A status summary is written only when none
+ * exists; `publishStatus` answers `false` when it kept one.
  */
 export class PublishService extends Context.Service<
 	PublishService,
@@ -99,7 +100,7 @@ export class PublishService extends Context.Service<
 		) => Effect.Effect<PublishResult, GitHubApiError>
 		readonly publishStatus: (
 			input: StatusInput
-		) => Effect.Effect<void, GitHubApiError>
+		) => Effect.Effect<boolean, GitHubApiError>
 	}
 >()('mng-review/PublishService') {}
 
@@ -149,10 +150,7 @@ export const PublishServiceLive = Layer.effect(
 			)
 		})
 
-		/**
-		 * Head lines of the merge base..head diff that take an inline comment, and every changed
-		 * file that still exists, which takes a file comment. No lines when git fails.
-		 */
+		/** Head lines of the diff that take an inline comment, and every changed file still there. */
 		const readCommentableLines = Effect.fn(
 			'PublishService.readCommentableLines'
 		)(function* (report: ReviewReport, head: string) {
@@ -236,10 +234,7 @@ export const PublishServiceLive = Layer.effect(
 			}
 		)
 
-		/**
-		 * One thread through its fallbacks: its line, then its file, then the summary. Only a 422
-		 * moves it on; any other failure leaves it unposted, since GitHub may have stored it.
-		 */
+		/** One thread through its fallbacks, line, file, summary; only a 422 moves it on. */
 		const postSingle = Effect.fn('PublishService.postSingle')(function* (
 			input: PublishInput,
 			thread: PlannedThread
@@ -384,7 +379,7 @@ export const PublishServiceLive = Layer.effect(
 			input: StatusInput
 		) {
 			const summary = yield* readSummary(input.pullNumber)
-			if (summary) return
+			if (summary) return false
 			yield* api.createIssueComment(
 				input.pullNumber,
 				formatStatusComment(
@@ -393,6 +388,7 @@ export const PublishServiceLive = Layer.effect(
 					toLinks(input)
 				)
 			)
+			return true
 		})
 
 		return { publish, publishStatus }

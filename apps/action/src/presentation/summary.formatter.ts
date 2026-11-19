@@ -246,7 +246,9 @@ function toPublishText(report: PublishReport): string {
 	if (report.status === 'not-published')
 		return `nothing posted: ${report.reason}`
 	if (report.status === 'status-only')
-		return 'posted the status to the summary comment'
+		return report.posted
+			? 'posted the offline status as the summary comment'
+			: 'kept the existing summary comment; the reviewer was offline'
 	const { result } = report
 	return `posted run ${result.run}: verdict ${result.verdict}, ${result.openBugs} open bug thread(s); new threads: ${result.onLine} on lines, ${result.onFile} on files, ${result.inSummary} in the summary comment, ${result.unposted} not posted; ${result.repeated} already had a thread, ${result.dismissed} found again under resolved threads`
 }

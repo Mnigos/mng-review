@@ -11,6 +11,13 @@ import type { PublishedFinding } from '../domain/publish.types'
 /** `path:line` or `path:start-end` at the start of an evidence line, the path made of safe characters only. */
 const EVIDENCE_PLACE = /^([\w./-]+):(\d+)(?:-(\d+))?\b[\s,:;-]*(.*)$/su
 const MAX_EVIDENCE = 6
+/** Characters of a title kept in a comment and its marker. */
+const MAX_TITLE_CHARS = 300
+/**
+ * Characters of a trigger, impact, premise, fix or evidence line kept, so a comment stays far below
+ * GitHub's 65,536 characters even after escaping and with the marker.
+ */
+const MAX_TEXT_CHARS = 3000
 
 /** Where evidence links point: the repository on its server at the reviewed head, and the engine that posts. */
 export interface BlobLinks {
@@ -19,6 +26,11 @@ export interface BlobLinks {
 	readonly name: string
 	readonly head: string
 	readonly engineCommit: string | undefined
+}
+
+/** Text cut to `max` characters, with an ellipsis when cut. */
+function toShort(text: string, max: number): string {
+	return text.length > max ? `${text.slice(0, max)}…` : text
 }
 
 /** A severity with a capital first letter. */
@@ -61,7 +73,7 @@ function toEvidenceItem(evidence: string, links: BlobLinks): string {
 /** The heading line: what kind of finding, its severity and its title. */
 function toHeading(published: PublishedFinding): string {
 	const { finding, kind } = published
-	const title = escapeMarkdown(finding.title)
+	const title = escapeMarkdown(toShort(finding.title, MAX_TITLE_CHARS))
 	if (kind === 'nit') return `**Nit** · ${title}`
 	if (kind === 'unverified')
 		return `**Unverified, ${finding.severity}** · ${title}`
@@ -73,7 +85,7 @@ function toUnverifiedLines(finding: KeptFinding): string[] {
 	if (finding.validation?.status !== 'unverified') return []
 	return [
 		'',
-		`Not blocking: it rests on ${escapeMarkdown(finding.validation.premise)}, which this repository neither shows nor rules out.`,
+		`Not blocking: it rests on ${escapeMarkdown(toShort(finding.validation.premise, MAX_TEXT_CHARS))}, which this repository neither shows nor rules out.`,
 	]
 }
 
@@ -114,7 +126,7 @@ export function toFindingMarker(
 		agent: finding.agents[0] ?? 'reviewer',
 		severity: finding.severity,
 		fingerprint: finding.fingerprint,
-		title: finding.title,
+		title: toShort(finding.title, MAX_TITLE_CHARS),
 		line: finding.line,
 		engine: links.engineCommit ?? null,
 	}
@@ -141,7 +153,7 @@ export function toFindingDetailLines(
 ): string[] {
 	const evidence = getDistinctEvidence(finding.evidence).slice(0, MAX_EVIDENCE)
 	return [
-		`${escapeMarkdown(finding.trigger)} ${escapeMarkdown(finding.impact)}`,
+		`${escapeMarkdown(toShort(finding.trigger, MAX_TEXT_CHARS))} ${escapeMarkdown(toShort(finding.impact, MAX_TEXT_CHARS))}`,
 		...toUnverifiedLines(finding),
 		...toPlaceNote(finding, onFile),
 		...(evidence.length === 0
@@ -149,10 +161,15 @@ export function toFindingDetailLines(
 			: [
 					'',
 					'Evidence:',
-					...evidence.map(line => toEvidenceItem(line, links)),
+					...evidence.map(line =>
+						toEvidenceItem(toShort(line, MAX_TEXT_CHARS), links)
+					),
 				]),
 		...(finding.suggestion
-			? ['', `Fix: ${escapeMarkdown(finding.suggestion)}`]
+			? [
+					'',
+					`Fix: ${escapeMarkdown(toShort(finding.suggestion, MAX_TEXT_CHARS))}`,
+				]
 			: []),
 		'',
 		`<sub>${toAttribution(finding)}</sub>`,

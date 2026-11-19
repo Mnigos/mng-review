@@ -99,8 +99,23 @@ const runAction = Effect.gen(function* () {
 	const env = yield* runnerEnvironmentConfig
 	const mode = yield* modeConfig.pipe(Effect.option)
 	if (mode._tag === 'None') {
-		yield* Console.log(
-			`mng-review: invalid configuration: ${MODE_VARIABLE} must be shadow or publish`
+		const invalid: ShadowOutcome = {
+			status: 'invalid-config',
+			source: MODE_VARIABLE,
+			reason: 'must be shadow or publish',
+		}
+		yield* Console.log(formatLogLine(invalid))
+		yield* writeSummary(
+			env.summaryPath,
+			formatSummary(invalid, { engineCommit: env.engineCommit })
+		)
+		yield* writeResult(
+			env.resultPath,
+			formatResult(invalid, {
+				...env,
+				wallMillis: (yield* Clock.currentTimeMillis) - startedAt,
+				masked,
+			})
 		)
 		return yield* new ActionExit({ code: INVALID_CONFIG_EXIT_CODE })
 	}
