@@ -57,8 +57,14 @@ export function isRefused(error: GitHubApiError): boolean {
  */
 export function getVerdict(report: ReviewReport, openBugs: number): Verdict {
 	if (openBugs > 0) return 'needs fixes'
-	const unfinished = report.agents.some(agent => agent.status !== 'ok')
-	if (report.endpointError || report.incomplete || unfinished)
-		return 'incomplete'
-	return 'ready'
+	return isFinished(report) ? 'ready' : 'incomplete'
+}
+
+/** True when every finder answered: no endpoint failure, no budget stop, no agent that failed or stopped. */
+export function isFinished(report: ReviewReport): boolean {
+	return (
+		!report.endpointError &&
+		!report.incomplete &&
+		report.agents.every(agent => agent.status === 'ok')
+	)
 }

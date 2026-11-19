@@ -31,7 +31,9 @@ export type PublishReport =
 
 /**
  * Publishes an outcome on its pull request: a reviewed run gets threads, the sticky summary, a
- * check run per agent and the `MNG Review` commit status; an offline endpoint only the summary. A skip, an invalid configuration or a git failure posts
+ * check run per agent and the `MNG Review` commit status, also when no finder had to run (the
+ * re-check and the status still matter); an offline endpoint gets the summary when there is none
+ * and an `error` status. A skip, an invalid configuration or a git failure posts
  * nothing; the job summary and the job's exit code report them. A GitHub failure never fails the
  * job: the report says what happened.
  */
@@ -57,13 +59,10 @@ export const PublishRunServiceLive = Layer.effect(
 		) {
 			if (outcome.status === 'reviewed') {
 				const { report, event, rules } = outcome
-				if (
-					report.planReport.plan.skippedRun ||
-					report.planReport.plan.runs.length === 0
-				)
+				if (report.planReport.plan.skippedRun)
 					return {
 						status: 'not-published',
-						reason: report.planReport.plan.skippedRun ?? 'nothing to review',
+						reason: report.planReport.plan.skippedRun,
 					} satisfies PublishReport
 				const result = yield* publisher.publish({
 					pullNumber: event.number,
@@ -89,6 +88,7 @@ export const PublishRunServiceLive = Layer.effect(
 					head: outcome.event.headSha,
 					engineCommit: context.engineCommit,
 				})
+				yield* statuses.reportOffline(outcome.event.headSha)
 				return { status: 'status-only', reason, posted } satisfies PublishReport
 			}
 			return {

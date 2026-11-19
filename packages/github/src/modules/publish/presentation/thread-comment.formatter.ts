@@ -28,6 +28,26 @@ export interface BlobLinks {
 	readonly engineCommit: string | undefined
 }
 
+/** Where the repository is and the commits a publish call is about. */
+export interface LinkTarget {
+	readonly head: string
+	readonly engineCommit: string | undefined
+}
+
+/** Links to the configured repository at the target's head. */
+export function toBlobLinks(
+	repository: Pick<BlobLinks, 'serverUrl' | 'owner' | 'name'>,
+	target: LinkTarget
+): BlobLinks {
+	return {
+		serverUrl: repository.serverUrl,
+		owner: repository.owner,
+		name: repository.name,
+		head: target.head,
+		engineCommit: target.engineCommit,
+	}
+}
+
 /** Text cut to `max` characters, with an ellipsis when cut. */
 function toShort(text: string, max: number): string {
 	return text.length > max ? `${text.slice(0, max)}…` : text

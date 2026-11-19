@@ -27,11 +27,14 @@ export const findingMarkerSchema = Schema.Struct({
 export type FindingMarker = typeof findingMarkerSchema.Type
 export type ThreadKind = FindingMarker['kind']
 
-/** The hidden marker of the sticky summary: how many runs reviewed the pull request, and the last head. */
+/**
+ * The hidden marker of the sticky summary: how many runs reviewed the pull request, and the last
+ * head a run reviewed completely, which incremental input starts from. Unset until a run finishes.
+ */
 export const summaryMarkerSchema = Schema.Struct({
 	v: Schema.Literal(MARKER_VERSION),
 	runs: countSchema,
-	head: Schema.String,
+	head: Schema.optionalKey(Schema.String),
 })
 export type SummaryMarker = typeof summaryMarkerSchema.Type
 

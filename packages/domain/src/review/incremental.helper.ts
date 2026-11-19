@@ -1,12 +1,18 @@
-import type { Plan } from '../routing/review-plan.types'
+import type { Plan, PlannedRun } from '../routing/review-plan.types'
 
 /** Characters of the last reviewed commit named in a skip reason. */
 const SHORT_SHA_LENGTH = 8
 
+/** True for a declared agent with incremental input, the only kind of run narrowed. */
+function isNarrowed(run: PlannedRun): boolean {
+	return run.role === 'agent' && run.input === 'incremental'
+}
+
 /**
- * The plan for a run after an earlier one: every run with `input: incremental` keeps only the files
- * changed since the last reviewed commit, and one with none left is skipped with that commit named.
- * `full_diff` and `metadata` runs keep their files, so they still see the whole change.
+ * The plan for a run after an earlier one: every declared agent with `input: incremental` keeps
+ * only the files changed since the last reviewed commit, and one with none left is skipped with
+ * that commit named. The main reviewer, `full_diff` and `metadata` runs keep their files, so the
+ * whole change is still reviewed once per run.
  */
 export function toIncrementalPlan(
 	plan: Plan,
@@ -14,7 +20,7 @@ export function toIncrementalPlan(
 	since: string
 ): Plan {
 	const narrowed = plan.runs.map(run =>
-		run.input === 'incremental'
+		isNarrowed(run)
 			? { ...run, files: run.files.filter(path => changedSince.has(path)) }
 			: run
 	)
@@ -27,7 +33,7 @@ export function toIncrementalPlan(
 		skips: [
 			...plan.skips,
 			...narrowed
-				.filter(run => run.input === 'incremental' && run.files.length === 0)
+				.filter(run => isNarrowed(run) && run.files.length === 0)
 				.filter(
 					(run, index, all) =>
 						all.findIndex(other => other.name === run.name) === index

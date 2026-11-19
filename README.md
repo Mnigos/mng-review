@@ -165,7 +165,7 @@ jobs:
       llm-key: ${{ secrets.MNG_REVIEW_LLM_KEY }}
 ```
 
-`review.yml` never gets write access, whatever the caller grants. On every run the bot checks its open threads again whose file changed and resolves the ones the validator no longer finds, writes a check run per agent, and sets the commit status `MNG Review`: `failure` while bug threads of the bot are open, `success` when none are, `error` when the run did not finish. Require that status in branch protection to gate merges on it. After `limits.max_runs_per_pr` runs, pushes are no longer reviewed. Agents with `input: incremental` review only what changed since the last run. ADRs 0007 and 0008 record the rules.
+`review.yml` never gets write access, whatever the caller grants. On every run the bot checks its open threads again whose file changed and resolves the ones the validator no longer finds, writes a check run per agent, and sets the commit status `MNG Review`: `failure` while bug threads of the bot are open, `success` when none are, `error` when the run did not finish. Require that status in branch protection to gate merges on it. After `limits.max_runs_per_pr` runs, pushes are no longer reviewed. Declared agents with `input: incremental` review only what changed since the last finished run; the main reviewer always sees the whole change. ADRs 0007 and 0008 record the rules.
 
 To count threads resolved by hand without waiting for the next push, run the status sweep on a schedule. It runs no model and needs no secret:
 

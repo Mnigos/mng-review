@@ -1,6 +1,7 @@
 import type { Finding } from '@mng-review/domain'
 import type { ThreadKind } from './publish-marker.schema'
 import { isSameProblem } from './publish-plan.helper'
+import { MAX_RECHECKS } from './publish.constants'
 import type { BotThread, PublishedFinding } from './publish.types'
 
 /** Thread kinds the bot checks again; a nit is never resolved by the bot. */
@@ -52,4 +53,17 @@ export function toThreadFinding(thread: BotThread): Finding {
 		models: [],
 		fingerprint: marker.fingerprint,
 	}
+}
+
+/**
+ * The candidates starting at a batch that moves with every run, so with more than `MAX_RECHECKS`
+ * of them every one is checked within a few runs instead of the same first batch each time.
+ */
+export function getRotated<TItem>(
+	items: readonly TItem[],
+	rotation: number
+): TItem[] {
+	if (items.length <= MAX_RECHECKS) return [...items]
+	const start = (rotation * MAX_RECHECKS) % items.length
+	return [...items.slice(start), ...items.slice(0, start)]
 }

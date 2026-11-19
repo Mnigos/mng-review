@@ -1,9 +1,10 @@
 import type { ReviewReport } from '@mng-review/engine'
 import { Context, Effect, Layer } from 'effect'
 import { GitHubStatusService } from '../../../platform/github-status.service'
+import { isFinished } from '../../publish/domain/bot-thread.helper'
 import { getAgentReport } from '../../publish/presentation/summary-agents.formatter'
 import type { Verdict } from '../../publish/presentation/summary-comment.formatter'
-import { toCommitStatus } from '../domain/status.helper'
+import { toCommitStatus, UNFINISHED_NOTE } from '../domain/status.helper'
 import {
 	formatCheckSummary,
 	formatCheckTitle,
@@ -25,9 +26,9 @@ export interface StatusReportResult {
 }
 
 /**
- * Writes one finished check run per agent that ran (`success` when it finished clean, `neutral`
- * otherwise, never blocking) and the `MNG Review` commit status from the verdict. A failed write
- * is counted out, never fatal.
+ * Writes one finished check run per agent that ran (`success` when every run of it finished clean,
+ * `neutral` otherwise, never blocking) and the `MNG Review` commit status from the verdict, or
+ * `error` when the reviewer was offline. A failed write is counted out, never fatal.
  */
 export class StatusReportService extends Context.Service<
 	StatusReportService,
@@ -35,6 +36,8 @@ export class StatusReportService extends Context.Service<
 		readonly report: (
 			input: StatusReportInput
 		) => Effect.Effect<StatusReportResult>
+		/** Sets `error` on a head the review could not run on; `false` when the write failed. */
+		readonly reportOffline: (head: string) => Effect.Effect<boolean>
 	}
 >()('mng-review/StatusReportService') {}
 
@@ -55,10 +58,16 @@ export const StatusReportServiceLive = Layer.effect(
 				runs,
 				run => {
 					const agent = getAgentReport(run, input.report.agents)
+					const reports = input.report.agents.filter(
+						entry => entry.name === run.name
+					)
 					const findings = [...input.report.bugs, ...input.report.nits].filter(
 						finding => finding.agents.includes(run.name)
 					)
-					const clean = agent?.status === 'ok' && findings.length === 0
+					const clean =
+						reports.length > 0 &&
+						reports.every(entry => entry.status === 'ok') &&
+						findings.length === 0
 					return github
 						.createCheckRun({
 							headSha: input.head,
@@ -77,7 +86,11 @@ export const StatusReportServiceLive = Layer.effect(
 			const status = yield* github
 				.setStatus({
 					sha: input.head,
-					...toCommitStatus(input.verdict, input.openBugs),
+					...toCommitStatus(
+						input.verdict,
+						input.openBugs,
+						isFinished(input.report)
+					),
 				})
 				.pipe(
 					Effect.as(true),
@@ -89,6 +102,21 @@ export const StatusReportServiceLive = Layer.effect(
 			}
 		})
 
-		return { report }
+		const reportOffline = Effect.fn('StatusReportService.reportOffline')(
+			function* (head: string) {
+				return yield* github
+					.setStatus({
+						sha: head,
+						state: 'error',
+						description: `the reviewer was offline; ${UNFINISHED_NOTE}`,
+					})
+					.pipe(
+						Effect.as(true),
+						Effect.orElseSucceed(() => false)
+					)
+			}
+		)
+
+		return { report, reportOffline }
 	})
 )

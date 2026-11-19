@@ -17,7 +17,9 @@ export interface SweepResult {
 /**
  * Refreshes the `MNG Review` status of open pull requests whose head already carries it, from the
  * bot's open bug threads now, so a thread resolved by hand counts. It runs no model and posts no
- * comment; pull requests the bot never reviewed are left alone.
+ * comment; pull requests the bot never reviewed are left alone. It reads the status again right
+ * before it writes and leaves a newer one alone; a publish run that lands between that read and
+ * the write can still be overwritten until the next sweep or push.
  */
 export class StatusSweepService extends Context.Service<
 	StatusSweepService,
@@ -45,6 +47,9 @@ export const StatusSweepServiceLive = Layer.effect(
 			).length
 			const next = toSweptStatus(previous, openBugs)
 			if (!next) return 'kept' as const
+			// A publish run may have set a newer status while the threads were read.
+			const latest = yield* github.getStatus(head)
+			if (latest?.id !== previous.id) return 'kept' as const
 			yield* github.setStatus({ sha: head, ...next })
 			return 'updated' as const
 		})
