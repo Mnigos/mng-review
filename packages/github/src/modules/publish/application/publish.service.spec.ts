@@ -20,7 +20,7 @@ import {
 	parseSummaryMarker,
 	parseFindingMarker,
 } from '../domain/publish-marker.parser'
-import { BOT_LOGIN } from '../domain/publish.constants'
+import { BOT_LOGIN, SHORT_SHA_LENGTH } from '../domain/publish.constants'
 import { toMarkerComment } from '../presentation/thread-comment.formatter'
 import { PublishService, PublishServiceLive } from './publish.service'
 
@@ -35,7 +35,6 @@ function setup() {
 	const fake = githubApiFake()
 	const dependencies = Layer.mergeAll(
 		fake.api,
-		gitLayer(repo.root),
 		Layer.succeed(GitHubConfig, {
 			serverUrl: 'https://github.com',
 			apiUrl: 'https://api.github.com',
@@ -45,7 +44,9 @@ function setup() {
 			token: Redacted.make('fixture'),
 		})
 	)
-	const publisher = PublishServiceLive.pipe(Layer.provide(dependencies))
+	const publisher = PublishServiceLive.pipe(
+		Layer.provide(Layer.merge(dependencies, gitLayer(repo.root)))
+	)
 	const input = {
 		pullNumber: 17,
 		head,
@@ -73,7 +74,7 @@ function setup() {
 			},
 		},
 	}
-	return { repo, original, base, head, fake, publisher, input }
+	return { repo, original, base, head, fake, dependencies, publisher, input }
 }
 
 /** A known existing bot-owned summary. */
@@ -111,6 +112,7 @@ layer(Layer.empty, { excludeTestServices: true })(
 					expect(yield* publisher.publish(fixture.input)).toMatchObject({
 						onLine: 1,
 						repeated: 0,
+						dismissed: 0,
 						run: 1,
 						verdict: 'needs fixes',
 					})
@@ -124,6 +126,7 @@ layer(Layer.empty, { excludeTestServices: true })(
 						pullNumber: 17,
 						input: {
 							commitId: fixture.head,
+							body: `MNG Review: 1 new comment(s) on \`${fixture.head.slice(0, SHORT_SHA_LENGTH)}\`. The summary is in the conversation.`,
 							comments: [{ path: bug().path, line: bug().line }],
 						},
 					})
@@ -145,31 +148,32 @@ layer(Layer.empty, { excludeTestServices: true })(
 					).toMatchObject({ runs: 2, head: fixture.head })
 				})
 		)
-		test.effect(
-			'a thread edited by another user does not suppress the finding',
-			() =>
-				Effect.gen(function* () {
-					const fixture = setup()
-					const thread = reviewThread()
-					fixture.fake.threads.push({
-						...thread,
-						comments: {
-							...thread.comments,
-							nodes: thread.comments.nodes.map(comment => ({
-								...comment,
-								editor: { login: 'contributor' },
-							})),
-						},
+		for (const login of ['contributor', BOT_LOGIN])
+			test.effect(
+				`a thread edited by User ${login} does not suppress the finding`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = setup()
+						const thread = reviewThread()
+						fixture.fake.threads.push({
+							...thread,
+							comments: {
+								...thread.comments,
+								nodes: thread.comments.nodes.map(comment => ({
+									...comment,
+									editor: { __typename: 'User', login },
+								})),
+							},
+						})
+						const publisher = yield* PublishService.pipe(
+							Effect.provide(fixture.publisher)
+						)
+						expect(yield* publisher.publish(fixture.input)).toMatchObject({
+							onLine: 1,
+							repeated: 0,
+						})
 					})
-					const publisher = yield* PublishService.pipe(
-						Effect.provide(fixture.publisher)
-					)
-					expect(yield* publisher.publish(fixture.input)).toMatchObject({
-						onLine: 1,
-						repeated: 0,
-					})
-				})
-		)
+			)
 		for (const refusals of [0, 1, 2])
 			test.effect(
 				`422 review falls back through ${refusals} single-comment refusals`,
@@ -320,9 +324,120 @@ layer(Layer.empty, { excludeTestServices: true })(
 						yield* publisher.publish({ ...fixture.input, head })
 					).toMatchObject({
 						onLine: scenario === 'untouched' ? 0 : 1,
-						repeated: scenario === 'untouched' ? 1 : 0,
+						repeated: 0,
+						dismissed: scenario === 'untouched' ? 1 : 0,
+						openBugs: scenario === 'untouched' ? 0 : 1,
+						verdict: scenario === 'untouched' ? 'ready' : 'needs fixes',
 					})
 				})
+			)
+		test.effect(
+			'a resolved thread on this head is dismissed without checking git log',
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup()
+					const thread = reviewThread(undefined, { isResolved: true })
+					fixture.fake.threads.push({
+						...thread,
+						comments: {
+							...thread.comments,
+							nodes: thread.comments.nodes.map(comment => ({
+								...comment,
+								originalCommit: { oid: fixture.head },
+							})),
+						},
+					})
+					const git = yield* GitService.pipe(
+						Effect.provide(gitLayer(fixture.repo.root))
+					)
+					const execSpy = vi.spyOn(git, 'exec')
+					const publisher = yield* PublishService.pipe(
+						Effect.provide(
+							PublishServiceLive.pipe(
+								Layer.provide(
+									Layer.merge(
+										fixture.dependencies,
+										Layer.succeed(GitService, git)
+									)
+								)
+							)
+						)
+					)
+					expect(yield* publisher.publish(fixture.input)).toMatchObject({
+						dismissed: 1,
+						repeated: 0,
+						onLine: 0,
+						onFile: 0,
+						inSummary: 0,
+						unposted: 0,
+						openBugs: 0,
+						verdict: 'ready',
+					})
+					expect(execSpy.mock.calls.some(([args]) => args[0] === 'log')).toBe(
+						false
+					)
+					expect(fixture.fake.writes.map(call => call.method)).toEqual([
+						'create',
+					])
+					expect(fixture.fake.comments[0]?.body).toContain(
+						'Found again under threads resolved without a code change, not blocking (1):'
+					)
+				})
+		)
+		for (const trailingNewline of [false, true])
+			test.effect(
+				`a resolved finding past EOF is dismissed when the last lines did not change, trailing newline=${trailingNewline}`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = setup()
+						const text = trailingNewline
+							? fixture.original
+							: fixture.original.trimEnd()
+						fixture.repo.write(bug().path, text)
+						const commit = fixture.repo.commit()
+						const finding = bug({ line: 100 })
+						const thread = reviewThread(
+							{ finding, kind: 'bug' },
+							{ isResolved: true }
+						)
+						fixture.fake.threads.push({
+							...thread,
+							comments: {
+								...thread.comments,
+								nodes: thread.comments.nodes.map(comment => ({
+									...comment,
+									originalCommit: { oid: commit },
+								})),
+							},
+						})
+						fixture.repo.write(
+							bug().path,
+							text.replace('line 10\n', 'changed again 10\n')
+						)
+						const head = fixture.repo.commit()
+						const publisher = yield* PublishService.pipe(
+							Effect.provide(fixture.publisher)
+						)
+						expect(
+							yield* publisher.publish({
+								...fixture.input,
+								head,
+								report: { ...fixture.input.report, bugs: [finding] },
+							})
+						).toMatchObject({
+							dismissed: 1,
+							repeated: 0,
+							onLine: 0,
+							onFile: 0,
+							inSummary: 0,
+							unposted: 0,
+							openBugs: 0,
+							verdict: 'ready',
+						})
+						expect(fixture.fake.writes.map(call => call.method)).toEqual([
+							'create',
+						])
+					})
 			)
 		test.effect('uses a real GitService with the temporary repository', () =>
 			Effect.gen(function* () {
@@ -418,7 +533,16 @@ layer(Layer.empty, { excludeTestServices: true })(
 							databaseId: 1,
 							author: { __typename: 'User', login: BOT_LOGIN },
 						},
-						{ ...summary(), databaseId: 2, editor: { login: 'contributor' } },
+						{
+							...summary(),
+							databaseId: 2,
+							editor: { __typename: 'User', login: 'contributor' },
+						},
+						{
+							...summary(),
+							databaseId: 5,
+							editor: { __typename: 'User', login: BOT_LOGIN },
+						},
 						{ ...summary(), databaseId: 3 },
 						{ ...summary(), databaseId: 4 }
 					)

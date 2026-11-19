@@ -499,6 +499,7 @@ test.each(['published', 'failed', 'status-only', 'not-published'] as const)(
 							inSummary: 3,
 							unposted: 4,
 							repeated: 5,
+							dismissed: 7,
 							run: 6,
 						},
 					} as const)
@@ -516,7 +517,7 @@ test.each(['published', 'failed', 'status-only', 'not-published'] as const)(
 		expect(text).not.toContain('Shadow mode:')
 		if (status === 'published')
 			expect(text).toContain(
-				'1 on lines, 2 on files, 3 in the summary comment, 4 not posted; 5 already had a thread'
+				'1 on lines, 2 on files, 3 in the summary comment, 4 not posted; 5 already had a thread, 7 found again under resolved threads'
 			)
 		if (status === 'failed' || status === 'not-published')
 			expect(text).toContain(escapeMarkdown(MALICIOUS))

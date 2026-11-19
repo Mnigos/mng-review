@@ -428,6 +428,7 @@ test.each(['published', 'failed', 'status-only', 'not-published'] as const)(
 							inSummary: 0,
 							unposted: 0,
 							repeated: 1,
+							dismissed: 3,
 							run: 2,
 						},
 					} as const)

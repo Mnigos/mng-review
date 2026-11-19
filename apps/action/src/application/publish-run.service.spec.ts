@@ -20,6 +20,7 @@ const PUBLISHED = {
 	inSummary: 0,
 	unposted: 0,
 	repeated: 0,
+	dismissed: 0,
 	run: 1,
 } as const
 

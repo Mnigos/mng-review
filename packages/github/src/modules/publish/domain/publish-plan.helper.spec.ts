@@ -126,19 +126,25 @@ describe('getMatchingThreads', () => {
 			])
 		).toHaveLength(1)
 	})
-	test('nearby line uses original line when current line is absent', () => {
-		const thread = botThread()
-		expect(
-			getMatchingThreads({ finding: bug(), kind: 'bug' }, [
-				{
-					...thread,
-					line: undefined,
-					originalLine: bug().line + NEAR_LINES,
-					marker: { ...thread.marker, fingerprint: 'different' },
-				},
-			])
-		).toHaveLength(1)
-	})
+	test.each([false, true])(
+		'outdated thread matches only by fingerprint: same=%s',
+		sameFingerprint => {
+			const thread = botThread()
+			expect(
+				getMatchingThreads({ finding: bug(), kind: 'bug' }, [
+					{
+						...thread,
+						line: undefined,
+						originalLine: bug().line + NEAR_LINES,
+						marker: {
+							...thread.marker,
+							fingerprint: sameFingerprint ? bug().fingerprint : 'different',
+						},
+					},
+				])
+			).toHaveLength(sameFingerprint ? 1 : 0)
+		}
+	)
 	test.each([
 		{
 			path: 'src/store.ts',
@@ -238,19 +244,28 @@ describe('planPublish', () => {
 			resolved: false,
 			changed: ['a', 'b'],
 			repeated: 1,
+			dismissed: 0,
 		},
-		{ label: 'resolved unchanged', resolved: true, changed: [], repeated: 1 },
+		{
+			label: 'resolved unchanged',
+			resolved: true,
+			changed: [],
+			repeated: 0,
+			dismissed: 1,
+		},
 		{
 			label: 'one resolved unchanged',
 			resolved: true,
 			changed: ['a'],
-			repeated: 1,
+			repeated: 0,
+			dismissed: 1,
 		},
 		{
 			label: 'every resolved changed',
 			resolved: true,
 			changed: ['a', 'b'],
 			repeated: 0,
+			dismissed: 0,
 		},
 	])('$label', row => {
 		const threads = ['a', 'b'].map(id =>
@@ -262,7 +277,39 @@ describe('planPublish', () => {
 			changedPlaces: new Set(row.changed),
 		})
 		expect(plan.repeated).toHaveLength(row.repeated)
-		expect(plan.threads).toHaveLength(1 - row.repeated)
+		expect(plan.dismissed).toHaveLength(row.dismissed)
+		expect(plan.threads).toHaveLength(1 - row.repeated - row.dismissed)
+	})
+	test.each([false, true])(
+		'an open covering thread wins over an unchanged resolved thread, resolved first=%s',
+		resolvedFirst => {
+			const selected = selection()
+			const resolved = botThread({ id: 'resolved', resolved: true })
+			const open = botThread({ id: 'open' })
+			const plan = planPublish(selected, {
+				threads: resolvedFirst ? [resolved, open] : [open, resolved],
+				lines: new Map(),
+				changedPlaces: new Set(),
+			})
+			expect(plan.repeated).toEqual([
+				{ finding: selected.outcome.bugs[0], kind: 'bug' },
+			])
+			expect(plan.dismissed).toEqual([])
+			expect(plan.threads).toEqual([])
+		}
+	)
+	test('dismissed bugs do not count as open bugs', () => {
+		const selected = selection()
+		const threads = [botThread({ resolved: true })]
+		const plan = planPublish(selected, {
+			threads,
+			lines: new Map(),
+			changedPlaces: new Set(),
+		})
+		expect(plan.dismissed).toEqual([
+			{ finding: selected.outcome.bugs[0], kind: 'bug' },
+		])
+		expect(countOpenBugs(plan, threads)).toBe(0)
 	})
 	test.each([
 		{ lines: new Map([['src/store.ts', new Set([10])]]), place: 'line' },
@@ -295,6 +342,7 @@ describe('planPublish', () => {
 						{ finding: bug(), kind: 'nit', place: 'file' },
 					],
 					repeated: [],
+					dismissed: [],
 					summaryNits: [],
 				},
 				threads
