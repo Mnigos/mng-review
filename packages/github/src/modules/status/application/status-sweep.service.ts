@@ -57,7 +57,14 @@ export const StatusSweepServiceLive = Layer.effect(
 					return marker ? [marker] : []
 				}
 			)
-			const next = toSweptStatus(previous, openBugs, summary?.finished)
+			// Bugs the last finished run on this head left without a thread still block it.
+			const unthreaded =
+				summary?.head === head ? (summary.unthreadedBugs ?? 0) : 0
+			const next = toSweptStatus(
+				previous,
+				openBugs + unthreaded,
+				summary?.finished
+			)
 			if (!next) return 'kept' as const
 			// A publish run may have set a newer status while the threads were read.
 			const latest = yield* github.getStatus(head)

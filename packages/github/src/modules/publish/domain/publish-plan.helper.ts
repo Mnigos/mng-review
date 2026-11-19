@@ -150,7 +150,13 @@ export function planPublish(
 	selection: PublishSelection,
 	context: PlanContext
 ): PublishPlan {
-	const threads: PlannedThread[] = []
+	const summaryNits = selection.outcome.nits.filter(
+		finding => finding.placement === 'summary'
+	)
+	// Nits the engine kept out of the threads but that are about the pull request go with the others.
+	const threads: PlannedThread[] = summaryNits
+		.filter(finding => isPullRequestFinding(finding, selection.agents))
+		.map(finding => ({ finding, kind: 'nit', place: 'pull_request' }))
 	const repeated: PublishedFinding[] = []
 	const dismissed: PublishedFinding[] = []
 	for (const published of getPublishedFindings(selection)) {
@@ -171,10 +177,22 @@ export function planPublish(
 		threads,
 		repeated,
 		dismissed,
-		summaryNits: selection.outcome.nits.filter(
-			finding => finding.placement === 'summary'
+		summaryNits: summaryNits.filter(
+			finding => !isPullRequestFinding(finding, selection.agents)
 		),
 	}
+}
+
+/** Places whose thread is on GitHub. */
+const THREAD_PLACES = ['line', 'file'] as const satisfies readonly ThreadPlace[]
+
+/** The run's new bugs that got no thread: in the summary, or unposted. */
+export function countUnthreadedBugs(plan: PublishPlan): number {
+	return plan.threads.filter(
+		thread =>
+			thread.kind === 'bug' &&
+			!THREAD_PLACES.some(place => place === thread.place)
+	).length
 }
 
 /** Open bug threads after the run: the bot's unresolved ones and the new bugs, wherever they went. */

@@ -37,6 +37,11 @@ export const summaryMarkerSchema = Schema.Struct({
 	head: Schema.optionalKey(Schema.String),
 	/** Whether the last run finished; the status sweep reads it, never the status text. */
 	finished: Schema.optionalKey(Schema.Boolean),
+	/**
+	 * Bugs of the last finished run on `head` that got no thread (in the summary, or unposted). The
+	 * status sweep counts them, since no thread holds them.
+	 */
+	unthreadedBugs: Schema.optionalKey(countSchema),
 })
 export type SummaryMarker = typeof summaryMarkerSchema.Type
 
