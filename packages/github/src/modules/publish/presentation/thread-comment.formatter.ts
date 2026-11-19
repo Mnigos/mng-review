@@ -220,11 +220,11 @@ export function toKindLabel(kind: ThreadKind, severity: Severity): string {
 	return toSeverityLabel(severity)
 }
 
-/** The bot's reply when it resolves its thread: the head the finding no longer holds at, and why. */
+/** The bot's reply when its finding no longer holds: the head, why, and that it stops counting the thread. */
 export function formatResolvedReply(reason: string, links: BlobLinks): string {
 	const head = toCodeSpan(links.head.slice(0, SHORT_SHA_LENGTH))
 	return [
-		`Resolved: this no longer holds at ${head}. ${escapeMarkdown(reason)}`,
+		`No longer found at ${head}: ${escapeMarkdown(reason)} The bot no longer counts this thread as open.`,
 		'',
 		toMarkerComment('reply', {
 			v: MARKER_VERSION,

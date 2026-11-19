@@ -5,7 +5,7 @@ import type {
 } from '../../../platform/github-api.schema'
 import type { GitHubApiError } from '../../../platform/github.errors'
 import type { Verdict } from '../presentation/summary-comment.formatter'
-import { parseFindingMarker } from './publish-marker.parser'
+import { parseFindingMarker, parseReplyMarker } from './publish-marker.parser'
 import { BOT_LOGIN } from './publish.constants'
 import type { BotThread } from './publish.types'
 
@@ -26,16 +26,27 @@ export function isBotComment(
 	)
 }
 
-/** The bot's thread with its marker, or `undefined` for anyone else's thread, an edited one or an unmarked one. */
+/**
+ * The bot's thread with its marker, or `undefined` for anyone else's thread, an edited one or an
+ * unmarked one. A thread whose latest comment is the bot's reply that the finding no longer holds
+ * counts as resolved: the job token cannot resolve threads (GitHub asks for `contents: write`).
+ */
 export function toBotThread(thread: ReviewThread): BotThread | undefined {
 	const [first] = thread.comments.nodes
 	if (!first || !isBotComment(first)) return undefined
 	const marker = parseFindingMarker(first.body)
 	if (!marker) return undefined
 	const onFile = thread.subjectType === 'FILE'
+	const [latest] = thread.latest?.nodes ?? []
+	const closedByBot =
+		thread.comments.totalCount > 1 &&
+		latest !== undefined &&
+		isBotComment(latest) &&
+		parseReplyMarker(latest.body)?.action === 'resolved'
 	return {
 		id: thread.id,
-		resolved: thread.isResolved,
+		resolved: thread.isResolved || closedByBot,
+		closedByBot: closedByBot && !thread.isResolved,
 		onFile,
 		path: thread.path,
 		line: onFile ? undefined : (thread.line ?? undefined),

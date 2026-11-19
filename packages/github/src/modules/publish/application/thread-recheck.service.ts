@@ -116,7 +116,11 @@ export const ThreadRecheckServiceLive = Layer.effect(
 			}
 		)
 
-		/** Replies with the reason, then resolves; a failed reply leaves the thread untouched. */
+		/**
+		 * Replies with the reason, which closes the thread for the bot's counts, then tries to resolve
+		 * it on GitHub, which needs `contents: write` the job usually lacks. A failed reply leaves the
+		 * thread untouched.
+		 */
 		const resolve = Effect.fn('ThreadRecheckService.resolve')(function* (
 			resolved: ResolvedThread,
 			links: BlobLinks
@@ -127,7 +131,9 @@ export const ThreadRecheckServiceLive = Layer.effect(
 					formatResolvedReply(resolved.reason, links)
 				)
 				.pipe(
-					Effect.flatMap(() => api.resolveThread(resolved.thread.id)),
+					Effect.tap(() =>
+						api.resolveThread(resolved.thread.id).pipe(Effect.ignore)
+					),
 					Effect.as([resolved]),
 					Effect.orElseSucceed(() => [])
 				)

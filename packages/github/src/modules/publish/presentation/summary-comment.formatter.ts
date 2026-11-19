@@ -153,7 +153,7 @@ function toFindingLines(input: SummaryInput, limit: number): string[] {
 					`${plan.repeated.length} finding(s) already have a thread and were not posted again.`,
 				]),
 		...toSection(
-			`Resolved by this run, no longer found at the head (${input.resolved.length}):`,
+			`Closed by this run, no longer found at the head (${input.resolved.length}):`,
 			toCapped(
 				input.resolved,
 				limit,
@@ -324,4 +324,19 @@ export function formatStatusComment(
 		'',
 		toMarkerComment('summary', marker),
 	].join('\n')
+}
+
+/**
+ * An existing summary with only its marker changed to say the last run did not finish, its run
+ * count and last finished head kept; the text a reader sees stays as it was.
+ */
+export function toUnfinishedSummary(
+	body: string,
+	marker: SummaryMarker
+): string {
+	const unfinished = toMarkerComment('summary', { ...marker, finished: false })
+	const end = body.lastIndexOf('<!-- ')
+	return end === -1
+		? `${body}\n\n${unfinished}`
+		: `${body.slice(0, end)}${unfinished}`
 }

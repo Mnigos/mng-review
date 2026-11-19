@@ -33,6 +33,7 @@ import type {
 import {
 	formatStatusComment,
 	formatSummaryComment,
+	toUnfinishedSummary,
 } from '../presentation/summary-comment.formatter'
 import {
 	formatThreadComment,
@@ -41,7 +42,6 @@ import {
 import type {
 	PublishInput,
 	PublishResult,
-	PublishTarget,
 	StatusInput,
 } from './publish.service.types'
 import { ThreadRecheckService } from './thread-recheck.service'
@@ -84,9 +84,6 @@ export const PublishServiceLive = Layer.effect(
 		const config = yield* GitHubConfig
 		const rechecker = yield* ThreadRecheckService
 
-		/** Links to the repository at the target's head. */
-		const toLinks = (target: PublishTarget) => toBlobLinks(config, target)
-
 		/** The bot's sticky summary: its oldest unedited comment that ends with a summary marker. */
 		const readSummary = Effect.fn('PublishService.readSummary')(function* (
 			pullNumber: number
@@ -95,7 +92,9 @@ export const PublishServiceLive = Layer.effect(
 			return comments.flatMap(comment => {
 				if (comment.databaseId === null || !isBotComment(comment)) return []
 				const marker = parseSummaryMarker(comment.body)
-				return marker ? [{ id: comment.databaseId, marker }] : []
+				return marker
+					? [{ id: comment.databaseId, marker, body: comment.body }]
+					: []
 			})[0]
 		})
 
@@ -140,10 +139,8 @@ export const PublishServiceLive = Layer.effect(
 		})
 
 		/**
-		 * True when a commit since the thread's touched the code around the finding at the head
-		 * (`git log -L`, which follows the lines through every commit, so a fix that was undone
-		 * counts), and when git cannot tell: a missing commit after a force-push, a missing file.
-		 * A run on the thread's own commit has nothing new.
+		 * True when a commit since the thread's touched the finding's lines (`git log -L`, so an undone
+		 * fix counts) or git cannot tell; false on the thread's own commit.
 		 */
 		const hasPlaceChanged = Effect.fn('PublishService.hasPlaceChanged')(
 			function* (thread: BotThread, path: string, line: number, head: string) {
@@ -206,7 +203,7 @@ export const PublishServiceLive = Layer.effect(
 			input: PublishInput,
 			thread: PlannedThread
 		) {
-			const links = toLinks(input)
+			const links = toBlobLinks(config, input)
 			const post = (onLine: boolean) =>
 				api.createReviewComment(input.pullNumber, {
 					commitId: input.head,
@@ -243,7 +240,7 @@ export const PublishServiceLive = Layer.effect(
 			input: PublishInput,
 			threads: readonly PlannedThread[]
 		) {
-			const links = toLinks(input)
+			const links = toBlobLinks(config, input)
 			const onLine = threads.filter(thread => thread.place === 'line')
 			const rest = threads.filter(thread => thread.place !== 'line')
 			const review =
@@ -290,7 +287,7 @@ export const PublishServiceLive = Layer.effect(
 			input: PublishInput
 		) {
 			const { report, pullNumber } = input
-			const links = toLinks(input)
+			const links = toBlobLinks(config, input)
 			const found = (yield* api.listReviewThreads(pullNumber)).flatMap(
 				thread => toBotThread(thread) ?? []
 			)
@@ -371,13 +368,19 @@ export const PublishServiceLive = Layer.effect(
 			input: StatusInput
 		) {
 			const summary = yield* readSummary(input.pullNumber)
-			if (summary) return false
+			if (summary) {
+				yield* api.updateIssueComment(
+					summary.id,
+					toUnfinishedSummary(summary.body, summary.marker)
+				)
+				return false
+			}
 			yield* api.createIssueComment(
 				input.pullNumber,
 				formatStatusComment(
 					input.status,
 					{ v: MARKER_VERSION, runs: 0, finished: false },
-					toLinks(input)
+					toBlobLinks(config, input)
 				)
 			)
 			return true

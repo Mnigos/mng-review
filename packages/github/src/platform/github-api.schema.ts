@@ -34,6 +34,10 @@ export const reviewThreadSchema = Schema.Struct({
 		totalCount: Schema.Number,
 		nodes: Schema.Array(threadCommentSchema),
 	}),
+	/** The thread's latest comment, which tells whether the bot's last reply closed it. */
+	latest: Schema.optionalKey(
+		Schema.Struct({ nodes: Schema.Array(threadCommentSchema) })
+	),
 })
 export type ReviewThread = typeof reviewThreadSchema.Type
 
