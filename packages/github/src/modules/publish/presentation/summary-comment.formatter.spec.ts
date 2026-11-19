@@ -90,6 +90,17 @@ function input(): SummaryInput {
 		marker: SUMMARY_MARKER,
 		maxRuns: 5,
 		links: LINKS,
+		resolved: [],
+		tokens: {
+			[HOSTILE_TEXT]: {
+				calls: 1,
+				inputTokens: 1000,
+				cachedInputTokens: 0,
+				outputTokens: 0,
+				reasoningTokens: 0,
+				totalTokens: 1000,
+			},
+		},
 	}
 }
 

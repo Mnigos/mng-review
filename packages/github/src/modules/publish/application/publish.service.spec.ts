@@ -23,9 +23,13 @@ import {
 import { BOT_LOGIN, SHORT_SHA_LENGTH } from '../domain/publish.constants'
 import { toMarkerComment } from '../presentation/thread-comment.formatter'
 import { PublishService, PublishServiceLive } from './publish.service'
+import { ThreadRecheckService } from './thread-recheck.service'
 
 /** Real git history with a finding on a changed head line and a recording API. */
-function setup() {
+function setup(
+	recheck: ThreadRecheckService['Service']['recheck'] = () =>
+		Effect.succeed({ resolved: [], checked: 0, tokens: undefined })
+) {
 	const repo = createRepo()
 	const original = `${Array.from({ length: 40 }, (_, index) => `line ${index + 1}`).join('\n')}\n`
 	repo.write(bug().path, original)
@@ -35,6 +39,7 @@ function setup() {
 	const fake = githubApiFake()
 	const dependencies = Layer.mergeAll(
 		fake.api,
+		Layer.succeed(ThreadRecheckService, { recheck }),
 		Layer.succeed(GitHubConfig, {
 			serverUrl: 'https://github.com',
 			apiUrl: 'https://api.github.com',
@@ -49,6 +54,7 @@ function setup() {
 	)
 	const input = {
 		pullNumber: 17,
+		pr: { labels: [], draft: false, fork: false, trigger: 'auto' as const },
 		head,
 		engineCommit: 'engine',
 		rules: RULES,
@@ -580,5 +586,70 @@ layer(Layer.empty, { excludeTestServices: true })(
 					expect(fixture.fake.comments).toEqual([existing])
 				})
 		)
+	}
+)
+
+layer(Layer.empty, { excludeTestServices: true })(
+	'PublishService recheck summary',
+	test => {
+		for (const ran of [true, false])
+			test.effect(
+				`resolved bugs no longer block, summary tokens use recheck=${ran}`,
+				() =>
+					Effect.gen(function* () {
+						const tokens = {
+							validator: {
+								calls: 1,
+								inputTokens: 2000,
+								outputTokens: 0,
+								cachedInputTokens: 0,
+								reasoningTokens: 0,
+								totalTokens: 2000,
+							},
+						}
+						const fixture = setup(input =>
+							Effect.succeed({
+								checked: ran ? 1 : 0,
+								resolved: ran
+									? input.threads.map(found => ({
+											thread: found,
+											reason: 'The write is guarded.',
+										}))
+									: [],
+								tokens: ran ? tokens : undefined,
+							})
+						)
+						fixture.fake.threads.push(
+							reviewThread({ finding: bug(), kind: 'bug' })
+						)
+						const published = yield* PublishService.use(publisher =>
+							publisher.publish({
+								...fixture.input,
+								report: {
+									...fixture.input.report,
+									bugs: [],
+									tokens: {
+										reviewer: { ...tokens.validator, totalTokens: 1000 },
+									},
+								},
+							})
+						).pipe(Effect.provide(fixture.publisher))
+						expect(published).toMatchObject({
+							openBugs: ran ? 0 : 1,
+							verdict: ran ? 'ready' : 'needs fixes',
+							resolved: ran ? 1 : 0,
+							rechecked: ran ? 1 : 0,
+						})
+						const summaryBody = fixture.fake.comments[0]?.body ?? ''
+						if (ran) {
+							expect(summaryBody).toContain(
+								'Resolved by this run, no longer found at the head (1)'
+							)
+							expect(summaryBody).toContain('The write is guarded.')
+							expect(summaryBody).toContain('Tokens: validator 2k')
+							expect(summaryBody).not.toContain('Tokens: reviewer')
+						} else expect(summaryBody).toContain('Tokens: reviewer 1k')
+					})
+			)
 	}
 )

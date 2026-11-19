@@ -420,6 +420,7 @@ test.each(['published', 'failed', 'status-only', 'not-published'] as const)(
 			status === 'published'
 				? ({
 						status,
+						checks: { checks: 1, status: true },
 						result: {
 							verdict: 'ready',
 							openBugs: 0,
@@ -429,6 +430,8 @@ test.each(['published', 'failed', 'status-only', 'not-published'] as const)(
 							unposted: 0,
 							repeated: 1,
 							dismissed: 3,
+							rechecked: 0,
+							resolved: 0,
 							run: 2,
 						},
 					} as const)

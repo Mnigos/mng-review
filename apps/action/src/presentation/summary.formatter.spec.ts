@@ -19,6 +19,8 @@ import {
 import {
 	formatLogLine,
 	formatPublishLogLine,
+	formatSweepLine,
+	formatSweepSummary,
 	formatSummary,
 	SUMMARY_TITLE,
 	toVerdictLine,
@@ -508,6 +510,7 @@ test.each(['published', 'failed', 'status-only', 'not-published'] as const)(
 			status === 'published'
 				? ({
 						status,
+						checks: { checks: 2, status: true },
 						result: {
 							verdict: 'ready',
 							openBugs: 0,
@@ -517,6 +520,8 @@ test.each(['published', 'failed', 'status-only', 'not-published'] as const)(
 							unposted: 4,
 							repeated: 5,
 							dismissed: 7,
+							rechecked: 8,
+							resolved: 3,
 							run: 6,
 						},
 					} as const)
@@ -534,10 +539,14 @@ test.each(['published', 'failed', 'status-only', 'not-published'] as const)(
 		)
 		expect(text).toContain('Publish mode:')
 		expect(text).not.toContain('Shadow mode:')
-		if (status === 'published')
+		if (status === 'published') {
+			expect(text).toContain(
+				'3 of 8 rechecked thread\\(s\\) resolved; 2 check run\\(s\\), status set'
+			)
 			expect(text).toContain(
 				'1 on lines, 2 on files, 3 in the summary comment, 4 not posted; 5 already had a thread, 7 found again under resolved threads'
 			)
+		}
 		if (status === 'failed' || status === 'not-published')
 			expect(text).toContain(escapeMarkdown(MALICIOUS))
 		if (status === 'status-only')
@@ -554,4 +563,22 @@ test.each([
 	expect(text).not.toContain('::')
 	expect(text).not.toContain('##[')
 	expect(text).not.toMatch(/[\r\n\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u)
+})
+
+describe('sweep formatters', () => {
+	test('reports checked, updated and failed pulls including a no-op sweep', () => {
+		expect(formatSweepLine({ checked: 4, updated: 2, failed: 1 })).toBe(
+			'status sweep: 4 pull request(s) carry the status, 2 updated, 1 failed'
+		)
+		expect(formatSweepLine({ checked: 0, updated: 0, failed: 0 })).toBe(
+			'status sweep: 0 pull request(s) carry the status, 0 updated, 0 failed'
+		)
+	})
+	test('sweep summaries escape supplied text', () => {
+		expect(formatSweepSummary(MALICIOUS)).toContain(escapeMarkdown(MALICIOUS))
+		expect(formatSweepSummary(MALICIOUS)).not.toContain('![')
+		expect(
+			formatSweepSummary(formatSweepLine({ checked: 2, updated: 1, failed: 0 }))
+		).toContain('2 pull request')
+	})
 })

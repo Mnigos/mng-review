@@ -28,6 +28,8 @@ export type ApiWrite =
 			readonly body: string
 	  }
 	| { readonly method: 'update'; readonly id: number; readonly body: string }
+	| { readonly method: 'reply'; readonly id: string; readonly body: string }
+	| { readonly method: 'resolve'; readonly id: string }
 
 /** In-memory GitHub with call recording and explicit per-operation failures, never an HTTP client. */
 export function githubApiFake() {
@@ -39,6 +41,8 @@ export function githubApiFake() {
 		comment: [] as GitHubApiError[],
 		create: [] as GitHubApiError[],
 		update: [] as GitHubApiError[],
+		reply: [] as GitHubApiError[],
+		resolve: [] as GitHubApiError[],
 	}
 	const author = { __typename: 'Bot', login: BOT_LOGIN }
 	const addThread = (input: ReviewCommentInput) => {
@@ -65,6 +69,33 @@ export function githubApiFake() {
 		})
 	}
 	const api = Layer.succeed(GitHubApiService, {
+		replyToThread: (id, body) =>
+			Effect.gen(function* () {
+				writes.push({ method: 'reply', id, body })
+				const error = failures.reply.shift()
+				if (error) return yield* error
+				const index = threads.findIndex(thread => thread.id === id)
+				const thread = threads[index]
+				if (thread)
+					threads[index] = {
+						...thread,
+						comments: {
+							...thread.comments,
+							totalCount: thread.comments.totalCount + 1,
+						},
+					}
+				return undefined
+			}),
+		resolveThread: id =>
+			Effect.gen(function* () {
+				writes.push({ method: 'resolve', id })
+				const error = failures.resolve.shift()
+				if (error) return yield* error
+				const index = threads.findIndex(thread => thread.id === id)
+				const thread = threads[index]
+				if (thread) threads[index] = { ...thread, isResolved: true }
+				return undefined
+			}),
 		listReviewThreads: () => Effect.sync(() => [...threads]),
 		listComments: () => Effect.sync(() => [...comments]),
 		createReview: (pullNumber, input) =>

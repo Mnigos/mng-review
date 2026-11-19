@@ -11,6 +11,7 @@ import type {
 	ReviewThread,
 } from '../../platform/github-api.schema'
 import { GitHubApiServiceLive } from '../../platform/github-api.service'
+import { GitHubStatusServiceLive } from '../../platform/github-status.service'
 import { GitHubConfig } from '../../platform/github.config'
 
 export const GITHUB_CREDENTIAL = 'fixture-github-credential'
@@ -59,16 +60,14 @@ export function makeGitHubHttp(reply: GitHubReply) {
 			)
 		})
 	)
+	const dependencies = Layer.merge(
+		Layer.succeed(GitHubConfig, GITHUB_SETTINGS),
+		Layer.succeed(HttpClient.HttpClient, client)
+	)
 	return {
 		requests,
-		layer: GitHubApiServiceLive.pipe(
-			Layer.provide(
-				Layer.merge(
-					Layer.succeed(GitHubConfig, GITHUB_SETTINGS),
-					Layer.succeed(HttpClient.HttpClient, client)
-				)
-			)
-		),
+		statusLayer: GitHubStatusServiceLive.pipe(Layer.provide(dependencies)),
+		layer: GitHubApiServiceLive.pipe(Layer.provide(dependencies)),
 	}
 }
 
