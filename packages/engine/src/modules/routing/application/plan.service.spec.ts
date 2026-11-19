@@ -109,10 +109,7 @@ const FINISH = {
 function planLayer(
 	root: string,
 	answer: ScriptedLlmAnswer = () =>
-		Effect.succeed([
-			{ type: 'text', text: '{"risk":"normal","add":[]}' },
-			FINISH,
-		])
+		Effect.succeed([{ type: 'text', text: '{"add":[]}' }, FINISH])
 ) {
 	return PlanServiceLive.pipe(
 		Layer.provideMerge(RouterServiceLive),
@@ -341,7 +338,7 @@ layer(Layer.empty, { excludeTestServices: true })('PlanService', test => {
 							Effect.succeed([
 								{
 									type: 'text',
-									text: '{"risk":"normal","add":[{"agent":"billing","reason":"Touches invoices."}]}',
+									text: '{"add":[{"agent":"billing","reason":"Touches invoices."}]}',
 								},
 								FINISH,
 							])
@@ -408,7 +405,10 @@ layer(Layer.empty, { excludeTestServices: true })('PlanService', test => {
 					Effect.provide(
 						planLayer(repo.root, () =>
 							Effect.succeed([
-								{ type: 'text', text: '{"risk":"risky","add":[]}' },
+								{
+									type: 'text',
+									text: '{"signals":[{"category":"access","path":"src/auth/session.ts","reason":"Line 1 changes who may update a session."}]}',
+								},
 								FINISH,
 							])
 						)

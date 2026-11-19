@@ -129,7 +129,7 @@ const decodeReport = Schema.decodeUnknownSync(
 /** Answers by offered tool, so fixtures remain deterministic under concurrent case execution. */
 function respond(call: CliModelRequest) {
 	if (call.tools?.some(tool => tool.function.name === 'route'))
-		return { content: { risk: 'normal', add: [] } }
+		return { content: { add: [] } }
 	if (call.tools?.some(tool => tool.function.name === 'report_findings'))
 		return { content: { findings: [REPORTED_FINDING, EXTRA_FINDING] } }
 	return {

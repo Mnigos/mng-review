@@ -40,7 +40,13 @@ const FILE = {
 } as const satisfies ChangedFile
 const MODEL = { model: 'router-custom', effort: 'high' } as const
 const ANSWER = {
-	risk: 'risky',
+	signals: [
+		{
+			category: 'access',
+			path: FILE.path,
+			reason: 'Lines 1-2 change ownership checks.',
+		},
+	],
 	add: [{ agent: 'auth', reason: 'checks ownership' }],
 } as const
 const FINISH = {
@@ -111,7 +117,12 @@ layer(Layer.empty)('RouterService', test => {
 				yield* Effect.gen(function* () {
 					expect(
 						yield* RouterService.use(router => router.route(input))
-					).toEqual({ status: 'ok', risk: 'risky', added: ANSWER.add })
+					).toEqual({
+						status: 'ok',
+						risk: 'risky',
+						signals: ANSWER.signals,
+						added: ANSWER.add,
+					})
 					const calls = yield* ScriptedLlm.use(script => script.calls)
 					expect(calls).toHaveLength(1)
 					expect(calls[0]?.model).toEqual(MODEL)
@@ -198,11 +209,7 @@ layer(Layer.empty)('RouterService', test => {
 				}).pipe(
 					Effect.provide(
 						routerLayer(
-							() =>
-								Effect.succeed([
-									{ type: 'text', text: '{"risk":"normal"}' },
-									FINISH,
-								]),
+							() => Effect.succeed([{ type: 'text', text: '{}' }, FINISH]),
 							gitFixture(
 								vi.fn(() =>
 									Effect.succeed(
@@ -220,11 +227,7 @@ layer(Layer.empty)('RouterService', test => {
 				)
 			})
 	)
-	for (const text of [
-		'{"risk":"normal"}',
-		'```json\n{"risk":"normal"}\n```',
-		'```\n{"risk":"normal"}\n```',
-	])
+	for (const text of ['{}', '```json\n{}\n```', '```\n{}\n```'])
 		test.effect(`accepts text JSON ${text}`, () =>
 			Effect.gen(function* () {
 				const input = yield* request
@@ -236,15 +239,15 @@ layer(Layer.empty)('RouterService', test => {
 							)
 						)
 					)
-				).toEqual({ status: 'ok', risk: 'normal', added: [] })
+				).toEqual({ status: 'ok', risk: 'normal', signals: [], added: [] })
 			})
 		)
 	for (const text of [
 		'',
 		'{bad',
-		'{"risk":"extreme"}',
-		'{"add":[]}',
-		'{"risk":"normal","add":[{"agent":3,"reason":"x"}]}',
+		'{"trivial":"yes"}',
+		'{"signals":[{"category":"unknown","path":"a.ts","reason":"x"}]}',
+		'{"add":[{"agent":3,"reason":"x"}]}',
 	])
 		test.effect(`returns failure for unusable model answer ${text}`, () =>
 			Effect.gen(function* () {

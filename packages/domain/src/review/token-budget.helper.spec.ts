@@ -2,6 +2,8 @@ import { DEFAULT_PRESET } from '../config/review-config.constants'
 import { config, plannedRun } from '../shared/mocks/domain-test.helper'
 import {
 	getPlannedTokens,
+	getFocusShare,
+	MIN_FOCUS_SHARE,
 	RUN_TOKEN_WEIGHT,
 	REVIEWER_MIN_SHARE,
 	toRunAllowances,
@@ -151,5 +153,74 @@ describe('reviewer least share', () => {
 			RUN_TOKEN_WEIGHT.REVIEWER * 100,
 			...agents.map(() => RUN_TOKEN_WEIGHT.BUG_AGENT * 100),
 		])
+	})
+})
+
+describe('getFocusShare', () => {
+	const files = [
+		{ path: 'src/auth/session.guard.ts', additions: 10, deletions: 20 },
+		{ path: 'src/data/record.ts', additions: 30, deletions: 40 },
+	] as const
+
+	test('uses additions and deletions across every file as the denominator', () => {
+		expect(getFocusShare(files, ['src/auth/session.guard.ts'])).toBe(0.3)
+		expect(getFocusShare(files, ['src/data/record.ts'])).toBe(0.7)
+	})
+	test('no focus paths means the whole allowance', () => {
+		expect(getFocusShare(files, [])).toBe(1)
+	})
+	test('all changed paths means the whole allowance', () => {
+		expect(
+			getFocusShare(
+				files,
+				files.map(file => file.path)
+			)
+		).toBe(1)
+	})
+	test('repeated focus paths do not count changed lines twice', () => {
+		expect(
+			getFocusShare(files, [
+				'src/auth/session.guard.ts',
+				'src/auth/session.guard.ts',
+			])
+		).toBe(0.3)
+	})
+	test('a focus below the minimum receives the minimum share', () => {
+		expect(
+			getFocusShare(
+				[
+					{ path: 'small.ts', additions: 1, deletions: 0 },
+					{ path: 'large.ts', additions: 99, deletions: 0 },
+				],
+				['small.ts']
+			)
+		).toBe(MIN_FOCUS_SHARE)
+	})
+	test('a focus exactly at the minimum keeps that share', () => {
+		expect(
+			getFocusShare(
+				[
+					{ path: 'focus.ts', additions: MIN_FOCUS_SHARE * 100, deletions: 0 },
+					{
+						path: 'other.ts',
+						additions: (1 - MIN_FOCUS_SHARE) * 100,
+						deletions: 0,
+					},
+				],
+				['focus.ts']
+			)
+		).toBe(MIN_FOCUS_SHARE)
+	})
+	test('focus paths without changed lines still receive the minimum', () => {
+		expect(getFocusShare(files, ['unchanged.ts'])).toBe(MIN_FOCUS_SHARE)
+	})
+	test('a binary-only or empty change keeps the whole allowance', () => {
+		expect(
+			getFocusShare(
+				[{ path: 'image.bin', additions: 0, deletions: 0 }],
+				['image.bin']
+			)
+		).toBe(1)
+		expect(getFocusShare([], ['missing.ts'])).toBe(1)
 	})
 })

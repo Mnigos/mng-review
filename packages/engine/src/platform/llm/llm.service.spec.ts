@@ -139,7 +139,7 @@ layer(Layer.empty)('LlmService HTTP', test => {
 					})
 					const route = Tool.make('route', {
 						description: 'Route',
-						parameters: Schema.Struct({ risk: Schema.String }),
+						parameters: Schema.Struct({ trivial: Schema.Boolean }),
 						success: Schema.Void,
 					})
 					yield* Effect.gen(function* () {
@@ -534,7 +534,7 @@ layer(Layer.empty)('LlmService HTTP', test => {
 											type: 'function',
 											function: {
 												name: 'route',
-												arguments: '{"risk":"normal"}',
+												arguments: '{"trivial":false}',
 											},
 										},
 									],
@@ -547,7 +547,7 @@ layer(Layer.empty)('LlmService HTTP', test => {
 				)
 			)
 			const route = Tool.make('route', {
-				parameters: Schema.Struct({ risk: Schema.String }),
+				parameters: Schema.Struct({ trivial: Schema.Boolean }),
 				success: Schema.Void,
 			})
 			const response = yield* LlmService.use(llm =>
@@ -562,7 +562,7 @@ layer(Layer.empty)('LlmService HTTP', test => {
 				)
 			).pipe(Effect.provide(http.layer))
 			expect(response.toolCalls).toMatchObject([
-				{ id: 'call-1', name: 'route', params: { risk: 'normal' } },
+				{ id: 'call-1', name: 'route', params: { trivial: false } },
 			])
 		})
 	)
