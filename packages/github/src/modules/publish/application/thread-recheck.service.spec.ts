@@ -17,6 +17,7 @@ import {
 	RULES,
 } from '../../../shared/mocks/publish-test.helper'
 import { escapeMarkdown } from '../../../utils/markdown.util'
+import { toBotThread } from '../domain/bot-thread.helper'
 import { parseReplyMarker } from '../domain/publish-marker.parser'
 import {
 	MAX_RECHECKS,
@@ -182,25 +183,46 @@ layer(Layer.empty, { excludeTestServices: true })(
 				})
 			)
 		for (const failureAt of ['reply', 'resolve'] as const)
-			test.effect(`a failed ${failureAt} is not reported as a resolution`, () =>
-				Effect.gen(function* () {
-					const fixture = setup()
-					fixture.api.failures[failureAt].push(
-						new GitHubApiError({
-							operation: failureAt,
-							reason: 'denied',
-							status: 403,
+			test.effect(
+				`a failed ${failureAt} counts a resolution only when the reply was posted`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = setup()
+						fixture.api.failures[failureAt].push(
+							new GitHubApiError({
+								operation: failureAt,
+								reason: 'denied',
+								status: 403,
+							})
+						)
+						expect(
+							yield* ThreadRecheckService.use(service =>
+								service.recheck(fixture.input)
+							).pipe(Effect.provide(fixture.service))
+						).toEqual({
+							checked: 1,
+							resolved:
+								failureAt === 'reply'
+									? []
+									: [
+											{
+												thread: fixture.input.threads[0],
+												reason: HOSTILE_TEXT,
+											},
+										],
+							tokens: TOKENS,
 						})
-					)
-					expect(
-						yield* ThreadRecheckService.use(service =>
-							service.recheck(fixture.input)
-						).pipe(Effect.provide(fixture.service))
-					).toMatchObject({ checked: 1, resolved: [] })
-					expect(fixture.api.writes.map(write => write.method)).toEqual(
-						failureAt === 'reply' ? ['reply'] : ['reply', 'resolve']
-					)
-				})
+						expect(fixture.api.writes.map(write => write.method)).toEqual(
+							failureAt === 'reply' ? ['reply'] : ['reply', 'resolve']
+						)
+						expect(fixture.api.threads[0]?.isResolved).toBe(false)
+						expect(fixture.api.threads.map(toBotThread)).toMatchObject([
+							{
+								resolved: failureAt === 'resolve',
+								closedByBot: failureAt === 'resolve',
+							},
+						])
+					})
 			)
 		test.effect(
 			'no changed candidates means no validator and no token replacement',

@@ -11,6 +11,7 @@ import {
 	REVIEW_THREAD,
 	toGitHubPage,
 } from '../shared/mocks/github-http.helper'
+import { botClosedReviewThread } from '../shared/mocks/publish-test.helper'
 import {
 	API_VERSION,
 	MAX_PAGES,
@@ -135,6 +136,38 @@ function expectApiFailure(failure: GitHubApiError, operation: string) {
 }
 
 layer(Layer.empty)('GitHubApiService reads', test => {
+	for (const { label, latest } of [
+		{ label: 'missing', latest: undefined },
+		{ label: 'empty', latest: { nodes: [] } },
+		{ label: 'closing reply', latest: botClosedReviewThread().latest },
+	])
+		test.effect(
+			`review threads preserve optional latest comment: ${label}`,
+			() =>
+				Effect.gen(function* () {
+					const thread = {
+						...REVIEW_THREAD,
+						...(latest === undefined ? {} : { latest }),
+					}
+					const fixture = makeGitHubHttp(() =>
+						Effect.succeed(
+							Response.json(toGitHubPage('reviewThreads', [thread]))
+						)
+					)
+					expect(
+						yield* GitHubApiService.use(service =>
+							service.listReviewThreads(42)
+						).pipe(Effect.provide(fixture.layer))
+					).toEqual([thread])
+					expect(getGitHubRequestBody(fixture.requests[0])).toMatchObject({
+						query: REVIEW_THREADS_QUERY,
+					})
+					expect(REVIEW_THREADS_QUERY).toMatch(
+						/latest:\s*comments\(last: 1\)\s*\{\s*nodes\s*\{\s*databaseId body author \{ __typename login \} editor \{ __typename login \} originalCommit \{ oid \}/u
+					)
+				})
+		)
+
 	for (const { operation, connection, node } of READS) {
 		test.effect(
 			`${operation} follows cursors, skips null nodes and preserves comment metadata`,

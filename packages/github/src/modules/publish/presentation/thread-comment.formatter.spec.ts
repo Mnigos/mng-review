@@ -1,12 +1,18 @@
 import { HOSTILE_TEXT } from '../../../shared/mocks/hostile-text.helper'
 import { bug, LINKS } from '../../../shared/mocks/publish-test.helper'
 import { escapeMarkdown } from '../../../utils/markdown.util'
-import { parseFindingMarker } from '../domain/publish-marker.parser'
+import {
+	parseFindingMarker,
+	parseReplyMarker,
+} from '../domain/publish-marker.parser'
 import {
 	formatThreadComment,
+	formatResolvedReply,
 	toFindingMarker,
 	toMarkerComment,
 } from './thread-comment.formatter'
+
+import { MARKER_VERSION, SHORT_SHA_LENGTH } from '../domain/publish.constants'
 
 describe('formatThreadComment', () => {
 	test.each(['title', 'trigger', 'impact', 'suggestion'] as const)(
@@ -137,4 +143,27 @@ describe('formatThreadComment', () => {
 			expect(text).not.toContain('```suggestion')
 		}
 	)
+})
+
+describe('formatResolvedReply', () => {
+	test('escapes the reason, names the short head and closes the bot count with a reply marker', () => {
+		const links = { ...LINKS, head: 'abcdef1234567890' }
+		const body = formatResolvedReply(HOSTILE_TEXT, links)
+		expect(body).toBe(
+			[
+				`No longer found at \`${links.head.slice(0, SHORT_SHA_LENGTH)}\`: ${escapeMarkdown(HOSTILE_TEXT)} The bot no longer counts this thread as open.`,
+				'',
+				toMarkerComment('reply', {
+					v: MARKER_VERSION,
+					action: 'resolved',
+					commit: links.head,
+				}),
+			].join('\n')
+		)
+		expect(parseReplyMarker(body)).toEqual({
+			v: MARKER_VERSION,
+			action: 'resolved',
+			commit: links.head,
+		})
+	})
 })

@@ -2,6 +2,7 @@ import { agent, config } from '../../../shared/mocks/domain-test.helper'
 import { HOSTILE_TEXT } from '../../../shared/mocks/hostile-text.helper'
 import {
 	bug,
+	botThread,
 	LINKS,
 	report,
 	SUMMARY_MARKER,
@@ -12,10 +13,12 @@ import { planPublish } from '../domain/publish-plan.helper'
 import type { ThreadPlace } from '../domain/publish.types'
 import {
 	formatSummaryComment,
+	toUnfinishedSummary,
 	formatStatusComment,
 	MAX_SUMMARY_CHARS,
 	type SummaryInput,
 } from './summary-comment.formatter'
+import { toMarkerComment } from './thread-comment.formatter'
 
 /** Summary sections all receive the same hostile model text. */
 function input(): SummaryInput {
@@ -105,6 +108,17 @@ function input(): SummaryInput {
 }
 
 describe('formatSummaryComment', () => {
+	test('lists bot closures separately with escaped reasons', () => {
+		const text = formatSummaryComment({
+			...input(),
+			resolved: [{ thread: botThread(), reason: HOSTILE_TEXT }],
+		})
+		expect(text).toContain(
+			'Closed by this run, no longer found at the head (1):'
+		)
+		expect(text).toContain(escapeMarkdown(HOSTILE_TEXT))
+		expect(text).not.toContain('Resolved by this run')
+	})
 	test('lists dismissed findings as nonblocking and escapes their titles', () => {
 		const fixture = input()
 		const finding = bug({ title: HOSTILE_TEXT, placement: 'summary' })
@@ -302,5 +316,50 @@ describe('formatSummaryComment', () => {
 		expect(text).toContain(escapeMarkdown(HOSTILE_TEXT))
 		expect(text).not.toContain('\u202E')
 		expect(parseSummaryMarker(text)).toEqual(SUMMARY_MARKER)
+	})
+})
+
+describe('toUnfinishedSummary', () => {
+	test.each([undefined, false, true])(
+		'replaces only the final marker, previously finished=%s',
+		finished => {
+			const marker = { ...SUMMARY_MARKER, runs: 4, finished }
+			const visible = `Verdict: ready\n<!-- ordinary HTML comment -->\n${toMarkerComment('summary', { ...SUMMARY_MARKER, runs: 2 })}\nDetails stay intact.\n\n`
+			const body = visible + toMarkerComment('summary', marker)
+			const unfinished = toUnfinishedSummary(body, marker)
+			expect(unfinished).toBe(
+				visible + toMarkerComment('summary', { ...marker, finished: false })
+			)
+			expect(parseSummaryMarker(unfinished)).toEqual({
+				...SUMMARY_MARKER,
+				runs: 4,
+				finished: false,
+			})
+			expect(
+				toUnfinishedSummary(unfinished, { ...marker, finished: false })
+			).toBe(unfinished)
+		}
+	)
+
+	test('appends a marker to a body without one', () => {
+		expect(toUnfinishedSummary('Existing summary', SUMMARY_MARKER)).toBe(
+			`Existing summary\n\n${toMarkerComment('summary', { ...SUMMARY_MARKER, finished: false })}`
+		)
+	})
+
+	test('appends a marker without removing unrelated HTML comments', () => {
+		const body =
+			'Existing summary\n<!-- ordinary comment -->\nKeep these details.'
+		expect(toUnfinishedSummary(body, SUMMARY_MARKER)).toBe(
+			`${body}\n\n${toMarkerComment('summary', { ...SUMMARY_MARKER, finished: false })}`
+		)
+	})
+
+	test('does not invent a last finished head for a summary without one', () => {
+		const marker = { v: SUMMARY_MARKER.v, runs: 0 }
+		expect(parseSummaryMarker(toUnfinishedSummary('Offline', marker))).toEqual({
+			...marker,
+			finished: false,
+		})
 	})
 })

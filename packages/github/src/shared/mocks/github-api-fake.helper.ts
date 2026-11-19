@@ -88,6 +88,17 @@ export function githubApiFake() {
 				if (thread)
 					threads[index] = {
 						...thread,
+						latest: {
+							nodes: [
+								{
+									databaseId: writes.length,
+									body,
+									author,
+									editor: null,
+									originalCommit: null,
+								},
+							],
+						},
 						comments: {
 							...thread.comments,
 							totalCount: thread.comments.totalCount + 1,

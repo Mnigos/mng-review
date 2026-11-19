@@ -14,11 +14,15 @@ import type {
 	PublishedFinding,
 } from '../../modules/publish/domain/publish.types'
 import {
+	formatResolvedReply,
 	toFindingMarker,
 	toMarkerComment,
 	type BlobLinks,
 } from '../../modules/publish/presentation/thread-comment.formatter'
-import type { ReviewThread } from '../../platform/github-api.schema'
+import type {
+	ReviewThread,
+	ThreadComment,
+} from '../../platform/github-api.schema'
 import { planInput } from '../../shared/mocks/domain-test.helper'
 
 export const LINKS = {
@@ -81,6 +85,7 @@ export function botThread(overrides: Partial<BotThread> = {}): BotThread {
 	return {
 		id: 'thread',
 		resolved: false,
+		closedByBot: false,
 		onFile: false,
 		path: bug().path,
 		line: bug().line,
@@ -149,5 +154,32 @@ export function agentReport(
 		findings: 0,
 		malformed: 0,
 		wallMillis: 1,
+	}
+}
+
+/** The bot's closing reply, with overrides for author and editor trust tests. */
+export function threadReply(
+	overrides: Partial<ThreadComment> = {}
+): ThreadComment {
+	return {
+		databaseId: 2,
+		body: formatResolvedReply('The write is guarded.', LINKS),
+		author: { __typename: 'Bot', login: BOT_LOGIN },
+		editor: null,
+		originalCommit: { oid: LINKS.head },
+		...overrides,
+	}
+}
+
+/** GitHub still shows this thread open after the bot posted its closing reply. */
+export function botClosedReviewThread(
+	overrides: Partial<ReviewThread> = {}
+): ReviewThread {
+	const thread = reviewThread()
+	return {
+		...thread,
+		comments: { ...thread.comments, totalCount: 2 },
+		latest: { nodes: [threadReply()] },
+		...overrides,
 	}
 }

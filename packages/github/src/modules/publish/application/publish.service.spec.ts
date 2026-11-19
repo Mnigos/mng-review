@@ -9,14 +9,21 @@ import {
 	gitLayer,
 } from '../../../shared/mocks/git-test.helper'
 import { githubApiFake } from '../../../shared/mocks/github-api-fake.helper'
+import { githubStatusFake } from '../../../shared/mocks/github-status-fake.helper'
 import {
 	bug,
+	botClosedReviewThread,
 	agentReport,
 	report,
 	RULES,
 	reviewThread,
 	SUMMARY_MARKER,
 } from '../../../shared/mocks/publish-test.helper'
+import {
+	StatusSweepService,
+	StatusSweepServiceLive,
+} from '../../status/application/status-sweep.service'
+import { toCommitStatus } from '../../status/domain/status.helper'
 import {
 	parseSummaryMarker,
 	parseFindingMarker,
@@ -251,7 +258,7 @@ layer(Layer.empty, { excludeTestServices: true })(
 			})
 		)
 		test.effect(
-			'status creates only when no summary exists, preserving the reviewed verdict',
+			'status creates an unfinished summary and then updates it without another comment',
 			() =>
 				Effect.gen(function* () {
 					const fixture = setup()
@@ -264,18 +271,25 @@ layer(Layer.empty, { excludeTestServices: true })(
 						engineCommit: undefined,
 						status: 'Reviewer offline',
 					}
-					yield* publisher.publishStatus(input)
+					expect(yield* publisher.publishStatus(input)).toBe(true)
 					expect(fixture.fake.writes.map(call => call.method)).toEqual([
 						'create',
 					])
 					expect(
 						parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
 					).toEqual({ v: SUMMARY_MARKER.v, runs: 0, finished: false })
-					yield* publisher.publishStatus({
-						...input,
-						status: 'Another failure',
-					})
-					expect(fixture.fake.writes).toHaveLength(1)
+					const originalBody = fixture.fake.comments[0]?.body
+					expect(
+						yield* publisher.publishStatus({
+							...input,
+							status: 'Another failure',
+						})
+					).toBe(false)
+					expect(fixture.fake.writes.map(call => call.method)).toEqual([
+						'create',
+						'update',
+					])
+					expect(fixture.fake.comments[0]?.body).toBe(originalBody)
 				})
 		)
 		for (const scenario of [
@@ -565,26 +579,31 @@ layer(Layer.empty, { excludeTestServices: true })(
 				})
 		)
 		test.effect(
-			'offline status leaves an existing reviewed summary unchanged',
+			'offline status preserves summary text and marks its existing runs and head unfinished',
 			() =>
 				Effect.gen(function* () {
 					const fixture = setup()
 					const existing = {
 						...summary(),
-						body: `Verdict: ready\n${summary().body}`,
+						body: `Verdict: ready\n${toMarkerComment('summary', { ...SUMMARY_MARKER, finished: true })}`,
 					}
 					fixture.fake.comments.push(existing)
 					const publisher = yield* PublishService.pipe(
 						Effect.provide(fixture.publisher)
 					)
-					yield* publisher.publishStatus({
-						pullNumber: 17,
-						head: fixture.head,
-						engineCommit: 'engine',
-						status: 'offline',
-					})
-					expect(fixture.fake.writes).toEqual([])
-					expect(fixture.fake.comments).toEqual([existing])
+					expect(
+						yield* publisher.publishStatus({
+							pullNumber: 17,
+							head: fixture.head,
+							engineCommit: 'engine',
+							status: 'offline',
+						})
+					).toBe(false)
+					const body = `Verdict: ready\n${toMarkerComment('summary', { ...SUMMARY_MARKER, finished: false })}`
+					expect(fixture.fake.writes).toEqual([
+						{ method: 'update', id: existing.databaseId, body },
+					])
+					expect(fixture.fake.comments).toEqual([{ ...existing, body }])
 				})
 		)
 	}
@@ -593,6 +612,104 @@ layer(Layer.empty, { excludeTestServices: true })(
 layer(Layer.empty, { excludeTestServices: true })(
 	'PublishService recheck summary',
 	test => {
+		test.effect(
+			'an earlier bot closure permits a ready verdict while GitHub still shows the thread open',
+			() =>
+				Effect.gen(function* () {
+					const recheckSpy = vi.fn(() =>
+						Effect.succeed({ checked: 0, resolved: [], tokens: undefined })
+					)
+					const fixture = setup(recheckSpy)
+					fixture.fake.threads.push(botClosedReviewThread())
+					expect(
+						yield* PublishService.use(publisher =>
+							publisher.publish({
+								...fixture.input,
+								report: { ...fixture.input.report, bugs: [] },
+							})
+						).pipe(Effect.provide(fixture.publisher))
+					).toMatchObject({ openBugs: 0, verdict: 'ready', resolved: 0 })
+					expect(recheckSpy.mock.calls).toHaveLength(1)
+					expect(fixture.fake.threads[0]?.isResolved).toBe(false)
+					expect(fixture.fake.writes.map(write => write.method)).toEqual([
+						'create',
+					])
+				})
+		)
+		test.effect(
+			'a sweep after an offline run uses the unfinished marker instead of an earlier successful verdict',
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup()
+					fixture.fake.comments.push({
+						...summary(),
+						body: `Verdict: ready\n${toMarkerComment('summary', { ...SUMMARY_MARKER, finished: true })}`,
+					})
+					fixture.fake.threads.push(botClosedReviewThread())
+					expect(
+						yield* PublishService.use(publisher =>
+							publisher.publishStatus({
+								pullNumber: 17,
+								head: fixture.head,
+								engineCommit: undefined,
+								status: 'offline',
+							})
+						).pipe(Effect.provide(fixture.publisher))
+					).toBe(false)
+					const status = githubStatusFake({
+						listOpenPullRequests: () =>
+							Effect.succeed([{ number: 17, head: { sha: fixture.head } }]),
+						getStatus: () =>
+							Effect.succeed({
+								id: 1,
+								...toCommitStatus('ready', 0, true),
+								context: 'MNG Review',
+								creator: null,
+							}),
+					})
+					expect(
+						yield* StatusSweepService.use(service => service.sweep()).pipe(
+							Effect.provide(
+								StatusSweepServiceLive.pipe(
+									Layer.provide(Layer.merge(fixture.fake.api, status.layer))
+								)
+							)
+						)
+					).toEqual({ checked: 1, updated: 1, failed: 0 })
+					expect(status.statuses).toEqual([
+						{ sha: fixture.head, ...toCommitStatus('incomplete', 0, false) },
+					])
+					expect(
+						parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
+					).toEqual({ ...SUMMARY_MARKER, finished: false })
+				})
+		)
+		test.effect(
+			'an existing summary update failure is reported without creating another comment',
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup()
+					const existing = summary()
+					fixture.fake.comments.push(existing)
+					const failure = error(403)
+					fixture.fake.failures.update.push(failure)
+					expect(
+						yield* PublishService.use(publisher =>
+							publisher.publishStatus({
+								pullNumber: 17,
+								head: fixture.head,
+								engineCommit: undefined,
+								status: 'offline',
+							})
+						).pipe(Effect.provide(fixture.publisher), Effect.flip)
+					).toEqual(failure)
+					expect(fixture.fake.writes.map(write => write.method)).toEqual([
+						'update',
+					])
+					expect(fixture.fake.comments).toEqual([existing])
+				})
+		)
+
 		for (const ran of [true, false])
 			test.effect(
 				`resolved bugs no longer block, summary tokens use recheck=${ran}`,
@@ -644,7 +761,7 @@ layer(Layer.empty, { excludeTestServices: true })(
 						const summaryBody = fixture.fake.comments[0]?.body ?? ''
 						if (ran) {
 							expect(summaryBody).toContain(
-								'Resolved by this run, no longer found at the head (1)'
+								'Closed by this run, no longer found at the head (1)'
 							)
 							expect(summaryBody).toContain('The write is guarded.')
 							expect(summaryBody).toContain('Tokens: validator 2k')
