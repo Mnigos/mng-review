@@ -276,6 +276,7 @@ export const AgentLoopServiceLive = Layer.effect(
 							firstMessageTokens: Math.min(firstMessageTokens, inputTokens),
 							first: state.firstMessageTokens === undefined,
 						})
+					yield* tokens.record(inputTokens + outputTokens)
 					const sent = {
 						...state,
 						wrapUpSent: state.wrapUpSent || wrapUp,
@@ -310,6 +311,7 @@ export const AgentLoopServiceLive = Layer.effect(
 									toolCalls: state.toolCalls,
 									turns: state.turn,
 									spentTokens: sent.spentTokens,
+									unspentTokens: 0,
 								},
 								{ ...sent, turn: state.turn + 1 },
 								wrapUp,
@@ -385,7 +387,8 @@ export const AgentLoopServiceLive = Layer.effect(
 							first ? Effect.succeed(first) : Effect.fail(error)
 						)
 					)
-				)
+				),
+				Effect.flatMap(tokens.settle)
 			)
 		})
 
