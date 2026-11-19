@@ -14,6 +14,7 @@ import {
 } from './github-status.service'
 
 const BOT_STATUS = {
+	id: 17,
 	state: 'failure',
 	context: STATUS_CONTEXT,
 	description: '1 open bug',

@@ -452,35 +452,39 @@ layer(Layer.empty)('ShadowRunService prior runs', test => {
 				)
 			})
 	)
-	for (const trigger of ['auto', 'manual'] as const)
-		test.effect(
-			`only an automatic trigger passes since, trigger=${trigger}`,
-			() =>
-				Effect.gen(function* () {
-					const fixture = harness()
-					const event = yield* eventParser.parsePullRequestEvent(
-						JSON.stringify(eventPayload())
-					)
-					const parsePullRequestEventSpy = vi
-						.spyOn(eventParser, 'parsePullRequestEvent')
-						.mockReturnValueOnce(
-							Effect.succeed({ ...event, pr: { ...event.pr, trigger } })
+	for (const head of [undefined, 'earlier-head'])
+		for (const trigger of ['auto', 'manual'] as const)
+			test.effect(
+				`only an automatic trigger with a reviewed head passes since, trigger=${trigger}, head=${head}`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = harness()
+						const event = yield* eventParser.parsePullRequestEvent(
+							JSON.stringify(eventPayload())
 						)
-					expect(
-						yield* fixture.run({
-							eventName: 'pull_request_target',
-							readEvent: Effect.succeed(JSON.stringify(eventPayload())),
-							readPrior: () =>
-								Effect.succeed({ runs: 1, head: 'earlier-head' }),
-						})
-					).toMatchObject({ status: 'reviewed' })
-					expect(parsePullRequestEventSpy).toHaveBeenCalledTimes(1)
-					const request = fixture.runSpy.mock.calls[0]?.[0]
-					if (trigger === 'auto')
-						expect(request).toHaveProperty('since', 'earlier-head')
-					else expect(request).not.toHaveProperty('since')
-				})
-		)
+						const parsePullRequestEventSpy = vi
+							.spyOn(eventParser, 'parsePullRequestEvent')
+							.mockReturnValueOnce(
+								Effect.succeed({ ...event, pr: { ...event.pr, trigger } })
+							)
+						expect(
+							yield* fixture.run({
+								eventName: 'pull_request_target',
+								readEvent: Effect.succeed(JSON.stringify(eventPayload())),
+								readPrior: () =>
+									Effect.succeed({
+										runs: 1,
+										...(head === undefined ? {} : { head }),
+									}),
+							})
+						).toMatchObject({ status: 'reviewed' })
+						expect(parsePullRequestEventSpy).toHaveBeenCalledTimes(1)
+						const request = fixture.runSpy.mock.calls[0]?.[0]
+						if (trigger === 'auto' && head !== undefined)
+							expect(request).toHaveProperty('since', 'earlier-head')
+						else expect(request).not.toHaveProperty('since')
+					})
+			)
 })
 
 describe('getRunLimitReason', () => {

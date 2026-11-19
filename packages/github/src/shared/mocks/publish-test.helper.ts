@@ -131,3 +131,23 @@ export const SUMMARY_MARKER = {
 	runs: 1,
 	head: LINKS.head,
 } as const
+
+type AgentRunReport = ReturnType<typeof toEmptyReviewReport>['agents'][number]
+
+/** Complete agent report for a planned model, with independently selectable outcome. */
+export function agentReport(
+	status: AgentRunReport['status'] = 'ok'
+): AgentRunReport {
+	return {
+		name: 'reviewer',
+		title: 'Main reviewer',
+		kind: 'bug',
+		model: 'model-a',
+		effort: 'high',
+		status,
+		toolCalls: 0,
+		findings: 0,
+		malformed: 0,
+		wallMillis: 1,
+	}
+}

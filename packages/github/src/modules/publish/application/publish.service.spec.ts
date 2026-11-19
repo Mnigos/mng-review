@@ -11,6 +11,7 @@ import {
 import { githubApiFake } from '../../../shared/mocks/github-api-fake.helper'
 import {
 	bug,
+	agentReport,
 	report,
 	RULES,
 	reviewThread,
@@ -651,5 +652,112 @@ layer(Layer.empty, { excludeTestServices: true })(
 						} else expect(summaryBody).toContain('Tokens: reviewer 1k')
 					})
 			)
+	}
+)
+
+layer(Layer.empty, { excludeTestServices: true })(
+	'PublishService last finished head',
+	test => {
+		for (const prior of ['absent', 'without-head', 'with-head'] as const)
+			for (const outcome of [
+				'finished',
+				'endpoint',
+				'budget',
+				'failed',
+				'incomplete',
+			] as const)
+				test.effect(
+					`${outcome} run with prior ${prior} writes only the last finished head`,
+					() =>
+						Effect.gen(function* () {
+							const recheckSpy = vi.fn<
+								ThreadRecheckService['Service']['recheck']
+							>(() =>
+								Effect.succeed({ resolved: [], checked: 0, tokens: undefined })
+							)
+							const fixture = setup(recheckSpy)
+							if (prior !== 'absent')
+								fixture.fake.comments.push({
+									...summary(),
+									body: toMarkerComment('summary', {
+										v: SUMMARY_MARKER.v,
+										runs: 3,
+										...(prior === 'with-head' ? { head: 'last-finished' } : {}),
+									}),
+								})
+							const reviewed = {
+								...fixture.input.report,
+								bugs: [],
+								agents: [
+									agentReport(),
+									{
+										...agentReport(
+											outcome === 'failed' || outcome === 'incomplete'
+												? outcome
+												: 'ok'
+										),
+										model: 'model-b',
+									},
+								],
+								...(outcome === 'endpoint' ? { endpointError: 'offline' } : {}),
+								...(outcome === 'budget'
+									? {
+											incomplete: {
+												reason: 'budget spent' as const,
+												unfinished: ['reviewer'],
+											},
+										}
+									: {}),
+							}
+							const publisher = yield* PublishService.pipe(
+								Effect.provide(fixture.publisher)
+							)
+							yield* publisher.publish({ ...fixture.input, report: reviewed })
+							const expectedHead =
+								outcome === 'finished'
+									? fixture.head
+									: prior === 'with-head'
+										? 'last-finished'
+										: undefined
+							const marker = {
+								v: SUMMARY_MARKER.v,
+								runs: prior === 'absent' ? 1 : 4,
+								...(expectedHead === undefined ? {} : { head: expectedHead }),
+							}
+							expect(
+								parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
+							).toEqual(marker)
+							expect(
+								yield* publisher.readPrior(fixture.input.pullNumber)
+							).toEqual(marker)
+							expect(recheckSpy).toHaveBeenCalledExactlyOnceWith(
+								expect.objectContaining({
+									pullNumber: fixture.input.pullNumber,
+									rotation: prior === 'absent' ? 0 : 3,
+								})
+							)
+						})
+				)
+		test.effect('offline summary has no reviewed head and zero runs', () =>
+			Effect.gen(function* () {
+				const fixture = setup()
+				const publisher = yield* PublishService.pipe(
+					Effect.provide(fixture.publisher)
+				)
+				yield* publisher.publishStatus({
+					pullNumber: 17,
+					head: fixture.head,
+					engineCommit: 'engine',
+					status: 'offline',
+				})
+				expect(
+					parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
+				).toEqual({ v: SUMMARY_MARKER.v, runs: 0 })
+				expect(yield* publisher.readPrior(17)).toEqual({
+					v: SUMMARY_MARKER.v,
+					runs: 0,
+				})
+			})
+		)
 	}
 )

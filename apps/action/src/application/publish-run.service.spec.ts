@@ -50,11 +50,14 @@ function setup(fail = false) {
 				)
 			: Effect.succeed(true)
 	)
+	const reportSpy = vi.fn(() => Effect.succeed({ checks: 1, status: true }))
+	const reportOfflineSpy = vi.fn(() => Effect.succeed(true))
 	const service = PublishRunServiceLive.pipe(
 		Layer.provide(
 			Layer.merge(
 				Layer.succeed(StatusReportService, {
-					report: () => Effect.succeed({ checks: 1, status: true }),
+					report: reportSpy,
+					reportOffline: reportOfflineSpy,
 				}),
 				Layer.succeed(PublishService, {
 					readPrior: () => Effect.succeed(undefined),
@@ -64,7 +67,7 @@ function setup(fail = false) {
 			)
 		)
 	)
-	return { service, publishSpy, publishStatusSpy }
+	return { service, publishSpy, publishStatusSpy, reportSpy, reportOfflineSpy }
 }
 
 layer(Layer.empty)('PublishRunService', test => {
@@ -94,32 +97,45 @@ layer(Layer.empty)('PublishRunService', test => {
 				engineCommit: CONTEXT.engineCommit,
 			})
 			expect(fixture.publishStatusSpy).not.toHaveBeenCalled()
+			expect(fixture.reportSpy).toHaveBeenCalledExactlyOnceWith({
+				head: EVENT.headSha,
+				report,
+				verdict: PUBLISHED.verdict,
+				openBugs: PUBLISHED.openBugs,
+			})
+			expect(fixture.reportOfflineSpy).not.toHaveBeenCalled()
 		})
 	)
-	test.effect('offline posts only a status', () =>
-		Effect.gen(function* () {
-			const fixture = setup()
-			const service = yield* PublishRunService.pipe(
-				Effect.provide(fixture.service)
-			)
-			expect(
-				yield* service.run(
-					{ status: 'offline', event: EVENT, reason: 'no endpoint' },
-					CONTEXT
+	test.effect(
+		'offline publishes its summary and reports an offline status',
+		() =>
+			Effect.gen(function* () {
+				const fixture = setup()
+				const service = yield* PublishRunService.pipe(
+					Effect.provide(fixture.service)
 				)
-			).toEqual({
-				status: 'status-only',
-				reason: 'Reviewer offline: no endpoint. Nothing was reviewed.',
-				posted: true,
+				expect(
+					yield* service.run(
+						{ status: 'offline', event: EVENT, reason: 'no endpoint' },
+						CONTEXT
+					)
+				).toEqual({
+					status: 'status-only',
+					reason: 'Reviewer offline: no endpoint. Nothing was reviewed.',
+					posted: true,
+				})
+				expect(fixture.publishSpy).not.toHaveBeenCalled()
+				expect(fixture.reportOfflineSpy).toHaveBeenCalledExactlyOnceWith(
+					EVENT.headSha
+				)
+				expect(fixture.reportSpy).not.toHaveBeenCalled()
+				expect(fixture.publishStatusSpy).toHaveBeenCalledExactlyOnceWith({
+					pullNumber: EVENT.number,
+					head: EVENT.headSha,
+					engineCommit: CONTEXT.engineCommit,
+					status: 'Reviewer offline: no endpoint. Nothing was reviewed.',
+				})
 			})
-			expect(fixture.publishSpy).not.toHaveBeenCalled()
-			expect(fixture.publishStatusSpy).toHaveBeenCalledExactlyOnceWith({
-				pullNumber: EVENT.number,
-				head: EVENT.headSha,
-				engineCommit: CONTEXT.engineCommit,
-				status: 'Reviewer offline: no endpoint. Nothing was reviewed.',
-			})
-		})
 	)
 	for (const status of ['reviewed', 'offline'] as const)
 		test.effect(
@@ -159,38 +175,55 @@ layer(Layer.empty)('PublishRunService', test => {
 			})
 		)
 	for (const skippedRun of [undefined, 'skip rule'])
-		test.effect(`empty review plan ${skippedRun} writes nothing`, () =>
-			Effect.gen(function* () {
-				const fixture = setup()
-				const service = yield* PublishRunService.pipe(
-					Effect.provide(fixture.service)
-				)
-				const report = reviewReport()
-				expect(
-					yield* service.run(
-						{
-							status: 'reviewed',
-							event: EVENT,
-							rules: RULES,
-							report: {
-								...report,
-								planReport: {
-									...report.planReport,
-									plan: {
-										...report.planReport.plan,
-										runs: [],
-										...(skippedRun ? { skippedRun } : {}),
-									},
-								},
+		test.effect(
+			`empty review plan publishes unless gated by ${skippedRun}`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup()
+					const service = yield* PublishRunService.pipe(
+						Effect.provide(fixture.service)
+					)
+					const report = reviewReport()
+					const reviewed = {
+						...report,
+						planReport: {
+							...report.planReport,
+							plan: {
+								...report.planReport.plan,
+								runs: [],
+								...(skippedRun ? { skippedRun } : {}),
 							},
 						},
-						CONTEXT
-					)
-				).toMatchObject({
-					status: 'not-published',
-					reason: skippedRun ?? 'nothing to review',
+					}
+
+					expect(
+						yield* service.run(
+							{
+								status: 'reviewed',
+								event: EVENT,
+								rules: RULES,
+								report: reviewed,
+							},
+							CONTEXT
+						)
+					).toMatchObject({
+						status: skippedRun ? 'not-published' : 'published',
+						...(skippedRun
+							? { reason: skippedRun }
+							: { result: PUBLISHED, checks: { checks: 1, status: true } }),
+					})
+					if (skippedRun) {
+						expect(fixture.publishSpy).not.toHaveBeenCalled()
+						expect(fixture.reportSpy).not.toHaveBeenCalled()
+					} else {
+						expect(fixture.publishSpy).toHaveBeenCalledOnce()
+						expect(fixture.reportSpy).toHaveBeenCalledExactlyOnceWith({
+							head: EVENT.headSha,
+							report: reviewed,
+							verdict: PUBLISHED.verdict,
+							openBugs: PUBLISHED.openBugs,
+						})
+					}
 				})
-				expect(fixture.publishSpy).not.toHaveBeenCalled()
-			})
 		)
 })

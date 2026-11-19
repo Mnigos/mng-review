@@ -205,8 +205,8 @@ layer(Layer.empty, { excludeTestServices: true })('RecheckService', test => {
 				).toEqual({ results: [], tokens: {} })
 			})
 	)
-	test.effect.fails(
-		'a known base on a diverged branch must use that commit in the validator diff',
+	test.effect(
+		'a force-pushed base on a diverged branch is omitted without calling the validator',
 		() =>
 			Effect.gen(function* () {
 				const fixture = setup()
@@ -242,11 +242,8 @@ layer(Layer.empty, { excludeTestServices: true })('RecheckService', test => {
 						],
 					})
 				).pipe(Effect.provide(fixture.services))
-				expect(checked.results).toHaveLength(1)
-				expect(scriptSpy).toHaveBeenCalledTimes(1)
-				expect(userText(scriptSpy.mock.calls[0]?.[0])).toContain(
-					'-side-branch bug'
-				)
+				expect(checked).toEqual({ results: [], tokens: {} })
+				expect(scriptSpy).not.toHaveBeenCalled()
 			})
 	)
 })
