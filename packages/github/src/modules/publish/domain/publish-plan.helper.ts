@@ -101,11 +101,32 @@ export function getMatchingThreads(
 	)
 }
 
-/** Where a new finding goes: its line when the diff has it, its file when the diff has that, else the summary. */
+/**
+ * True when only metadata agents reported the finding: it is about the pull request, and the path
+ * and line the model had to give name no place in the code.
+ */
+export function isPullRequestFinding(
+	finding: Pick<Finding, 'agents'>,
+	agents: AgentsByName
+): boolean {
+	return (
+		finding.agents.length > 0 &&
+		finding.agents.every(
+			name => agents.get(name)?.frontMatter.input === 'metadata'
+		)
+	)
+}
+
+/**
+ * Where a new finding goes: the summary when it is about the pull request, its line when the diff
+ * has it, its file when the diff has that, else the summary.
+ */
 function getPlace(
-	finding: Pick<Finding, 'path' | 'line'>,
-	lines: CommentableLines
+	finding: Pick<Finding, 'agents' | 'path' | 'line'>,
+	lines: CommentableLines,
+	agents: AgentsByName
 ): ThreadPlace {
+	if (isPullRequestFinding(finding, agents)) return 'pull_request'
 	const fileLines = lines.get(finding.path)
 	if (fileLines?.has(finding.line)) return 'line'
 	return fileLines ? 'file' : 'summary'
@@ -143,7 +164,7 @@ export function planPublish(
 		else
 			threads.push({
 				...published,
-				place: getPlace(published.finding, context.lines),
+				place: getPlace(published.finding, context.lines, selection.agents),
 			})
 	}
 	return {

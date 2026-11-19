@@ -75,12 +75,17 @@ function toCapped<TItem>(
 	return [...lines, `- and ${items.length - limit} more`]
 }
 
-/** A finding as one list line: kind, place and title. */
-function toFindingLine(
-	thread: Pick<PlannedThread, 'finding' | 'kind'>
-): string {
+/** A finding to list, with its place when it has one. */
+type ListedFinding = Pick<PlannedThread, 'finding' | 'kind'> &
+	Partial<Pick<PlannedThread, 'place'>>
+
+/** A finding as one list line: kind, place and title; a finding about the pull request has no place. */
+function toFindingLine(thread: ListedFinding): string {
 	const { finding, kind } = thread
-	return `- **${toKindLabel(kind, finding.severity)}** ${toCodeSpan(toShortText(`${finding.path}:${finding.line}`))} ${escapeMarkdown(toShortText(finding.title))}`
+	const label = `- **${toKindLabel(kind, finding.severity)}**`
+	const title = escapeMarkdown(toShortText(finding.title))
+	if (thread.place === 'pull_request') return `${label} ${title}`
+	return `${label} ${toCodeSpan(toShortText(`${finding.path}:${finding.line}`))} ${title}`
 }
 
 /**
@@ -110,6 +115,20 @@ function toSection(title: string, lines: readonly string[]): string[] {
 	return lines.length === 0 ? [] : ['', title, '', ...lines]
 }
 
+/** Collapsed findings up to the limit, then how many more there are. */
+function toCollapsedFindings(
+	threads: readonly PlannedThread[],
+	limit: number,
+	links: BlobLinks
+): string[] {
+	return [
+		...threads
+			.slice(0, limit)
+			.flatMap((thread, index) => toCollapsedFinding(thread, index, links)),
+		...(threads.length > limit ? [`- and ${threads.length - limit} more`] : []),
+	]
+}
+
 /** Most severe first. */
 function bySeverity(a: PlannedThread, b: PlannedThread): number {
 	return (
@@ -125,6 +144,9 @@ function toFindingLines(input: SummaryInput, limit: number): string[] {
 		thread => thread.place === 'line' || thread.place === 'file'
 	)
 	const inSummary = threads.filter(thread => thread.place === 'summary')
+	const aboutPullRequest = threads.filter(
+		thread => thread.place === 'pull_request'
+	)
 	const unposted = threads.filter(thread => thread.place === 'unposted')
 	const published = new Set(
 		[...plan.threads, ...plan.repeated, ...plan.dismissed].map(
@@ -139,14 +161,14 @@ function toFindingLines(input: SummaryInput, limit: number): string[] {
 			`New threads (${posted.length}):`,
 			toCapped(posted, limit, toFindingLine)
 		),
-		...toSection(`Not in the diff (${inSummary.length}):`, [
-			...inSummary
-				.slice(0, limit)
-				.flatMap((thread, index) => toCollapsedFinding(thread, index, links)),
-			...(inSummary.length > limit
-				? [`- and ${inSummary.length - limit} more`]
-				: []),
-		]),
+		...toSection(
+			`About the pull request (${aboutPullRequest.length}):`,
+			toCollapsedFindings(aboutPullRequest, limit, links)
+		),
+		...toSection(
+			`Not in the diff (${inSummary.length}):`,
+			toCollapsedFindings(inSummary, limit, links)
+		),
 		...toSection(
 			`Could not be posted, retried on the next run (${unposted.length}):`,
 			toCapped(unposted, limit, toFindingLine)

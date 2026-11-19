@@ -32,10 +32,17 @@ export interface PublishedFinding {
 /**
  * Where a new finding goes: an inline thread on its line, a comment on its file when the line is
  * outside the diff, or the summary when the file is not in the diff at all or GitHub refused both.
+ * `pull_request`: a finding only metadata agents reported is about the pull request itself (its
+ * title, description or size), not a line, so it stays in the summary whatever path it names.
  * `unposted`: a write failed in a way that leaves unknown whether GitHub stored it, so nothing
  * more is tried; the next run finds the thread or posts it.
  */
-export type ThreadPlace = 'line' | 'file' | 'summary' | 'unposted'
+export type ThreadPlace =
+	| 'line'
+	| 'file'
+	| 'summary'
+	| 'pull_request'
+	| 'unposted'
 
 /** A finding the run publishes and where. */
 export interface PlannedThread extends PublishedFinding {
