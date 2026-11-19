@@ -1,7 +1,7 @@
 import { Effect } from 'effect'
 import { ConfigError } from '../config/config.errors'
 import { SAME_DESCRIPTION_OVERLAP } from '../findings/finding.constants'
-import { getWordOverlap } from '../findings/finding.helper'
+import { getWordCoverage } from '../findings/finding.helper'
 import type { KeptFinding } from '../validation/validation.types'
 import type { BenchFile, ExpectedFinding } from './bench-file.schema'
 import type {
@@ -27,16 +27,16 @@ export interface MatchInput {
 	readonly lineWindow: number
 }
 
-/** A kept bug as the benchmark reports it; a bug without a validation counts as unvalidated. */
-export function toBenchFinding(finding: KeptFinding): BenchFinding {
+/**
+ * A kept bug as the benchmark reports it: every field of the finding plus its validation `status`;
+ * a bug without a validation counts as unvalidated.
+ */
+export function toBenchFinding(
+	finding: KeptFinding
+): BenchFinding & KeptFinding {
 	const status = finding.validation?.status
 	return {
-		path: finding.path,
-		line: finding.line,
-		title: finding.title,
-		severity: finding.severity,
-		trigger: finding.trigger,
-		impact: finding.impact,
+		...finding,
 		status:
 			status === undefined || status === 'rejected' ? 'unvalidated' : status,
 	}
@@ -57,7 +57,7 @@ function isNearMatch(entry: ExpectedFinding, finding: BenchFinding): boolean {
 	return (
 		finding.path !== entry.path &&
 		getDirectory(finding.path) === getDirectory(entry.path) &&
-		getWordOverlap(
+		getWordCoverage(
 			entry.summary,
 			[finding.title, finding.trigger, finding.impact].join(' ')
 		) >= SAME_DESCRIPTION_OVERLAP

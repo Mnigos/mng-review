@@ -1,4 +1,10 @@
-import type { PlannedRun } from '@mng-review/domain'
+import {
+	MECHANICAL_MAX_NET_SHARE,
+	MECHANICAL_MIN_FILES,
+	MECHANICAL_MIN_SMALL_SHARE,
+	MECHANICAL_REWRITE_MIN_LINES,
+	type PlannedRun,
+} from '@mng-review/domain'
 import type { AgentRunReport, ReviewReport } from '@mng-review/engine'
 import type {
 	PullRequestEvent,
@@ -11,6 +17,7 @@ import { toFindingsLines } from './findings-summary.formatter'
 export const SUMMARY_TITLE = '## MNG Review (shadow mode)'
 const SHORT_SHA_LENGTH = 8
 const MILLIS_PER_SECOND = 1000
+const PERCENT = 100
 
 /** What the summary says about the run besides the outcome. */
 export interface SummaryContext {
@@ -105,12 +112,23 @@ function toAgentRow(
 	return `| ${escapeMarkdown(run.name)} | ${toSelectedBy(run)} | ${escapeMarkdown(model)} ${run.effort} | ${status} | ${agent?.findings ?? 0} | ${agent?.toolCalls ?? 0} | ${agent ? toSeconds(agent.wallMillis) : ''} |`
 }
 
-/** Whether files under `risk_paths` sat in a mechanical change, and which conditions it failed. */
+/** A share as a whole percentage. */
+function toPercent(share: number): string {
+	return `${Math.round(share * PERCENT)}%`
+}
+
+/**
+ * The change measured against each mechanical condition and its limit, and whether files under
+ * `risk_paths` sat in a mechanical change; nothing when no such file changed.
+ */
 function toShapeText(plan: ReviewReport['planReport']['plan']): string {
 	const { shape } = plan
 	if (!shape || plan.riskPathHits.length === 0) return ''
-	if (shape.failed.length === 0) return '; mechanical change'
-	return `; not mechanical, failed: ${shape.failed.join(', ')}`
+	const verdict =
+		shape.failed.length === 0
+			? 'mechanical change'
+			: `not mechanical, failed: ${shape.failed.join(', ')}`
+	return `; ${shape.files} files (mechanical needs ${MECHANICAL_MIN_FILES}), ${toPercent(shape.smallShare)} small edits (needs ${toPercent(MECHANICAL_MIN_SMALL_SHARE)}), lines ${toPercent(shape.netShare)} apart (at most ${toPercent(MECHANICAL_MAX_NET_SHARE)}), ${shape.riskyRewrites.length} risky rewrite(s) of ${MECHANICAL_REWRITE_MIN_LINES}+ lines: ${verdict}`
 }
 
 /** Risk, depth and router, then the agents that ran and the ones skipped, each with why. */
