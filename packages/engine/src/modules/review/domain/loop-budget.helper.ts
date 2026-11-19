@@ -91,10 +91,26 @@ export function getMissingTokens(
 		: needed - budget.conversationTokens + 1
 }
 
+/** What a finished conversation spent and left unspent. */
+export interface SpentTokens {
+	readonly spentTokens: number
+	/** Tokens of its share and pool claims it left unspent; what its finder gives back to the pool. */
+	readonly unspentTokens: number
+}
+
 /** One conversation's token bounds as the loop checks them, its pool claims included. */
 export interface ConversationBudget {
 	/** The budget with what the conversation claimed from the pool added to its share. */
 	readonly current: Effect.Effect<LoopBudget | undefined>
+	/** Adds one call's input and output tokens to what the conversation spent. */
+	readonly record: (tokens: number) => Effect.Effect<void>
+	/**
+	 * The result with what the whole conversation spent and what it left of its share and pool
+	 * claims, read when it ends, so an answer kept from before a failed turn reports every call.
+	 */
+	readonly settle: <TResult extends SpentTokens>(
+		result: TResult
+	) => Effect.Effect<TResult>
 	/**
 	 * True once the conversation cannot afford a call after the next one and the pool cannot cover
 	 * the difference, or the whole run has spent its finder tokens (`spent`).
@@ -107,11 +123,21 @@ export function makeConversationBudget(
 	budget: LoopBudget | undefined,
 	spent: Effect.Effect<number>
 ): Effect.Effect<ConversationBudget> {
-	return Effect.map(Ref.make(0), granted => {
-		const current = Effect.map(Ref.get(granted), extra =>
-			budget === undefined
-				? undefined
-				: { ...budget, conversationTokens: budget.conversationTokens + extra }
+	return Effect.map(Ref.make({ granted: 0, spent: 0 }), totals => {
+		const granted = {
+			get: Ref.get(totals).pipe(Effect.map(entry => entry.granted)),
+			add: (tokens: number) =>
+				Ref.update(totals, entry => ({
+					...entry,
+					granted: entry.granted + tokens,
+				})),
+		}
+		const current = granted.get.pipe(
+			Effect.map(extra =>
+				budget === undefined
+					? undefined
+					: { ...budget, conversationTokens: budget.conversationTokens + extra }
+			)
 		)
 		const isSpent = (state: ConversationTokens) =>
 			Effect.gen(function* () {
@@ -121,10 +147,26 @@ export function makeConversationBudget(
 				const missing = getMissingTokens(now, state)
 				if (missing === 0) return false
 				if (!(now.pool && (yield* now.pool.claim(missing)))) return true
-				yield* Ref.update(granted, extra => extra + missing)
+				yield* granted.add(missing)
 				return false
 			})
-		return { current, isSpent }
+		const record = (tokens: number) =>
+			Ref.update(totals, entry => ({ ...entry, spent: entry.spent + tokens }))
+		const settle = <TResult extends SpentTokens>(result: TResult) =>
+			Ref.get(totals).pipe(
+				Effect.map(entry => ({
+					...result,
+					spentTokens: entry.spent,
+					unspentTokens:
+						budget === undefined
+							? 0
+							: Math.max(
+									0,
+									budget.conversationTokens + entry.granted - entry.spent
+								),
+				}))
+			)
+		return { current, isSpent, record, settle }
 	})
 }
 

@@ -228,6 +228,12 @@ export const FinderServiceLive = Layer.effect(
 			tried: readonly string[]
 		): ReturnType<typeof attemptJob> =>
 			attemptJob(run, job, context, model).pipe(
+				// A fallback restarts the conversation, so only a first attempt knows what the job left.
+				Effect.tap(result =>
+					context.tokens.pool && tried.length === 1
+						? context.tokens.pool.release(result.unspentTokens)
+						: Effect.void
+				),
 				Effect.catchTag('ModelDroppedError', error =>
 					nextModel(context, tried).pipe(
 						Effect.flatMap(next =>
@@ -267,12 +273,8 @@ export const FinderServiceLive = Layer.effect(
 						: {}),
 				})
 				.pipe(
-					Effect.tap(result =>
-						context.tokens.pool
-							? context.tokens.pool.release(job.tokens - result.spentTokens)
-							: Effect.void
-					),
 					Effect.map(result => ({
+						unspentTokens: result.unspentTokens,
 						model: model.model,
 						toolCalls: result.toolCalls,
 						continued: result.continued === true,

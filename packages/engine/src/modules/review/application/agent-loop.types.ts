@@ -1,7 +1,7 @@
 import type { ModelSetting } from '@mng-review/domain'
 import type { Effect } from 'effect'
 import type { Prompt } from 'effect/ai'
-import type { LoopBudget } from '../domain/loop-budget.helper'
+import type { LoopBudget, SpentTokens } from '../domain/loop-budget.helper'
 import type { RepoToolName } from './repo.toolkit'
 import type { ReportFindingsTool } from './report-findings.tool'
 import type { ReportVerdictTool } from './report-verdict.tool'
@@ -49,12 +49,10 @@ export interface LoopCoverage<TValue> {
 }
 
 /** An agent's answer and what it took. */
-export interface LoopResult<TValue> {
+export interface LoopResult<TValue> extends SpentTokens {
 	readonly value: TValue
 	readonly toolCalls: number
 	readonly turns: number
-	/** Tokens the conversation spent, input and output of every call. */
-	readonly spentTokens: number
 	/** The agent got a continuation turn for files it had not read. */
 	readonly continued?: boolean
 }
