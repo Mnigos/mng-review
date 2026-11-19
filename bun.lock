@@ -30,6 +30,7 @@
         "@effect/platform-bun": "catalog:",
         "@mng-review/domain": "workspace:*",
         "@mng-review/engine": "workspace:*",
+        "@mng-review/github": "workspace:*",
         "effect": "catalog:",
       },
       "devDependencies": {
@@ -84,6 +85,21 @@
       },
       "devDependencies": {
         "@effect/platform-node-shared": "catalog:",
+        "@effect/vitest": "catalog:",
+        "@mng-review/typescript-config": "workspace:*",
+        "@types/node": "catalog:",
+        "typescript": "catalog:",
+        "vitest": "catalog:",
+      },
+    },
+    "packages/github": {
+      "name": "@mng-review/github",
+      "dependencies": {
+        "@mng-review/domain": "workspace:*",
+        "@mng-review/engine": "workspace:*",
+        "effect": "catalog:",
+      },
+      "devDependencies": {
         "@effect/vitest": "catalog:",
         "@mng-review/typescript-config": "workspace:*",
         "@types/node": "catalog:",
@@ -201,6 +217,8 @@
     "@mng-review/domain": ["@mng-review/domain@workspace:packages/domain"],
 
     "@mng-review/engine": ["@mng-review/engine@workspace:packages/engine"],
+
+    "@mng-review/github": ["@mng-review/github@workspace:packages/github"],
 
     "@mng-review/oxlint-plugin": ["@mng-review/oxlint-plugin@workspace:tooling/oxlint-plugin"],
 

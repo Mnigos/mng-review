@@ -1,0 +1,382 @@
+import {
+	Context,
+	Duration,
+	Effect,
+	Layer,
+	Predicate,
+	Redacted,
+	Schema,
+} from 'effect'
+import {
+	HttpClient,
+	HttpClientRequest,
+	type HttpClientResponse,
+} from 'effect/http'
+import {
+	API_VERSION,
+	MAX_PAGES,
+	PAGE_SIZE,
+	PULL_REQUEST_COMMENTS_QUERY,
+	READ_RETRIES,
+	READ_RETRY,
+	REQUEST_TIMEOUT,
+	REVIEW_THREADS_QUERY,
+	SERVER_ERROR_STATUS,
+} from './github-api.constants'
+import {
+	type ConnectionPage,
+	createdSchema,
+	errorBodySchema,
+	type PullRequestComment,
+	pullRequestCommentsAnswerSchema,
+	type ReviewThread,
+	reviewThreadsAnswerSchema,
+} from './github-api.schema'
+import { GitHubConfig } from './github.config'
+import { GitHubApiError } from './github.errors'
+
+/** One inline comment of a review, on a line of the head side of the diff. */
+export interface InlineComment {
+	readonly path: string
+	readonly line: number
+	readonly body: string
+}
+
+/** A review the bot posts: always `COMMENT`, never an approval or a change request. */
+export interface ReviewInput {
+	readonly commitId: string
+	readonly body: string
+	readonly comments: readonly InlineComment[]
+}
+
+/** A single review comment: on a line, or on the whole file when `line` is unset. */
+export interface ReviewCommentInput {
+	readonly commitId: string
+	readonly path: string
+	readonly line?: number
+	readonly body: string
+}
+
+/** The calls publishing makes on one pull request of the configured repository. */
+export class GitHubApiService extends Context.Service<
+	GitHubApiService,
+	{
+		readonly listReviewThreads: (
+			pullNumber: number
+		) => Effect.Effect<readonly ReviewThread[], GitHubApiError>
+		readonly listComments: (
+			pullNumber: number
+		) => Effect.Effect<readonly PullRequestComment[], GitHubApiError>
+		readonly createReview: (
+			pullNumber: number,
+			input: ReviewInput
+		) => Effect.Effect<number, GitHubApiError>
+		readonly createReviewComment: (
+			pullNumber: number,
+			input: ReviewCommentInput
+		) => Effect.Effect<number, GitHubApiError>
+		readonly createIssueComment: (
+			pullNumber: number,
+			body: string
+		) => Effect.Effect<number, GitHubApiError>
+		readonly updateIssueComment: (
+			commentId: number,
+			body: string
+		) => Effect.Effect<void, GitHubApiError>
+	}
+>()('mng-review/GitHubApiService') {}
+
+/** True for a failure worth reading again: no answer, or a 5xx. */
+function isTransient(error: GitHubApiError): boolean {
+	return error.status === undefined || error.status >= SERVER_ERROR_STATUS
+}
+
+/** A read with retries on transient failures. */
+function read<TValue>(
+	effect: Effect.Effect<TValue, GitHubApiError>
+): Effect.Effect<TValue, GitHubApiError> {
+	return effect.pipe(
+		Effect.retry({
+			schedule: READ_RETRY,
+			times: READ_RETRIES,
+			while: isTransient,
+		})
+	)
+}
+
+/** The answer's GraphQL errors joined, or `undefined` when it has none. */
+function getGraphqlErrors(
+	errors: readonly { readonly message: string }[] | undefined
+): string | undefined {
+	if (!errors || errors.length === 0) return undefined
+	return errors.map(error => error.message).join('; ')
+}
+
+/**
+ * Every node of a connection, page by page. A missing pull request or more than `MAX_PAGES`
+ * pages fails, so a partial list is never taken for the whole; nodes GitHub could not resolve
+ * are left out.
+ */
+function collect<TNode>(
+	operation: string,
+	fetchPage: (
+		cursor: string | null
+	) => Effect.Effect<ConnectionPage<TNode> | undefined, GitHubApiError>,
+	cursor: string | null,
+	page: number
+): Effect.Effect<readonly TNode[], GitHubApiError> {
+	return fetchPage(cursor).pipe(
+		Effect.flatMap(connection => {
+			if (!connection)
+				return Effect.fail(
+					new GitHubApiError({
+						operation,
+						reason:
+							'the repository or pull request is not visible to the token',
+					})
+				)
+			const nodes = connection.nodes.filter(Predicate.isNotNull)
+			const { hasNextPage, endCursor } = connection.pageInfo
+			if (!hasNextPage || !endCursor) return Effect.succeed(nodes)
+			if (page + 1 >= MAX_PAGES)
+				return Effect.fail(
+					new GitHubApiError({
+						operation,
+						reason: `more than ${MAX_PAGES * PAGE_SIZE} entries`,
+					})
+				)
+			return collect(operation, fetchPage, endCursor, page + 1).pipe(
+				Effect.map(rest => [...nodes, ...rest])
+			)
+		})
+	)
+}
+
+export const GitHubApiServiceLive = Layer.effect(
+	GitHubApiService,
+	Effect.gen(function* () {
+		const config = yield* GitHubConfig
+		const client = yield* HttpClient.HttpClient
+		const repo = `${config.apiUrl}/repos/${config.owner}/${config.name}`
+
+		/** Sends a request with the token and the API version; a non-2xx answer fails with GitHub's message. */
+		const send = (
+			operation: string,
+			request: HttpClientRequest.HttpClientRequest
+		): Effect.Effect<HttpClientResponse.HttpClientResponse, GitHubApiError> =>
+			client
+				.execute(
+					request.pipe(
+						HttpClientRequest.bearerToken(Redacted.value(config.token)),
+						HttpClientRequest.setHeaders({
+							accept: 'application/vnd.github+json',
+							'x-github-api-version': API_VERSION,
+							'user-agent': 'mng-review',
+						})
+					)
+				)
+				.pipe(
+					Effect.mapError(
+						error =>
+							new GitHubApiError({ operation, reason: error.reason._tag })
+					),
+					Effect.flatMap(response =>
+						response.status >= 200 && response.status < 300
+							? Effect.succeed(response)
+							: response.json.pipe(
+									Effect.flatMap(Schema.decodeUnknownEffect(errorBodySchema)),
+									Effect.map(body => body.message),
+									Effect.orElseSucceed(() => 'no message'),
+									Effect.flatMap(reason =>
+										Effect.fail(
+											new GitHubApiError({
+												operation,
+												status: response.status,
+												reason,
+											})
+										)
+									)
+								)
+					),
+					// Spans would record request URLs and headers.
+					Effect.withTracerEnabled(false)
+				)
+
+		/** Sends a request and decodes its JSON body; the whole exchange has `REQUEST_TIMEOUT`. */
+		const sendJson = <TValue>(
+			operation: string,
+			request: HttpClientRequest.HttpClientRequest,
+			schema: Schema.Decoder<TValue>
+		): Effect.Effect<TValue, GitHubApiError> =>
+			send(operation, request).pipe(
+				Effect.flatMap(response => response.json),
+				Effect.flatMap(Schema.decodeUnknownEffect(schema)),
+				Effect.timeout(REQUEST_TIMEOUT),
+				Effect.mapError(error => {
+					if (Predicate.isTagged(error, 'GitHubApiError')) return error
+					if (Predicate.isTagged(error, 'TimeoutError'))
+						return new GitHubApiError({
+							operation,
+							reason: `no answer within ${Duration.format(REQUEST_TIMEOUT)}`,
+						})
+					return new GitHubApiError({ operation, reason: 'unexpected answer' })
+				})
+			)
+
+		/** A GraphQL query; errors beside data, or no data, fail the read. */
+		const query = <
+			TAnswer extends {
+				readonly errors?: readonly { readonly message: string }[] | undefined
+			},
+		>(
+			operation: string,
+			text: string,
+			variables: Record<string, unknown>,
+			schema: Schema.Decoder<TAnswer>
+		): Effect.Effect<TAnswer, GitHubApiError> =>
+			read(
+				sendJson(
+					operation,
+					HttpClientRequest.post(config.graphqlUrl).pipe(
+						HttpClientRequest.bodyJsonUnsafe({ query: text, variables })
+					),
+					schema
+				)
+			).pipe(
+				Effect.flatMap(answer => {
+					const errors = getGraphqlErrors(answer.errors)
+					return errors === undefined
+						? Effect.succeed(answer)
+						: Effect.fail(new GitHubApiError({ operation, reason: errors }))
+				})
+			)
+
+		/** The variables every pull request query takes. */
+		const toVariables = (pullNumber: number, cursor: string | null) => ({
+			owner: config.owner,
+			name: config.name,
+			number: pullNumber,
+			cursor,
+		})
+
+		const listReviewThreads = Effect.fn('GitHubApiService.listReviewThreads')(
+			function* (pullNumber: number) {
+				return yield* collect(
+					'listReviewThreads',
+					cursor =>
+						query(
+							'listReviewThreads',
+							REVIEW_THREADS_QUERY,
+							toVariables(pullNumber, cursor),
+							reviewThreadsAnswerSchema
+						).pipe(
+							Effect.map(
+								answer => answer.data?.repository?.pullRequest?.reviewThreads
+							)
+						),
+					null,
+					0
+				)
+			}
+		)
+
+		const listComments = Effect.fn('GitHubApiService.listComments')(function* (
+			pullNumber: number
+		) {
+			return yield* collect(
+				'listComments',
+				cursor =>
+					query(
+						'listComments',
+						PULL_REQUEST_COMMENTS_QUERY,
+						toVariables(pullNumber, cursor),
+						pullRequestCommentsAnswerSchema
+					).pipe(
+						Effect.map(answer => answer.data?.repository?.pullRequest?.comments)
+					),
+				null,
+				0
+			)
+		})
+
+		const createReview = Effect.fn('GitHubApiService.createReview')(function* (
+			pullNumber: number,
+			input: ReviewInput
+		) {
+			const created = yield* sendJson(
+				'createReview',
+				HttpClientRequest.post(`${repo}/pulls/${pullNumber}/reviews`).pipe(
+					HttpClientRequest.bodyJsonUnsafe({
+						commit_id: input.commitId,
+						event: 'COMMENT',
+						body: input.body,
+						comments: input.comments.map(comment => ({
+							path: comment.path,
+							line: comment.line,
+							side: 'RIGHT',
+							body: comment.body,
+						})),
+					})
+				),
+				createdSchema
+			)
+			return created.id
+		})
+
+		const createReviewComment = Effect.fn(
+			'GitHubApiService.createReviewComment'
+		)(function* (pullNumber: number, input: ReviewCommentInput) {
+			const place =
+				input.line === undefined
+					? { subject_type: 'file' }
+					: { line: input.line, side: 'RIGHT' }
+			const created = yield* sendJson(
+				'createReviewComment',
+				HttpClientRequest.post(`${repo}/pulls/${pullNumber}/comments`).pipe(
+					HttpClientRequest.bodyJsonUnsafe({
+						commit_id: input.commitId,
+						path: input.path,
+						body: input.body,
+						...place,
+					})
+				),
+				createdSchema
+			)
+			return created.id
+		})
+
+		const createIssueComment = Effect.fn('GitHubApiService.createIssueComment')(
+			function* (pullNumber: number, body: string) {
+				const created = yield* sendJson(
+					'createIssueComment',
+					HttpClientRequest.post(`${repo}/issues/${pullNumber}/comments`).pipe(
+						HttpClientRequest.bodyJsonUnsafe({ body })
+					),
+					createdSchema
+				)
+				return created.id
+			}
+		)
+
+		const updateIssueComment = Effect.fn('GitHubApiService.updateIssueComment')(
+			function* (commentId: number, body: string) {
+				yield* sendJson(
+					'updateIssueComment',
+					HttpClientRequest.patch(`${repo}/issues/comments/${commentId}`).pipe(
+						HttpClientRequest.bodyJsonUnsafe({ body })
+					),
+					createdSchema
+				)
+			}
+		)
+
+		return {
+			listReviewThreads,
+			listComments,
+			createReview,
+			createReviewComment,
+			createIssueComment,
+			updateIssueComment,
+		}
+	})
+)

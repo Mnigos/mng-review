@@ -6,12 +6,12 @@ import {
 	type PlannedRun,
 } from '@mng-review/domain'
 import type { AgentRunReport, ReviewReport } from '@mng-review/engine'
+import { escapeMarkdown, toCodeSpan, toLogText } from '@mng-review/github'
 import type {
 	PullRequestEvent,
 	ReviewedRun,
 	ShadowOutcome,
 } from '../application/shadow-run.types'
-import { escapeMarkdown, toCodeSpan, toLogText } from '../utils/markdown.util'
 import { toFindingsLines } from './findings-summary.formatter'
 
 export const SUMMARY_TITLE = '## MNG Review (shadow mode)'

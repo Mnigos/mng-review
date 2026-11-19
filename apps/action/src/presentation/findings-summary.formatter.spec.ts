@@ -4,11 +4,11 @@ import {
 	type KeptFinding,
 	type Unverified,
 } from '@mng-review/domain'
+import { escapeMarkdown } from '@mng-review/github'
 import {
 	reviewReport,
 	unverifiedBug,
 } from '../shared/mocks/review-report.helper'
-import { escapeMarkdown } from '../utils/markdown.util'
 import { toFindingsLines } from './findings-summary.formatter'
 
 const MALICIOUS = '![x](https://evil.example/a.png) <img src=x> | col'
