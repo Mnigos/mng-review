@@ -10,6 +10,44 @@ describe('escapeMarkdown', () => {
 			'\\!\\[x\\]\\(`https://evil.example/a.png)` \\<img src=x\\> \\| col next'
 		)
 	})
+	test.each(['@user', '@org/team', '#12', 'owner/repo#12', 'GH-12'])(
+		'wraps %s even immediately after a backtick',
+		reference => {
+			expect(escapeMarkdown(`\`${reference}`)).toBe(`\\\`\`${reference}\``)
+		}
+	)
+	test.each([
+		'abcdef1',
+		'ABCDEF1',
+		'1234567',
+		'abcdef1234567890abcdef1234567890abcdef12',
+		'owner/repo@abcdef1',
+		'abcdef1...1234567',
+		'abcdef1..1234567',
+	])('wraps commit reference %s in code', reference => {
+		expect(escapeMarkdown(reference)).toBe(`\`${reference}\``)
+	})
+	test.each([
+		['bidirectional override', 'first\u202Elast', 'firstlast'],
+		['zero-width mark inside a mention', '@us\u200Ber', '`@user`'],
+		['format marks around an issue', '\u2066#12\u2069', '`#12`'],
+		['minus list marker', '- item', '\\- item'],
+		['plus list marker', '+ item', '\\+ item'],
+		['heading underline marker', '= title', '\\= title'],
+		['indented list marker', '  - item', ' \\- item'],
+		['numbered list with dot', '12. item', '12\\. item'],
+		['numbered list with parenthesis', '3) item', '3\\) item'],
+		[
+			'ordinary words and short numbers',
+			'hello world 1 123456 abcdef',
+			'hello world 1 123456 abcdef',
+		],
+		['hex longer than a commit', 'a'.repeat(41), 'a'.repeat(41)],
+		['hex inside a word', 'zabcdef1z', 'zabcdef1z'],
+	])('handles %s', (_name, input, expected) => {
+		expect(escapeMarkdown(input)).toBe(expected)
+	})
+
 	test.each([
 		[
 			'HTTPS URL',
@@ -175,6 +213,9 @@ describe('toLogText', () => {
 })
 
 describe('toCodeSpan', () => {
+	test('drops bidirectional overrides so a path cannot be shown reversed', () => {
+		expect(toCodeSpan('src/a\u202Ests.ts:12')).toBe('`src/asts.ts:12`')
+	})
 	test.each([
 		['a lone carriage return', 'first\rlast'],
 		['consecutive carriage returns', 'first\r\rlast'],
