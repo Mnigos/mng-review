@@ -198,12 +198,14 @@ function toFindingLines(input: SummaryInput, limit: number): string[] {
 			`New threads (${posted.length}):`,
 			toCapped(posted, limit, toFindingLine)
 		),
-		...toSection(
-			`Not in the diff (${inSummary.length}):`,
-			inSummary
+		...toSection(`Not in the diff (${inSummary.length}):`, [
+			...inSummary
 				.slice(0, limit)
-				.flatMap((thread, index) => toCollapsedFinding(thread, index, links))
-		),
+				.flatMap((thread, index) => toCollapsedFinding(thread, index, links)),
+			...(inSummary.length > limit
+				? [`- and ${inSummary.length - limit} more`]
+				: []),
+		]),
 		...toSection(
 			`Could not be posted, retried on the next run (${unposted.length}):`,
 			toCapped(unposted, limit, toFindingLine)

@@ -2,8 +2,11 @@ import type { LineFold } from '@mng-review/engine'
 
 /** `@@ -a[,b] +c[,d] @@`; an omitted count is 1. */
 const HUNK_HEADER = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/u
-/** The head path in a file header; quoted paths (special characters) are not matched. */
-const NEW_PATH = /^\+\+\+ b\/(.+)$/u
+/**
+ * The head path in a file header, without the tab git adds after a path that has a space; quoted
+ * paths (special characters) are not matched.
+ */
+const NEW_PATH = /^\+\+\+ b\/(.+?)\t?$/u
 /** Longest diff line the fold keeps whole; hunk headers and paths are far shorter. */
 export const DIFF_LINE_CHARS = 4096
 
