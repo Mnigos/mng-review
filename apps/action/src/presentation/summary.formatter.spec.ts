@@ -55,7 +55,7 @@ const OUTCOMES = [
 		log: 'mng-review: invalid configuration: .mng/review.yml: unknown setting',
 	},
 	{
-		outcome: { status: 'failed', reason: 'missing base commit' },
+		outcome: { status: 'failed', reason: 'missing base commit', event: EVENT },
 		summary: '**Failed:** missing base commit',
 		log: 'mng-review: failed: missing base commit',
 	},
