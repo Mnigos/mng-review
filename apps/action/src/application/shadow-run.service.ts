@@ -7,10 +7,29 @@ import {
 import { Context, Effect, Layer } from 'effect'
 import { parsePullRequestEvent } from '../infrastructure/pull-request-event.parser'
 import type {
+	PriorRun,
 	PullRequestEvent,
 	ShadowOutcome,
 	ShadowRunInput,
 } from './shadow-run.types'
+
+/** Actions that start a run whatever the run count: a draft that became ready. */
+const EXEMPT_ACTIONS = ['ready_for_review'] as const
+
+/**
+ * Why the run stops at `limits.max_runs_per_pr`, or `undefined` when it goes on: a manual trigger
+ * and a pull request that just became ready for review are exempt.
+ */
+export function getRunLimitReason(
+	prior: PriorRun | undefined,
+	limit: number,
+	event: Pick<PullRequestEvent, 'action' | 'pr'>
+): string | undefined {
+	if (!prior || prior.runs < limit || event.pr.trigger === 'manual')
+		return undefined
+	if (EXEMPT_ACTIONS.some(action => action === event.action)) return undefined
+	return `run limit reached: ${prior.runs} of ${limit} runs on this pull request; a manual command still runs`
+}
 
 /** Events whose payload carries a pull request. */
 const PULL_REQUEST_EVENTS = ['pull_request', 'pull_request_target'] as const
@@ -36,7 +55,8 @@ export const ShadowRunServiceLive = Layer.effect(
 		const endpointProbe = yield* EndpointProbeService
 
 		const review = Effect.fn('ShadowRunService.review')(function* (
-			event: PullRequestEvent
+			event: PullRequestEvent,
+			input: ShadowRunInput
 		) {
 			if (event.pr.fork)
 				return { status: 'skipped', reason: FORK_REASON, event } as const
@@ -44,6 +64,14 @@ export const ShadowRunServiceLive = Layer.effect(
 			const skipped = gateRun(rules.config, event.pr)
 			if (skipped !== undefined)
 				return { status: 'skipped', reason: skipped, event } as const
+			const prior = input.readPrior ? yield* input.readPrior(event) : undefined
+			const limited = getRunLimitReason(
+				prior,
+				rules.config.limits.max_runs_per_pr,
+				event
+			)
+			if (limited !== undefined)
+				return { status: 'skipped', reason: limited, event } as const
 			const probe = yield* endpointProbe.probe()
 			if (probe.status === 'offline')
 				return { status: 'offline', reason: probe.reason, event } as const
@@ -52,6 +80,7 @@ export const ShadowRunServiceLive = Layer.effect(
 				baseRef: event.baseSha,
 				headRef: event.headSha,
 				pr: event.pr,
+				...(prior && event.pr.trigger === 'auto' ? { since: prior.head } : {}),
 			})
 			return { status: 'reviewed', event, report, rules } as const
 		})
@@ -67,7 +96,7 @@ export const ShadowRunServiceLive = Layer.effect(
 			return yield* input.readEvent.pipe(
 				Effect.flatMap(parsePullRequestEvent),
 				Effect.flatMap(event =>
-					review(event).pipe(
+					review(event, input).pipe(
 						Effect.catchTags({
 							ConfigError: error =>
 								Effect.succeed({

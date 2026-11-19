@@ -12,8 +12,14 @@ import {
 import {
 	GitHubApiServiceLive,
 	GitHubConfigLive,
+	GitHubStatusServiceLive,
+	PublishService,
 	PublishServiceLive,
+	StatusReportServiceLive,
+	StatusSweepService,
+	StatusSweepServiceLive,
 	ThreadRecheckServiceLive,
+	toLogText,
 } from '@mng-review/github'
 import { Clock, Console, Effect, FileSystem, Layer } from 'effect'
 import { FetchHttpClient } from 'effect/http'
@@ -25,7 +31,10 @@ import {
 	ShadowRunService,
 	ShadowRunServiceLive,
 } from './application/shadow-run.service'
-import type { ShadowOutcome } from './application/shadow-run.types'
+import type {
+	PullRequestEvent,
+	ShadowOutcome,
+} from './application/shadow-run.types'
 import {
 	MODE_VARIABLE,
 	maskEndpoint,
@@ -46,6 +55,8 @@ import {
 	formatLogLine,
 	formatPublishLogLine,
 	formatSummary,
+	formatSweepLine,
+	formatSweepSummary,
 } from './presentation/summary.formatter'
 
 /** Bun's process and file system, `fetch` for the endpoint, and git in the caller's checkout. */
@@ -74,14 +85,49 @@ const SessionLive = Layer.mergeAll(
 const ActionLive = ShadowRunServiceLive.pipe(Layer.provideMerge(SessionLive))
 
 /** Publishing over the job token; built only in publish mode, so a shadow run never needs a token. */
+/** The GitHub API and status calls over the job token; built only in publish and sweep mode. */
+const GitHubLive = Layer.mergeAll(
+	GitHubApiServiceLive,
+	GitHubStatusServiceLive
+).pipe(Layer.provideMerge(GitHubConfigLive))
+
+/** Publishing, the re-check and the status over the job token, and the publish run on top. */
 const PublishLive = PublishRunServiceLive.pipe(
-	Layer.provide(PublishServiceLive),
-	Layer.provide(ThreadRecheckServiceLive),
-	Layer.provideMerge(RecheckServiceLive),
 	Layer.provideMerge(
-		GitHubApiServiceLive.pipe(Layer.provideMerge(GitHubConfigLive))
+		Layer.mergeAll(PublishServiceLive, StatusReportServiceLive).pipe(
+			Layer.provide(ThreadRecheckServiceLive),
+			Layer.provideMerge(RecheckServiceLive),
+			Layer.provideMerge(GitHubLive)
+		)
 	)
 )
+
+/** Refreshes the status of open pull requests; a missing token or a GitHub error is reported. */
+const runSweep = Effect.gen(function* () {
+	const env = yield* runnerEnvironmentConfig
+	const line = yield* StatusSweepService.use(service => service.sweep()).pipe(
+		Effect.map(formatSweepLine),
+		Effect.provide(StatusSweepServiceLive.pipe(Layer.provide(GitHubLive))),
+		Effect.catchTags({
+			ConfigError: error =>
+				Effect.succeed(`status sweep failed: ${error.message}`),
+			GitHubApiError: error =>
+				Effect.succeed(`status sweep failed: ${error.message}`),
+		})
+	)
+	yield* Console.log(toLogText(`mng-review: ${line}`))
+	yield* writeSummary(env.summaryPath, formatSweepSummary(line))
+})
+
+/**
+ * The earlier runs on the pull request from the sticky summary; a missing token or a GitHub error
+ * counts as none, so the review still runs.
+ */
+const readPrior = (event: PullRequestEvent) =>
+	PublishService.use(service => service.readPrior(event.number)).pipe(
+		Effect.provide(PublishLive),
+		Effect.orElseSucceed(() => undefined)
+	)
 
 /** Publishes the outcome; a missing token or repository is reported, never fatal. */
 const publishOutcome = (
@@ -108,7 +154,7 @@ const runAction = Effect.gen(function* () {
 		const invalid: ShadowOutcome = {
 			status: 'invalid-config',
 			source: MODE_VARIABLE,
-			reason: 'must be shadow or publish',
+			reason: 'must be shadow, publish or sweep',
 		}
 		yield* Console.log(formatLogLine(invalid))
 		yield* writeSummary(
@@ -125,13 +171,22 @@ const runAction = Effect.gen(function* () {
 		)
 		return yield* new ActionExit({ code: INVALID_CONFIG_EXIT_CODE })
 	}
+	if (mode.value === 'sweep') return yield* runSweep
 	const fs = yield* FileSystem.FileSystem
+	const priorServices =
+		yield* Effect.context<Effect.Services<ReturnType<typeof readPrior>>>()
 	const outcome = yield* ShadowRunService.use(service =>
 		service.run({
 			eventName: env.eventName,
 			readEvent: readEventText(env.eventPath).pipe(
 				Effect.provideService(FileSystem.FileSystem, fs)
 			),
+			...(mode.value === 'publish'
+				? {
+						readPrior: (event: PullRequestEvent) =>
+							readPrior(event).pipe(Effect.provideContext(priorServices)),
+					}
+				: {}),
 		})
 	)
 	const publish =

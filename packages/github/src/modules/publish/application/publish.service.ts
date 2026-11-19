@@ -68,6 +68,10 @@ export class PublishService extends Context.Service<
 		readonly publishStatus: (
 			input: StatusInput
 		) => Effect.Effect<boolean, GitHubApiError>
+		/** The sticky summary's marker: how many runs reviewed the pull request and the last head. */
+		readonly readPrior: (
+			pullNumber: number
+		) => Effect.Effect<SummaryMarker | undefined, GitHubApiError>
 	}
 >()('mng-review/PublishService') {}
 
@@ -379,6 +383,12 @@ export const PublishServiceLive = Layer.effect(
 			return true
 		})
 
-		return { publish, publishStatus }
+		const readPrior = Effect.fn('PublishService.readPrior')(function* (
+			pullNumber: number
+		) {
+			return (yield* readSummary(pullNumber))?.marker
+		})
+
+		return { publish, publishStatus, readPrior }
 	})
 )

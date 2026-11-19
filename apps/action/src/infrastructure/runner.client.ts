@@ -30,12 +30,13 @@ export const repoDirConfig = Config.String('MNG_REVIEW_REPO_DIR').pipe(
 )
 
 export const MODE_VARIABLE = 'MNG_REVIEW_MODE'
-export const RUN_MODES = ['shadow', 'publish'] as const
+export const RUN_MODES = ['shadow', 'publish', 'sweep'] as const
 export type RunMode = (typeof RUN_MODES)[number]
 
 /**
  * `MNG_REVIEW_MODE`: `shadow` (the default) writes the job summary only, `publish` also posts on
- * the pull request. Any other value fails, before the review spends anything.
+ * the pull request, `sweep` reviews nothing and refreshes the `MNG Review` status of open pull
+ * requests. Any other value fails, before the review spends anything.
  */
 export const modeConfig = Config.Literals(RUN_MODES, MODE_VARIABLE).pipe(
 	Config.withDefault('shadow' as RunMode)

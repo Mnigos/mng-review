@@ -1,4 +1,9 @@
-import { type PublishResult, PublishService } from '@mng-review/github'
+import {
+	type PublishResult,
+	PublishService,
+	type StatusReportResult,
+	StatusReportService,
+} from '@mng-review/github'
 import { Context, Effect, Layer } from 'effect'
 import type { ShadowOutcome } from './shadow-run.types'
 
@@ -9,7 +14,12 @@ export interface PublishContext {
 
 /** What publishing did with an outcome. */
 export type PublishReport =
-	| { readonly status: 'published'; readonly result: PublishResult }
+	| {
+			readonly status: 'published'
+			readonly result: PublishResult
+			/** Check runs written and whether the commit status was set. */
+			readonly checks: StatusReportResult
+	  }
 	| {
 			readonly status: 'status-only'
 			readonly reason: string
@@ -20,8 +30,8 @@ export type PublishReport =
 	| { readonly status: 'failed'; readonly reason: string }
 
 /**
- * Publishes an outcome on its pull request: a reviewed run gets threads and the sticky summary, an
- * offline endpoint only the summary. A skip, an invalid configuration or a git failure posts
+ * Publishes an outcome on its pull request: a reviewed run gets threads, the sticky summary, a
+ * check run per agent and the `MNG Review` commit status; an offline endpoint only the summary. A skip, an invalid configuration or a git failure posts
  * nothing; the job summary and the job's exit code report them. A GitHub failure never fails the
  * job: the report says what happened.
  */
@@ -39,6 +49,7 @@ export const PublishRunServiceLive = Layer.effect(
 	PublishRunService,
 	Effect.gen(function* () {
 		const publisher = yield* PublishService
+		const statuses = yield* StatusReportService
 
 		const publish = Effect.fn('PublishRunService.publish')(function* (
 			outcome: ShadowOutcome,
@@ -62,7 +73,13 @@ export const PublishRunServiceLive = Layer.effect(
 					head: event.headSha,
 					engineCommit: context.engineCommit,
 				})
-				return { status: 'published', result } satisfies PublishReport
+				const checks = yield* statuses.report({
+					head: event.headSha,
+					report,
+					verdict: result.verdict,
+					openBugs: result.openBugs,
+				})
+				return { status: 'published', result, checks } satisfies PublishReport
 			}
 			if (outcome.status === 'offline') {
 				const reason = `Reviewer offline: ${outcome.reason}. Nothing was reviewed.`

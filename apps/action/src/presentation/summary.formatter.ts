@@ -9,6 +9,7 @@ import type { AgentRunReport, ReviewReport } from '@mng-review/engine'
 import {
 	escapeMarkdown,
 	getAgentReport,
+	type SweepResult,
 	toCodeSpan,
 	toLogText,
 } from '@mng-review/github'
@@ -22,6 +23,7 @@ import { toFindingsLines } from './findings-summary.formatter'
 
 export const SUMMARY_TITLE = '## MNG Review (shadow mode)'
 export const PUBLISH_SUMMARY_TITLE = '## MNG Review (publish mode)'
+export const SWEEP_SUMMARY_TITLE = '## MNG Review (status sweep)'
 const SHORT_SHA_LENGTH = 8
 const MILLIS_PER_SECOND = 1000
 const PERCENT = 100
@@ -249,8 +251,8 @@ function toPublishText(report: PublishReport): string {
 		return report.posted
 			? 'posted the offline status as the summary comment'
 			: 'kept the existing summary comment; the reviewer was offline'
-	const { result } = report
-	return `posted run ${result.run}: verdict ${result.verdict}, ${result.openBugs} open bug thread(s); new threads: ${result.onLine} on lines, ${result.onFile} on files, ${result.inSummary} in the summary comment, ${result.unposted} not posted; ${result.repeated} already had a thread, ${result.dismissed} found again under resolved threads; ${result.resolved} of ${result.rechecked} rechecked thread(s) resolved`
+	const { result, checks } = report
+	return `posted run ${result.run}: verdict ${result.verdict}, ${result.openBugs} open bug thread(s); new threads: ${result.onLine} on lines, ${result.onFile} on files, ${result.inSummary} in the summary comment, ${result.unposted} not posted; ${result.repeated} already had a thread, ${result.dismissed} found again under resolved threads; ${result.resolved} of ${result.rechecked} rechecked thread(s) resolved; ${checks.checks} check run(s), status ${checks.status ? 'set' : 'not set'}`
 }
 
 /** The publish line of the job log; a GitHub message in it can never act as a workflow command. */
@@ -286,4 +288,14 @@ export function formatSummary(
 		`Shadow mode: nothing is posted to the pull request. ${engine}`,
 		'',
 	].join('\n')
+}
+
+/** What the status sweep did, in words. */
+export function formatSweepLine(result: SweepResult): string {
+	return `status sweep: ${result.checked} pull request(s) carry the status, ${result.updated} updated, ${result.failed} failed`
+}
+
+/** The job summary of a status sweep. */
+export function formatSweepSummary(line: string): string {
+	return [SWEEP_SUMMARY_TITLE, '', escapeMarkdown(line), ''].join('\n')
 }
