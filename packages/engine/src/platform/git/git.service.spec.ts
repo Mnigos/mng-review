@@ -25,6 +25,26 @@ const ProcessLayer = NodeChildProcessSpawner.layer.pipe(
 )
 
 /** Creates an isolated repository; all fixture commands disable hooks and signing. */
+/** Variables that point git at another repository; set inside a git hook, they would win over `cwd`. */
+const GIT_LOCATION_VARIABLES = new Set([
+	'GIT_DIR',
+	'GIT_WORK_TREE',
+	'GIT_COMMON_DIR',
+	'GIT_INDEX_FILE',
+	'GIT_OBJECT_DIRECTORY',
+	'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+	'GIT_PREFIX',
+])
+
+/** The process environment without git's location variables, so fixtures only touch their own repository. */
+function toFixtureEnv(): NodeJS.ProcessEnv {
+	return Object.fromEntries(
+		Object.entries(process.env).filter(
+			([name]) => !GIT_LOCATION_VARIABLES.has(name)
+		)
+	)
+}
+
 function createRepo(name = 'repo') {
 	const parent = realpathSync(mkdtempSync(join(tmpdir(), 'mng-review-spec-')))
 	roots.push(parent)
@@ -48,7 +68,7 @@ function createRepo(name = 'repo') {
 				cwd: root,
 				encoding: 'utf-8',
 				env: {
-					...process.env,
+					...toFixtureEnv(),
 					GIT_CONFIG_GLOBAL: '/dev/null',
 					GIT_CONFIG_NOSYSTEM: '1',
 					GIT_TERMINAL_PROMPT: '0',
