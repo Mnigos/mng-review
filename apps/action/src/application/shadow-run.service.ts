@@ -66,20 +66,32 @@ export const ShadowRunServiceLive = Layer.effect(
 				} satisfies ShadowOutcome
 			return yield* input.readEvent.pipe(
 				Effect.flatMap(parsePullRequestEvent),
-				Effect.flatMap(review),
-				Effect.catchTags({
-					ConfigError: error =>
-						Effect.succeed({
-							status: 'invalid-config',
-							source: error.source,
-							reason: error.reason,
-						} satisfies ShadowOutcome),
-					GitError: error =>
-						Effect.succeed({
-							status: 'failed',
-							reason: `git: ${error.message}`,
-						} satisfies ShadowOutcome),
-				})
+				Effect.flatMap(event =>
+					review(event).pipe(
+						Effect.catchTags({
+							ConfigError: error =>
+								Effect.succeed({
+									status: 'invalid-config',
+									source: error.source,
+									reason: error.reason,
+									event,
+								} satisfies ShadowOutcome),
+							GitError: error =>
+								Effect.succeed({
+									status: 'failed',
+									reason: `git: ${error.message}`,
+									event,
+								} satisfies ShadowOutcome),
+						})
+					)
+				),
+				Effect.catchTag('ConfigError', error =>
+					Effect.succeed({
+						status: 'invalid-config',
+						source: error.source,
+						reason: error.reason,
+					} satisfies ShadowOutcome)
+				)
 			)
 		})
 
