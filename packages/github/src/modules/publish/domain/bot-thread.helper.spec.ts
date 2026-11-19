@@ -1,12 +1,21 @@
+import type { ThreadComment } from '../../../platform/github-api.schema'
 import { GitHubApiError } from '../../../platform/github.errors'
-import { report, reviewThread } from '../../../shared/mocks/publish-test.helper'
+import {
+	report,
+	reviewThread,
+	threadReply,
+	botClosedReviewThread,
+	RULES,
+} from '../../../shared/mocks/publish-test.helper'
 import {
 	getVerdict,
 	isBotComment,
 	isRefused,
 	toBotThread,
 } from './bot-thread.helper'
+import { countOpenBugs, planPublish } from './publish-plan.helper'
 import { BOT_LOGIN } from './publish.constants'
+import { getRecheckCandidates } from './thread-recheck.helper'
 
 describe('bot thread ownership', () => {
 	test.each([
@@ -192,4 +201,98 @@ describe('publish verdict', () => {
 			).toBe(status === 422)
 		}
 	)
+})
+
+interface ReplyCase extends Partial<ThreadComment> {
+	readonly label: string
+}
+
+describe('bot closing replies', () => {
+	test.each([false, true])(
+		'GitHub resolved=%s takes precedence over bot closure',
+		isResolved => {
+			expect(toBotThread(botClosedReviewThread({ isResolved }))).toMatchObject({
+				resolved: true,
+				closedByBot: !isResolved,
+				replies: 1,
+			})
+		}
+	)
+	test.each([
+		{ label: 'missing latest', latest: undefined },
+		{ label: 'empty latest', latest: { nodes: [] } },
+		{
+			label: 'only the root comment',
+			comments: { ...reviewThread().comments, totalCount: 1 },
+		},
+	])('$label leaves a GitHub-open thread open', overrides => {
+		expect(toBotThread(botClosedReviewThread(overrides))).toMatchObject({
+			resolved: false,
+			closedByBot: false,
+		})
+	})
+
+	test.each([
+		{
+			label: 'human reply after the bot closure',
+			author: { __typename: 'User', login: 'contributor' },
+		},
+		{
+			label: 'human using the bot login',
+			author: { __typename: 'User', login: BOT_LOGIN },
+		},
+		{ label: 'another bot', author: { __typename: 'Bot', login: 'other-bot' } },
+		{ label: 'deleted author', author: null },
+		{ label: 'unmarked bot reply', body: 'The finding no longer holds.' },
+		{
+			label: 'invalid reply action',
+			body: '<!-- mng-review:reply {"v":1,"action":"ignored","commit":"head"} -->',
+		},
+		{
+			label: 'human edited bot reply',
+			editor: { __typename: 'User', login: 'contributor' },
+		},
+		{
+			label: 'human editor using bot login',
+			editor: { __typename: 'User', login: BOT_LOGIN },
+		},
+		{
+			label: 'another bot edited reply',
+			editor: { __typename: 'Bot', login: 'other-bot' },
+		},
+	] satisfies ReplyCase[])('$label does not close a thread', overrides => {
+		expect(
+			toBotThread(
+				botClosedReviewThread({ latest: { nodes: [threadReply(overrides)] } })
+			)
+		).toMatchObject({ resolved: false, closedByBot: false })
+	})
+
+	test('a reply edited by the bot itself still closes its thread', () => {
+		expect(
+			toBotThread(
+				botClosedReviewThread({
+					latest: {
+						nodes: [
+							threadReply({ editor: { __typename: 'Bot', login: BOT_LOGIN } }),
+						],
+					},
+				})
+			)
+		).toMatchObject({ resolved: true, closedByBot: true })
+	})
+
+	test('a bot-closed bug contributes no open bugs, permits a ready verdict and is not a recheck candidate', () => {
+		const thread = toBotThread(botClosedReviewThread())
+		expect(thread).toBeDefined()
+		if (!thread) return
+		const review = { ...report(), bugs: [] }
+		const plan = planPublish(
+			{ outcome: review, config: RULES.config, agents: new Map() },
+			{ threads: [thread], lines: new Map(), changedPlaces: new Set() }
+		)
+		expect(countOpenBugs(plan, [thread])).toBe(0)
+		expect(getVerdict(review, countOpenBugs(plan, [thread]))).toBe('ready')
+		expect(getRecheckCandidates([thread], [], 'next-head')).toEqual([])
+	})
 })

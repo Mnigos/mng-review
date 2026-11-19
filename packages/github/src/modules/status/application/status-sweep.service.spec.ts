@@ -6,6 +6,7 @@ import { githubApiFake } from '../../../shared/mocks/github-api-fake.helper'
 import { githubStatusFake } from '../../../shared/mocks/github-status-fake.helper'
 import {
 	reviewThread,
+	botClosedReviewThread,
 	bug,
 	SUMMARY_MARKER,
 } from '../../../shared/mocks/publish-test.helper'
@@ -54,6 +55,8 @@ layer(Layer.empty)('StatusSweepService', test => {
 	)
 	for (const kind of [
 		'resolved',
+		'bot-closed',
+		'human-after-bot',
 		'unverified',
 		'nit',
 		'foreign',
@@ -70,23 +73,46 @@ layer(Layer.empty)('StatusSweepService', test => {
 					},
 					{ isResolved: kind === 'resolved' }
 				)
+				const closed = botClosedReviewThread()
 				api.threads.push(
-					kind === 'foreign' || kind === 'edited'
-						? {
-								...thread,
-								comments: {
-									...thread.comments,
-									nodes: thread.comments.nodes.map(comment => ({
-										...comment,
-										...(kind === 'foreign'
-											? { author: { __typename: 'User', login: 'contributor' } }
-											: {
-													editor: { __typename: 'User', login: 'contributor' },
-												}),
-									})),
-								},
-							}
-						: thread
+					kind === 'bot-closed'
+						? closed
+						: kind === 'human-after-bot'
+							? {
+									...closed,
+									comments: { ...closed.comments, totalCount: 3 },
+									latest: {
+										nodes:
+											closed.latest?.nodes.map(comment => ({
+												...comment,
+												author: { __typename: 'User', login: 'contributor' },
+											})) ?? [],
+									},
+								}
+							: kind === 'foreign' || kind === 'edited'
+								? {
+										...thread,
+										comments: {
+											...thread.comments,
+											nodes: thread.comments.nodes.map(comment => ({
+												...comment,
+												...(kind === 'foreign'
+													? {
+															author: {
+																__typename: 'User',
+																login: 'contributor',
+															},
+														}
+													: {
+															editor: {
+																__typename: 'User',
+																login: 'contributor',
+															},
+														}),
+											})),
+										},
+									}
+								: thread
 				)
 				const fake = githubStatusFake({
 					listOpenPullRequests: () =>
@@ -112,7 +138,10 @@ layer(Layer.empty)('StatusSweepService', test => {
 				expect(fake.statuses).toContainEqual(
 					expect.objectContaining({
 						sha: 'head',
-						state: kind === 'open' ? 'failure' : 'success',
+						state:
+							kind === 'open' || kind === 'human-after-bot'
+								? 'failure'
+								: 'success',
 					})
 				)
 				expect(api.writes).toEqual([])
