@@ -5,6 +5,7 @@ import {
 	MECHANICAL_MIN_SMALL_SHARE,
 	MECHANICAL_REWRITE_MIN_LINES,
 } from '@mng-review/domain'
+import { escapeMarkdown } from '@mng-review/github'
 import type {
 	PullRequestEvent,
 	ShadowOutcome,
@@ -14,7 +15,6 @@ import {
 	deepReviewReport,
 	reviewReport,
 } from '../shared/mocks/review-report.helper'
-import { escapeMarkdown } from '../utils/markdown.util'
 import {
 	formatLogLine,
 	formatSummary,

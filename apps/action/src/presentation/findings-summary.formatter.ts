@@ -5,7 +5,7 @@ import {
 	type Severity,
 } from '@mng-review/domain'
 import type { ReviewReport } from '@mng-review/engine'
-import { escapeMarkdown, toCodeSpan } from '../utils/markdown.util'
+import { escapeMarkdown, toCodeSpan } from '@mng-review/github'
 
 /** Severities from the most severe down, the order findings are listed in. */
 const SEVERITY_ORDER = SEVERITIES.toReversed()

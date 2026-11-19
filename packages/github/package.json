@@ -1,0 +1,25 @@
+{
+  "name": "@mng-review/github",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --root ../.. --project @mng-review/github --passWithNoTests"
+  },
+  "dependencies": {
+    "@mng-review/domain": "workspace:*",
+    "@mng-review/engine": "workspace:*",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@effect/vitest": "catalog:",
+    "@mng-review/typescript-config": "workspace:*",
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

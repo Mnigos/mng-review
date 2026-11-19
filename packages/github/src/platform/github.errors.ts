@@ -1,0 +1,17 @@
+import { Schema } from 'effect'
+
+/** A GitHub API call failed: the request, the answer's status when there was one, and why. */
+export class GitHubApiError extends Schema.TaggedError<GitHubApiError>()(
+	'GitHubApiError',
+	{
+		/** The call, such as `createReview`; never a URL or a token. */
+		operation: Schema.String,
+		status: Schema.optionalKey(Schema.Number),
+		reason: Schema.String,
+	}
+) {
+	override get message(): string {
+		const status = this.status === undefined ? '' : ` (HTTP ${this.status})`
+		return `GitHub ${this.operation} failed${status}: ${this.reason}`
+	}
+}
