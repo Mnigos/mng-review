@@ -219,3 +219,58 @@ layer(Layer.empty)('returned finder tokens', test => {
 			})
 	)
 })
+
+layer(Layer.empty)('coverage token reserve', test => {
+	test.effect(
+		'holds the reserve until continuation, opens it only once and keeps pool grants',
+		() =>
+			Effect.gen(function* () {
+				const pool = yield* makeTokenPool
+				yield* pool.release(10)
+				const budget = yield* makeConversationBudget(
+					{ ...BUDGET, reserve: 25, pool },
+					Effect.succeed(0)
+				)
+				expect(yield* budget.current).toMatchObject({ conversationTokens: 75 })
+				expect(
+					yield* budget.isSpent({ spentTokens: 5, nextInputTokens: 35 })
+				).toBe(false)
+				expect(yield* budget.current).toMatchObject({ conversationTokens: 76 })
+				expect(yield* pool.available).toBe(9)
+				yield* budget.openReserve
+				expect(yield* budget.current).toMatchObject({ conversationTokens: 101 })
+				yield* budget.openReserve
+				expect(yield* budget.current).toMatchObject({ conversationTokens: 101 })
+				expect(
+					yield* budget.isSpent({ spentTokens: 20, nextInputTokens: 40 })
+				).toBe(false)
+				expect(yield* pool.available).toBe(9)
+			})
+	)
+	test.effect(
+		'a conversation that is spent can continue with the opened reserve',
+		() =>
+			Effect.gen(function* () {
+				const budget = yield* makeConversationBudget(
+					{ ...BUDGET, reserve: 25 },
+					Effect.succeed(0)
+				)
+				const state = { spentTokens: 5, nextInputTokens: 35 }
+				expect(yield* budget.isSpent(state)).toBe(true)
+				yield* budget.openReserve
+				expect(yield* budget.isSpent(state)).toBe(false)
+			})
+	)
+	test.effect('opening a reserve cannot bypass the finder run limit', () =>
+		Effect.gen(function* () {
+			const budget = yield* makeConversationBudget(
+				{ ...BUDGET, reserve: 25 },
+				Effect.succeed(BUDGET.runTokens)
+			)
+			yield* budget.openReserve
+			expect(
+				yield* budget.isSpent({ spentTokens: 0, nextInputTokens: 1 })
+			).toBe(true)
+		})
+	)
+})

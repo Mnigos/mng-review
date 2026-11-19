@@ -42,6 +42,7 @@ import {
 import { toContinuationMessage } from '../../domain/loop-message.helper'
 import {
 	CHARS_PER_TOKEN,
+	CONTINUATION_RESERVE_SHARE,
 	FINDER_TOKEN_SHARE,
 	MAX_CORRECTIONS,
 	MAX_LISTED_UNTOUCHED,
@@ -1871,6 +1872,75 @@ layer(Layer.empty)('reviewer token pool in the loop', test => {
 												)
 										: Effect.succeed(answer()),
 								{ tokensPerRun: 20_000 },
+								callSpy
+							)
+						)
+					)
+				})
+		)
+})
+
+layer(Layer.empty)('reserved coverage after forced wrap-up', test => {
+	for (const maxToolCalls of [1, LIMITS.maxToolCalls])
+		test.effect(
+			`token-forced answers ${maxToolCalls === 1 ? 'stop at the tool limit' : 'get a continuation that can read and add findings'}`,
+			() =>
+				Effect.gen(function* () {
+					const conversationTokens = 10_000
+					const reserve = Math.floor(
+						conversationTokens * CONTINUATION_RESERVE_SHARE
+					)
+					const callSpy = vi.fn(() => Effect.succeed('source'))
+					const first = rawFinding({ path: 'src/other.ts' })
+					const second = rawFinding()
+					yield* Effect.gen(function* () {
+						const output = yield* AgentLoopService.use(loop =>
+							loop.run({
+								...COVERED_REQUEST,
+								budget: { runTokens: 20_000, conversationTokens, reserve },
+							})
+						)
+						expect(output.value.findings).toEqual(
+							maxToolCalls === 1 ? [first] : [first, second]
+						)
+						expect(output.continued).toBe(maxToolCalls === 1 ? undefined : true)
+						expect(output.spentTokens).toBe(
+							2500 + (maxToolCalls === 1 ? 5 : 15)
+						)
+						const calls = yield* ScriptedLlm.use(script => script.calls)
+						expect(calls).toHaveLength(maxToolCalls === 1 ? 2 : 4)
+						expect(
+							calls[1]?.options.tools.map(tool => String(tool.name))
+						).toEqual([REQUEST.finish])
+						expect(callSpy).toHaveBeenCalledTimes(maxToolCalls === 1 ? 0 : 1)
+						if (maxToolCalls > 1) {
+							expect(
+								calls[2]?.options.tools.map(tool => String(tool.name))
+							).toEqual([...COVERED_REQUEST.tools, REQUEST.finish])
+							expect(JSON.stringify(calls[2]?.options.prompt)).toContain(
+								`- ${BILLING_PATH}`
+							)
+						}
+					}).pipe(
+						Effect.provide(
+							loopLayer(
+								(_call, index) =>
+									Effect.succeed(
+										index === 0
+											? [
+													toolCall('read_file', { path: BILLING_PATH }),
+													finishWithUsage(2500),
+												]
+											: index === 1
+												? answer(REQUEST.finish, { findings: [first] })
+												: index === 2
+													? [
+															toolCall('read_file', { path: BILLING_PATH }),
+															FINISH,
+														]
+													: answer(REQUEST.finish, { findings: [second] })
+									),
+								{ maxToolCalls, tokensPerRun: 20_000 },
 								callSpy
 							)
 						)
