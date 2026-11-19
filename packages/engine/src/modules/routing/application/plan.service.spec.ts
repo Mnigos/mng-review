@@ -31,6 +31,7 @@ import {
 	type ScriptedLlmAnswer,
 } from '../../../platform/llm/scripted-llm.layer'
 import { TokenLedgerLive } from '../../../platform/llm/token-ledger.service'
+import { toFixtureEnv } from '../../../shared/mocks/git-env.helper'
 import { PlanService, PlanServiceLive } from './plan.service'
 import { RouterServiceLive } from './router.service'
 
@@ -64,7 +65,7 @@ function createRepo(name = 'repo') {
 				cwd: root,
 				encoding: 'utf-8',
 				env: {
-					...process.env,
+					...toFixtureEnv(),
 					GIT_CONFIG_GLOBAL: '/dev/null',
 					GIT_CONFIG_NOSYSTEM: '1',
 					GIT_TERMINAL_PROMPT: '0',

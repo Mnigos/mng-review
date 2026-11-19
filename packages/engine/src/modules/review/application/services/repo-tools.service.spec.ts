@@ -25,6 +25,7 @@ import {
 	GitWorkdir,
 } from '../../../../platform/git/git.service'
 import { config, pr } from '../../../../shared/mocks/domain-test.helper'
+import { toFixtureEnv } from '../../../../shared/mocks/git-env.helper'
 import {
 	MAX_GREP_LINES,
 	MAX_TOOL_OUTPUT_CHARS,
@@ -62,7 +63,7 @@ function createRepo(name = 'repo') {
 				cwd: root,
 				encoding: 'utf-8',
 				env: {
-					...process.env,
+					...toFixtureEnv(),
 					GIT_CONFIG_GLOBAL: '/dev/null',
 					GIT_CONFIG_NOSYSTEM: '1',
 					GIT_TERMINAL_PROMPT: '0',
