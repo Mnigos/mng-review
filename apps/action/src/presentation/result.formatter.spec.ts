@@ -432,7 +432,9 @@ test.each(['published', 'failed', 'status-only', 'not-published'] as const)(
 							run: 2,
 						},
 					} as const)
-				: { status, reason: 'publishing detail' }
+				: status === 'status-only'
+					? { status, reason: 'publishing detail', posted: false }
+					: { status, reason: 'publishing detail' }
 		expect(
 			decodeJson(
 				formatResult(

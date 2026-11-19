@@ -520,7 +520,9 @@ test.each(['published', 'failed', 'status-only', 'not-published'] as const)(
 							run: 6,
 						},
 					} as const)
-				: { status, reason: MALICIOUS }
+				: status === 'status-only'
+					? { status, reason: MALICIOUS, posted: false }
+					: { status, reason: MALICIOUS }
 		const text = formatSummary(
 			{
 				status: 'reviewed',
@@ -538,6 +540,8 @@ test.each(['published', 'failed', 'status-only', 'not-published'] as const)(
 			)
 		if (status === 'failed' || status === 'not-published')
 			expect(text).toContain(escapeMarkdown(MALICIOUS))
+		if (status === 'status-only')
+			expect(text).toContain('kept the existing summary comment')
 	}
 )
 

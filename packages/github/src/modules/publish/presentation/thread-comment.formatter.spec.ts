@@ -25,6 +25,25 @@ describe('formatThreadComment', () => {
 			expect(visible).not.toContain('\u202E')
 		}
 	)
+	test('stays far below the comment limit with huge model text', () => {
+		const huge = '<>&'.repeat(40_000)
+		const text = formatThreadComment(
+			{
+				finding: bug({
+					title: huge,
+					trigger: huge,
+					impact: huge,
+					suggestion: huge,
+					evidence: [huge],
+				}),
+				kind: 'bug',
+			},
+			LINKS,
+			true
+		)
+		expect(text.length).toBeLessThan(65_536)
+		expect(parseFindingMarker(text)?.title.length).toBeLessThanOrEqual(301)
+	})
 	test('escapes unverified premise, evidence, agents and validator model', () => {
 		const text = formatThreadComment(
 			{
