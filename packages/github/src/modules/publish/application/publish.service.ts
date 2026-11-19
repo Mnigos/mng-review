@@ -275,9 +275,9 @@ export const PublishServiceLive = Layer.effect(
 			const restResults = yield* Effect.forEach(
 				rest,
 				thread =>
-					thread.place === 'summary'
-						? Effect.succeed(thread)
-						: postSingle(input, thread),
+					thread.place === 'file'
+						? postSingle(input, thread)
+						: Effect.succeed(thread),
 				{ concurrency: 1 }
 			)
 			return [...lineResults, ...restResults]
@@ -354,7 +354,7 @@ export const PublishServiceLive = Layer.effect(
 				openBugs,
 				onLine: count('line'),
 				onFile: count('file'),
-				inSummary: count('summary'),
+				inSummary: count('summary') + count('pull_request'),
 				unposted: count('unposted'),
 				repeated: plan.repeated.length,
 				dismissed: plan.dismissed.length,
