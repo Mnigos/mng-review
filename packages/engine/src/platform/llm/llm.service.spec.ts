@@ -20,6 +20,7 @@ import {
 	HttpClientResponse,
 } from 'effect/http'
 import { TestClock } from 'effect/testing'
+import { REDACTED } from '../../utils/redact.util'
 import { EndpointConfig } from '../config/endpoint.config'
 import { LLM_CALL_TIMEOUT, LLM_RETRY_DELAY_MILLIS } from './llm.constants'
 import { LlmService, LlmServiceLive, LlmSettings } from './llm.service'
@@ -75,6 +76,7 @@ type Reply = (
 	index: number
 ) => Effect.Effect<Response, HttpClientError.HttpClientError>
 interface HarnessOptions {
+	readonly endpoint?: string
 	readonly concurrency?: number
 	readonly credential?: string
 }
@@ -96,7 +98,7 @@ function harness(reply: Reply, options: HarnessOptions = {}) {
 		Layer.provide(Layer.succeed(HttpClient.HttpClient, client)),
 		Layer.provide(
 			Layer.succeed(EndpointConfig, {
-				url: ENDPOINT,
+				url: options.endpoint ?? ENDPOINT,
 				key:
 					options.credential === undefined
 						? undefined
@@ -696,6 +698,34 @@ layer(Layer.empty)('LlmService HTTP', test => {
 					'https://other.example.test',
 				])
 					expect(failure.message).not.toContain(secret)
+			})
+	)
+	test.effect(
+		'redacts a hostname-only transport error for an endpoint with a port',
+		() =>
+			Effect.gen(function* () {
+				const endpoint = 'http://inference.example.com:8080/v1'
+				const { hostname } = new URL(endpoint)
+				const http = harness(
+					request =>
+						Effect.fail(
+							new HttpClientError.HttpClientError({
+								reason: new HttpClientError.TransportError({
+									request,
+									description: `getaddrinfo ENOTFOUND ${hostname}`,
+								}),
+							})
+						),
+					{ endpoint }
+				)
+				const failure = yield* LlmService.use(llm =>
+					llm.run(MODEL, generate)
+				).pipe(Effect.provide(http.layer), Effect.flip)
+				expect(failure).toMatchObject({ _tag: 'LlmError' })
+				expect(failure.message).toContain(`getaddrinfo ENOTFOUND ${REDACTED}`)
+				expect(failure.message).not.toContain(hostname)
+				expect(http.requests).toHaveLength(1)
+				expect(http.requests[0]?.url).toBe(`${endpoint}/chat/completions`)
 			})
 	)
 	test.effect(

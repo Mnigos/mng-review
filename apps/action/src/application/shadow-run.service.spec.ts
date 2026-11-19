@@ -15,6 +15,7 @@ import {
 	type Rules,
 } from '@mng-review/engine'
 import { Effect, Layer } from 'effect'
+import { parsePullRequestEvent } from '../infrastructure/pull-request-event.parser'
 import {
 	cleanupRepos,
 	createRepo,
@@ -280,6 +281,13 @@ layer(Layer.empty)('ShadowRunService', test => {
 					status: 'invalid-config',
 					source: error.source,
 				})
+				if (stage === 'read' || stage === 'parse')
+					expect(outcome).not.toHaveProperty('event')
+				else
+					expect(outcome).toHaveProperty(
+						'event',
+						yield* parsePullRequestEvent(JSON.stringify(eventPayload()))
+					)
 				if (outcome.status === 'invalid-config') {
 					if (stage === 'parse')
 						expect(outcome.reason).toContain('not a pull request event')
@@ -305,6 +313,7 @@ layer(Layer.empty)('ShadowRunService', test => {
 				expect(yield* fixture.run()).toEqual({
 					status: 'failed',
 					reason: `git: ${error.message}`,
+					event: yield* parsePullRequestEvent(JSON.stringify(eventPayload())),
 				})
 			})
 		)
