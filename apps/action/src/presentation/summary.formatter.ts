@@ -250,7 +250,7 @@ function toPublishText(report: PublishReport): string {
 			? 'posted the offline status as the summary comment'
 			: 'kept the existing summary comment; the reviewer was offline'
 	const { result } = report
-	return `posted run ${result.run}: verdict ${result.verdict}, ${result.openBugs} open bug thread(s); new threads: ${result.onLine} on lines, ${result.onFile} on files, ${result.inSummary} in the summary comment, ${result.unposted} not posted; ${result.repeated} already had a thread, ${result.dismissed} found again under resolved threads`
+	return `posted run ${result.run}: verdict ${result.verdict}, ${result.openBugs} open bug thread(s); new threads: ${result.onLine} on lines, ${result.onFile} on files, ${result.inSummary} in the summary comment, ${result.unposted} not posted; ${result.repeated} already had a thread, ${result.dismissed} found again under resolved threads; ${result.resolved} of ${result.rechecked} rechecked thread(s) resolved`
 }
 
 /** The publish line of the job log; a GitHub message in it can never act as a workflow command. */

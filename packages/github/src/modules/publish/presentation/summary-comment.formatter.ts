@@ -1,13 +1,14 @@
-import {
-	getSeverityRank,
-	type PlannedRun,
-	SEVERITIES,
-} from '@mng-review/domain'
-import type { AgentRunReport, ReviewReport } from '@mng-review/engine'
+import { getSeverityRank } from '@mng-review/domain'
+import type { ReviewReport, TokensByModel } from '@mng-review/engine'
 import { escapeMarkdown, toCodeSpan } from '../../../utils/markdown.util'
 import type { SummaryMarker } from '../domain/publish-marker.schema'
 import { SHORT_SHA_LENGTH } from '../domain/publish.constants'
-import type { PlannedThread, PublishPlan } from '../domain/publish.types'
+import type {
+	PlannedThread,
+	PublishPlan,
+	ResolvedThread,
+} from '../domain/publish.types'
+import { toAgentRows, toRiskSource } from './summary-agents.formatter'
 import {
 	type BlobLinks,
 	toFindingDetailLines,
@@ -46,81 +47,16 @@ export interface SummaryInput {
 	readonly marker: SummaryMarker
 	readonly maxRuns: number
 	readonly links: BlobLinks
-}
-
-/**
- * The report of one planned run, by name. A deep run plans the main reviewer once per reviewer
- * model; then the planned model picks the report: its own model, or the model it fell back from.
- */
-export function getAgentReport(
-	run: PlannedRun,
-	agents: readonly AgentRunReport[]
-): AgentRunReport | undefined {
-	const named = agents.filter(agent => agent.name === run.name)
-	if (named.length === 1) return named[0]
-	return (
-		named.find(agent => agent.fellBackFrom === run.model) ??
-		named.find(agent => !agent.fellBackFrom && agent.model === run.model)
-	)
-}
-
-/** Why a planned run ran: always, its path rules, or the router's reason. */
-function toWhy(run: PlannedRun): string {
-	if (run.selectedBy === 'router')
-		return `router: ${escapeMarkdown(run.reason ?? '')}`
-	return run.selectedBy === 'paths' ? 'path rules' : 'always'
-}
-
-/** A run's findings by severity, or how it ended when it did not finish. */
-function toAgentResult(run: PlannedRun, report: ReviewReport): string {
-	const agent = getAgentReport(run, report.agents)
-	if (!agent) return 'not run'
-	if (agent.status !== 'ok') return agent.status
-	const own = [...report.bugs, ...report.nits].filter(finding =>
-		finding.agents.includes(run.name)
-	)
-	if (own.length === 0) return 'clean'
-	return SEVERITIES.toReversed()
-		.map(severity => ({
-			severity,
-			count: own.filter(finding => finding.severity === severity).length,
-		}))
-		.filter(entry => entry.count > 0)
-		.map(entry => `${entry.count} ${entry.severity}`)
-		.join(', ')
-}
-
-/** What decided the risk: risky paths, a mechanical change, or the router and its signals. */
-function toRiskSource(report: ReviewReport): string {
-	const { plan } = report.planReport
-	if (plan.riskSource === 'risk_paths') return 'risk_paths'
-	if (plan.riskSource === 'mechanical') return 'mechanical change'
-	if (plan.riskSource !== 'router') return 'default'
-	const signals = (plan.router.signals ?? []).slice(0, SHORT_LIST_ITEMS)
-	if (signals.length === 0) return 'router'
-	return `router: ${signals.map(signal => `${escapeMarkdown(signal.category)} in ${toCodeSpan(signal.path)}`).join(', ')}`
+	/** Threads this run resolved after checking them again. */
+	readonly resolved: readonly ResolvedThread[]
+	/** Tokens of the whole job, the re-check included. */
+	readonly tokens: TokensByModel
 }
 
 /** The verdict line: verdict, risk and why, open bugs and the run count. */
 function toVerdictLine(input: SummaryInput): string {
 	const { plan } = input.report.planReport
 	return `**Verdict: ${input.verdict}** · risk ${plan.risk} (${toRiskSource(input.report)}) · ${input.openBugs} open bug thread(s) · run ${input.marker.runs} of ${input.maxRuns}`
-}
-
-/** One table row per planned run; deep runs of the main reviewer appear once. */
-function toAgentRows(report: ReviewReport): string[] {
-	const runs = report.planReport.plan.runs.filter(
-		(run, index, all) =>
-			all.findIndex(other => other.name === run.name) === index
-	)
-	return [
-		'| Agent | Result | Why it ran |',
-		'| --- | --- | --- |',
-		...runs.map(
-			run =>
-				`| ${escapeMarkdown(run.name)} | ${toAgentResult(run, report)} | ${toWhy(run)} |`
-		),
-	]
 }
 
 /** At most `limit` lines, then one saying how many were left out. */
@@ -217,6 +153,16 @@ function toFindingLines(input: SummaryInput, limit: number): string[] {
 					`${plan.repeated.length} finding(s) already have a thread and were not posted again.`,
 				]),
 		...toSection(
+			`Resolved by this run, no longer found at the head (${input.resolved.length}):`,
+			toCapped(
+				input.resolved.map(
+					entry =>
+						`- ${toCodeSpan(`${entry.thread.path}:${entry.thread.line ?? entry.thread.originalLine ?? entry.thread.marker.line}`)} ${escapeMarkdown(entry.thread.marker.title)}: ${escapeMarkdown(toShortReason(entry.reason))}`
+				),
+				limit
+			)
+		),
+		...toSection(
 			`Found again under threads resolved without a code change, not blocking (${plan.dismissed.length}):`,
 			toCapped(plan.dismissed, limit, toFindingLine)
 		),
@@ -302,8 +248,8 @@ function toThousands(tokens: number): string {
 }
 
 /** Tokens per model, in thousands. */
-function toTokenLine(report: ReviewReport): string {
-	const entries = Object.entries(report.tokens)
+function toTokenLine(tokens: TokensByModel): string {
+	const entries = Object.entries(tokens)
 	if (entries.length === 0) return 'Tokens: none'
 	return `Tokens: ${entries.map(([model, entry]) => `${escapeMarkdown(model)} ${toThousands(entry.totalTokens)}`).join(' · ')}`
 }
@@ -332,7 +278,7 @@ function toSummaryBody(input: SummaryInput, depth: SummaryDepth): string {
 				...toFindingLines(input, depth.limit),
 				...toRejectedLines(input.report, depth.limit),
 				'',
-				toTokenLine(input.report),
+				toTokenLine(input.tokens),
 			]
 		: ['', 'The details did not fit in one comment; the job summary has them.']
 	return [

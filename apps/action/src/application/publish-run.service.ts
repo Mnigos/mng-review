@@ -58,6 +58,7 @@ export const PublishRunServiceLive = Layer.effect(
 					pullNumber: event.number,
 					report,
 					rules,
+					pr: event.pr,
 					head: event.headSha,
 					engineCommit: context.engineCommit,
 				})

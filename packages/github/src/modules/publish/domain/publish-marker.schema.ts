@@ -18,6 +18,9 @@ export const findingMarkerSchema = Schema.Struct({
 	title: Schema.String,
 	/** The finding's line at the commit it was posted on, also for a comment on the file. */
 	line: Schema.Int,
+	/** Trigger and impact as the finder wrote them, so a later run can check the finding again. */
+	trigger: Schema.optionalKey(Schema.String),
+	impact: Schema.optionalKey(Schema.String),
 	/** The engine commit that posted it; `null` outside the workflow. */
 	engine: Schema.NullOr(Schema.String),
 })
@@ -31,3 +34,13 @@ export const summaryMarkerSchema = Schema.Struct({
 	head: Schema.String,
 })
 export type SummaryMarker = typeof summaryMarkerSchema.Type
+
+export const REPLY_ACTIONS = ['resolved'] as const
+
+/** The hidden marker of the bot's reply in one of its threads: what it did and at which head. */
+export const replyMarkerSchema = Schema.Struct({
+	v: Schema.Literal(MARKER_VERSION),
+	action: Schema.Literals(REPLY_ACTIONS),
+	commit: Schema.String,
+})
+export type ReplyMarker = typeof replyMarkerSchema.Type

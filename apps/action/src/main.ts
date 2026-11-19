@@ -4,6 +4,7 @@ import {
 	EndpointProbeServiceLive,
 	GitServiceLive,
 	GitWorkdir,
+	RecheckServiceLive,
 	ReviewRunServiceLive,
 	RulesServiceLive,
 	TokenLedgerLive,
@@ -12,6 +13,7 @@ import {
 	GitHubApiServiceLive,
 	GitHubConfigLive,
 	PublishServiceLive,
+	ThreadRecheckServiceLive,
 } from '@mng-review/github'
 import { Clock, Console, Effect, FileSystem, Layer } from 'effect'
 import { FetchHttpClient } from 'effect/http'
@@ -74,7 +76,11 @@ const ActionLive = ShadowRunServiceLive.pipe(Layer.provideMerge(SessionLive))
 /** Publishing over the job token; built only in publish mode, so a shadow run never needs a token. */
 const PublishLive = PublishRunServiceLive.pipe(
 	Layer.provide(PublishServiceLive),
-	Layer.provide(GitHubApiServiceLive.pipe(Layer.provideMerge(GitHubConfigLive)))
+	Layer.provide(ThreadRecheckServiceLive),
+	Layer.provideMerge(RecheckServiceLive),
+	Layer.provideMerge(
+		GitHubApiServiceLive.pipe(Layer.provideMerge(GitHubConfigLive))
+	)
 )
 
 /** Publishes the outcome; a missing token or repository is reported, never fatal. */

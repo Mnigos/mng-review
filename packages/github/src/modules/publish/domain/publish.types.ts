@@ -51,3 +51,9 @@ export interface PublishPlan {
 
 /** The head-side lines of the pull request's diff that can carry an inline comment, by path. */
 export type CommentableLines = ReadonlyMap<string, ReadonlySet<number>>
+
+/** A thread the bot resolved because the validator no longer finds its finding at the head, with why. */
+export interface ResolvedThread {
+	readonly thread: BotThread
+	readonly reason: string
+}
