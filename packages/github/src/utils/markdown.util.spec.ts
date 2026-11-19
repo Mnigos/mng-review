@@ -88,7 +88,7 @@ describe('escapeMarkdown', () => {
 		[
 			'email address glued after punctuation',
 			'contact:(x.y+z-w@example.com)',
-			'contact:\\(`x.y+z-w@example.com`\\)',
+			'contact:\\(`x.y+z-w@example.com)`',
 		],
 		[
 			'table separator',
@@ -98,7 +98,7 @@ describe('escapeMarkdown', () => {
 		[
 			'embedded backticks',
 			'https://example.com/a`b``c',
-			'`https://example.com/a`\\`b\\`\\`c',
+			'```https://example.com/a`b``c```',
 		],
 		[
 			'several autolinks',
@@ -209,6 +209,26 @@ describe('toLogText', () => {
 		['empty text', '', ''],
 	])('neutralizes %s', (_name, input, expected) => {
 		expect(toLogText(input)).toBe(expected)
+	})
+})
+
+describe('escapeMarkdown next to a code span', () => {
+	test.each([
+		['deadbeef@victim', '`deadbeef@victim`'],
+		['@a@victim', '`@a@victim`'],
+		['a@b.co@victim', '`a@b.co@victim`'],
+		['#1@victim', '`#1@victim`'],
+		['deadbeef#12', '`deadbeef#12`'],
+	])('keeps the whole token %s in one code span', (text, expected) => {
+		expect(escapeMarkdown(text)).toBe(expected)
+	})
+	test('stops the code span at a table cell border', () => {
+		expect(escapeMarkdown('x | deadbeef | y')).toBe('x \\| `deadbeef` \\| y')
+	})
+	test('wraps advisory identifiers', () => {
+		expect(escapeMarkdown('see CVE-2024-1234 and GHSA-abcd-efgh-ijkl')).toBe(
+			'see `CVE-2024-1234` and `GHSA-abcd-efgh-ijkl`'
+		)
 	})
 })
 
