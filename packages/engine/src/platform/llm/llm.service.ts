@@ -74,10 +74,16 @@ function isRetryWorthy(error: LlmError): boolean {
 	)
 }
 
-/** Everything that names the endpoint: the key, the URL, its origin and its host. */
+/** Everything that names the endpoint: the key, the URL, its origin, its host and its hostname without the port. */
 function toSecrets(url: string, key: string | undefined): string[] {
 	const parsed = new URL(url)
-	return [url, parsed.origin, parsed.host, ...(key ? [key] : [])]
+	return [
+		url,
+		parsed.origin,
+		parsed.host,
+		parsed.hostname,
+		...(key ? [key] : []),
+	]
 }
 
 export const LlmServiceLive = Layer.effect(

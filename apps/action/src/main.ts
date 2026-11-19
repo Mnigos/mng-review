@@ -78,8 +78,7 @@ const runAction = Effect.gen(function* () {
 	)
 	yield* writeResult(
 		env.resultPath,
-		formatResult(outcome, { ...env, wallMillis }),
-		masked
+		formatResult(outcome, { ...env, wallMillis, masked })
 	)
 	if (outcome.status === 'invalid-config')
 		return yield* new ActionExit({ code: INVALID_CONFIG_EXIT_CODE })

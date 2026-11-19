@@ -35,12 +35,15 @@ export interface InvalidConfigRun {
 	readonly status: 'invalid-config'
 	readonly source: string
 	readonly reason: string
+	/** Unset when the event itself is invalid. */
+	readonly event?: PullRequestEvent
 }
 
 /** Git could not read the change, so the workflow's checkout is incomplete. */
 export interface FailedRun {
 	readonly status: 'failed'
 	readonly reason: string
+	readonly event: PullRequestEvent
 }
 
 /** The change was planned and, unless the plan skipped it, reviewed. */

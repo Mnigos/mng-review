@@ -1,9 +1,5 @@
 import { ConfigError } from '@mng-review/domain'
-import {
-	LLM_KEY_VARIABLE,
-	LLM_URL_VARIABLE,
-	REDACTED,
-} from '@mng-review/engine'
+import { LLM_KEY_VARIABLE, LLM_URL_VARIABLE } from '@mng-review/engine'
 import { Config, Console, Effect, FileSystem, Option, Redacted } from 'effect'
 import { EVENT_PATH_VARIABLE } from './pull-request-event.parser'
 
@@ -49,17 +45,23 @@ export const runnerEnvironmentConfig = Config.all({
 		eventPath: Option.getOrUndefined(settings.eventPath),
 		summaryPath: Option.getOrUndefined(settings.summaryPath),
 		engineCommit: Option.getOrUndefined(settings.engineCommit)?.trim(),
-		resultPath: Option.getOrUndefined(settings.resultPath),
+		resultPath: Option.getOrUndefined(settings.resultPath)?.trim() || undefined,
 		repository: Option.getOrUndefined(settings.repository)?.trim(),
 		runId: Option.getOrUndefined(settings.runId)?.trim(),
 		runAttempt: Option.getOrUndefined(settings.runAttempt)?.trim(),
 	}))
 )
 
-/** Every form of the endpoint that could reach a log: the URL, its origin and host, and the key. */
+/** Every form of the endpoint that could reach a log: the URL, its origin, host and hostname, and the key. */
 function toMaskedValues(url: string, key: string): string[] {
 	const parsed = URL.canParse(url) ? new URL(url) : undefined
-	const forms = [url, key, parsed?.origin ?? '', parsed?.host ?? '']
+	const forms = [
+		url,
+		key,
+		parsed?.origin ?? '',
+		parsed?.host ?? '',
+		parsed?.hostname ?? '',
+	]
 	return [...new Set(forms.flatMap(form => form.split(/\r?\n/u)))].filter(
 		form => form.trim().length > 0
 	)
@@ -118,21 +120,12 @@ export const writeSummary = Effect.fn('runner.writeSummary')(function* (
 	return yield* fs.writeFileString(path, markdown, { flag: 'a' })
 })
 
-/**
- * Writes the result file with every masked value replaced, in its JSON-escaped form since the
- * file is JSON, longest first so a value that holds another goes whole. Outside a workflow, with
- * no path, nothing is written.
- */
+/** Writes the result file; outside a workflow, with no path, nothing is written. */
 export const writeResult = Effect.fn('runner.writeResult')(function* (
 	path: string | undefined,
-	json: string,
-	masked: readonly string[]
+	json: string
 ) {
 	if (!path) return yield* Effect.void
-	const redacted = masked
-		.map(value => JSON.stringify(value).slice(1, -1))
-		.toSorted((a, b) => b.length - a.length)
-		.reduce((text, value) => text.replaceAll(value, REDACTED), json)
 	const fs = yield* FileSystem.FileSystem
-	return yield* fs.writeFileString(path, redacted)
+	return yield* fs.writeFileString(path, json)
 })

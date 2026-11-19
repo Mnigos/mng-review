@@ -1,4 +1,4 @@
-import { toReviewJson } from '@mng-review/engine'
+import { REDACTED, toReviewJson } from '@mng-review/engine'
 import type {
 	PullRequestEvent,
 	ShadowOutcome,
@@ -17,6 +17,8 @@ export interface ResultContext {
 	readonly runAttempt: string | undefined
 	/** From the start of the entry to the outcome, endpoint probe and rules included. */
 	readonly wallMillis: number
+	/** The endpoint's masked values, replaced in every string of the file. */
+	readonly masked: readonly string[]
 }
 
 /** The pull request's number, commits and the metadata the plan used; no title or body. */
@@ -52,17 +54,25 @@ function toOutcomeJson(outcome: ShadowOutcome) {
 	}
 }
 
+/** The text with every masked value replaced, longest first so a value that holds another goes whole. */
+function toRedacted(text: string, masked: readonly string[]): string {
+	return masked
+		.toSorted((a, b) => b.length - a.length)
+		.reduce((out, value) => out.replaceAll(value, REDACTED), text)
+}
+
 /**
  * The result file the workflow uploads as an artifact, so real runs can be analysed through the
  * API: the status, the run and pull request, wall time, tokens per model and, for a reviewed run,
- * the document `mng-review --json` prints. It carries no secret; the writer also redacts the
- * endpoint's masked values.
+ * the document `mng-review --json` prints. Every string in it has the endpoint's masked values
+ * replaced; numbers and other values stay as they are.
  */
 export function formatResult(
 	outcome: ShadowOutcome,
 	context: ResultContext
 ): string {
 	const event = 'event' in outcome ? outcome.event : undefined
+	const masked = context.masked.filter(value => value.length > 0)
 	return JSON.stringify(
 		{
 			version: RESULT_VERSION,
@@ -70,7 +80,7 @@ export function formatResult(
 			engineCommit: context.engineCommit ?? null,
 			run: {
 				repository: context.repository ?? null,
-				eventName: context.eventName,
+				eventName: context.eventName || null,
 				runId: context.runId ?? null,
 				runAttempt: context.runAttempt ?? null,
 			},
@@ -78,7 +88,8 @@ export function formatResult(
 			wallMillis: context.wallMillis,
 			...toOutcomeJson(outcome),
 		},
-		null,
+		(_key, value: unknown) =>
+			typeof value === 'string' ? toRedacted(value, masked) : value,
 		2
 	)
 }
