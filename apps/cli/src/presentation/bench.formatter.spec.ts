@@ -58,6 +58,7 @@ const CASE = {
 	nits: 3,
 	tokens: TOKENS,
 	tokenSources: {},
+	agents: [],
 	wallMillis: 1200,
 } as const satisfies CaseReport
 const REPORT = {
@@ -243,4 +244,31 @@ test('bench totals text reports the confirmed and unverified found counts separa
 	expect(formatBenchText(report)).toContain(
 		'real found 2 (1 confirmed, 1 unverified)'
 	)
+})
+
+describe('bench agent JSON', () => {
+	test('retains every finder row and optional unit, continuation and unfinished fields', () => {
+		const agents = [
+			{
+				name: 'reviewer',
+				model: 'review-model',
+				status: 'incomplete',
+				toolCalls: 7,
+				findings: 2,
+				units: 3,
+				continued: 1,
+				unfinished: ['src/billing/refund.ts'],
+			},
+			{
+				name: 'billing',
+				model: 'agent-model',
+				status: 'ok',
+				toolCalls: 0,
+				findings: 0,
+			},
+		] as const satisfies CaseReport['agents']
+		expect(
+			JSON.parse(formatBenchJson({ ...REPORT, cases: [{ ...CASE, agents }] }))
+		).toMatchObject({ cases: [{ agents }] })
+	})
 })

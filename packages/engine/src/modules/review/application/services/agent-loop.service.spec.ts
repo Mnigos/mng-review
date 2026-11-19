@@ -35,7 +35,10 @@ import {
 	toolCall,
 } from '../../../../shared/mocks/review-test.helper'
 import { fenceData } from '../../../../utils/fence.util'
-import { toEstimatedTokens } from '../../domain/loop-budget.helper'
+import {
+	makeTokenPool,
+	toEstimatedTokens,
+} from '../../domain/loop-budget.helper'
 import { toContinuationMessage } from '../../domain/loop-message.helper'
 import {
 	CHARS_PER_TOKEN,
@@ -255,6 +258,7 @@ layer(Layer.empty)('AgentLoopService', test => {
 						value: { findings: [], dropped: 0 },
 						toolCalls: 0,
 						turns: 1,
+						spentTokens: 5,
 					})
 					expect(callSpy).not.toHaveBeenCalled()
 					const calls = yield* ScriptedLlm.use(script => script.calls)
@@ -693,6 +697,7 @@ layer(Layer.empty)('AgentLoopService', test => {
 						value: { findings: [], dropped: 0 },
 						toolCalls: 1,
 						turns: 2,
+						spentTokens: 10,
 					})
 					yield* Deferred.await(cancelled)
 					expect(callSpy).toHaveBeenCalledExactlyOnceWith(SCOPE, 'read_file', {
@@ -1093,6 +1098,7 @@ layer(Layer.empty)('conversation token budget and sources', test => {
 						value: { findings: [], dropped: 0 },
 						toolCalls: 5,
 						turns: 2,
+						spentTokens: 1150 + nextInputTokens,
 					})
 					expect(callSpy).toHaveBeenCalledTimes(5)
 					const calls = yield* ScriptedLlm.use(script => script.calls)
@@ -1434,6 +1440,7 @@ layer(Layer.empty)('coverage continuation', test => {
 						).toEqual({
 							value: { ...first, dropped: 0 },
 							turns: 1,
+							spentTokens,
 							toolCalls: 0,
 						})
 						expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(
@@ -1469,6 +1476,7 @@ layer(Layer.empty)('coverage continuation', test => {
 				).toEqual({
 					value: { findings: [], dropped: 0 },
 					turns: 2,
+					spentTokens: 10,
 					toolCalls: 1,
 				})
 				expect(callSpy).toHaveBeenCalledExactlyOnceWith(SCOPE, 'diff', {})
@@ -1517,6 +1525,7 @@ layer(Layer.empty)('coverage continuation', test => {
 							value: { findings: [], dropped: 0 },
 							continued: true,
 							turns: 3,
+							spentTokens: 15,
 							toolCalls: 1,
 						})
 						expect(callSpy).toHaveBeenCalledExactlyOnceWith(SCOPE, name, params)
@@ -1562,6 +1571,7 @@ layer(Layer.empty)('coverage continuation', test => {
 				).toEqual({
 					value: { findings: [], dropped: 0 },
 					turns: 2,
+					spentTokens: 10,
 					toolCalls: 1,
 				})
 				expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(2)
@@ -1581,7 +1591,7 @@ layer(Layer.empty)('coverage continuation', test => {
 		Effect.gen(function* () {
 			expect(
 				yield* AgentLoopService.use(loop => loop.run(COVERED_REQUEST))
-			).toEqual({ value: rawParsed(), turns: 1, toolCalls: 0 })
+			).toEqual({ value: rawParsed(), turns: 1, toolCalls: 0, spentTokens: 5 })
 			expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(1)
 		}).pipe(
 			Effect.provide(
@@ -1600,6 +1610,7 @@ layer(Layer.empty)('coverage continuation', test => {
 					continued: true,
 					toolCalls: 1,
 					turns: 3,
+					spentTokens: 15,
 				})
 				const calls = yield* ScriptedLlm.use(script => script.calls)
 				expect(calls).toHaveLength(3)
@@ -1642,6 +1653,7 @@ layer(Layer.empty)('coverage continuation', test => {
 						value: { findings: [first, second], dropped: 0 },
 						continued: true,
 						turns: 2,
+						spentTokens: 10,
 						toolCalls: 0,
 					})
 					const calls = yield* ScriptedLlm.use(script => script.calls)
@@ -1795,4 +1807,52 @@ layer(Layer.empty)('coverage continuation', test => {
 			)
 		)
 	)
+})
+
+layer(Layer.empty)('reviewer token pool in the loop', test => {
+	for (const released of [0, 10_000])
+		test.effect(
+			`a reviewer ${released ? 'uses returned tokens to keep reading' : 'wraps up with an empty pool'}`,
+			() =>
+				Effect.gen(function* () {
+					const pool = yield* makeTokenPool
+					const callSpy = vi.fn(() => Effect.succeed('source'))
+					yield* Effect.gen(function* () {
+						expect(
+							yield* AgentLoopService.use(loop =>
+								loop.run({
+									...REQUEST,
+									budget: { runTokens: 20_000, conversationTokens: 200, pool },
+								})
+							)
+						).toMatchObject({ turns: 2, toolCalls: 1, spentTokens: 105 })
+						const calls = yield* ScriptedLlm.use(script => script.calls)
+						expect(
+							calls[1]?.options.tools.map(tool => String(tool.name))
+						).toEqual(
+							released ? [...REQUEST.tools, REQUEST.finish] : [REQUEST.finish]
+						)
+						expect(callSpy).toHaveBeenCalledTimes(released ? 1 : 0)
+						expect(yield* pool.available).toBeLessThanOrEqual(released)
+					}).pipe(
+						Effect.provide(
+							loopLayer(
+								(_call, index) =>
+									index === 0
+										? pool
+												.release(released)
+												.pipe(
+													Effect.as([
+														toolCall('read_file', { path: BILLING_PATH }),
+														finishWithUsage(100),
+													])
+												)
+										: Effect.succeed(answer()),
+								{ tokensPerRun: 20_000 },
+								callSpy
+							)
+						)
+					)
+				})
+		)
 })

@@ -90,6 +90,18 @@ const decodeReport = Schema.decodeUnknownSync(
 							validatedBy: Schema.String,
 						})
 					),
+					agents: Schema.Array(
+						Schema.Struct({
+							name: Schema.String,
+							model: Schema.String,
+							status: Schema.String,
+							toolCalls: Schema.Number,
+							findings: Schema.Number,
+							units: Schema.optionalKey(Schema.Number),
+							continued: Schema.optionalKey(Schema.Number),
+							unfinished: Schema.optionalKey(Schema.Array(Schema.String)),
+						})
+					),
 					nits: Schema.Number,
 					tokens: tokensSchema,
 					tokenSources: Schema.Record(
@@ -455,6 +467,15 @@ layer(Layer.empty, { excludeTestServices: true })('bench CLI', test => {
 						depth: { level: 'balanced', source: 'review.yml depth' },
 						risk: 'normal',
 						rejected: [],
+						agents: [
+							{
+								name: 'reviewer',
+								model: 'reviewer',
+								status: 'ok',
+								toolCalls: 0,
+								findings: 2,
+							},
+						],
 					})
 				}
 				expect(report.cases.every(entry => entry.wallMillis >= 0)).toBeTruthy()
@@ -738,6 +759,7 @@ layer(Layer.empty, { excludeTestServices: true })('bench CLI', test => {
 				for (const entry of report.cases) {
 					expect(entry.skipped).toBe('label skip-review is in skip.labels')
 					expect(entry.tokens).toEqual({})
+					expect(entry.agents).toEqual([])
 					expect(entry.endpointError).toBeUndefined()
 				}
 				expect(invocation.requests).toEqual([])

@@ -1,5 +1,10 @@
+import { layer } from '@effect/vitest'
+import { Effect, Layer, Ref } from 'effect'
 import {
+	getMissingTokens,
 	isOutOfTokens,
+	makeConversationBudget,
+	makeTokenPool,
 	toAffordableOutputs,
 	toEstimatedTokens,
 } from './loop-budget.helper'
@@ -84,4 +89,133 @@ describe('affordable tool outputs', () => {
 				refusal
 			)
 		).toEqual([]))
+})
+
+describe('missing conversation tokens', () => {
+	test.each([
+		[19, 40, 0],
+		[20, 40, 1],
+		[21, 40, 2],
+		[100, 0, 1],
+	])(
+		'%i spent and %i next input need %i more tokens',
+		(spentTokens, nextInputTokens, missing) =>
+			expect(getMissingTokens(BUDGET, { spentTokens, nextInputTokens })).toBe(
+				missing
+			)
+	)
+})
+
+layer(Layer.empty)('returned finder tokens', test => {
+	test.effect(
+		'releases only floored positive tokens and claims all or nothing',
+		() =>
+			Effect.gen(function* () {
+				const pool = yield* makeTokenPool
+				expect(yield* pool.available).toBe(0)
+				for (const tokens of [-10, 0, 0.9]) yield* pool.release(tokens)
+				expect(yield* pool.available).toBe(0)
+				yield* pool.release(10.9)
+				expect(yield* pool.claim(11)).toBe(false)
+				expect(yield* pool.available).toBe(10)
+				expect(yield* pool.claim(4)).toBe(true)
+				expect(yield* pool.available).toBe(6)
+				yield* pool.release(-100)
+				expect(yield* pool.claim(6)).toBe(true)
+				expect(yield* pool.claim(1)).toBe(false)
+				expect(yield* pool.available).toBe(0)
+			})
+	)
+	test.effect(
+		'concurrent claims cannot spend the same released tokens twice',
+		() =>
+			Effect.gen(function* () {
+				const pool = yield* makeTokenPool
+				yield* pool.release(10)
+				expect(
+					(yield* Effect.all([pool.claim(10), pool.claim(10)], {
+						concurrency: 'unbounded',
+					})).filter(Boolean)
+				).toHaveLength(1)
+				expect(yield* pool.available).toBe(0)
+			})
+	)
+	test.effect(
+		'claims exactly what is missing, keeps the grant and wraps up when the pool is empty',
+		() =>
+			Effect.gen(function* () {
+				const pool = yield* makeTokenPool
+				const budget = yield* makeConversationBudget(
+					{ ...BUDGET, pool },
+					Effect.succeed(0)
+				)
+				const state = { spentTokens: 20, nextInputTokens: 40 }
+				expect(yield* budget.isSpent(state)).toBe(true)
+				yield* pool.release(5)
+				expect(yield* budget.isSpent(state)).toBe(false)
+				expect(yield* budget.current).toMatchObject({ conversationTokens: 101 })
+				expect(yield* pool.available).toBe(4)
+				expect(yield* budget.isSpent(state)).toBe(false)
+				expect(yield* pool.available).toBe(4)
+				expect(yield* budget.isSpent({ ...state, spentTokens: 24 })).toBe(false)
+				expect(yield* pool.available).toBe(0)
+				expect(yield* budget.current).toMatchObject({ conversationTokens: 105 })
+				expect(yield* budget.isSpent({ ...state, spentTokens: 25 })).toBe(true)
+			})
+	)
+	test.effect(
+		'an insufficient pool is unchanged and an agent without a pool wraps up',
+		() =>
+			Effect.gen(function* () {
+				const pool = yield* makeTokenPool
+				yield* pool.release(2)
+				const reviewer = yield* makeConversationBudget(
+					{ ...BUDGET, pool },
+					Effect.succeed(0)
+				)
+				const agent = yield* makeConversationBudget(BUDGET, Effect.succeed(0))
+				const state = { spentTokens: 23, nextInputTokens: 40 }
+				expect(yield* reviewer.isSpent(state)).toBe(true)
+				expect(yield* agent.isSpent(state)).toBe(true)
+				expect(yield* reviewer.current).toMatchObject({
+					conversationTokens: 100,
+				})
+				expect(yield* pool.available).toBe(2)
+			})
+	)
+	test.effect(
+		'the run limit wins over an available pool, including at the exact boundary',
+		() =>
+			Effect.gen(function* () {
+				const pool = yield* makeTokenPool
+				yield* pool.release(1000)
+				const spent = yield* Ref.make(BUDGET.runTokens - 1)
+				const budget = yield* makeConversationBudget(
+					{ ...BUDGET, pool },
+					Ref.get(spent)
+				)
+				const state = { spentTokens: 0, nextInputTokens: 1 }
+				expect(yield* budget.isSpent(state)).toBe(false)
+				yield* Ref.set(spent, BUDGET.runTokens)
+				expect(yield* budget.isSpent(state)).toBe(true)
+				expect(yield* pool.available).toBe(1000)
+			})
+	)
+	test.effect(
+		'an absent budget stays unbounded even after the run has spent tokens',
+		() =>
+			Effect.gen(function* () {
+				const budget = yield* makeConversationBudget(
+					undefined,
+					Effect.succeed(10_000)
+				)
+				expect(yield* budget.current).toBeUndefined()
+				expect(
+					yield* budget.isSpent({
+						spentTokens: 10_000,
+						nextInputTokens: 10_000,
+					})
+				).toBe(false)
+			})
+	)
 })
