@@ -1,0 +1,108 @@
+import { Effect, Layer } from 'effect'
+import { BOT_LOGIN } from '../../modules/publish/domain/publish.constants'
+import type {
+	PullRequestComment,
+	ReviewThread,
+} from '../../platform/github-api.schema'
+import {
+	GitHubApiService,
+	type ReviewInput,
+	type ReviewCommentInput,
+} from '../../platform/github-api.service'
+import type { GitHubApiError } from '../../platform/github.errors'
+
+export type ApiWrite =
+	| {
+			readonly method: 'review'
+			readonly pullNumber: number
+			readonly input: ReviewInput
+	  }
+	| {
+			readonly method: 'comment'
+			readonly pullNumber: number
+			readonly input: ReviewCommentInput
+	  }
+	| {
+			readonly method: 'create'
+			readonly pullNumber: number
+			readonly body: string
+	  }
+	| { readonly method: 'update'; readonly id: number; readonly body: string }
+
+/** In-memory GitHub with call recording and explicit per-operation failures, never an HTTP client. */
+export function githubApiFake() {
+	const threads: ReviewThread[] = []
+	const comments: PullRequestComment[] = []
+	const writes: ApiWrite[] = []
+	const failures = {
+		review: [] as GitHubApiError[],
+		comment: [] as GitHubApiError[],
+		create: [] as GitHubApiError[],
+		update: [] as GitHubApiError[],
+	}
+	const author = { __typename: 'Bot', login: BOT_LOGIN }
+	const addThread = (input: ReviewCommentInput) => {
+		threads.push({
+			id: `thread-${threads.length}`,
+			isResolved: false,
+			isOutdated: false,
+			path: input.path,
+			line: input.line ?? null,
+			originalLine: input.line ?? null,
+			subjectType: input.line === undefined ? 'FILE' : 'LINE',
+			comments: {
+				totalCount: 1,
+				nodes: [
+					{
+						databaseId: threads.length + 1,
+						body: input.body,
+						author,
+						editor: null,
+						originalCommit: { oid: input.commitId },
+					},
+				],
+			},
+		})
+	}
+	const api = Layer.succeed(GitHubApiService, {
+		listReviewThreads: () => Effect.sync(() => [...threads]),
+		listComments: () => Effect.sync(() => [...comments]),
+		createReview: (pullNumber, input) =>
+			Effect.gen(function* () {
+				writes.push({ method: 'review', pullNumber, input })
+				const error = failures.review.shift()
+				if (error) return yield* error
+				for (const comment of input.comments)
+					addThread({ ...comment, commitId: input.commitId })
+				return writes.length
+			}),
+		createReviewComment: (pullNumber, input) =>
+			Effect.gen(function* () {
+				writes.push({ method: 'comment', pullNumber, input })
+				const error = failures.comment.shift()
+				if (error) return yield* error
+				addThread(input)
+				return writes.length
+			}),
+		createIssueComment: (pullNumber, body) =>
+			Effect.gen(function* () {
+				writes.push({ method: 'create', pullNumber, body })
+				const error = failures.create.shift()
+				if (error) return yield* error
+				const id = writes.length
+				comments.push({ databaseId: id, body, author, editor: null })
+				return id
+			}),
+		updateIssueComment: (id, body) =>
+			Effect.gen(function* () {
+				writes.push({ method: 'update', id, body })
+				const error = failures.update.shift()
+				if (error) return yield* error
+				const index = comments.findIndex(comment => comment.databaseId === id)
+				const existing = comments[index]
+				if (existing) comments[index] = { ...existing, body }
+				return undefined
+			}),
+	})
+	return { api, threads, comments, writes, failures }
+}

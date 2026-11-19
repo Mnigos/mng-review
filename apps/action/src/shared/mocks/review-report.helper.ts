@@ -5,7 +5,11 @@ import {
 	type ReportedFinding,
 	toFinding,
 } from '@mng-review/domain'
-import { type ReviewReport, toEmptyReviewReport } from '@mng-review/engine'
+import {
+	type ReviewReport,
+	type Rules,
+	toEmptyReviewReport,
+} from '@mng-review/engine'
 
 const REPORTED_FINDING = {
 	path: 'src/items/store.ts',
@@ -198,3 +202,10 @@ export function unverifiedBug() {
 		},
 	} as const satisfies KeptFinding
 }
+
+/** Base rules shared by reviewed action outcomes. */
+export const RULES = {
+	config: DEFAULT_PRESET,
+	agents: [],
+	source: 'base',
+} as const satisfies Rules

@@ -13,10 +13,12 @@ import type {
 import { BASE_SHA, HEAD_SHA } from '../shared/mocks/pull-request-event.helper'
 import {
 	deepReviewReport,
+	RULES,
 	reviewReport,
 } from '../shared/mocks/review-report.helper'
 import {
 	formatLogLine,
+	formatPublishLogLine,
 	formatSummary,
 	SUMMARY_TITLE,
 	toVerdictLine,
@@ -86,6 +88,7 @@ describe('formatLogLine', () => {
 		test(`neutralizes ${JSON.stringify(command)} in reviewed endpoint errors`, () => {
 			const line = formatLogLine({
 				status: 'reviewed',
+				rules: RULES,
 				event: EVENT,
 				report: { ...reviewReport(), endpointError: reason },
 			})
@@ -98,6 +101,7 @@ describe('formatLogLine', () => {
 			const report = reviewReport()
 			const line = formatLogLine({
 				status: 'reviewed',
+				rules: RULES,
 				event: EVENT,
 				report: {
 					...report,
@@ -131,7 +135,7 @@ describe('formatSummary', () => {
 	test('reviewed outcome includes verdict, risk, agent reasons, tokens, wall time and shortened commits', () => {
 		const report = reviewReport()
 		const text = formatSummary(
-			{ status: 'reviewed', event: EVENT, report },
+			{ status: 'reviewed', rules: RULES, event: EVENT, report },
 			CONTEXT
 		)
 		expect(text).toContain(
@@ -148,9 +152,9 @@ describe('formatSummary', () => {
 		expect(text).toContain('Wall time 1.2 s.')
 		expect(text).toContain('### Did not finish')
 		expect(text).toContain('model model-a dropped: rate limited \\(429\\)')
-		expect(formatLogLine({ status: 'reviewed', event: EVENT, report })).toBe(
-			`mng-review: ${toVerdictLine(report)}`
-		)
+		expect(
+			formatLogLine({ status: 'reviewed', rules: RULES, event: EVENT, report })
+		).toBe(`mng-review: ${toVerdictLine(report)}`)
 	})
 	test.each(['planned', 'reversed'])(
 		'matches deep reviewer rows to their model with reports in %s order',
@@ -159,6 +163,7 @@ describe('formatSummary', () => {
 			const text = formatSummary(
 				{
 					status: 'reviewed',
+					rules: RULES,
 					event: EVENT,
 					report: {
 						...report,
@@ -191,6 +196,7 @@ describe('formatSummary', () => {
 			const text = formatSummary(
 				{
 					status: 'reviewed',
+					rules: RULES,
 					event: EVENT,
 					report: {
 						...report,
@@ -212,7 +218,12 @@ describe('formatSummary', () => {
 	test('shows planned reviewer runs without reports as not run', () => {
 		const report = deepReviewReport()
 		const text = formatSummary(
-			{ status: 'reviewed', event: EVENT, report: { ...report, agents: [] } },
+			{
+				status: 'reviewed',
+				rules: RULES,
+				event: EVENT,
+				report: { ...report, agents: [] },
+			},
 			CONTEXT
 		)
 		expect(
@@ -279,7 +290,7 @@ describe('formatSummary', () => {
 			},
 		}
 		const text = formatSummary(
-			{ status: 'reviewed', event: EVENT, report },
+			{ status: 'reviewed', rules: RULES, event: EVENT, report },
 			CONTEXT
 		)
 		expect(text).not.toContain('![')
@@ -308,6 +319,7 @@ describe('formatSummary', () => {
 		const text = formatSummary(
 			{
 				status: 'reviewed',
+				rules: RULES,
 				event: EVENT,
 				report: { ...reviewReport(), endpointError: MALICIOUS },
 			},
@@ -324,6 +336,7 @@ describe('formatSummary', () => {
 		const text = formatSummary(
 			{
 				status: 'reviewed',
+				rules: RULES,
 				event: EVENT,
 				report: {
 					...report,
@@ -359,7 +372,7 @@ describe('formatSummary', () => {
 				},
 			}
 			const text = formatSummary(
-				{ status: 'reviewed', event: EVENT, report },
+				{ status: 'reviewed', rules: RULES, event: EVENT, report },
 				CONTEXT
 			)
 			expect(text).toContain(skippedRun ?? 'nothing to review')
@@ -382,7 +395,10 @@ describe('toVerdictLine', () => {
 		}
 		expect(toVerdictLine(report)).toContain('; the run is incomplete')
 		expect(
-			formatSummary({ status: 'reviewed', event: EVENT, report }, CONTEXT)
+			formatSummary(
+				{ status: 'reviewed', rules: RULES, event: EVENT, report },
+				CONTEXT
+			)
 		).toContain('- reviewer: budget spent')
 	})
 	test('endpoint error takes precedence over a blocking finding', () => {
@@ -391,7 +407,10 @@ describe('toVerdictLine', () => {
 			'incomplete, the model endpoint failed: no model available'
 		)
 		expect(
-			formatSummary({ status: 'reviewed', event: EVENT, report }, CONTEXT)
+			formatSummary(
+				{ status: 'reviewed', rules: RULES, event: EVENT, report },
+				CONTEXT
+			)
 		).toContain('incomplete, the model endpoint failed: no model available')
 	})
 })
@@ -418,7 +437,7 @@ for (const failed of [[], MECHANICAL_CONDITIONS] as const)
 			},
 		}
 		const text = formatSummary(
-			{ status: 'reviewed', event: EVENT, report },
+			{ status: 'reviewed', rules: RULES, event: EVENT, report },
 			CONTEXT
 		)
 		const riskLine = text.split('\n').find(line => line.startsWith('Risk **'))
@@ -453,7 +472,7 @@ test.each([false, true])(
 			},
 		}
 		const text = formatSummary(
-			{ status: 'reviewed', event: EVENT, report },
+			{ status: 'reviewed', rules: RULES, event: EVENT, report },
 			CONTEXT
 		)
 		expect(text).not.toContain('mechanical change')
@@ -464,3 +483,53 @@ test.each([false, true])(
 		expect(text).not.toContain('risky rewrite(s)')
 	}
 )
+
+test.each(['published', 'failed', 'status-only', 'not-published'] as const)(
+	'summary includes %s publish report and mode',
+	status => {
+		const publish =
+			status === 'published'
+				? ({
+						status,
+						result: {
+							verdict: 'ready',
+							openBugs: 0,
+							onLine: 1,
+							onFile: 2,
+							inSummary: 3,
+							unposted: 4,
+							repeated: 5,
+							run: 6,
+						},
+					} as const)
+				: { status, reason: MALICIOUS }
+		const text = formatSummary(
+			{
+				status: 'reviewed',
+				rules: RULES,
+				event: EVENT,
+				report: reviewReport(),
+			},
+			{ ...CONTEXT, publish }
+		)
+		expect(text).toContain('Publish mode:')
+		expect(text).not.toContain('Shadow mode:')
+		if (status === 'published')
+			expect(text).toContain(
+				'1 on lines, 2 on files, 3 in the summary comment, 4 not posted; 5 already had a thread'
+			)
+		if (status === 'failed' || status === 'not-published')
+			expect(text).toContain(escapeMarkdown(MALICIOUS))
+	}
+)
+
+test.each([
+	'::error file=x::injected\n::warning::next',
+	'\r##[error]injected\u202E\u2028::stop-commands::token',
+])('publish log cannot emit workflow commands from %s', reason => {
+	const text = formatPublishLogLine({ status: 'failed', reason })
+	expect(text).toMatch(/^mng-review: publishing failed:/u)
+	expect(text).not.toContain('::')
+	expect(text).not.toContain('##[')
+	expect(text).not.toMatch(/[\r\n\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u)
+})

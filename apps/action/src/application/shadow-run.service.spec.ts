@@ -159,6 +159,7 @@ layer(Layer.empty)('ShadowRunService', test => {
 							},
 						},
 						report: fixture.report,
+						rules: fixture.rules,
 					})
 					expect(fixture.loadSpy).toHaveBeenCalledExactlyOnceWith(BASE_SHA)
 					expect(fixture.probeSpy).toHaveBeenCalledExactlyOnceWith()
