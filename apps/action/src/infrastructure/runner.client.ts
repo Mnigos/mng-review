@@ -1,5 +1,9 @@
 import { ConfigError } from '@mng-review/domain'
-import { LLM_KEY_VARIABLE, LLM_URL_VARIABLE } from '@mng-review/engine'
+import {
+	LLM_KEY_VARIABLE,
+	LLM_URL_VARIABLE,
+	REDACTED,
+} from '@mng-review/engine'
 import { Config, Console, Effect, FileSystem, Option, Redacted } from 'effect'
 import { EVENT_PATH_VARIABLE } from './pull-request-event.parser'
 
@@ -12,6 +16,12 @@ export interface RunnerEnvironment {
 	readonly summaryPath: string | undefined
 	/** `MNG_REVIEW_ENGINE_COMMIT`, the reusable workflow's own commit. */
 	readonly engineCommit: string | undefined
+	/** `MNG_REVIEW_RESULT_PATH`, where the result file goes; unset, no file is written. */
+	readonly resultPath: string | undefined
+	/** `GITHUB_REPOSITORY`, `owner/name` of the caller. */
+	readonly repository: string | undefined
+	readonly runId: string | undefined
+	readonly runAttempt: string | undefined
 }
 
 /**
@@ -29,12 +39,20 @@ export const runnerEnvironmentConfig = Config.all({
 	eventPath: Config.option(Config.String(EVENT_PATH_VARIABLE)),
 	summaryPath: Config.option(Config.String('GITHUB_STEP_SUMMARY')),
 	engineCommit: Config.option(Config.String('MNG_REVIEW_ENGINE_COMMIT')),
+	resultPath: Config.option(Config.String('MNG_REVIEW_RESULT_PATH')),
+	repository: Config.option(Config.String('GITHUB_REPOSITORY')),
+	runId: Config.option(Config.String('GITHUB_RUN_ID')),
+	runAttempt: Config.option(Config.String('GITHUB_RUN_ATTEMPT')),
 }).pipe(
 	Config.map((settings): RunnerEnvironment => ({
 		eventName: settings.eventName.trim(),
 		eventPath: Option.getOrUndefined(settings.eventPath),
 		summaryPath: Option.getOrUndefined(settings.summaryPath),
 		engineCommit: Option.getOrUndefined(settings.engineCommit)?.trim(),
+		resultPath: Option.getOrUndefined(settings.resultPath),
+		repository: Option.getOrUndefined(settings.repository)?.trim(),
+		runId: Option.getOrUndefined(settings.runId)?.trim(),
+		runAttempt: Option.getOrUndefined(settings.runAttempt)?.trim(),
 	}))
 )
 
@@ -49,7 +67,8 @@ function toMaskedValues(url: string, key: string): string[] {
 
 /**
  * Registers the endpoint's URL and key with the runner's `::add-mask::` command, so neither can
- * appear in the job log even if a later message carried one. Unset values are skipped.
+ * appear in the job log even if a later message carried one. Unset values are skipped. Returns the
+ * masked values, which the result file is redacted with.
  */
 export const maskEndpoint = Effect.fn('runner.maskEndpoint')(function* () {
 	const settings = yield* Config.all({
@@ -63,9 +82,9 @@ export const maskEndpoint = Effect.fn('runner.maskEndpoint')(function* () {
 		onNone: () => '',
 		onSome: Redacted.value,
 	})
-	yield* Effect.forEach(toMaskedValues(url, key), value =>
-		Console.log(`::add-mask::${value}`)
-	)
+	const values = toMaskedValues(url, key)
+	for (const value of values) yield* Console.log(`::add-mask::${value}`)
+	return values
 })
 
 /** The event payload as text; a missing path or an unreadable file fails naming `GITHUB_EVENT_PATH`. */
@@ -97,4 +116,23 @@ export const writeSummary = Effect.fn('runner.writeSummary')(function* (
 	if (!path) return yield* Console.log(markdown)
 	const fs = yield* FileSystem.FileSystem
 	return yield* fs.writeFileString(path, markdown, { flag: 'a' })
+})
+
+/**
+ * Writes the result file with every masked value replaced, in its JSON-escaped form since the
+ * file is JSON, longest first so a value that holds another goes whole. Outside a workflow, with
+ * no path, nothing is written.
+ */
+export const writeResult = Effect.fn('runner.writeResult')(function* (
+	path: string | undefined,
+	json: string,
+	masked: readonly string[]
+) {
+	if (!path) return yield* Effect.void
+	const redacted = masked
+		.map(value => JSON.stringify(value).slice(1, -1))
+		.toSorted((a, b) => b.length - a.length)
+		.reduce((text, value) => text.replaceAll(value, REDACTED), json)
+	const fs = yield* FileSystem.FileSystem
+	return yield* fs.writeFileString(path, redacted)
 })

@@ -8,7 +8,7 @@ import {
 	RulesServiceLive,
 	TokenLedgerLive,
 } from '@mng-review/engine'
-import { Console, Effect, FileSystem, Layer } from 'effect'
+import { Clock, Console, Effect, FileSystem, Layer } from 'effect'
 import { FetchHttpClient } from 'effect/http'
 import {
 	ShadowRunService,
@@ -19,6 +19,7 @@ import {
 	readEventText,
 	repoDirConfig,
 	runnerEnvironmentConfig,
+	writeResult,
 	writeSummary,
 } from './infrastructure/runner.client'
 import {
@@ -26,6 +27,7 @@ import {
 	FAILED_EXIT_CODE,
 	INVALID_CONFIG_EXIT_CODE,
 } from './presentation/action-exit.errors'
+import { formatResult } from './presentation/result.formatter'
 import { formatLogLine, formatSummary } from './presentation/summary.formatter'
 
 /** Bun's process and file system, `fetch` for the endpoint, and git in the caller's checkout. */
@@ -51,9 +53,13 @@ const ActionLive = ShadowRunServiceLive.pipe(
 	)
 )
 
-/** Reviews the pull request of the workflow's event, writes the job summary and exits by the outcome. */
+/**
+ * Reviews the pull request of the workflow's event, writes the job summary and the result file,
+ * and exits by the outcome.
+ */
 const runAction = Effect.gen(function* () {
-	yield* maskEndpoint()
+	const startedAt = yield* Clock.currentTimeMillis
+	const masked = yield* maskEndpoint()
 	const env = yield* runnerEnvironmentConfig
 	const fs = yield* FileSystem.FileSystem
 	const outcome = yield* ShadowRunService.use(service =>
@@ -64,10 +70,16 @@ const runAction = Effect.gen(function* () {
 			),
 		})
 	)
+	const wallMillis = (yield* Clock.currentTimeMillis) - startedAt
 	yield* Console.log(formatLogLine(outcome))
 	yield* writeSummary(
 		env.summaryPath,
 		formatSummary(outcome, { engineCommit: env.engineCommit })
+	)
+	yield* writeResult(
+		env.resultPath,
+		formatResult(outcome, { ...env, wallMillis }),
+		masked
 	)
 	if (outcome.status === 'invalid-config')
 		return yield* new ActionExit({ code: INVALID_CONFIG_EXIT_CODE })
