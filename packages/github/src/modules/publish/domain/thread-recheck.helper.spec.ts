@@ -1,5 +1,10 @@
 import { botThread, bug } from '../../../shared/mocks/publish-test.helper'
-import { getRecheckCandidates, toThreadFinding } from './thread-recheck.helper'
+import { MAX_RECHECKS } from './publish.constants'
+import {
+	getRecheckCandidates,
+	toThreadFinding,
+	getRotated,
+} from './thread-recheck.helper'
 
 const HEAD = 'new-head'
 
@@ -90,6 +95,31 @@ describe('toThreadFinding', () => {
 			expect(toThreadFinding(thread).line).toBe(
 				originalLine ?? thread.marker.line
 			)
+		}
+	)
+})
+
+describe('getRotated', () => {
+	test.each([0, 1, MAX_RECHECKS])(
+		'keeps %i items in order at any rotation',
+		length => {
+			const items = Array.from({ length }, (_, index) => ({ id: index }))
+			expect(getRotated(items, 5)).toEqual(items)
+			expect(getRotated(items, 5)).not.toBe(items)
+		}
+	)
+	test.each([0, 1, 2, 3])(
+		'starts a longer list at rotation %i and wraps without dropping items',
+		rotation => {
+			const items = Array.from({ length: MAX_RECHECKS + 2 }, (_, index) => ({
+				id: index,
+			}))
+			const original = [...items]
+			const start = (rotation * MAX_RECHECKS) % items.length
+			const rotated = getRotated(items, rotation)
+			expect(rotated).toEqual([...items.slice(start), ...items.slice(0, start)])
+			expect(rotated[0]).toBe(items[start])
+			expect(items).toEqual(original)
 		}
 	)
 })

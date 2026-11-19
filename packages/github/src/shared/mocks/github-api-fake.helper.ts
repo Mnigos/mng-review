@@ -43,6 +43,7 @@ export function githubApiFake() {
 		update: [] as GitHubApiError[],
 		reply: [] as GitHubApiError[],
 		resolve: [] as GitHubApiError[],
+		listThreads: [] as GitHubApiError[],
 	}
 	const author = { __typename: 'Bot', login: BOT_LOGIN }
 	const addThread = (input: ReviewCommentInput) => {
@@ -68,6 +69,14 @@ export function githubApiFake() {
 			},
 		})
 	}
+	const threadReads: number[] = []
+	const listReviewThreads = (pullNumber: number) =>
+		Effect.gen(function* () {
+			threadReads.push(pullNumber)
+			const error = failures.listThreads.shift()
+			if (error) return yield* error
+			return [...threads]
+		})
 	const api = Layer.succeed(GitHubApiService, {
 		replyToThread: (id, body) =>
 			Effect.gen(function* () {
@@ -96,7 +105,7 @@ export function githubApiFake() {
 				if (thread) threads[index] = { ...thread, isResolved: true }
 				return undefined
 			}),
-		listReviewThreads: () => Effect.sync(() => [...threads]),
+		listReviewThreads,
 		listComments: () => Effect.sync(() => [...comments]),
 		createReview: (pullNumber, input) =>
 			Effect.gen(function* () {
@@ -135,5 +144,5 @@ export function githubApiFake() {
 				return undefined
 			}),
 	})
-	return { api, threads, comments, writes, failures }
+	return { api, threads, comments, writes, failures, threadReads }
 }

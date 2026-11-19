@@ -10,7 +10,7 @@ const SINCE = '0123456789abcdef'
 
 describe('toIncrementalPlan', () => {
 	test('incremental runs keep only changed paths without mutating the plan', () => {
-		const run = plannedRun({ files: ['src/a.ts', 'src/b.ts'] })
+		const run = plannedRun({ role: 'agent', files: ['src/a.ts', 'src/b.ts'] })
 		const plan = { ...buildPlan(planInput(), NORMAL_ROUTER), runs: [run] }
 		const narrowed = toIncrementalPlan(
 			plan,
@@ -25,9 +25,9 @@ describe('toIncrementalPlan', () => {
 		const plan = {
 			...buildPlan(planInput(), NORMAL_ROUTER),
 			runs: [
-				plannedRun(),
-				plannedRun({ model: 'model-b' }),
-				plannedRun({ name: 'storage' }),
+				plannedRun({ role: 'agent' }),
+				plannedRun({ role: 'agent', model: 'model-b' }),
+				plannedRun({ role: 'agent', name: 'storage' }),
 			],
 			skips: [skip],
 		}
@@ -47,10 +47,26 @@ describe('toIncrementalPlan', () => {
 			],
 		})
 	})
+	test.each([{ changed: [] }, { changed: ['src/b.ts'] }])(
+		'the incremental main reviewer keeps the whole change with changed paths %j',
+		({ changed }) => {
+			const run = plannedRun({
+				role: 'reviewer',
+				input: 'incremental',
+				files: ['src/a.ts', 'src/b.ts'],
+			})
+			const plan = { ...buildPlan(planInput(), NORMAL_ROUTER), runs: [run] }
+			const narrowed = toIncrementalPlan(plan, new Set(changed), SINCE)
+			expect(narrowed.runs).toEqual([run])
+			expect(narrowed.runs[0]).toBe(run)
+			expect(narrowed.skips).toEqual(plan.skips)
+		}
+	)
 	test.each(['full_diff', 'metadata'] as const)(
 		'%s retains its original run even with no changed paths',
 		input => {
 			const run = plannedRun({
+				role: 'agent',
 				input,
 				files: input === 'metadata' ? [] : ['src/a.ts'],
 			})

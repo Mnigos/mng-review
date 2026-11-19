@@ -32,3 +32,11 @@ describe('publish markers', () => {
 		})
 	}
 })
+
+test('summary markers without a completely reviewed head still decode', () => {
+	const { head: _head, ...marker } = SUMMARY_MARKER
+	expect(parseSummaryMarker(toMarkerComment('summary', marker))).toEqual(marker)
+	expect(
+		parseSummaryMarker(toMarkerComment('summary', { ...marker, head: 12 }))
+	).toBeUndefined()
+})

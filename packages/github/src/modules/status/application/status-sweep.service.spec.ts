@@ -5,6 +5,7 @@ import { GitHubApiError } from '../../../platform/github.errors'
 import { githubApiFake } from '../../../shared/mocks/github-api-fake.helper'
 import { githubStatusFake } from '../../../shared/mocks/github-status-fake.helper'
 import { reviewThread, bug } from '../../../shared/mocks/publish-test.helper'
+import { UNFINISHED_NOTE } from '../domain/status.helper'
 import {
 	StatusSweepService,
 	StatusSweepServiceLive,
@@ -86,6 +87,7 @@ layer(Layer.empty)('StatusSweepService', test => {
 						Effect.succeed([{ number: 1, head: { sha: 'head' } }]),
 					getStatus: () =>
 						Effect.succeed({
+							id: 1,
 							state: 'failure',
 							description: 'stale',
 							context: 'MNG Review',
@@ -131,6 +133,7 @@ layer(Layer.empty)('StatusSweepService', test => {
 							failureAt === 'read' && sha === 'first'
 								? Effect.fail(error)
 								: Effect.succeed({
+										id: 1,
 										state: 'failure',
 										description: null,
 										context: 'MNG Review',
@@ -155,4 +158,103 @@ layer(Layer.empty)('StatusSweepService', test => {
 					)
 				})
 		)
+})
+
+layer(Layer.empty)('StatusSweepService latest status', test => {
+	for (const latest of ['same', 'newer', 'gone', 'read-failed'] as const)
+		test.effect(
+			`a ${latest} status at the second read controls the write`,
+			() =>
+				Effect.gen(function* () {
+					const previous = {
+						id: 1,
+						state: 'failure',
+						description: 'stale',
+						context: 'MNG Review',
+						creator: null,
+					}
+					const getStatusSpy = vi
+						.fn()
+						.mockReturnValueOnce(Effect.succeed(previous))
+						.mockReturnValueOnce(
+							latest === 'read-failed'
+								? Effect.fail(
+										new GitHubApiError({ operation: 'read', reason: 'denied' })
+									)
+								: Effect.succeed(
+										latest === 'gone'
+											? undefined
+											: { ...previous, id: latest === 'newer' ? 2 : 1 }
+									)
+						)
+					const fake = githubStatusFake({
+						listOpenPullRequests: () =>
+							Effect.succeed([{ number: 17, head: { sha: 'head' } }]),
+						getStatus: getStatusSpy,
+					})
+					const api = githubApiFake()
+					expect(
+						yield* StatusSweepService.use(service => service.sweep()).pipe(
+							Effect.provide(
+								StatusSweepServiceLive.pipe(
+									Layer.provide(Layer.merge(fake.layer, api.api))
+								)
+							)
+						)
+					).toEqual({
+						checked: 1,
+						updated: latest === 'same' ? 1 : 0,
+						failed: latest === 'read-failed' ? 1 : 0,
+					})
+					expect(getStatusSpy.mock.calls).toEqual([['head'], ['head']])
+					expect(api.threadReads).toEqual([17])
+					expect(fake.statuses).toEqual(
+						latest === 'same'
+							? [
+									{
+										sha: 'head',
+										state: 'success',
+										description: 'no open bug thread',
+									},
+								]
+							: []
+					)
+				})
+		)
+	test.effect(
+		'resolving the last bug from an unfinished run never sweeps it green',
+		() =>
+			Effect.gen(function* () {
+				const fake = githubStatusFake({
+					listOpenPullRequests: () =>
+						Effect.succeed([{ number: 17, head: { sha: 'head' } }]),
+					getStatus: () =>
+						Effect.succeed({
+							id: 1,
+							state: 'failure',
+							description: `1 open bug thread(s); needs fixes; ${UNFINISHED_NOTE}`,
+							context: 'MNG Review',
+							creator: null,
+						}),
+				})
+				const api = githubApiFake()
+				api.threads.push(reviewThread(undefined, { isResolved: true }))
+				expect(
+					yield* StatusSweepService.use(service => service.sweep()).pipe(
+						Effect.provide(
+							StatusSweepServiceLive.pipe(
+								Layer.provide(Layer.merge(fake.layer, api.api))
+							)
+						)
+					)
+				).toEqual({ checked: 1, updated: 1, failed: 0 })
+				expect(fake.statuses).toEqual([
+					{
+						sha: 'head',
+						state: 'error',
+						description: `no open bug thread; ${UNFINISHED_NOTE}`,
+					},
+				])
+			})
+	)
 })

@@ -12,6 +12,7 @@ import { githubApiFake } from '../../../shared/mocks/github-api-fake.helper'
 import { HOSTILE_TEXT } from '../../../shared/mocks/hostile-text.helper'
 import {
 	botThread,
+	reviewThread,
 	LINKS,
 	RULES,
 } from '../../../shared/mocks/publish-test.helper'
@@ -62,6 +63,7 @@ function setup(validation: Validation['status'] = 'rejected') {
 	repo.write('src/store.ts', 'after\n')
 	const head = repo.commit()
 	const api = githubApiFake()
+	api.threads.push(reviewThread())
 	const recheckSpy = vi.fn((request: RecheckRequest) =>
 		Effect.succeed({
 			results: request.items.map(item => ({
@@ -81,6 +83,8 @@ function setup(validation: Validation['status'] = 'rejected') {
 		)
 	)
 	const input = {
+		pullNumber: 17,
+		rotation: 0,
 		pr: { labels: [], draft: false, fork: false, trigger: 'auto' as const },
 		rules: RULES,
 		links: { ...LINKS, head },
@@ -215,6 +219,115 @@ layer(Layer.empty, { excludeTestServices: true })(
 					).toEqual({ checked: 0, resolved: [], tokens: undefined })
 					expect(fixture.recheckSpy).not.toHaveBeenCalled()
 				})
+		)
+	}
+)
+
+layer(Layer.empty, { excludeTestServices: true })(
+	'ThreadRecheckService fresh state and rotation',
+	test => {
+		for (const change of [
+			'reply',
+			'resolved',
+			'gone',
+			'edited',
+			'foreign',
+			'read-failed',
+		] as const)
+			test.effect(
+				`a rejected thread with ${change} at the second read is left alone`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = setup()
+						fixture.recheckSpy.mockImplementationOnce(request =>
+							Effect.sync(() => {
+								const [thread] = fixture.api.threads
+								if (!thread) return { results: [], tokens: TOKENS }
+								if (change === 'gone') fixture.api.threads.splice(0)
+								else if (change === 'read-failed')
+									fixture.api.failures.listThreads.push(
+										new GitHubApiError({
+											operation: 'threads',
+											reason: 'denied',
+											status: 403,
+										})
+									)
+								else
+									fixture.api.threads[0] = {
+										...thread,
+										isResolved: change === 'resolved',
+										comments: {
+											...thread.comments,
+											totalCount: change === 'reply' ? 2 : 1,
+											nodes: thread.comments.nodes.map(comment => ({
+												...comment,
+												...(change === 'edited'
+													? {
+															editor: {
+																__typename: 'User',
+																login: 'contributor',
+															},
+														}
+													: {}),
+												...(change === 'foreign'
+													? {
+															author: {
+																__typename: 'User',
+																login: 'contributor',
+															},
+														}
+													: {}),
+											})),
+										},
+									}
+								return {
+									results: request.items.map(item => ({
+										...item,
+										validation: toValidation('rejected'),
+									})),
+									tokens: TOKENS,
+								}
+							})
+						)
+						expect(
+							yield* ThreadRecheckService.use(service =>
+								service.recheck(fixture.input)
+							).pipe(Effect.provide(fixture.service))
+						).toEqual({ checked: 1, resolved: [], tokens: TOKENS })
+						expect(fixture.recheckSpy).toHaveBeenCalledOnce()
+						expect(fixture.api.threadReads).toEqual([17])
+						expect(fixture.api.writes).toEqual([])
+					})
+			)
+		test.effect('a later run rotates the capped validator batch', () =>
+			Effect.gen(function* () {
+				const fixture = setup('confirmed')
+				const threads = Array.from({ length: MAX_RECHECKS + 2 }, (_, index) =>
+					botThread({
+						id: `changed-${index}`,
+						commit: fixture.base,
+						marker: { ...botThread().marker, title: `Problem ${index}` },
+					})
+				)
+				const service = yield* ThreadRecheckService.pipe(
+					Effect.provide(fixture.service)
+				)
+				yield* service.recheck({ ...fixture.input, threads, rotation: 0 })
+				yield* service.recheck({ ...fixture.input, threads, rotation: 1 })
+				expect(
+					fixture.recheckSpy.mock.calls.map(([request]) =>
+						request.items.map(item => item.finding.title)
+					)
+				).toEqual([
+					threads.slice(0, MAX_RECHECKS).map(thread => thread.marker.title),
+					[
+						...threads.slice(MAX_RECHECKS),
+						...threads.slice(0, MAX_RECHECKS - 2),
+					].map(thread => thread.marker.title),
+				])
+				expect(fixture.api.threadReads).toEqual([])
+				expect(fixture.api.writes).toEqual([])
+			})
 		)
 	}
 )
