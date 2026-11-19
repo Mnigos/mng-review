@@ -58,6 +58,18 @@ const UNREVIEWED = [
 	{ status: 'failed', reason: 'missing base commit', event: EVENT },
 ] as const satisfies readonly ShadowOutcome[]
 
+/** Token usage of one model with the given total. */
+function toUsage(totalTokens: number) {
+	return {
+		calls: 1,
+		inputTokens: totalTokens,
+		cachedInputTokens: 0,
+		outputTokens: 0,
+		reasoningTokens: 0,
+		totalTokens,
+	}
+}
+
 describe('formatResult', () => {
 	test('writes the complete versioned reviewed document with the CLI review value', () => {
 		const report = reviewReport()
@@ -281,6 +293,32 @@ describe('formatResult', () => {
 		})
 		expect(json).toHaveProperty('tokens', report.tokens)
 		expect(json).toHaveProperty('review.tokens', report.tokens)
+	})
+
+	test('keeps every token entry when two model names redact to the same name', () => {
+		const url = 'http://inference.example.com:8080/v1'
+		const host = 'inference.example.com'
+		expect(
+			decodeJson(
+				formatResult(
+					{
+						status: 'reviewed',
+						event: EVENT,
+						report: {
+							...reviewReport(),
+							tokens: {
+								[`${url}/model-b`]: toUsage(3),
+								[`${host}/model-b`]: toUsage(5),
+							},
+						},
+					},
+					{ ...CONTEXT, masked: [url, host] }
+				)
+			)
+		).toHaveProperty('tokens', {
+			[`${REDACTED}/model-b`]: toUsage(3),
+			[`${REDACTED}/model-b (2)`]: toUsage(5),
+		})
 	})
 
 	test('redacts a masked value inside model names that key the token maps', () => {
