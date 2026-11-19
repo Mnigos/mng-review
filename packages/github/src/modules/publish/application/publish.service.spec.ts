@@ -214,6 +214,11 @@ layer(Layer.empty, { excludeTestServices: true })(
 						expect(singles.map(call => call.input.line)).toEqual(
 							refusals === 0 ? [bug().line] : [bug().line, undefined]
 						)
+						const marker = parseSummaryMarker(
+							fixture.fake.comments[0]?.body ?? ''
+						)
+						expect(marker).toMatchObject({ head: fixture.head, finished: true })
+						expect(marker?.unthreadedBugs).toBe(refusals === 2 ? 1 : undefined)
 						expect(fixture.fake.writes.at(-1)?.method).toBe('create')
 					})
 			)
@@ -236,6 +241,13 @@ layer(Layer.empty, { excludeTestServices: true })(
 							'review',
 							'create',
 						])
+						expect(
+							parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
+						).toMatchObject({
+							head: fixture.head,
+							finished: true,
+							unthreadedBugs: 1,
+						})
 					})
 			)
 		test.effect('recreates a summary whose update returned 404', () =>
@@ -476,6 +488,114 @@ layer(Layer.empty, { excludeTestServices: true })(
 layer(Layer.empty, { excludeTestServices: true })(
 	'PublishServiceLive batching and status',
 	test => {
+		for (const source of ['metadata', 'outside-diff'] as const)
+			test.effect(
+				`a published ${source} bug still blocks a sweep without any thread`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = setup()
+						const finding = bug({
+							agents: [source],
+							path: source === 'outside-diff' ? 'outside.ts' : bug().path,
+						})
+						const published = yield* PublishService.use(service =>
+							service.publish({
+								...fixture.input,
+								rules: {
+									...RULES,
+									agents: [
+										agent(source, {
+											input: source === 'metadata' ? 'metadata' : 'incremental',
+										}),
+									],
+								},
+								report: { ...fixture.input.report, bugs: [finding] },
+							})
+						).pipe(Effect.provide(fixture.publisher))
+						expect(published).toMatchObject({
+							inSummary: 1,
+							openBugs: 1,
+							verdict: 'needs fixes',
+						})
+						expect(
+							parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
+						).toMatchObject({
+							head: fixture.head,
+							finished: true,
+							unthreadedBugs: 1,
+						})
+						expect(fixture.fake.threads).toEqual([])
+						const status = toCommitStatus(
+							published.verdict,
+							published.openBugs,
+							true
+						)
+						expect(status.state).toBe('failure')
+						const fake = githubStatusFake({
+							listOpenPullRequests: () =>
+								Effect.succeed([
+									{
+										number: fixture.input.pullNumber,
+										head: { sha: fixture.head },
+									},
+								]),
+							getStatus: () =>
+								Effect.succeed({
+									id: 1,
+									...status,
+									context: 'MNG Review',
+									creator: null,
+								}),
+						})
+						expect(
+							yield* StatusSweepService.use(service => service.sweep()).pipe(
+								Effect.provide(
+									StatusSweepServiceLive.pipe(
+										Layer.provide(Layer.merge(fake.layer, fixture.fake.api))
+									)
+								)
+							)
+						).toEqual({ checked: 1, updated: 0, failed: 0 })
+						expect(fake.statuses).toEqual([])
+					})
+			)
+
+		test.effect(
+			'publishes a metadata summary nit without a location or blocking bug count',
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup()
+					const finding = bug({
+						kind: 'nit',
+						placement: 'summary',
+						agents: ['metadata'],
+						evidence: [],
+					})
+					expect(
+						yield* PublishService.use(service =>
+							service.publish({
+								...fixture.input,
+								rules: {
+									...RULES,
+									agents: [agent('metadata', { input: 'metadata' })],
+								},
+								report: { ...fixture.input.report, bugs: [], nits: [finding] },
+							})
+						).pipe(Effect.provide(fixture.publisher))
+					).toMatchObject({ inSummary: 1, openBugs: 0, verdict: 'ready' })
+					const body = fixture.fake.comments[0]?.body ?? ''
+					expect(body).toContain('About the pull request (1):')
+					expect(body).not.toContain('Nits not posted inline')
+					expect(body).not.toContain(`${finding.path}:${finding.line}`)
+					expect(parseSummaryMarker(body)).toEqual({
+						v: SUMMARY_MARKER.v,
+						runs: 1,
+						head: fixture.head,
+						finished: true,
+					})
+					expect(fixture.fake.threads).toEqual([])
+				})
+		)
 		for (const kind of ['bug', 'unverified', 'nit'] as const)
 			test.effect(
 				`keeps a metadata ${kind} in the summary with its count and verdict`,
@@ -530,6 +650,11 @@ layer(Layer.empty, { excludeTestServices: true })(
 						expect(fixture.fake.comments[0]?.body).toContain(
 							'About the pull request (1):'
 						)
+						const marker = parseSummaryMarker(
+							fixture.fake.comments[0]?.body ?? ''
+						)
+						expect(marker).toMatchObject({ head: fixture.head, finished: true })
+						expect(marker?.unthreadedBugs).toBe(kind === 'bug' ? 1 : undefined)
 					})
 			)
 		test.effect(
@@ -592,6 +717,13 @@ layer(Layer.empty, { excludeTestServices: true })(
 					expect(fixture.fake.comments[0]?.body).toContain(
 						'Not in the diff (1):'
 					)
+					expect(
+						parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
+					).toMatchObject({
+						head: fixture.head,
+						finished: true,
+						unthreadedBugs: 2,
+					})
 				})
 		)
 		test.effect(

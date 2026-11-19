@@ -8,13 +8,14 @@ import {
 import type { ThreadKind } from './publish-marker.schema'
 import {
 	countOpenBugs,
+	countUnthreadedBugs,
 	getMatchingThreads,
 	getPublishedFindings,
 	isPullRequestFinding,
 	planPublish,
 	type PublishSelection,
 } from './publish-plan.helper'
-import type { BotThread } from './publish.types'
+import type { BotThread, ThreadPlace } from './publish.types'
 
 /** Only the finding under examination is selected. */
 function selection(): PublishSelection {
@@ -268,6 +269,36 @@ describe('isPullRequestFinding', () => {
 })
 
 describe('planPublish', () => {
+	test('moves only metadata summary nits into pull request entries', () => {
+		const metadata = bug({
+			kind: 'nit',
+			placement: 'summary',
+			agents: ['metadata'],
+		})
+		const diff = bug({ kind: 'nit', placement: 'summary', agents: ['diff'] })
+		const mixed = bug({
+			kind: 'nit',
+			placement: 'summary',
+			agents: ['metadata', 'diff'],
+		})
+		const plan = planPublish(
+			{
+				...selection(),
+				agents: new Map([
+					['metadata', agent('metadata', { input: 'metadata' })],
+					['diff', agent('diff', { input: 'incremental' })],
+				]),
+				outcome: { bugs: [], nits: [metadata, diff, mixed], rejected: [] },
+			},
+			{ threads: [], lines: new Map(), changedPlaces: new Set() }
+		)
+		expect(plan.threads).toEqual([
+			{ finding: metadata, kind: 'nit', place: 'pull_request' },
+		])
+		expect(plan.summaryNits).toEqual([diff, mixed])
+		expect(countOpenBugs(plan, [])).toBe(0)
+		expect(countUnthreadedBugs(plan)).toBe(0)
+	})
 	for (const kind of ['bug', 'unverified', 'nit'] as const)
 		for (const location of ['line', 'file', 'outside'] as const)
 			test(`places a metadata ${kind} in the pull request summary when its location is ${location}`, () => {
@@ -470,5 +501,52 @@ describe('planPublish', () => {
 				threads
 			)
 		).toBe(2)
+	})
+})
+
+describe('countUnthreadedBugs', () => {
+	for (const place of [
+		'line',
+		'file',
+		'summary',
+		'pull_request',
+		'unposted',
+	] as const satisfies readonly ThreadPlace[])
+		for (const kind of ['bug', 'nit', 'unverified'] as const)
+			test(`counts a ${kind} at ${place} only when it is a bug without a thread`, () => {
+				expect(
+					countUnthreadedBugs({
+						threads: [
+							{
+								finding: bug({ kind: kind === 'nit' ? 'nit' : 'bug' }),
+								kind,
+								place,
+							},
+						],
+						repeated: [],
+						dismissed: [],
+						summaryNits: [],
+					})
+				).toBe(
+					kind === 'bug' &&
+						(place === 'summary' ||
+							place === 'pull_request' ||
+							place === 'unposted')
+						? 1
+						: 0
+				)
+			})
+
+	test('adds bugs across summary places without counting repeated, dismissed or summary nits', () => {
+		expect(
+			countUnthreadedBugs({
+				threads: (['summary', 'pull_request', 'unposted'] as const).map(
+					place => ({ finding: bug(), kind: 'bug', place })
+				),
+				repeated: [{ finding: bug(), kind: 'bug' }],
+				dismissed: [{ finding: bug(), kind: 'bug' }],
+				summaryNits: [bug({ kind: 'nit', placement: 'summary' })],
+			})
+		).toBe(3)
 	})
 })

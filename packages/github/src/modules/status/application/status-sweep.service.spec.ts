@@ -295,6 +295,71 @@ layer(Layer.empty)('StatusSweepService latest status', test => {
 })
 
 layer(Layer.empty)('StatusSweepService summary marker', test => {
+	for (const scenario of [
+		{
+			name: 'matching head without a thread',
+			head: 'head',
+			openBugs: 0,
+			expected: 2,
+		},
+		{
+			name: 'matching head with an open bug',
+			head: 'head',
+			openBugs: 1,
+			expected: 3,
+		},
+		{ name: 'another head', head: 'previous', openBugs: 0, expected: 0 },
+		{ name: 'no reviewed head', head: undefined, openBugs: 0, expected: 0 },
+	] as const)
+		test.effect(`sweep counts unthreaded bugs for ${scenario.name}`, () =>
+			Effect.gen(function* () {
+				const api = githubApiFake()
+				api.comments.push({
+					databaseId: 101,
+					body: toMarkerComment('summary', {
+						...SUMMARY_MARKER,
+						head: scenario.head,
+						finished: true,
+						unthreadedBugs: 2,
+					}),
+					author: { __typename: 'Bot', login: BOT_LOGIN },
+					editor: null,
+				})
+				if (scenario.openBugs > 0) api.threads.push(reviewThread())
+				const fake = githubStatusFake({
+					listOpenPullRequests: () =>
+						Effect.succeed([{ number: 17, head: { sha: 'head' } }]),
+					getStatus: () =>
+						Effect.succeed({
+							id: 1,
+							state: 'failure',
+							description: 'stale',
+							context: 'MNG Review',
+							creator: null,
+						}),
+				})
+				expect(
+					yield* StatusSweepService.use(service => service.sweep()).pipe(
+						Effect.provide(
+							StatusSweepServiceLive.pipe(
+								Layer.provide(Layer.merge(fake.layer, api.api))
+							)
+						)
+					)
+				).toEqual({ checked: 1, updated: 1, failed: 0 })
+				expect(fake.statuses).toEqual([
+					{
+						sha: 'head',
+						...toCommitStatus(
+							scenario.expected > 0 ? 'needs fixes' : 'ready',
+							scenario.expected,
+							true
+						),
+					},
+				])
+				expect(api.writes).toEqual([])
+			})
+		)
 	for (const finished of [true, false])
 		for (const edited of [true, false])
 			test.effect(

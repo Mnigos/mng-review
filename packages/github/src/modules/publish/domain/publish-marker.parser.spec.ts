@@ -6,6 +6,29 @@ import { toMarkerComment } from '../presentation/thread-comment.formatter'
 import { parseFindingMarker, parseSummaryMarker } from './publish-marker.parser'
 
 describe('publish markers', () => {
+	test.each([undefined, 0, 2])(
+		'summary markers decode an optional unthreaded bug count of %s',
+		unthreadedBugs => {
+			const marker = {
+				...SUMMARY_MARKER,
+				finished: true,
+				...(unthreadedBugs === undefined ? {} : { unthreadedBugs }),
+			}
+			expect(parseSummaryMarker(toMarkerComment('summary', marker))).toEqual(
+				marker
+			)
+		}
+	)
+	test.each([-1, 1.5, '2', null])(
+		'summary markers reject an invalid unthreaded bug count of %s',
+		unthreadedBugs => {
+			expect(
+				parseSummaryMarker(
+					toMarkerComment('summary', { ...SUMMARY_MARKER, unthreadedBugs })
+				)
+			).toBeUndefined()
+		}
+	)
 	for (const name of ['finding', 'summary'] as const) {
 		const marker = name === 'finding' ? botThread().marker : SUMMARY_MARKER
 		const parse = name === 'finding' ? parseFindingMarker : parseSummaryMarker
