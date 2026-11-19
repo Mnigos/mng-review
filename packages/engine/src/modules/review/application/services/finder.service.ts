@@ -1,8 +1,6 @@
 import {
-	addLaterFindings,
 	getReviewableFiles,
 	type ModelSetting,
-	type ParsedFindings,
 	type PlannedRun,
 	parseFindingsAnswer,
 	sortFindings,
@@ -31,8 +29,8 @@ import {
 	MAX_INCREMENTAL_DIFF_CHARS,
 } from '../../domain/review.constants'
 import { LoopError } from '../../domain/review.errors'
-import type { LoopCoverage } from '../agent-loop.types'
 import type { FinderContext, FinderJob, FinderResult } from '../finder.types'
+import { toFindingsCoverage } from '../findings-coverage.helper'
 import {
 	ALL_REPO_TOOLS,
 	METADATA_REPO_TOOLS,
@@ -48,20 +46,6 @@ import {
 import { AgentLoopService } from './agent-loop.service'
 import { ModelHealthService } from './model-health.service'
 import { type RepoScope, RepoToolsService } from './repo-tools.service'
-
-/**
- * The main reviewer's method check: the changed files it must read before it answers. A
- * continuation adds only findings that do not repeat the first answer's.
- */
-export function toFindingsCoverage(
-	paths: readonly string[]
-): LoopCoverage<ParsedFindings> {
-	return {
-		paths,
-		answered: value => value.findings.map(entry => entry.path),
-		merge: addLaterFindings,
-	}
-}
 
 /**
  * Runs one planned finder: the main reviewer (split into units at deep depth) or a declared agent
