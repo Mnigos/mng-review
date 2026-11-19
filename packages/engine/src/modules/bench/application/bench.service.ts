@@ -95,6 +95,18 @@ const reviewCase = Effect.fn('BenchService.reviewCase')(function* (
 		nits: report.nits.length,
 		tokens: report.tokens,
 		tokenSources: report.tokenSources,
+		agents: report.agents.map(agent => ({
+			name: agent.name,
+			model: agent.model,
+			status: agent.status,
+			toolCalls: agent.toolCalls,
+			findings: agent.findings,
+			...(agent.units === undefined ? {} : { units: agent.units }),
+			...(agent.continued === undefined ? {} : { continued: agent.continued }),
+			...(agent.unfinished === undefined
+				? {}
+				: { unfinished: agent.unfinished }),
+		})),
 		wallMillis: report.wallMillis,
 		...(plan.skippedRun ? { skipped: plan.skippedRun } : {}),
 		...(report.endpointError ? { endpointError: report.endpointError } : {}),

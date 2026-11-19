@@ -9,11 +9,25 @@ import type {
 	TokensByModel,
 	TokensBySource,
 } from '../../../platform/llm/token-ledger.service'
+import type { AgentRunReport } from '../../review/domain/review-report.types'
 
 /** A bug the validator rejected in a case, with its reason. */
 export type BenchRejected = Pick<
 	RejectedFinding,
 	'path' | 'line' | 'title' | 'severity' | 'reason' | 'validatedBy'
+>
+
+/** How one finder of a case worked: its tool calls, units and continuations. */
+export type BenchAgent = Pick<
+	AgentRunReport,
+	| 'name'
+	| 'model'
+	| 'status'
+	| 'toolCalls'
+	| 'findings'
+	| 'units'
+	| 'continued'
+	| 'unfinished'
 >
 
 /** How one case of a benchmark went. */
@@ -32,6 +46,8 @@ export interface CaseReport {
 	readonly tokens: TokensByModel
 	/** Finder and validator tokens by source. */
 	readonly tokenSources: TokensBySource
+	/** Each finder's tool calls, units and continuations. */
+	readonly agents: readonly BenchAgent[]
 	readonly wallMillis: number
 	/** Why the gate skipped the whole run, when it did. */
 	readonly skipped?: string
