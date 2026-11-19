@@ -1,3 +1,4 @@
+import { REDACTED } from '@mng-review/engine'
 import {
 	Context,
 	Duration,
@@ -137,7 +138,14 @@ function collect<TNode>(
 				)
 			const nodes = connection.nodes.filter(Predicate.isNotNull)
 			const { hasNextPage, endCursor } = connection.pageInfo
-			if (!hasNextPage || !endCursor) return Effect.succeed(nodes)
+			if (!hasNextPage) return Effect.succeed(nodes)
+			if (!endCursor)
+				return Effect.fail(
+					new GitHubApiError({
+						operation,
+						reason: 'more pages without a cursor',
+					})
+				)
 			if (page + 1 >= MAX_PAGES)
 				return Effect.fail(
 					new GitHubApiError({
@@ -158,6 +166,12 @@ export const GitHubApiServiceLive = Layer.effect(
 		const config = yield* GitHubConfig
 		const client = yield* HttpClient.HttpClient
 		const repo = `${config.apiUrl}/repos/${config.owner}/${config.name}`
+
+		/** GitHub's message with the token replaced, in case an upstream error echoes it. */
+		const toSafeReason = (message: string): string => {
+			const token = Redacted.value(config.token)
+			return token ? message.replaceAll(token, REDACTED) : message
+		}
 
 		/** Sends a request with the token and the API version; a non-2xx answer fails with GitHub's message. */
 		const send = (
@@ -185,7 +199,7 @@ export const GitHubApiServiceLive = Layer.effect(
 							? Effect.succeed(response)
 							: response.json.pipe(
 									Effect.flatMap(Schema.decodeUnknownEffect(errorBodySchema)),
-									Effect.map(body => body.message),
+									Effect.map(body => toSafeReason(body.message)),
 									Effect.orElseSucceed(() => 'no message'),
 									Effect.flatMap(reason =>
 										Effect.fail(
@@ -247,7 +261,9 @@ export const GitHubApiServiceLive = Layer.effect(
 					const errors = getGraphqlErrors(answer.errors)
 					return errors === undefined
 						? Effect.succeed(answer)
-						: Effect.fail(new GitHubApiError({ operation, reason: errors }))
+						: Effect.fail(
+								new GitHubApiError({ operation, reason: toSafeReason(errors) })
+							)
 				})
 			)
 
