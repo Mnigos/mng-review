@@ -8,7 +8,7 @@ import { ConfigProvider, Effect, FileSystem, Layer, Schema } from 'effect'
 import { TestConsole } from 'effect/testing'
 import { formatResult } from '../presentation/result.formatter'
 import { eventPayload } from '../shared/mocks/pull-request-event.helper'
-import { reviewReport } from '../shared/mocks/review-report.helper'
+import { reviewReport, RULES } from '../shared/mocks/review-report.helper'
 import { parsePullRequestEvent } from './pull-request-event.parser'
 import {
 	maskEndpoint,
@@ -192,7 +192,7 @@ layer(RunnerLayer)('runner client', test => {
 				yield* writeResult(
 					path,
 					formatResult(
-						{ status: 'reviewed', event, report },
+						{ status: 'reviewed', rules: RULES, event, report },
 						{
 							engineCommit: undefined,
 							repository: 'example/project',

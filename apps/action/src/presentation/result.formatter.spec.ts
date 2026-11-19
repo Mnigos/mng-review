@@ -5,7 +5,7 @@ import type {
 	ShadowOutcome,
 } from '../application/shadow-run.types'
 import { BASE_SHA, HEAD_SHA } from '../shared/mocks/pull-request-event.helper'
-import { reviewReport } from '../shared/mocks/review-report.helper'
+import { reviewReport, RULES } from '../shared/mocks/review-report.helper'
 import {
 	formatResult,
 	RESULT_VERSION,
@@ -75,11 +75,16 @@ describe('formatResult', () => {
 		const report = reviewReport()
 		expect(
 			decodeJson(
-				formatResult({ status: 'reviewed', event: EVENT, report }, CONTEXT)
+				formatResult(
+					{ status: 'reviewed', rules: RULES, event: EVENT, report },
+					CONTEXT
+				)
 			)
 		).toEqual({
 			version: RESULT_VERSION,
 			status: 'reviewed',
+			mode: 'shadow',
+			publish: null,
 			engineCommit: CONTEXT.engineCommit,
 			run: {
 				repository: CONTEXT.repository,
@@ -224,7 +229,10 @@ describe('formatResult', () => {
 				labels: [sensitive],
 			},
 		}
-		const text = formatResult({ status: 'reviewed', event, report }, context)
+		const text = formatResult(
+			{ status: 'reviewed', rules: RULES, event, report },
+			context
+		)
 		expect(decodeJson(text)).toMatchObject({
 			engineCommit: expected,
 			run: {
@@ -270,7 +278,7 @@ describe('formatResult', () => {
 		const report = reviewReport()
 		const json = decodeJson(
 			formatResult(
-				{ status: 'reviewed', event: EVENT, report },
+				{ status: 'reviewed', rules: RULES, event: EVENT, report },
 				{
 					...CONTEXT,
 					wallMillis: RESULT_VERSION,
@@ -303,6 +311,7 @@ describe('formatResult', () => {
 				formatResult(
 					{
 						status: 'reviewed',
+						rules: RULES,
 						event: EVENT,
 						report: {
 							...reviewReport(),
@@ -335,6 +344,7 @@ describe('formatResult', () => {
 		const text = formatResult(
 			{
 				status: 'reviewed',
+				rules: RULES,
 				event: EVENT,
 				report: { ...reviewReport(), tokens: { [model]: usage } },
 			},
@@ -389,6 +399,7 @@ describe('formatResult', () => {
 			}
 			const outcome = {
 				status: 'reviewed',
+				rules: RULES,
 				event: EVENT,
 				report,
 			} as const satisfies ShadowOutcome
@@ -401,3 +412,38 @@ describe('formatResult', () => {
 			)
 		})
 })
+
+test.each(['published', 'failed', 'status-only', 'not-published'] as const)(
+	'result includes %s publish report and publish mode',
+	status => {
+		const publish =
+			status === 'published'
+				? ({
+						status,
+						result: {
+							verdict: 'ready',
+							openBugs: 0,
+							onLine: 0,
+							onFile: 0,
+							inSummary: 0,
+							unposted: 0,
+							repeated: 1,
+							run: 2,
+						},
+					} as const)
+				: { status, reason: 'publishing detail' }
+		expect(
+			decodeJson(
+				formatResult(
+					{
+						status: 'reviewed',
+						rules: RULES,
+						event: EVENT,
+						report: reviewReport(),
+					},
+					{ ...CONTEXT, publish }
+				)
+			)
+		).toMatchObject({ mode: 'publish', publish })
+	}
+)
