@@ -1,0 +1,33 @@
+# ADR 0007: Publish mode posts as the job token's bot, with comments only
+
+**Status:** Proposed
+**Date:** 2026-11-19
+
+## Context
+
+Shadow mode (ADR 0006) writes the result to the job summary and an artifact. Stage 4 posts it on the pull request: one thread per bug, nits, a sticky summary with a verdict. Posting gives a `pull_request_target` job write access to pull requests while it handles text the pull request's author and the models wrote. The posted text is read by people and by agents, and GitHub turns parts of Markdown into links, mentions and issue or commit references. A reusable workflow whose job asks for `pull-requests: write` makes every caller that grants only `read` fail at startup, even when that job is skipped (tried on 2026-11-19), and a reusable workflow that asks for nothing gives its job whatever the caller grants, which for a caller without `permissions` is the repository's default token, possibly write-all.
+
+## Decision
+
+- Publishing is opt-in and has its own reusable workflow. `review.yml` stays shadow mode and caps the job at `contents: read`, `pull-requests: read`. `review-publish.yml` caps it at `contents: read`, `pull-requests: write`. Each file's cap holds whatever the caller grants, and a read-only caller never references the writing file. Both run the same steps from `.github/actions/review` in the engine checkout; only the publish file passes the job token to the review step.
+- The bot is `github-actions[bot]`, the identity of the job token. Its reviews are always `COMMENT`; it never approves and never requests changes.
+- A thread is the bot's when its first comment is by `github-actions` (a `Bot`), nobody else edited it (GraphQL `editor` is empty or the bot), and the body ends with a hidden marker: `<!-- mng-review:finding {json} -->` with `id`, `kind` (`bug`, `unverified`, `nit`), `agent`, `severity`, `fingerprint`, `title`, `line` and the engine commit. The sticky summary is the bot's oldest unedited conversation comment that ends with `<!-- mng-review:summary {json} -->` (run count, last reviewed head); the bot edits it in place and creates it again when it was deleted. In the marker JSON `<`, `>` and `&` are escaped, so model text cannot close the comment.
+- Every text from a model, the rules or the pull request is escaped: Markdown syntax, list and rule markers at the start, URLs, e-mail addresses, `@` mentions, issue references (`#12`, `owner/repo#12`, `GH-12`) and commit references (a SHA of 7 to 40 hex characters, `owner/repo@sha`, `sha...sha`) become plain text or code, and format characters (bidirectional overrides) are dropped. Model text never goes inside raw HTML such as `<summary>`, where escapes do not apply. Evidence `path:line` becomes a link the engine builds to the reviewed head, only for paths of safe characters without `..`.
+- A finding gets a thread when it is a bug placed inline, an unverified bug at or above its severity floor (marked unverified, never blocking), or a nit placed inline. A bug thread covers a bug or an unverified finding; an unverified thread covers only an unverified one, so a confirmed bug always gets a blocking thread; a nit thread covers a nit. Covering means the same fingerprint, or, for a thread on a line, a line at most 6 away with a similar title. A finding covered by an open thread is not posted again; one covered only by resolved threads is posted again when a commit since the thread's commit touched the code within 6 lines of the finding (`git log -L`, so a fix that was undone counts) or when git cannot tell.
+- New line threads go out in one review. GitHub's 422 for a place moves a finding to its file, then to the summary. Any other failure (no answer, a 5xx) leaves it unposted, because GitHub may have stored it; the next run finds the thread or posts it. Publishing never fails the job: a GitHub error is reported in the job log, the job summary and the result file. Reads retry on a missing answer or a 5xx, every request has a 30-second timeout, and a GraphQL answer with errors, a missing pull request or more than 2,000 entries fails the read instead of being taken as complete.
+- A finding's `suggestion` is prose from the model, so it is shown as a "Fix:" line, not as a GitHub suggestion block, which would replace the commented line with that prose.
+- The verdict is `needs fixes` while any bug thread of the bot is open or a new bug was posted, `incomplete` when nothing blocks but the run did not finish (an endpoint failure or the token budget), `ready` otherwise. Unverified threads and nits never block. An offline endpoint writes a status summary only when none exists yet; it never replaces a verdict.
+- Triggers added later carry their own limits. A reply in a review thread (`pull_request_review_comment`) runs the caller's workflow file from the pull request's merge ref, which the pull request can change; that trigger therefore gets no model secrets and makes no model call, and hands the reply to a run on the default branch. Commands in conversation comments check the commenter's permission and that the commenter is a user, not a bot, before any model call.
+
+## Consequences
+
+- Repositories in shadow mode keep the read-only cap when they move to a newer engine commit. Publishing needs a second caller, or a changed one, that references `review-publish.yml`.
+- The checkout steps before the shared action are written twice, once per workflow file, and must change together.
+- Someone with write access can still delete threads or the summary; an edit by anyone but the bot makes a comment no longer the bot's, so an edited marker cannot steer the bot. Another workflow in the same repository that posts attacker-controlled text as `github-actions[bot]` could plant a marker; the marker steers only the bot's own bookkeeping (skipping a finding, the run count). Signing markers was declined: it needs a secret only this workflow holds, and the model key is not one to reuse for that.
+- A finding reworded beyond the matching rule gets a second thread.
+- Rejected: one workflow with a `mode` input and no permissions block (a caller without `permissions` gives the job the default token); a second job in the same workflow with `pull-requests: write` (fails read-only callers at startup); a separate publishing job fed by the artifact (the thread re-check in stage 4 needs the model and the write token in one job); GitHub suggestion blocks from free-text suggestions.
+
+## Related
+
+- `docs/spec.md`: Pipeline, Publish; CI in publish mode
+- ADR 0006

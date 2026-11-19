@@ -8,7 +8,7 @@ It talks to any OpenAI-compatible chat completions endpoint. You bring the endpo
 
 ## Status
 
-Under construction. The CLI works locally; the GitHub workflow runs in shadow mode, writing its findings to the job summary without posting them. The design is in [docs/spec.md](docs/spec.md); progress is tracked in the issues.
+Under construction. The CLI works locally; the GitHub workflow runs in shadow mode, writing its findings to the job summary, or in publish mode, commenting on the pull request. The design is in [docs/spec.md](docs/spec.md); progress is tracked in the issues.
 
 ## Usage
 
@@ -146,6 +146,24 @@ The node joins with `--shields-up` and then turns subnet routes off (`tailscale 
 The job also uploads the result as JSON, the artifact `mng-review-result`, kept 14 days: status, pull request number and commits, verdict, wall time, tokens per model and the document `mng-review --json` prints. Fetch it with `gh run download <run-id> --name mng-review-result`.
 
 On a public repository anyone can read the job summary and download the artifact, findings included, before the pull request merges. With `pull_request_target`, use a self-hosted `runner` only if it is ephemeral, since the job holds the endpoint key.
+
+### Publish mode
+
+`review-publish.yml` also comments on the pull request as `github-actions[bot]`: one thread per bug with its evidence, unverified findings marked as such, nits in the same review, and a summary comment with the verdict that is edited on every run. A finding already in an open thread is not posted twice. The bot only comments; it never approves or requests changes. It takes the same inputs and secrets as `review.yml`; grant the job `pull-requests: write`:
+
+```yaml
+jobs:
+  review:
+    uses: Mnigos/mng-review/.github/workflows/review-publish.yml@<commit-sha>
+    permissions:
+      contents: read
+      pull-requests: write
+    secrets:
+      llm-url: ${{ secrets.MNG_REVIEW_LLM_URL }}
+      llm-key: ${{ secrets.MNG_REVIEW_LLM_KEY }}
+```
+
+`review.yml` never gets write access, whatever the caller grants. ADR 0007 records the rules.
 
 ### Exit codes
 
