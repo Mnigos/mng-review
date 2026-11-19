@@ -10,6 +10,7 @@ import {
 	countOpenBugs,
 	getMatchingThreads,
 	getPublishedFindings,
+	isPullRequestFinding,
 	planPublish,
 	type PublishSelection,
 } from './publish-plan.helper'
@@ -237,7 +238,128 @@ describe('getMatchingThreads', () => {
 	})
 })
 
+describe('isPullRequestFinding', () => {
+	test.each([
+		{ names: ['metadata'], expected: true },
+		{ names: ['metadata', 'other-metadata'], expected: true },
+		{ names: ['metadata', 'diff'], expected: false },
+		{ names: ['metadata', 'full-diff'], expected: false },
+		{ names: ['reviewer'], expected: false },
+		{ names: ['metadata', 'reviewer'], expected: false },
+		{ names: ['unknown'], expected: false },
+		{ names: ['metadata', 'unknown'], expected: false },
+		{ names: [], expected: false },
+	])(
+		'classifies reporting agents $names as $expected',
+		({ names, expected }) => {
+			expect(
+				isPullRequestFinding(
+					{ agents: names },
+					new Map([
+						['metadata', agent('metadata', { input: 'metadata' })],
+						['other-metadata', agent('other-metadata', { input: 'metadata' })],
+						['diff', agent('diff', { input: 'incremental' })],
+						['full-diff', agent('full-diff', { input: 'full_diff' })],
+					])
+				)
+			).toBe(expected)
+		}
+	)
+})
+
 describe('planPublish', () => {
+	for (const kind of ['bug', 'unverified', 'nit'] as const)
+		for (const location of ['line', 'file', 'outside'] as const)
+			test(`places a metadata ${kind} in the pull request summary when its location is ${location}`, () => {
+				const finding = bug({
+					agents: ['metadata'],
+					kind: kind === 'nit' ? 'nit' : 'bug',
+					severity: 'medium',
+					placement: kind === 'unverified' ? 'summary' : 'inline',
+					...(kind === 'unverified'
+						? ({
+								validation: {
+									status: 'unverified',
+									severity: 'medium',
+									premise: 'Pull request scope',
+									reason: 'Missing supporting description',
+									evidence: [],
+									model: 'validator',
+								},
+							} as const)
+						: {}),
+				})
+				const plan = planPublish(
+					{
+						...selection(),
+						config: config({ comments: { min_severity: 'high' } }),
+						agents: new Map([
+							[
+								'metadata',
+								agent('metadata', {
+									input: 'metadata',
+									comments: { min_severity: 'medium' },
+								}),
+							],
+						]),
+						outcome: {
+							bugs: kind === 'nit' ? [] : [finding],
+							nits: kind === 'nit' ? [finding] : [],
+							rejected: [],
+						},
+					},
+					{
+						threads: [],
+						lines:
+							location === 'outside'
+								? new Map()
+								: new Map([
+										[
+											finding.path,
+											new Set([
+												location === 'line' ? finding.line : finding.line + 100,
+											]),
+										],
+									]),
+						changedPlaces: new Set(),
+					}
+				)
+				expect(plan.threads).toEqual([{ finding, kind, place: 'pull_request' }])
+				expect(countOpenBugs(plan, [])).toBe(kind === 'bug' ? 1 : 0)
+			})
+
+	test.each([
+		{ resolved: false, changed: false, disposition: 'repeated' },
+		{ resolved: true, changed: false, disposition: 'dismissed' },
+		{ resolved: true, changed: true, disposition: 'threads' },
+	] as const)('keeps metadata matching $disposition', row => {
+		const finding = bug({ agents: ['metadata'] })
+		const thread = botThread({ resolved: row.resolved })
+		const plan = planPublish(
+			{
+				...selection(),
+				agents: new Map([
+					['metadata', agent('metadata', { input: 'metadata' })],
+				]),
+				outcome: { bugs: [finding], nits: [], rejected: [] },
+			},
+			{
+				threads: [thread],
+				lines: new Map([[finding.path, new Set([finding.line])]]),
+				changedPlaces: new Set(row.changed ? [thread.id] : []),
+			}
+		)
+		expect(plan[row.disposition]).toEqual([
+			{
+				finding,
+				kind: 'bug',
+				...(row.disposition === 'threads' ? { place: 'pull_request' } : {}),
+			},
+		])
+		expect(plan.threads).toHaveLength(row.disposition === 'threads' ? 1 : 0)
+		expect(plan.repeated).toHaveLength(row.disposition === 'repeated' ? 1 : 0)
+		expect(plan.dismissed).toHaveLength(row.disposition === 'dismissed' ? 1 : 0)
+	})
 	test.each([
 		{
 			label: 'open even if changed',
