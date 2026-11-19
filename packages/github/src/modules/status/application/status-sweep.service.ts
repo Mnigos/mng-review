@@ -2,7 +2,11 @@ import { Context, Effect, Layer } from 'effect'
 import { GitHubApiService } from '../../../platform/github-api.service'
 import { GitHubStatusService } from '../../../platform/github-status.service'
 import type { GitHubApiError } from '../../../platform/github.errors'
-import { toBotThread } from '../../publish/domain/bot-thread.helper'
+import {
+	isBotComment,
+	toBotThread,
+} from '../../publish/domain/bot-thread.helper'
+import { parseSummaryMarker } from '../../publish/domain/publish-marker.parser'
 import { toSweptStatus } from '../domain/status.helper'
 
 /** What a sweep did. */
@@ -45,7 +49,15 @@ export const StatusSweepServiceLive = Layer.effect(
 			const openBugs = threads.filter(
 				thread => !thread.resolved && thread.marker.kind === 'bug'
 			).length
-			const next = toSweptStatus(previous, openBugs)
+			const [summary] = (yield* api.listComments(pullNumber)).flatMap(
+				comment => {
+					const marker = isBotComment(comment)
+						? parseSummaryMarker(comment.body)
+						: undefined
+					return marker ? [marker] : []
+				}
+			)
+			const next = toSweptStatus(previous, openBugs, summary?.finished)
 			if (!next) return 'kept' as const
 			// A publish run may have set a newer status while the threads were read.
 			const latest = yield* github.getStatus(head)

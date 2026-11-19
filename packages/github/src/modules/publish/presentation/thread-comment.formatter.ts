@@ -148,8 +148,8 @@ export function toFindingMarker(
 		fingerprint: finding.fingerprint,
 		title: toShort(finding.title, MAX_TITLE_CHARS),
 		line: finding.line,
-		trigger: finding.trigger,
-		impact: finding.impact,
+		trigger: toShort(finding.trigger, MAX_TEXT_CHARS),
+		impact: toShort(finding.impact, MAX_TEXT_CHARS),
 		engine: links.engineCommit ?? null,
 	}
 }

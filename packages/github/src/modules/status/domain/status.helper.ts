@@ -42,16 +42,19 @@ export interface PreviousStatus {
 
 /**
  * The status the sweep sets after counting the bot's open bug threads again, or `undefined` when
- * it stays. Open threads make it `failure`; none left makes it `success` only when the run that set
- * it finished, so an unfinished run stays `error` until a run finishes.
+ * it stays. Open threads make it `failure`; none left makes it `success` only when the last run
+ * finished, so an unfinished run stays `error` until a run finishes. Whether it finished comes from
+ * the summary's marker when there is one, since a status can be overwritten; else from the status.
  */
 export function toSweptStatus(
 	previous: PreviousStatus,
-	openBugs: number
+	openBugs: number,
+	lastRunFinished?: boolean
 ): CommitStatusText | undefined {
 	const finished =
-		previous.state !== 'error' &&
-		!(previous.description ?? '').includes(UNFINISHED_NOTE)
+		lastRunFinished ??
+		(previous.state !== 'error' &&
+			!(previous.description ?? '').includes(UNFINISHED_NOTE))
 	const next = toCommitStatus(
 		openBugs > 0 ? 'needs fixes' : 'ready',
 		openBugs,

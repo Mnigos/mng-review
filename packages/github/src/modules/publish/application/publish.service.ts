@@ -317,12 +317,12 @@ export const PublishServiceLive = Layer.effect(
 			const threads = found.map(thread =>
 				resolvedIds.has(thread.id) ? { ...thread, resolved: true } : thread
 			)
-			const reviewedHead = isFinished(report)
-				? input.head
-				: summary?.marker.head
+			const finished = isFinished(report)
+			const reviewedHead = finished ? input.head : summary?.marker.head
 			const marker: SummaryMarker = {
 				v: MARKER_VERSION,
 				runs: (summary?.marker.runs ?? 0) + 1,
+				finished,
 				...(reviewedHead === undefined ? {} : { head: reviewedHead }),
 			}
 			const lines = yield* readCommentableLines(report, input.head)
@@ -376,7 +376,7 @@ export const PublishServiceLive = Layer.effect(
 				input.pullNumber,
 				formatStatusComment(
 					input.status,
-					{ v: MARKER_VERSION, runs: 0 },
+					{ v: MARKER_VERSION, runs: 0, finished: false },
 					toLinks(input)
 				)
 			)
