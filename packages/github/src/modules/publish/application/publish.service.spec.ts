@@ -152,7 +152,7 @@ layer(Layer.empty, { excludeTestServices: true })(
 					])
 					expect(
 						parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
-					).toMatchObject({ runs: 2, head: fixture.head })
+					).toMatchObject({ runs: 2, head: fixture.head, finished: true })
 				})
 		)
 		for (const login of ['contributor', BOT_LOGIN])
@@ -270,7 +270,7 @@ layer(Layer.empty, { excludeTestServices: true })(
 					])
 					expect(
 						parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
-					).toMatchObject({ runs: 0 })
+					).toEqual({ v: SUMMARY_MARKER.v, runs: 0, finished: false })
 					yield* publisher.publishStatus({
 						...input,
 						status: 'Another failure',
@@ -722,6 +722,7 @@ layer(Layer.empty, { excludeTestServices: true })(
 							const marker = {
 								v: SUMMARY_MARKER.v,
 								runs: prior === 'absent' ? 1 : 4,
+								finished: outcome === 'finished',
 								...(expectedHead === undefined ? {} : { head: expectedHead }),
 							}
 							expect(
@@ -752,10 +753,11 @@ layer(Layer.empty, { excludeTestServices: true })(
 				})
 				expect(
 					parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
-				).toEqual({ v: SUMMARY_MARKER.v, runs: 0 })
+				).toEqual({ v: SUMMARY_MARKER.v, runs: 0, finished: false })
 				expect(yield* publisher.readPrior(17)).toEqual({
 					v: SUMMARY_MARKER.v,
 					runs: 0,
+					finished: false,
 				})
 			})
 		)
