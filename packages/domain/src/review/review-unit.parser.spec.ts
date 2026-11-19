@@ -80,7 +80,8 @@ describe('parseFileDiffs and splitReviewUnits', () => {
 			)
 			const text = paths.map(path => diff(path, 1)).join('')
 			const units = splitReviewUnits(text, max)
-			expect(units).toHaveLength(max)
+			expect(units.length).toBeLessThanOrEqual(max)
+			expect(units.length).toBeGreaterThan(0)
 			expect(units.flatMap(unit => unit.paths).toSorted()).toEqual(
 				paths.toSorted()
 			)
@@ -131,5 +132,120 @@ describe('parseFileDiffs and splitReviewUnits', () => {
 	test('empty diff has no units', () => {
 		expect(parseFileDiffs('')).toEqual([])
 		expect(splitReviewUnits('')).toEqual([])
+	})
+})
+
+describe('neighbouring file groups', () => {
+	test('closes a path-ordered group at its rounded-up share of changed lines', () => {
+		const entries = [
+			['src/alpha/a.ts', 2],
+			['src/alpha/b.ts', 1],
+			['src/beta/a.ts', 1],
+			['src/beta/b.ts', 1],
+			['src/beta/c.ts', 2],
+		] as const
+		const text = entries.map(([path, count]) => diff(path, count)).join('')
+		const units = splitReviewUnits(text, 3)
+		expect(
+			units.map(unit => ({
+				label: unit.label,
+				paths: unit.paths,
+				size: unit.size,
+			}))
+		).toEqual([
+			{
+				label: 'src/alpha/ (2 files)',
+				paths: ['src/alpha/a.ts', 'src/alpha/b.ts'],
+				size: 6,
+			},
+			{
+				label: 'src/beta/ (3 files)',
+				paths: ['src/beta/a.ts', 'src/beta/b.ts', 'src/beta/c.ts'],
+				size: 8,
+			},
+		])
+		expect(units.map(unit => unit.diff).join('')).toBe(text)
+		expect(
+			units.flatMap(unit =>
+				parseFileDiffs(unit.diff).flatMap(file => file.hunks)
+			)
+		).toHaveLength(7)
+	})
+	test('a large file closes its group and later neighbouring files stay in order', () => {
+		const entries = [
+			['src/alpha/a.ts', 4],
+			['src/alpha/b.ts', 1],
+			['src/beta/a.ts', 1],
+			['src/beta/b.ts', 1],
+			['src/gamma/a.ts', 1],
+		] as const
+		const units = splitReviewUnits(
+			entries.map(([path, count]) => diff(path, count)).join(''),
+			3
+		)
+		expect(units.map(unit => unit.paths)).toEqual([
+			['src/alpha/a.ts'],
+			['src/alpha/b.ts', 'src/beta/a.ts', 'src/beta/b.ts'],
+			['src/gamma/a.ts'],
+		])
+		expect(units.map(unit => unit.label)).toEqual([
+			'src/alpha/ (1 files)',
+			'src/ (3 files)',
+			'src/gamma/ (1 files)',
+		])
+		expect(units.map(unit => unit.size)).toEqual([8, 6, 2])
+	})
+	test.each([1, 2, 3])(
+		'packing at max %i is deterministic for shuffled file order and keeps each hunk once',
+		max => {
+			const paths = [
+				'src/alpha/a.ts',
+				'src/alpha/b.ts',
+				'src/beta/a.ts',
+				'src/beta/b.ts',
+				'src/gamma/a.ts',
+				'src/gamma/b.ts',
+			]
+			const blocks = paths.map((path, index) => diff(path, (index % 3) + 1))
+			const expected = splitReviewUnits(blocks.join(''), max)
+			for (const shuffled of [
+				blocks.toReversed(),
+				[blocks[3], blocks[0], blocks[5], blocks[2], blocks[4], blocks[1]],
+			])
+				expect(splitReviewUnits(shuffled.join(''), max)).toEqual(expected)
+			expect(expected.length).toBeLessThanOrEqual(max)
+			expect(expected.flatMap(unit => unit.paths)).toEqual(paths)
+			expect(expected.map(unit => unit.diff).join('')).toBe(blocks.join(''))
+			expect(expected.reduce((sum, unit) => sum + unit.size, 0)).toBe(24)
+		}
+	)
+	test('labels use complete shared directory segments and omit a nonexistent common directory', () => {
+		const text = [
+			'a.ts',
+			'b.ts',
+			'src/billing/charge.ts',
+			'src/billings/refund.ts',
+		]
+			.map(path => diff(path, 1))
+			.join('')
+		expect(splitReviewUnits(text, 2).map(unit => unit.label)).toEqual([
+			'2 files',
+			'src/ (2 files)',
+		])
+	})
+	test('zero-line files stay in one nonempty group without losing headers', () => {
+		const text = Array.from(
+			{ length: 4 },
+			(_, index) =>
+				`diff --git a/src/mode${index}.ts b/src/mode${index}.ts\nold mode 100644\nnew mode 100755\n`
+		).join('')
+		expect(splitReviewUnits(text, 2)).toEqual([
+			{
+				label: 'src/ (4 files)',
+				paths: Array.from({ length: 4 }, (_, index) => `src/mode${index}.ts`),
+				diff: text,
+				size: 0,
+			},
+		])
 	})
 })

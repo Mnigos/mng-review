@@ -2,6 +2,7 @@ import { MIN_FILE_DIFF_CHARS, type ReviewUnit } from '@mng-review/domain'
 import { file, unifiedDiff } from '../../../shared/mocks/domain-test.helper'
 import {
 	getChangedUnits,
+	getWholePaths,
 	toChangeMessage,
 	toUnitMessage,
 } from './finder-message.helper'
@@ -191,5 +192,26 @@ describe('changed units in first messages', () => {
 				maxChars: 0,
 			})
 		).not.toContain('; changes')
+	})
+})
+
+describe('whole first-message diffs', () => {
+	test('counts whole small files while excluding cut and omitted files', () => {
+		const small = unifiedDiff('src/billing/charge.ts')
+		const large = unifiedDiff('src/billing/refund.ts', 2000)
+		expect(
+			getWholePaths(small + large, small.length + MIN_FILE_DIFF_CHARS)
+		).toEqual(new Set(['src/billing/charge.ts']))
+		expect(getWholePaths(small + large, 0)).toEqual(new Set())
+		expect(getWholePaths(small + large, small.length + large.length)).toEqual(
+			new Set(['src/billing/charge.ts', 'src/billing/refund.ts'])
+		)
+	})
+	test('an exact fit counts as read and no diff means no paths', () => {
+		const text = unifiedDiff('src/billing/charge.ts')
+		expect(getWholePaths(text, text.length)).toEqual(
+			new Set(['src/billing/charge.ts'])
+		)
+		expect(getWholePaths('', 10_000)).toEqual(new Set())
 	})
 })

@@ -63,23 +63,23 @@ layer(Layer.empty, { excludeTestServices: true })('review CLI', test => {
 					blocking: false,
 					endpointError: null,
 					bugs: [],
-					tokens: { reviewer: { totalTokens: 10 } },
+					tokens: { reviewer: { totalTokens: 5 } },
 					tokenSources: {
 						reviewer: {
-							calls: 2,
+							calls: 1,
 							conversations: 1,
-							firstMessageTokens: 6,
+							firstMessageTokens: 3,
 							historyTokens: 0,
 						},
 					},
 				})
 				expect(invocation.requests).toEqual(
-					Array.from({ length: 2 }, () => `${ENDPOINT}/chat/completions`)
+					Array.from({ length: 1 }, () => `${ENDPOINT}/chat/completions`)
 				)
-				expect(decodeReport(invocation.out).agents).toMatchObject([
-					{ continued: 1 },
-				])
-				expect(JSON.stringify(invocation.calls[1]?.messages.at(-1))).toContain(
+				expect(decodeReport(invocation.out).agents[0]).not.toHaveProperty(
+					'continued'
+				)
+				expect(JSON.stringify(invocation.calls[0]?.messages)).not.toContain(
 					'Before your answer counts'
 				)
 			})
@@ -619,12 +619,9 @@ layer(Layer.empty, { excludeTestServices: true })('review CLI', test => {
 					).toHaveLength(1)
 					expect(
 						invocation.calls.filter(call => call.model !== 'router')
-					).toHaveLength(expectedDepth === 'deep' ? 8 : 2)
-					expect(report.agents).toMatchObject(
-						Array.from({ length: count }, () => ({
-							continued: expectedDepth === 'deep' ? 2 : 1,
-						}))
-					)
+					).toHaveLength(expectedDepth === 'deep' ? 4 : 1)
+					for (const entry of report.agents)
+						expect(entry).not.toHaveProperty('continued')
 					expect(report.endpointError).toBeNull()
 					expect(report.droppedModels).toEqual([])
 				})

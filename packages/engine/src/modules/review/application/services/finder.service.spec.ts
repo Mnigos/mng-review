@@ -31,6 +31,7 @@ import {
 import { getFirstDiffChars } from '../../domain/finder-budget.helper'
 import { makeTokenPool } from '../../domain/loop-budget.helper'
 import {
+	CONTINUATION_RESERVE_SHARE,
 	MIN_UNIT_TOKENS,
 	FINDER_TOKEN_SHARE,
 	MAX_FULL_DIFF_CHARS,
@@ -145,8 +146,8 @@ layer(Layer.empty)('FinderService', test => {
 					)
 				).toMatchObject({ report: { status: 'ok' } })
 				const calls = yield* ScriptedLlm.use(script => script.calls)
-				expect(calls).toHaveLength(2)
-				expect(JSON.stringify(calls[1]?.options.prompt)).toContain(
+				expect(calls).toHaveLength(1)
+				expect(JSON.stringify(calls[0]?.options.prompt)).not.toContain(
 					'Before your answer counts'
 				)
 				for (const prompt of [REVIEWER_PROMPT, FINDING_RULES_PROMPT])
@@ -361,9 +362,9 @@ ${DIFF}`)
 					yield* FinderService.use(finder =>
 						finder.run(plannedRun(), context({ fanOut: true }))
 					)
-				).toMatchObject({ report: { status: 'ok', units: 2, continued: 2 } })
+				).toMatchObject({ report: { status: 'ok', units: 2 } })
 				const calls = yield* ScriptedLlm.use(script => script.calls)
-				expect(calls).toHaveLength(4)
+				expect(calls).toHaveLength(2)
 				const firstCalls = calls.filter(
 					call => call.options.prompt.content.length === 2
 				)
@@ -734,10 +735,10 @@ layer(Layer.empty)('finder unit budgets and paths', test => {
 					)
 				)
 				expect(output.report.units).toBe(2)
-				expect(output.report.continued).toBe(2)
-				expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(4)
+				expect(output.report.continued).toBeUndefined()
+				expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(2)
 				expect(yield* TokenLedger.use(ledger => ledger.sources)).toMatchObject({
-					reviewer: { calls: 4, conversations: 2 },
+					reviewer: { calls: 2, conversations: 2 },
 				})
 			}).pipe(
 				Effect.provide(
@@ -759,7 +760,7 @@ layer(Layer.empty)('finder unit budgets and paths', test => {
 					})
 				)
 			)
-			expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(2)
+			expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(1)
 		}).pipe(
 			Effect.provide(
 				finderLayer(
@@ -781,7 +782,7 @@ layer(Layer.empty)('finder unit budgets and paths', test => {
 						)
 					)
 					const calls = yield* ScriptedLlm.use(script => script.calls)
-					expect(calls).toHaveLength(paths.includes(BILLING_PATH) ? 2 : 0)
+					expect(calls).toHaveLength(paths.includes(BILLING_PATH) ? 1 : 0)
 					expect(output.report.status).toBe('ok')
 					if (paths.includes(BILLING_PATH)) {
 						expect(userText(calls[0])).toContain('Your unit:')
@@ -935,11 +936,7 @@ layer(Layer.empty)('finder coverage jobs', test => {
 						)
 					)
 					expect(coverages).toEqual(
-						job === 'balanced'
-							? [[BILLING_PATH, 'other.ts']]
-							: job === 'deep'
-								? [[BILLING_PATH], ['other.ts']]
-								: [undefined]
+						job === 'balanced' ? [[]] : job === 'deep' ? [[], []] : [undefined]
 					)
 					expect(output.report.continued).toBeUndefined()
 				})
@@ -992,7 +989,10 @@ layer(Layer.empty)('finder coverage jobs', test => {
 								})
 							),
 						gitFixture({
-							readDiff: () => Effect.succeed(DIFF + unifiedDiff('other.ts')),
+							readDiff: () =>
+								Effect.succeed(
+									unifiedDiff(BILLING_PATH, 20_000) + unifiedDiff('other.ts')
+								),
 						})
 					)
 				)
@@ -1143,4 +1143,83 @@ layer(Layer.empty)('failed continuation token accounting', test => {
 				)
 			})
 	)
+})
+
+layer(Layer.empty)('coverage allowance wiring', test => {
+	for (const fanOut of [false, true])
+		test.effect(
+			`${fanOut ? 'deep units' : 'whole-change reviewer'} reserve tokens only for files whose diff was not wholly shown`,
+			() =>
+				Effect.gen(function* () {
+					const requests: Omit<LoopRequest<unknown>, 'parse' | 'coverage'>[] =
+						[]
+					const coverages: (readonly string[] | undefined)[] = []
+					const run: AgentLoopService['Service']['run'] = request => {
+						requests.push(request)
+						coverages.push(request.coverage?.paths)
+						return request.parse({ findings: [] }).pipe(
+							Effect.orDie,
+							Effect.map(value => ({
+								value,
+								turns: 1,
+								toolCalls: 0,
+								spentTokens: 5,
+							}))
+						)
+					}
+					const smallPath = 'src/billing/refund.ts'
+					const allowance = MIN_UNIT_TOKENS * 2 + 3
+					const scope = {
+						...SCOPE,
+						change: {
+							...SCOPE.change,
+							files: [
+								file(BILLING_PATH),
+								file(smallPath),
+								file('skip.ts', { skipped: 'too_large' }),
+							],
+						},
+					}
+					yield* FinderService.use(finder =>
+						finder.run(
+							plannedRun({ files: [BILLING_PATH, smallPath] }),
+							context({
+								scope,
+								fanOut,
+								tokens: { allowance, runTokens: 200_000 },
+							})
+						)
+					).pipe(
+						Effect.provide(
+							FinderServiceLive.pipe(
+								Layer.provide(Layer.succeed(AgentLoopService, { run })),
+								Layer.provide(
+									reviewDependencies(
+										() => Effect.die('unexpected model call'),
+										{},
+										gitFixture({
+											readDiff: () =>
+												Effect.succeed(
+													unifiedDiff(BILLING_PATH, 20_000) +
+														unifiedDiff(smallPath)
+												),
+										})
+									)
+								)
+							)
+						)
+					)
+					expect(requests).toHaveLength(fanOut ? 2 : 1)
+					expect(coverages).toEqual(
+						fanOut ? [[BILLING_PATH], []] : [[BILLING_PATH]]
+					)
+					const jobTokens = fanOut ? Math.floor(allowance / 2) : allowance
+					expect(requests[0]?.budget).toEqual({
+						runTokens: 200_000,
+						conversationTokens: jobTokens,
+						reserve: Math.floor(jobTokens * CONTINUATION_RESERVE_SHARE),
+					})
+					if (fanOut) expect(requests[1]?.budget).not.toHaveProperty('reserve')
+				})
+		)
 })
