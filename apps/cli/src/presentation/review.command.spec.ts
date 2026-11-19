@@ -584,7 +584,20 @@ layer(Layer.empty, { excludeTestServices: true })('review CLI', test => {
 								content: call.tools?.some(
 									tool => tool.function.name === 'route'
 								)
-									? { risk, add: [] }
+									? {
+											signals:
+												risk === 'risky'
+													? [
+															{
+																category: 'money',
+																path: REPORTED_FINDING.path,
+																reason:
+																	'Lines 12 and 26 change charge amounts.',
+															},
+														]
+													: [],
+											add: [],
+										}
 									: { findings: [] },
 							}),
 						}
@@ -638,7 +651,7 @@ layer(Layer.empty, { excludeTestServices: true })('review CLI', test => {
 								content: call.tools?.some(
 									tool => tool.function.name === 'route'
 								)
-									? { risk: 'normal', add: [] }
+									? { add: [] }
 									: { findings: [REPORTED_FINDING] },
 							}),
 						}

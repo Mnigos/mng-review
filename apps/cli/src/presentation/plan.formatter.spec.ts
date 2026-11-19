@@ -251,3 +251,35 @@ test('absent shape is null in JSON and silent in text even with risk-path hits',
 		risk: { shape: null },
 	})
 })
+
+test('prints each router signal directly below the Router line and preserves it in JSON', () => {
+	const signals = [
+		{
+			category: 'access',
+			path: 'src/auth/session.guard.ts',
+			reason: 'Lines 8-12 change who may update a session.',
+		},
+		{
+			category: 'stored_data',
+			path: 'src/data/record.ts',
+			reason: 'Line 20 deletes existing records.',
+		},
+	] as const
+	const input = report({
+		riskSource: 'router',
+		riskPathHits: [],
+		router: { status: 'ok', risk: 'risky', added: [], signals },
+	})
+	expect(formatPlanText(input)).toContain(
+		[
+			'Router: ok, rated risky, added 0',
+			'  access  src/auth/session.guard.ts: Lines 8-12 change who may update a session.',
+			'  stored_data  src/data/record.ts: Line 20 deletes existing records.',
+			'',
+			'Will run (1):',
+		].join('\n')
+	)
+	expect(JSON.parse(formatPlanJson(input))).toMatchObject({
+		router: { signals },
+	})
+})

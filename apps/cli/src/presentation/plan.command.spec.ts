@@ -16,6 +16,7 @@ import {
 	NodeTerminal,
 } from '@effect/platform-node-shared'
 import { layer } from '@effect/vitest'
+import type { RiskSignal } from '@mng-review/domain'
 import { GitWorkdir } from '@mng-review/engine'
 import { Cause, ConfigProvider, Effect, Exit, Layer, Schema } from 'effect'
 import { Command } from 'effect/cli'
@@ -132,7 +133,7 @@ const decodeReport = Schema.decodeUnknownSync(
 )
 
 interface CliOptions {
-	readonly risk?: string
+	readonly signals?: readonly RiskSignal[]
 	readonly endpoint?: string
 	readonly responseText?: string
 }
@@ -157,7 +158,7 @@ function run(root: string, args: readonly string[], options: CliOptions = {}) {
 								role: 'assistant',
 								content:
 									options.responseText ??
-									JSON.stringify({ risk: options.risk ?? 'normal', add: [] }),
+									JSON.stringify({ signals: options.signals ?? [], add: [] }),
 							},
 							finish_reason: 'stop',
 						},
@@ -290,7 +291,16 @@ layer(Layer.empty, { excludeTestServices: true })('plan CLI', test => {
 				const invocation = yield* run(
 					repo.root,
 					['plan', '--base', 'main', '--json'],
-					{ endpoint: 'https://api.example.test/v1', risk: 'risky' }
+					{
+						endpoint: 'https://api.example.test/v1',
+						signals: [
+							{
+								category: 'access',
+								path: 'packages/auth/session.ts',
+								reason: 'Line 1 changes the session ownership check.',
+							},
+						],
+					}
 				)
 				expect(invocation.outcome._tag).toBe('Success')
 				const report = decodeReport(invocation.out)

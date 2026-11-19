@@ -1,16 +1,24 @@
 import { layer } from '@effect/vitest'
-import { absorb, getPlannedTokens, toRunAllowances } from '@mng-review/domain'
+import {
+	absorb,
+	buildPlan,
+	getPlannedTokens,
+	MIN_FOCUS_SHARE,
+	toRunAllowances,
+} from '@mng-review/domain'
 import { Effect, Layer, Ref } from 'effect'
 import { TestClock } from 'effect/testing'
 import { TokenLedgerLive } from '../../../../platform/llm/token-ledger.service'
 import {
 	agent,
 	config,
+	file,
 	finding,
 } from '../../../../shared/mocks/domain-test.helper'
 import {
 	LIMITS,
 	reviewRequest,
+	REVIEWERS,
 } from '../../../../shared/mocks/review-test.helper'
 import { ValidatorService } from '../../../validation/application/validator.service'
 import { getValidationTokens } from '../../domain/finder-budget.helper'
@@ -392,6 +400,116 @@ layer(Layer.empty)('review token allocation', test => {
 				).toBeUndefined()
 			})
 	)
+	for (const scenario of [
+		{
+			name: 'router signals',
+			riskPaths: [],
+			accessLines: 40,
+			focusPaths: ['src/auth/session.guard.ts'],
+			share: 0.4,
+		},
+		{
+			name: 'a small router focus',
+			riskPaths: [],
+			accessLines: 1,
+			focusPaths: ['src/auth/session.guard.ts'],
+			share: MIN_FOCUS_SHARE,
+		},
+		{
+			name: 'risk paths ahead of router signals',
+			riskPaths: ['src/data/**'],
+			accessLines: 40,
+			focusPaths: ['src/data/record.ts'],
+			share: 0.6,
+		},
+	] as const)
+		test.effect(
+			`later deep reviewers use ${scenario.name} and scale only their allowance`,
+			() =>
+				Effect.gen(function* () {
+					const cfg = config({
+						depth: 'auto',
+						risk_paths: [...scenario.riskPaths],
+						models: { reviewer: [...REVIEWERS] },
+					})
+					const base = reviewRequest(cfg, [agent('checks')])
+					const files = [
+						file('src/auth/session.guard.ts', {
+							additions: scenario.accessLines,
+							deletions: 0,
+						}),
+						file('src/data/record.ts', {
+							additions: 0,
+							deletions: 100 - scenario.accessLines,
+						}),
+						file('generated/cache.ts', {
+							additions: 900,
+							deletions: 0,
+							skipped: 'skip.paths',
+						}),
+					]
+					const change = { ...base.planReport.change, files }
+					const plan = buildPlan(
+						{ config: cfg, agents: base.rules.agents, files, pr: base.pr },
+						{
+							status: 'ok',
+							risk: 'risky',
+							added: [],
+							signals: [
+								{
+									category: 'access',
+									path: 'src/auth/session.guard.ts',
+									reason: 'Lines 1-4 change who can update a session.',
+								},
+								{
+									category: 'secrets',
+									path: 'src/auth/session.guard.ts',
+									reason:
+										'Line 5 changes the credential sent to another service.',
+								},
+							],
+						}
+					)
+					const request = {
+						...base,
+						planReport: { ...base.planReport, change, plan },
+					}
+					const runSpy = vi.fn<FinderService['Service']['run']>(run =>
+						Effect.succeed(finderResult([], run.name))
+					)
+					yield* ReviewService.use(review => review.review(request)).pipe(
+						Effect.provide(
+							reviewLayer(runSpy, () => Effect.die('no findings to validate'))
+						)
+					)
+					expect(plan.depth).toBe('deep')
+					expect(plan.riskSource).toBe(
+						scenario.riskPaths.length > 0 ? 'risk_paths' : 'router'
+					)
+					expect(runSpy).toHaveBeenCalledTimes(plan.runs.length)
+					const runTokens = Math.floor(
+						getPlannedTokens(cfg.limits, 'deep') * FINDER_TOKEN_SHARE
+					)
+					const allowances = toRunAllowances(plan.runs, runTokens)
+					for (const [index, run] of plan.runs.entries()) {
+						const context = runSpy.mock.calls.find(
+							([entry]) => entry === run
+						)?.[1]
+						const narrowed =
+							run.role === 'reviewer' && run.model === REVIEWERS[1].model
+						expect(context?.unitPaths).toEqual(
+							narrowed ? scenario.focusPaths : undefined
+						)
+						expect(context?.fanOut).toBe(true)
+						expect(context?.tokens).toEqual({
+							runTokens,
+							allowance: Math.floor(
+								(allowances[index] ?? 0) * (narrowed ? scenario.share : 1)
+							),
+						})
+					}
+				})
+		)
 	test.effect('deep reviewers without risk path hits stay unrestricted', () =>
 		Effect.gen(function* () {
 			const findSpy = vi.fn<FinderService['Service']['run']>(run =>
