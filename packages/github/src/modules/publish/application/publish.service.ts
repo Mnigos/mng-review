@@ -16,6 +16,7 @@ import { parseSummaryMarker } from '../domain/publish-marker.parser'
 import type { SummaryMarker } from '../domain/publish-marker.schema'
 import {
 	countOpenBugs,
+	countUnthreadedBugs,
 	getMatchingThreads,
 	getPublishedFindings,
 	planPublish,
@@ -30,6 +31,7 @@ import type {
 	CommentableLines,
 	PlannedThread,
 } from '../domain/publish.types'
+import { toNextSummaryMarker } from '../domain/summary-marker.helper'
 import {
 	formatStatusComment,
 	formatSummaryComment,
@@ -314,14 +316,6 @@ export const PublishServiceLive = Layer.effect(
 			const threads = found.map(thread =>
 				resolvedIds.has(thread.id) ? { ...thread, resolved: true } : thread
 			)
-			const finished = isFinished(report)
-			const reviewedHead = finished ? input.head : summary?.marker.head
-			const marker: SummaryMarker = {
-				v: MARKER_VERSION,
-				runs: (summary?.marker.runs ?? 0) + 1,
-				finished,
-				...(reviewedHead === undefined ? {} : { head: reviewedHead }),
-			}
 			const lines = yield* readCommentableLines(report, input.head)
 			const changedPlaces = yield* getChangedPlaces(input, threads)
 			const planned = planPublish(
@@ -331,6 +325,11 @@ export const PublishServiceLive = Layer.effect(
 			const posted = yield* postThreads(input, planned.threads)
 			const plan = { ...planned, threads: posted }
 			const openBugs = countOpenBugs(plan, threads)
+			const marker = toNextSummaryMarker(summary?.marker, {
+				head: input.head,
+				finished: isFinished(report),
+				unthreadedBugs: countUnthreadedBugs(plan),
+			})
 			const verdict = getVerdict(report, openBugs)
 			yield* writeSummary(
 				pullNumber,
