@@ -28,12 +28,22 @@ describe('bot thread ownership', () => {
 		},
 		{
 			author: { __typename: 'Bot', login: BOT_LOGIN },
-			editor: { login: BOT_LOGIN },
+			editor: { __typename: 'Bot', login: BOT_LOGIN },
 			owned: true,
 		},
 		{
 			author: { __typename: 'Bot', login: BOT_LOGIN },
-			editor: { login: 'contributor' },
+			editor: { __typename: 'User', login: 'contributor' },
+			owned: false,
+		},
+		{
+			author: { __typename: 'Bot', login: BOT_LOGIN },
+			editor: { __typename: 'User', login: BOT_LOGIN },
+			owned: false,
+		},
+		{
+			author: { __typename: 'Bot', login: BOT_LOGIN },
+			editor: { __typename: 'Bot', login: 'other-bot' },
 			owned: false,
 		},
 	])('requires bot identity and trusted editor $author $editor', row => {
@@ -136,6 +146,38 @@ describe('publish verdict', () => {
 			)
 		).toBe(row.verdict)
 	})
+	for (const status of ['ok', 'failed', 'incomplete'] as const)
+		for (const openBugs of [0, 1])
+			test(`finder ${status} with ${openBugs} open bugs`, () => {
+				const finder = {
+					name: 'specialist',
+					title: 'Specialist',
+					kind: 'bug',
+					model: 'model-a',
+					effort: 'high',
+					status,
+					toolCalls: 0,
+					findings: 0,
+					malformed: 0,
+					wallMillis: 0,
+				} as const
+				expect(
+					getVerdict(
+						{
+							...report(),
+							agents: [{ ...finder, name: 'reviewer', status: 'ok' }, finder],
+						},
+						openBugs
+					)
+				).toBe(
+					openBugs > 0
+						? 'needs fixes'
+						: status === 'ok'
+							? 'ready'
+							: 'incomplete'
+				)
+			})
+
 	test.each([undefined, 400, 401, 403, 404, 422, 500, 503])(
 		'only 422 is a place refusal: %s',
 		status => {

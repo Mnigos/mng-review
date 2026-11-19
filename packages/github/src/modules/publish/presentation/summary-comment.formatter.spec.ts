@@ -1,3 +1,4 @@
+import { agent, config } from '../../../shared/mocks/domain-test.helper'
 import { HOSTILE_TEXT } from '../../../shared/mocks/hostile-text.helper'
 import {
 	bug,
@@ -7,6 +8,8 @@ import {
 } from '../../../shared/mocks/publish-test.helper'
 import { escapeMarkdown } from '../../../utils/markdown.util'
 import { parseSummaryMarker } from '../domain/publish-marker.parser'
+import { planPublish } from '../domain/publish-plan.helper'
+import type { ThreadPlace } from '../domain/publish.types'
 import {
 	formatSummaryComment,
 	formatStatusComment,
@@ -79,6 +82,7 @@ function input(): SummaryInput {
 		plan: {
 			threads: [{ finding, kind: 'unverified', place: 'summary' }],
 			repeated: [],
+			dismissed: [],
 			summaryNits: [],
 		},
 		verdict: 'ready',
@@ -90,6 +94,110 @@ function input(): SummaryInput {
 }
 
 describe('formatSummaryComment', () => {
+	test('lists dismissed findings as nonblocking and escapes their titles', () => {
+		const fixture = input()
+		const finding = bug({ title: HOSTILE_TEXT, placement: 'summary' })
+		const text = formatSummaryComment({
+			...fixture,
+			report: { ...fixture.report, bugs: [finding], rejected: [] },
+			plan: {
+				threads: [],
+				repeated: [],
+				dismissed: [{ finding, kind: 'bug' }],
+				summaryNits: [],
+			},
+		})
+		expect(text).toContain(
+			`Found again under threads resolved without a code change, not blocking (1):\n\n- **High** \`src/store.ts:10\` ${escapeMarkdown(HOSTILE_TEXT)}`
+		)
+		expect(text).not.toContain('Below the severity floor')
+		expect(text).not.toContain('already have a thread')
+		expect(text).toContain('**Verdict: ready**')
+	})
+	test.each([false, true])(
+		'lists bugs below their severity floor, unverified=%s',
+		unverified => {
+			const fixture = input()
+			const finding = bug({
+				severity: 'medium',
+				placement: 'summary',
+				agents: ['specialist'],
+				validation: unverified
+					? {
+							status: 'unverified',
+							severity: 'medium',
+							reason: 'Missing contract',
+							premise: 'Dependency behavior',
+							evidence: [],
+							model: 'validator',
+						}
+					: undefined,
+			})
+			const reviewReport = { ...fixture.report, bugs: [finding], rejected: [] }
+			const plan = planPublish(
+				{
+					outcome: reviewReport,
+					config: config({ comments: { min_severity: 'low' } }),
+					agents: new Map([
+						[
+							'specialist',
+							agent('specialist', { comments: { min_severity: 'high' } }),
+						],
+					]),
+				},
+				{ threads: [], lines: new Map(), changedPlaces: new Set() }
+			)
+			const text = formatSummaryComment({
+				...fixture,
+				report: reviewReport,
+				plan,
+			})
+			expect(plan.threads).toEqual([])
+			expect(text).toContain(
+				`Below the severity floor (1):\n\n- **${unverified ? 'Unverified, medium' : 'Medium'}** \`src/store.ts:10\` ${finding.title}`
+			)
+			expect(text).not.toContain('New threads')
+		}
+	)
+	test.each(['line', 'file', 'summary', 'unposted'] satisfies ThreadPlace[])(
+		'a finding with a %s thread is absent from below the floor',
+		place => {
+			const fixture = input()
+			const finding = bug({ placement: 'summary' })
+			const text = formatSummaryComment({
+				...fixture,
+				report: { ...fixture.report, bugs: [finding], rejected: [] },
+				plan: {
+					threads: [{ finding, kind: 'unverified', place }],
+					repeated: [],
+					dismissed: [],
+					summaryNits: [],
+				},
+			})
+			expect(text).not.toContain('Below the severity floor')
+			expect(text).not.toContain('Found again under threads resolved')
+		}
+	)
+	test.each(['repeated', 'dismissed'] as const)(
+		'a %s finding is absent from below the floor',
+		disposition => {
+			const fixture = input()
+			const finding = bug({ placement: 'summary' })
+			const text = formatSummaryComment({
+				...fixture,
+				report: { ...fixture.report, bugs: [finding], rejected: [] },
+				plan: {
+					threads: [],
+					repeated: [],
+					dismissed: [],
+					summaryNits: [],
+					[disposition]: [{ finding, kind: 'bug' }],
+				},
+			})
+			expect(text).not.toContain('Below the severity floor')
+		}
+	)
+
 	test('escapes the rejected validator reason independently of the title and router reason', () => {
 		const fixture = input()
 		const [rejected] = fixture.report.rejected
