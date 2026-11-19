@@ -85,6 +85,23 @@ function gitLayer(root: string) {
 
 layer(Layer.empty, { excludeTestServices: true })('GitService', test => {
 	test.effect(
+		'reads its own repository when GIT_DIR points at another one',
+		() =>
+			Effect.gen(function* () {
+				const repo = createRepo('own')
+				repo.write('a.ts', 'own\n')
+				const own = repo.commit()
+				const other = createRepo('other')
+				other.write('b.ts', 'other\n')
+				other.commit()
+				vi.stubEnv('GIT_DIR', join(other.root, '.git'))
+				vi.stubEnv('GIT_WORK_TREE', other.root)
+				const git = yield* GitService.pipe(Effect.provide(gitLayer(repo.root)))
+				expect(yield* git.resolveCommit('HEAD')).toBe(own)
+				vi.unstubAllEnvs()
+			}).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllEnvs())))
+	)
+	test.effect(
 		'reads merge-base counts and committed blob sizes after the base advances',
 		() =>
 			Effect.gen(function* () {
