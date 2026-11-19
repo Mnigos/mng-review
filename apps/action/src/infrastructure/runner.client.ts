@@ -52,12 +52,13 @@ export const runnerEnvironmentConfig = Config.all({
 	}))
 )
 
-/** Every form of the endpoint that could reach a log: the URL, its origin, host and hostname, and the key. */
+/** Every form of the endpoint that could reach a log: the URL, its origin, host and hostname, and the key as read and trimmed. */
 function toMaskedValues(url: string, key: string): string[] {
 	const parsed = URL.canParse(url) ? new URL(url) : undefined
 	const forms = [
 		url,
 		key,
+		key.trim(),
 		parsed?.origin ?? '',
 		parsed?.host ?? '',
 		parsed?.hostname ?? '',

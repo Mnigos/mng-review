@@ -277,6 +277,22 @@ layer(RunnerLayer)('runner client', test => {
 			])
 		}).pipe(Effect.provide(Layer.fresh(TestConsole.layer)))
 	)
+	test.effect('masks a padded key both as read and trimmed', () =>
+		Effect.gen(function* () {
+			const masked = yield* maskEndpoint().pipe(
+				Effect.provide(
+					ConfigProvider.layer(
+						ConfigProvider.fromEnvRecord({
+							MNG_REVIEW_LLM_URL: 'https://llm.example.com/v1',
+							MNG_REVIEW_LLM_KEY: ' test-key ',
+						})
+					)
+				)
+			)
+			expect(masked).toContain(' test-key ')
+			expect(masked).toContain('test-key')
+		}).pipe(Effect.provide(Layer.fresh(TestConsole.layer)))
+	)
 	test.effect('skips empty mask values and removes duplicate forms', () =>
 		Effect.gen(function* () {
 			yield* maskEndpoint().pipe(

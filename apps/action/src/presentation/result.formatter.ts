@@ -67,7 +67,7 @@ const DATA_KEYED_MAPS = new Set(['tokens', 'tokenSources'])
 
 /**
  * A JSON value with the masked values replaced in strings and in the keys of the maps keyed by
- * model names. Schema keys, numbers, booleans and arrays pass through; `JSON.stringify` visits
+ * model names; names that become equal get a ` (2)`, ` (3)` suffix so no entry is lost. Schema keys, numbers, booleans and arrays pass through; `JSON.stringify` visits
  * the members.
  */
 function toRedactedValue(
@@ -77,11 +77,17 @@ function toRedactedValue(
 ): unknown {
 	if (Predicate.isString(value)) return toRedacted(value, masked)
 	if (!DATA_KEYED_MAPS.has(key) || !Predicate.isObject(value)) return value
-	return Object.fromEntries(
-		Object.entries(value).map(([name, member]) => [
-			toRedacted(name, masked),
-			member,
-		])
+	return Object.entries(value).reduce<Record<string, unknown>>(
+		(out, [name, member]) => {
+			const redacted = toRedacted(name, masked)
+			const taken = Object.keys(out).filter(
+				existing =>
+					existing === redacted || existing.startsWith(`${redacted} (`)
+			).length
+			out[taken === 0 ? redacted : `${redacted} (${taken + 1})`] = member
+			return out
+		},
+		{}
 	)
 }
 
