@@ -30,6 +30,7 @@ export const FINDING_RULES_PROMPT = `How to work:
 - \`line\` is a line number in the file at head. For a deleted file, use the line in base.
 - \`impact\` says what goes wrong for users or data when the trigger happens; the severity follows from it by the rubric below.
 - \`suggestion\` is optional. Give it only when the fix is short and self-contained.
+- When you find a defect, check the other changed files for the same code pattern, such as a sibling handler or a copied helper, and report each place it occurs as its own finding.
 - Report each problem once. Report nothing when you find nothing. An empty list is a good answer.
 
 ${SEVERITY_RUBRIC}
