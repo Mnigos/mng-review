@@ -34,6 +34,11 @@ export const MIN_VALIDATION_TOKENS = 30_000
 export const MAX_LISTED_UNITS = 4
 /** Longest name of a changed function or block in a file line. */
 export const MAX_LISTED_UNIT_CHARS = 60
+/**
+ * Share of a main reviewer conversation's tokens held back for its continuation turn, so it can
+ * read the changed files it left unread even when the budget forced its first answer.
+ */
+export const CONTINUATION_RESERVE_SHARE = 0.25
 /** Changed files a continuation turn names; it counts the rest. */
 export const MAX_LISTED_UNTOUCHED = 20
 /** Invalid answers the loop corrects before it gives up on an agent. */

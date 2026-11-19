@@ -19,12 +19,14 @@ import {
 	toFinderStatus,
 } from '../../domain/finder-budget.helper'
 import {
+	getWholePaths,
 	toChangeMessage,
 	toContextNotes,
 	toUnitMessage,
 } from '../../domain/finder-message.helper'
 import type { AgentRunReport } from '../../domain/review-report.types'
 import {
+	CONTINUATION_RESERVE_SHARE,
 	MAX_FULL_DIFF_CHARS,
 	MAX_INCREMENTAL_DIFF_CHARS,
 } from '../../domain/review.constants'
@@ -122,20 +124,26 @@ export const FinderServiceLive = Layer.effect(
 			if ((split.length > 0 || narrowed) && units.length === 0) return []
 			if (split.length > 1 || narrowed) {
 				const tokens = Math.floor(allowance / Math.max(1, units.length))
-				return units.map(unit => ({
-					unit: unit.label,
-					system: `${system}\n\n${UNIT_PROMPT}`,
-					user: toUnitMessage({
-						unit,
-						files: context.scope.change.files,
-						pr,
-						maxChars: getFirstDiffChars(tokens, MAX_INCREMENTAL_DIFF_CHARS),
-					}),
-					tools: ALL_REPO_TOOLS,
-					tokens,
-					coverage: unit.paths,
-				}))
+				return units.map(unit => {
+					const maxChars = getFirstDiffChars(tokens, MAX_INCREMENTAL_DIFF_CHARS)
+					const whole = getWholePaths(unit.diff, maxChars)
+					return {
+						unit: unit.label,
+						system: `${system}\n\n${UNIT_PROMPT}`,
+						user: toUnitMessage({
+							unit,
+							files: context.scope.change.files,
+							pr,
+							maxChars,
+						}),
+						tools: ALL_REPO_TOOLS,
+						tokens,
+						coverage: unit.paths.filter(path => !whole.has(path)),
+					}
+				})
 			}
+			const maxChars = getFirstDiffChars(allowance, MAX_FULL_DIFF_CHARS)
+			const whole = getWholePaths(diff, maxChars)
 			return [
 				{
 					system,
@@ -144,13 +152,13 @@ export const FinderServiceLive = Layer.effect(
 						scope: run.files,
 						pr,
 						diff,
-						maxChars: getFirstDiffChars(allowance, MAX_FULL_DIFF_CHARS),
+						maxChars,
 					}),
 					tools: ALL_REPO_TOOLS,
 					tokens: allowance,
 					coverage: getReviewableFiles(context.scope.change.files)
 						.map(file => file.path)
-						.filter(path => run.files.includes(path)),
+						.filter(path => run.files.includes(path) && !whole.has(path)),
 				},
 			]
 		})
@@ -265,6 +273,11 @@ export const FinderServiceLive = Layer.effect(
 						conversationTokens: job.tokens,
 						...(run.role === 'reviewer' && context.tokens.pool
 							? { pool: context.tokens.pool }
+							: {}),
+						...(job.coverage && job.coverage.length > 0
+							? {
+									reserve: Math.floor(job.tokens * CONTINUATION_RESERVE_SHARE),
+								}
 							: {}),
 					},
 					source: run.name,

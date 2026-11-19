@@ -91,9 +91,9 @@ export const AgentLoopServiceLive = Layer.effect(
 			const { isSpent } = tokens
 
 			/** Files of `coverage` the answer leaves unread, when tool calls and time allow a turn. */
-			const getUnread = (state: LoopState, value: TValue, wrapUp: boolean) =>
+			const getUnread = (state: LoopState, value: TValue) =>
 				Effect.gen(function* () {
-					if (!coverage || wrapUp || (yield* Ref.get(kept))) return []
+					if (!coverage || (yield* Ref.get(kept))) return []
 					if (state.toolCalls >= limits.maxToolCalls) return []
 					if ((yield* Clock.currentTimeMillis) >= deadline) return []
 					const read = new Set([
@@ -105,12 +105,12 @@ export const AgentLoopServiceLive = Layer.effect(
 
 			/**
 			 * A parsed answer: merged into the kept one after a continuation, else held for one
-			 * continuation turn when it leaves files of `coverage` unread.
+			 * continuation turn when it leaves files of `coverage` unread. The turn opens the
+			 * budget's reserve, so an answer the token budget forced still gets it.
 			 */
 			const accept = (
 				answer: LoopResult<TValue>,
 				next: LoopState,
-				wrapUp: boolean,
 				reply: (text: string) => Prompt.MessageEncoded
 			): Effect.Effect<LoopResult<TValue>, LoopError | ModelCallError> =>
 				Effect.gen(function* () {
@@ -121,8 +121,9 @@ export const AgentLoopServiceLive = Layer.effect(
 							value: coverage.merge(first.value, answer.value),
 							continued: true,
 						}
-					const unread = yield* getUnread(next, answer.value, wrapUp)
+					const unread = yield* getUnread(next, answer.value)
 					if (unread.length === 0) return answer
+					yield* tokens.openReserve
 					const text = toContinuationMessage(unread, finish)
 					const continued = {
 						...next,
@@ -314,7 +315,6 @@ export const AgentLoopServiceLive = Layer.effect(
 									unspentTokens: 0,
 								},
 								{ ...sent, turn: state.turn + 1 },
-								wrapUp,
 								text => reply(text, text)
 							)
 						const problem = parsed.failure.message

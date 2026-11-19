@@ -43,6 +43,9 @@ export interface FinderJob {
 	readonly unit?: string
 	/** Tokens this conversation may spend. */
 	readonly tokens: number
-	/** Changed files the agent must read before it answers (the main reviewer's method). */
+	/**
+	 * Changed files the agent must read before it answers (the main reviewer's method): those the
+	 * first message does not show whole.
+	 */
 	readonly coverage?: readonly string[]
 }

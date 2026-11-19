@@ -94,6 +94,21 @@ function toMissingNote(budgeted: readonly BudgetedFile[]): string[] {
 	]
 }
 
+/**
+ * Paths whose whole diff a first message built from `diff` and `maxChars` shows; the agent has
+ * read these without a tool.
+ */
+export function getWholePaths(
+	diff: string,
+	maxChars: number
+): ReadonlySet<string> {
+	return new Set(
+		budgetDiff(diff, maxChars)
+			.files.filter(file => file.shown === 'full')
+			.map(file => file.path)
+	)
+}
+
 /** The change's title and description, fenced; nothing when it has neither. */
 export function toPullRequestBlock(
 	pr: Pick<PullRequestInfo, 'title' | 'body'>
