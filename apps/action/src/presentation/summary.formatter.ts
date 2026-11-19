@@ -44,7 +44,7 @@ function toShortSha(sha: string): string {
 	return toCodeSpan(sha.slice(0, SHORT_SHA_LENGTH))
 }
 
-/** The verdict the run would post, in one line; stage 4 posts it. */
+/** The verdict in one line: incomplete, as the posted verdict is, when an agent failed or stopped and nothing blocks. */
 export function toVerdictLine(report: ReviewReport): string {
 	const { plan } = report.planReport
 	if (plan.skippedRun) return `skipped: ${plan.skippedRun}`
@@ -52,9 +52,12 @@ export function toVerdictLine(report: ReviewReport): string {
 	if (report.endpointError)
 		return `incomplete, the model endpoint failed: ${report.endpointError}`
 	const blocking = report.bugs.filter(bug => bug.placement === 'inline').length
-	const verdict = report.blocking
-		? `needs fixes, ${blocking} bug(s) at or above the severity floor`
-		: 'ready, no bug at or above the severity floor'
+	if (report.blocking)
+		return `needs fixes, ${blocking} bug(s) at or above the severity floor${report.incomplete ? '; the run is incomplete' : ''}`
+	const unfinished = report.agents.filter(agent => agent.status !== 'ok')
+	if (unfinished.length > 0)
+		return `incomplete, ${unfinished.length} agent(s) did not finish; no bug at or above the severity floor so far`
+	const verdict = 'ready, no bug at or above the severity floor'
 	return report.incomplete ? `${verdict}; the run is incomplete` : verdict
 }
 
