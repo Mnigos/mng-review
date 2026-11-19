@@ -68,14 +68,17 @@ function getTitleOverlap(a: string, b: string): number {
 
 /**
  * True when the thread describes the finding's problem: the same fingerprint, or, for a thread on
- * a line, the same path, a line at most `NEAR_LINES` away and similar titles. A thread on a file
- * matches by fingerprint only.
+ * a line of the head, the same path, a line at most `NEAR_LINES` away and similar titles. A thread
+ * on a file, or an outdated one whose line left the diff, matches by fingerprint only, since its
+ * old line number says nothing about the head.
  */
 function isSameProblem(finding: Finding, thread: BotThread): boolean {
 	if (thread.marker.fingerprint === finding.fingerprint) return true
 	if (thread.onFile || thread.path !== finding.path) return false
-	const line = thread.line ?? thread.originalLine
-	if (line === undefined || Math.abs(line - finding.line) > NEAR_LINES)
+	if (
+		thread.line === undefined ||
+		Math.abs(thread.line - finding.line) > NEAR_LINES
+	)
 		return false
 	return (
 		getTitleOverlap(thread.marker.title, finding.title) >= SAME_TITLE_OVERLAP
@@ -117,9 +120,10 @@ export interface PlanContext {
 }
 
 /**
- * Plans one run: a finding covered by an open thread of the bot, or only by resolved threads whose
- * code has not changed since, is not posted again; every other one gets a thread where the diff
- * allows. Nits the engine placed in the summary stay there.
+ * Plans one run: a finding covered by an open thread of the bot is repeated; one covered only by
+ * resolved threads whose code has not changed since is dismissed, listed in the summary and not
+ * blocking; every other one gets a thread where the diff allows. Nits the engine placed in the
+ * summary stay there.
  */
 export function planPublish(
 	selection: PublishSelection,
@@ -127,11 +131,15 @@ export function planPublish(
 ): PublishPlan {
 	const threads: PlannedThread[] = []
 	const repeated: PublishedFinding[] = []
+	const dismissed: PublishedFinding[] = []
 	for (const published of getPublishedFindings(selection)) {
-		const covered = getMatchingThreads(published, context.threads).some(
-			thread => !thread.resolved || !context.changedPlaces.has(thread.id)
+		const matches = getMatchingThreads(published, context.threads)
+		const open = matches.some(thread => !thread.resolved)
+		const unchanged = matches.some(
+			thread => thread.resolved && !context.changedPlaces.has(thread.id)
 		)
-		if (covered) repeated.push(published)
+		if (open) repeated.push(published)
+		else if (unchanged) dismissed.push(published)
 		else
 			threads.push({
 				...published,
@@ -141,6 +149,7 @@ export function planPublish(
 	return {
 		threads,
 		repeated,
+		dismissed,
 		summaryNits: selection.outcome.nits.filter(
 			finding => finding.placement === 'summary'
 		),

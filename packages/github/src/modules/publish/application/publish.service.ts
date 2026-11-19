@@ -8,6 +8,7 @@ import { Context, Effect, Layer } from 'effect'
 import { GitHubApiService } from '../../../platform/github-api.service'
 import { GitHubConfig } from '../../../platform/github.config'
 import type { GitHubApiError } from '../../../platform/github.errors'
+import { toCodeSpan } from '../../../utils/markdown.util'
 import {
 	getVerdict,
 	isBotComment,
@@ -78,6 +79,8 @@ export interface PublishResult {
 	/** Threads whose write failed with no answer or a server error; whether GitHub stored them is unknown. */
 	readonly unposted: number
 	readonly repeated: number
+	/** Findings found again under threads resolved without a code change since. */
+	readonly dismissed: number
 	readonly run: number
 }
 
@@ -175,13 +178,18 @@ export const PublishServiceLive = Layer.effect(
 		 * True when a commit since the thread's touched the code around the finding at the head
 		 * (`git log -L`, which follows the lines through every commit, so a fix that was undone
 		 * counts), and when git cannot tell: a missing commit after a force-push, a missing file.
+		 * A run on the thread's own commit has nothing new.
 		 */
 		const hasPlaceChanged = Effect.fn('PublishService.hasPlaceChanged')(
 			function* (thread: BotThread, path: string, line: number, head: string) {
 				if (!thread.commit) return true
+				if (thread.commit === head) return false
 				const text = yield* git.readFileAt(head, path).pipe(Effect.option)
 				if (text._tag === 'None' || text.value === undefined) return true
-				const lastLine = Math.max(1, text.value.split('\n').length)
+				const lastLine = Math.max(
+					1,
+					text.value.replace(/\n$/u, '').split('\n').length
+				)
 				const start = Math.min(lastLine, Math.max(1, line - THREAD_PLACE_LINES))
 				const end = Math.min(lastLine, line + THREAD_PLACE_LINES)
 				const result = yield* git
@@ -282,7 +290,7 @@ export const PublishServiceLive = Layer.effect(
 					: yield* api
 							.createReview(input.pullNumber, {
 								commitId: input.head,
-								body: `MNG Review: ${onLine.length} new comment(s) on ${input.head.slice(0, SHORT_SHA_LENGTH)}. The summary is in the conversation.`,
+								body: `MNG Review: ${onLine.length} new comment(s) on ${toCodeSpan(input.head.slice(0, SHORT_SHA_LENGTH))}. The summary is in the conversation.`,
 								comments: onLine.map(thread => ({
 									path: thread.finding.path,
 									line: thread.finding.line,
@@ -367,6 +375,7 @@ export const PublishServiceLive = Layer.effect(
 				inSummary: count('summary'),
 				unposted: count('unposted'),
 				repeated: plan.repeated.length,
+				dismissed: plan.dismissed.length,
 				run: marker.runs,
 			} satisfies PublishResult
 		})

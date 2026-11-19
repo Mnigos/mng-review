@@ -180,9 +180,13 @@ function toFindingLines(input: SummaryInput, limit: number): string[] {
 	)
 	const inSummary = threads.filter(thread => thread.place === 'summary')
 	const unposted = threads.filter(thread => thread.place === 'unposted')
+	const published = new Set(
+		[...plan.threads, ...plan.repeated, ...plan.dismissed].map(
+			entry => entry.finding
+		)
+	)
 	const below = report.bugs.filter(
-		bug =>
-			bug.placement === 'summary' && bug.validation?.status !== 'unverified'
+		bug => bug.placement === 'summary' && !published.has(bug)
 	)
 	return [
 		...toSection(
@@ -206,9 +210,21 @@ function toFindingLines(input: SummaryInput, limit: number): string[] {
 					`${plan.repeated.length} finding(s) already have a thread and were not posted again.`,
 				]),
 		...toSection(
+			`Found again under threads resolved without a code change, not blocking (${plan.dismissed.length}):`,
+			toCapped(plan.dismissed.map(toFindingLine), limit)
+		),
+		...toSection(
 			`Below the severity floor (${below.length}):`,
 			toCapped(
-				below.map(finding => toFindingLine({ finding, kind: 'bug' })),
+				below.map(finding =>
+					toFindingLine({
+						finding,
+						kind:
+							finding.validation?.status === 'unverified'
+								? 'unverified'
+								: 'bug',
+					})
+				),
 				limit
 			)
 		),
