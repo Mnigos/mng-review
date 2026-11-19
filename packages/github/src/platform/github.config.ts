@@ -70,7 +70,7 @@ export const GitHubConfigLive = Layer.effect(
 		return {
 			serverUrl: settings.serverUrl.trim().replace(/\/+$/u, ''),
 			apiUrl: settings.apiUrl.trim().replace(/\/+$/u, ''),
-			graphqlUrl: settings.graphqlUrl.trim(),
+			graphqlUrl: settings.graphqlUrl.trim().replace(/\/+$/u, ''),
 			owner: match[1],
 			name: match[2],
 			token: settings.token.value,

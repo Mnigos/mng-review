@@ -51,10 +51,11 @@ export function escapeMarkdown(text: string): string {
 
 /**
  * Text as an inline code span outside a table, with a fence longer than any backtick run inside
- * it and line breaks as spaces. Nothing inside a code span is read as Markdown or HTML.
+ * it, line breaks as spaces and format characters dropped. Nothing inside a code span is read as
+ * Markdown or HTML, and its text cannot be shown in another order.
  */
 export function toCodeSpan(text: string): string {
-	const flat = text.replace(LINE_BREAKS, ' ')
+	const flat = text.replace(FORMAT_CHARACTERS, '').replace(LINE_BREAKS, ' ')
 	const longest = Math.max(
 		0,
 		...Array.from(flat.matchAll(BACKTICK_RUN), match => match[0].length)
