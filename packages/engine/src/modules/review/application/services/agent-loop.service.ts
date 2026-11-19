@@ -4,7 +4,7 @@ import { TokenLedger } from '../../../../platform/llm/token-ledger.service'
 import { fenceData } from '../../../../utils/fence.util'
 import {
 	type CallStop,
-	isOutOfTokens,
+	makeConversationBudget,
 	toAffordableOutputs,
 	toEstimatedTokens,
 } from '../../domain/loop-budget.helper'
@@ -86,16 +86,9 @@ export const AgentLoopServiceLive = Layer.effect(
 			/** The answer before a continuation turn, kept if the continuation fails. */
 			const kept = yield* Ref.make<LoopResult<TValue> | undefined>(undefined)
 
+			const tokens = yield* makeConversationBudget(request.budget, health.spent)
 			/** True once the conversation or the whole run is out of tokens, as the turn checks it. */
-			const isSpent = (state: LoopState) =>
-				health.spent.pipe(
-					Effect.map(
-						spent =>
-							request.budget !== undefined &&
-							(isOutOfTokens(request.budget, state) ||
-								spent >= request.budget.runTokens)
-					)
-				)
+			const { isSpent } = tokens
 
 			/** Files of `coverage` the answer leaves unread, when tool calls and time allow a turn. */
 			const getUnread = (state: LoopState, value: TValue, wrapUp: boolean) =>
@@ -316,6 +309,7 @@ export const AgentLoopServiceLive = Layer.effect(
 									value: parsed.success,
 									toolCalls: state.toolCalls,
 									turns: state.turn,
+									spentTokens: sent.spentTokens,
 								},
 								{ ...sent, turn: state.turn + 1 },
 								wrapUp,
@@ -334,14 +328,14 @@ export const AgentLoopServiceLive = Layer.effect(
 						state,
 						{
 							wrapUp: wrapUp || expired,
-							outOfTokens: isOutOfTokens(request.budget, sent),
+							outOfTokens: yield* isSpent(sent),
 						},
 						yield* Clock.currentTimeMillis
 					)
 					const refusal = `error: token budget reached; call ${finish} now`
 					const fenced = toAffordableOutputs(
 						outputs.map(output => fenceData(TOOL_OUTPUT_LABEL, output)),
-						request.budget,
+						yield* tokens.current,
 						sent,
 						refusal
 					)

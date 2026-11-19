@@ -23,6 +23,7 @@ Do not report style, naming, formatting, missing comments, or anything a linter 
 export const FINDING_RULES_PROMPT = `How to work:
 
 - Use the tools to read the files around the change: callers, callees, types, tests and configuration. \`head\` is the code after the change and \`base\` is the code before it.
+- Each turn re-sends the whole conversation, so every turn costs more than the one before. Ask for what you need in few turns: call several tools in one turn, and read line ranges of large files rather than whole files.
 - Check every changed unit in your scope before you answer, the small edits included.
 - Each finding must name a trigger: the concrete input, state or call sequence that makes the bug happen in this repository. If you cannot name one, drop the finding.
 - \`evidence\` lists the lines that prove it, each as \`path:line\` with a few words, for example \`src/billing/charge.ts:42 retries without an idempotency key\`.

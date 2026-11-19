@@ -12,8 +12,11 @@ export const WRAP_UP_GRACE = '1 minute' satisfies Duration.Input
  * while budget remains for that answer and for validation.
  */
 export const FINDER_TOKEN_SHARE = 0.7
-/** Share of a conversation's tokens its first message may take, so it can afford a few calls. */
-export const FIRST_MESSAGE_SHARE = 0.25
+/**
+ * Share of a conversation's tokens its first message's diff may take. The first message is re-sent
+ * on every call, so a smaller one leaves the conversation more calls to read what it chooses.
+ */
+export const FIRST_MESSAGE_SHARE = 0.15
 /** Characters per token assumed when sizing the first message; code runs about 3 to 4. */
 export const CHARS_PER_TOKEN = 3
 /** Fewest diff characters a first message carries, whatever the budget. */
@@ -27,6 +30,10 @@ export const MAX_VALIDATION_TOKENS = 60_000
  * a few calls that read the code. Many findings can take a run past its planned tokens.
  */
 export const MIN_VALIDATION_TOKENS = 30_000
+/** Changed functions or blocks a file line names for a file whose diff is not shown whole. */
+export const MAX_LISTED_UNITS = 4
+/** Longest name of a changed function or block in a file line. */
+export const MAX_LISTED_UNIT_CHARS = 60
 /** Changed files a continuation turn names; it counts the rest. */
 export const MAX_LISTED_UNTOUCHED = 20
 /** Invalid answers the loop corrects before it gives up on an agent. */

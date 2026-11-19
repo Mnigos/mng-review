@@ -66,7 +66,9 @@ export function toFindingsCoverage(
  * (`kind`, `input` and `max_findings` from its front matter). A job whose model is dropped moves to
  * the next available fallback model. Each job answers with what it has once its share of the run's
  * planned tokens runs out (`tokens`); a deep review splits into as many units as its share pays
- * for, and `unitPaths` narrows them to the risky ones. A job the budget stops before it answers is listed as
+ * for, and `unitPaths` narrows them to the risky ones. A job that answers under its share gives the
+ * rest to the run's pool, and the main reviewer's conversations claim from it before they wrap up.
+ * A job the budget stops before it answers is listed as
  * unfinished and the others' findings stay. It never fails: a failure is the report's status.
  */
 export class FinderService extends Context.Service<
@@ -255,6 +257,9 @@ export const FinderServiceLive = Layer.effect(
 					budget: {
 						runTokens: context.tokens.runTokens,
 						conversationTokens: job.tokens,
+						...(run.role === 'reviewer' && context.tokens.pool
+							? { pool: context.tokens.pool }
+							: {}),
 					},
 					source: run.name,
 					...(job.coverage
@@ -262,6 +267,11 @@ export const FinderServiceLive = Layer.effect(
 						: {}),
 				})
 				.pipe(
+					Effect.tap(result =>
+						context.tokens.pool
+							? context.tokens.pool.release(job.tokens - result.spentTokens)
+							: Effect.void
+					),
 					Effect.map(result => ({
 						model: model.model,
 						toolCalls: result.toolCalls,

@@ -1,4 +1,33 @@
+import { Effect, Ref } from 'effect'
 import { CHARS_PER_TOKEN } from './review.constants'
+
+/**
+ * Finder tokens a run planned but a finder left unspent: a finder that answers under its share
+ * gives the rest back, and the main reviewer conversations may claim it. Claims never exceed what
+ * was given back, so the finders together still spend about what the run planned.
+ */
+export interface TokenPool {
+	/** Gives back tokens a finder did not spend; zero or less gives nothing. */
+	readonly release: (tokens: number) => Effect.Effect<void>
+	/** Takes `tokens` from the pool when it holds that many; false leaves the pool as it was. */
+	readonly claim: (tokens: number) => Effect.Effect<boolean>
+	/** Tokens given back and not yet claimed. */
+	readonly available: Effect.Effect<number>
+}
+
+/** An empty pool for one run's finders. */
+export const makeTokenPool: Effect.Effect<TokenPool> = Effect.map(
+	Ref.make(0),
+	left => ({
+		release: tokens =>
+			Ref.update(left, current => current + Math.max(0, Math.floor(tokens))),
+		claim: tokens =>
+			Ref.modify(left, current =>
+				tokens <= current ? [true, current - tokens] : [false, current]
+			),
+		available: Ref.get(left),
+	})
+)
 
 /** Token bounds of one agent conversation. */
 export interface LoopBudget {
@@ -9,6 +38,11 @@ export interface LoopBudget {
 	 * the input of the call before it, so it wraps up once that would no longer fit.
 	 */
 	readonly conversationTokens: number
+	/**
+	 * Where the conversation may claim more once its own share would stop it; only the main
+	 * reviewer's conversations get one.
+	 */
+	readonly pool?: TokenPool
 }
 
 /** What a conversation has spent so far. */
@@ -41,6 +75,57 @@ export function isOutOfTokens(
 		budget !== undefined &&
 		state.spentTokens + 2 * state.nextInputTokens >= budget.conversationTokens
 	)
+}
+
+/**
+ * Tokens the conversation lacks to afford a call after the next one; 0 when it can. A conversation
+ * with a pool claims this much before it wraps up.
+ */
+export function getMissingTokens(
+	budget: LoopBudget,
+	state: ConversationTokens
+): number {
+	const needed = state.spentTokens + 2 * state.nextInputTokens
+	return needed < budget.conversationTokens
+		? 0
+		: needed - budget.conversationTokens + 1
+}
+
+/** One conversation's token bounds as the loop checks them, its pool claims included. */
+export interface ConversationBudget {
+	/** The budget with what the conversation claimed from the pool added to its share. */
+	readonly current: Effect.Effect<LoopBudget | undefined>
+	/**
+	 * True once the conversation cannot afford a call after the next one and the pool cannot cover
+	 * the difference, or the whole run has spent its finder tokens (`spent`).
+	 */
+	readonly isSpent: (state: ConversationTokens) => Effect.Effect<boolean>
+}
+
+/** The token bounds of one conversation: `budget`, plus what it claims from the budget's pool. */
+export function makeConversationBudget(
+	budget: LoopBudget | undefined,
+	spent: Effect.Effect<number>
+): Effect.Effect<ConversationBudget> {
+	return Effect.map(Ref.make(0), granted => {
+		const current = Effect.map(Ref.get(granted), extra =>
+			budget === undefined
+				? undefined
+				: { ...budget, conversationTokens: budget.conversationTokens + extra }
+		)
+		const isSpent = (state: ConversationTokens) =>
+			Effect.gen(function* () {
+				const now = yield* current
+				if (now === undefined) return false
+				if ((yield* spent) >= now.runTokens) return true
+				const missing = getMissingTokens(now, state)
+				if (missing === 0) return false
+				if (!(now.pool && (yield* now.pool.claim(missing)))) return true
+				yield* Ref.update(granted, extra => extra + missing)
+				return false
+			})
+		return { current, isSpent }
+	})
 }
 
 /** Tokens a text is assumed to take, at `CHARS_PER_TOKEN`. */

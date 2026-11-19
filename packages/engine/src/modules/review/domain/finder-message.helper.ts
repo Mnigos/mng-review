@@ -2,12 +2,34 @@ import {
 	type BudgetedFile,
 	budgetDiff,
 	type ChangedFile,
+	parseFileDiffs,
 	type PullRequestInfo,
 	type ReviewUnit,
 } from '@mng-review/domain'
 import { fenceData } from '../../../utils/fence.util'
+import { MAX_LISTED_UNIT_CHARS, MAX_LISTED_UNITS } from './review.constants'
 
 const NONE = '(none)'
+
+/**
+ * The code each file's hunks change, by path: the function or block git names after each `@@`,
+ * once each, at most `MAX_LISTED_UNITS` per file, each cut to `MAX_LISTED_UNIT_CHARS`. It tells a
+ * finder what a file it has not seen changes, so it can choose what to read.
+ */
+export function getChangedUnits(diff: string): ReadonlyMap<string, string[]> {
+	return new Map(
+		parseFileDiffs(diff).map(file => [
+			file.path,
+			[
+				...new Set(
+					file.hunks
+						.map(hunk => hunk.context.slice(0, MAX_LISTED_UNIT_CHARS))
+						.filter(context => context !== '')
+				),
+			].slice(0, MAX_LISTED_UNITS),
+		])
+	)
+}
 
 /** The change a finder's first message describes. */
 export interface ChangeMessageInput {
@@ -27,21 +49,38 @@ function toShownNote(file: BudgetedFile | undefined): string {
 	return `, diff cut to ${file.shownChars} of ${file.chars} characters`
 }
 
-/** One line per file: path, line counts, and whether the review leaves it out or its diff is cut. */
-function toFileList(
-	files: readonly ChangedFile[],
-	budgeted: readonly BudgetedFile[] = []
+/** A file list without a diff: no file is marked cut and none names its changed code. */
+
+/** What a file list knows about the diff: what each file kept, and the code each file changes. */
+interface FileListDiff {
+	readonly budgeted: readonly BudgetedFile[]
+	readonly units: ReadonlyMap<string, readonly string[]>
+}
+
+/** The changed code a file line names: only for a file whose diff the message does not show whole. */
+function toUnitsNote(
+	file: BudgetedFile | undefined,
+	units: readonly string[] | undefined
 ): string {
+	if (!file || file.shown === 'full' || !units || units.length === 0) return ''
+	return `; changes ${units.map(unit => `\`${unit}\``).join(', ')}`
+}
+
+/**
+ * One line per file: path, line counts, whether the review leaves it out or its diff is cut, and
+ * for a cut or left-out diff the code it changes.
+ */
+function toFileList(files: readonly ChangedFile[], diff: FileListDiff): string {
 	if (files.length === 0) return NONE
 	return files
 		.map(file => {
 			const skipped = file.skipped
 				? `, left out of the review (${file.skipped})`
 				: ''
-			const shown = toShownNote(
-				budgeted.find(entry => entry.path === file.path)
-			)
-			return `- ${file.path} (+${file.additions} -${file.deletions}${skipped}${shown})`
+			const budgeted = diff.budgeted.find(entry => entry.path === file.path)
+			const shown = toShownNote(budgeted)
+			const units = toUnitsNote(budgeted, diff.units.get(file.path))
+			return `- ${file.path} (+${file.additions} -${file.deletions}${skipped}${shown})${units}`
 		})
 		.join('\n')
 }
@@ -80,12 +119,13 @@ export function toContextNotes(context: string | undefined): string[] {
  */
 export function toChangeMessage(input: ChangeMessageInput): string {
 	const budget = budgetDiff(input.diff, input.maxChars)
+	const listed = { budgeted: budget.files, units: getChangedUnits(input.diff) }
 	const inScope = input.files.filter(file => input.scope.includes(file.path))
 	const others = input.files.filter(file => !input.scope.includes(file.path))
 	return [
-		fenceData('Files in your scope:', toFileList(inScope, budget.files)),
+		fenceData('Files in your scope:', toFileList(inScope, listed)),
 		...(others.length > 0
-			? [fenceData('Other changed files:', toFileList(others, budget.files))]
+			? [fenceData('Other changed files:', toFileList(others, listed))]
 			: []),
 		...toPullRequestBlock(input.pr),
 		fenceData('Diff (base to head):', budget.text || NONE),
@@ -104,9 +144,13 @@ export interface UnitMessageInput extends Omit<
 /** First message of one unit of a deep review: the unit, every changed file and the unit's diff. */
 export function toUnitMessage(input: UnitMessageInput): string {
 	const budget = budgetDiff(input.unit.diff, input.maxChars)
+	const listed = {
+		budgeted: budget.files,
+		units: getChangedUnits(input.unit.diff),
+	}
 	return [
 		fenceData('Your unit:', input.unit.label),
-		fenceData('All changed files:', toFileList(input.files, budget.files)),
+		fenceData('All changed files:', toFileList(input.files, listed)),
 		...toPullRequestBlock(input.pr),
 		fenceData('Diff of your unit:', budget.text || NONE),
 		...toMissingNote(budget.files),
