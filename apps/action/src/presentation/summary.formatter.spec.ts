@@ -1,4 +1,10 @@
-import { MECHANICAL_CONDITIONS } from '@mng-review/domain'
+import {
+	MECHANICAL_CONDITIONS,
+	MECHANICAL_MAX_NET_SHARE,
+	MECHANICAL_MIN_FILES,
+	MECHANICAL_MIN_SMALL_SHARE,
+	MECHANICAL_REWRITE_MIN_LINES,
+} from '@mng-review/domain'
 import type {
 	PullRequestEvent,
 	ShadowOutcome,
@@ -391,13 +397,13 @@ describe('toVerdictLine', () => {
 })
 
 for (const failed of [[], MECHANICAL_CONDITIONS] as const)
-	test(`summary annotates the risk line with mechanical failures ${failed.join(', ')}`, () => {
+	test(`summary prints measured values and limits before mechanical failures ${failed.join(', ')}`, () => {
 		const fixture = reviewReport()
 		const shape = {
-			files: 1,
-			smallShare: 1,
-			netShare: 0,
-			riskyRewrites: [],
+			files: failed.length ? MECHANICAL_MIN_FILES - 1 : MECHANICAL_MIN_FILES,
+			smallShare: failed.length ? 0.594 : MECHANICAL_MIN_SMALL_SHARE,
+			netShare: failed.length ? 0.256 : MECHANICAL_MAX_NET_SHARE,
+			riskyRewrites: failed.length ? ['src/billing/charge.ts'] : [],
 			failed,
 		}
 		const report = {
@@ -416,10 +422,11 @@ for (const failed of [[], MECHANICAL_CONDITIONS] as const)
 			CONTEXT
 		)
 		const riskLine = text.split('\n').find(line => line.startsWith('Risk **'))
+		const verdict = failed.length
+			? `not mechanical, failed: ${failed.join(', ')}`
+			: 'mechanical change'
 		expect(riskLine).toContain(
-			failed.length
-				? `; not mechanical, failed: ${failed.join(', ')}`
-				: '; mechanical change'
+			`; ${shape.files} files (mechanical needs ${MECHANICAL_MIN_FILES}), ${failed.length ? '59%' : `${MECHANICAL_MIN_SMALL_SHARE * 100}%`} small edits (needs ${MECHANICAL_MIN_SMALL_SHARE * 100}%), lines ${failed.length ? '26%' : `${MECHANICAL_MAX_NET_SHARE * 100}%`} apart (at most ${MECHANICAL_MAX_NET_SHARE * 100}%), ${shape.riskyRewrites.length} risky rewrite(s) of ${MECHANICAL_REWRITE_MIN_LINES}+ lines: ${verdict}`
 		)
 	})
 
@@ -449,7 +456,11 @@ test.each([false, true])(
 			{ status: 'reviewed', event: EVENT, report },
 			CONTEXT
 		)
-		expect(text).not.toContain('; mechanical change')
-		expect(text).not.toContain('; not mechanical')
+		expect(text).not.toContain('mechanical change')
+		expect(text).not.toContain('not mechanical')
+		expect(text).not.toContain('files (mechanical needs')
+		expect(text).not.toContain('small edits (needs')
+		expect(text).not.toContain('apart (at most')
+		expect(text).not.toContain('risky rewrite(s)')
 	}
 )

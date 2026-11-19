@@ -41,6 +41,8 @@ const findingSchema = Schema.Struct({
 	trigger: Schema.String,
 	impact: Schema.String,
 	status: Schema.Literals(['confirmed', 'unverified', 'unvalidated']),
+	evidence: Schema.Array(Schema.String),
+	validation: Schema.optionalKey(Schema.Unknown),
 })
 const matchSchema = Schema.Struct({
 	expected: expectedSchema,
@@ -220,6 +222,38 @@ function benchRepo() {
 afterEach(cleanupRepos)
 
 layer(Layer.empty, { excludeTestServices: true })('bench CLI', test => {
+	test.effect(
+		'JSON keeps validation and evidence beside status for matched and unmatched findings',
+		() =>
+			Effect.gen(function* () {
+				const invocation = yield* runReviewCli(
+					benchRepo().root,
+					['bench', BENCH_FILE, '--case', 'checkout-timeout', '--json'],
+					OPTIONS
+				)
+				expect(invocation.outcome._tag).toBe('Success')
+				const score = decodeReport(invocation.out).cases[0]?.score
+				const validation = {
+					status: 'confirmed',
+					severity: 'medium',
+					reason: 'A retry applies the charge twice.',
+					evidence: ['src/billing/charge.ts:2'],
+					model: 'reviewer',
+				}
+				expect(score?.found).toHaveLength(1)
+				expect(score?.found[0]?.finding).toMatchObject({
+					...REPORTED_FINDING,
+					status: 'confirmed',
+					validation,
+				})
+				expect(score?.unmatched).toHaveLength(1)
+				expect(score?.unmatched[0]).toMatchObject({
+					...EXTRA_FINDING,
+					status: 'confirmed',
+					validation,
+				})
+			})
+	)
 	test.effect(
 		'case titles and descriptions reach the reviewer without leaking between cases',
 		() =>
