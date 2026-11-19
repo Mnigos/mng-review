@@ -21,7 +21,7 @@ export const REVIEW_THREADS_QUERY = `query($owner: String!, $name: String!, $num
           id isResolved isOutdated path line originalLine subjectType
           comments(first: 1) {
             totalCount
-            nodes { databaseId body author { __typename login } editor { login } originalCommit { oid } }
+            nodes { databaseId body author { __typename login } editor { __typename login } originalCommit { oid } }
           }
         }
       }
@@ -35,7 +35,7 @@ export const PULL_REQUEST_COMMENTS_QUERY = `query($owner: String!, $name: String
     pullRequest(number: $number) {
       comments(first: ${PAGE_SIZE}, after: $cursor) {
         pageInfo { hasNextPage endCursor }
-        nodes { databaseId body author { __typename login } editor { login } }
+        nodes { databaseId body author { __typename login } editor { __typename login } }
       }
     }
   }

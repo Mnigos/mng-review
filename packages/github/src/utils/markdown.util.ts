@@ -6,12 +6,14 @@ const BACKTICK_RUN = /`+/gu
 /**
  * What GitHub turns into a link or a notification on its own: URLs with a scheme, `www.` hosts,
  * e-mail addresses, `@` mentions of users and teams, issue references (`#12`, `owner/repo#12`,
- * `GH-12`), which also notify the referenced issue, and commit references (a SHA of 7 to 40 hex
- * characters, `owner/repo@sha`, `sha...sha`). A scheme has at most 32 characters and an address
+ * `GH-12`), which also notify the referenced issue, commit references (a SHA of 7 to 40 hex
+ * characters, `owner/repo@sha`, `sha...sha`) and advisories (`CVE-2024-1234`, `GHSA-…`). A scheme has at most 32 characters and an address
  * starts only where its local part starts, so a long word costs a bounded scan per position.
  */
 const AUTOLINK =
-	/(?:[a-z][a-z0-9+.-]{0,31}:\/\/|www\.)[^\s|`]+|(?<![\w.+-])[\w.+-]+@[\w-]+(?:\.[\w-]+)+|(?<!\w)@[a-z0-9][\w-]*(?:\/[\w.-]+)?|(?<!\w)(?:[\w.-]+\/[\w.-]+)?#\d+|\bgh-\d+\b|(?<!\w)(?:[\w.-]+\/[\w.-]+@)?[0-9a-f]{7,40}(?:\.{2,3}[0-9a-f]{7,40})?(?!\w|:\/\/)/giu
+	/(?:[a-z][a-z0-9+.-]{0,31}:\/\/|www\.)[^\s|`]+|(?<![\w.+-])[\w.+-]+@[\w-]+(?:\.[\w-]+)+|(?<!\w)@[a-z0-9][\w-]*(?:\/[\w.-]+)?|(?<!\w)(?:[\w.-]+\/[\w.-]+)?#\d+|\bgh-\d+\b|\bcve-\d{4}-\d{4,}\b|\bghsa(?:-[a-z0-9]{4}){3}\b|(?<!\w)(?:[\w.-]+\/[\w.-]+@)?[0-9a-f]{7,40}(?:\.{2,3}[0-9a-f]{7,40})?(?!\w|:\/\/)/giu
+/** Where a token ends: whitespace, or a table cell border, which must stay outside code. */
+const TOKEN_END = /[\s|]/u
 /** Format characters (bidirectional overrides, zero-width marks), which could make text read in another order. */
 const FORMAT_CHARACTERS = /\p{Cf}+/gu
 /** A start GitHub reads as a list item, a heading underline or a rule: `-`, `+` or `=`. */
@@ -28,6 +30,16 @@ function escapeSyntax(text: string): string {
 }
 
 /**
+ * Where the token that holds a match ends. The code span takes the whole token, since text
+ * right after a code span is its own text node, where GitHub would link a mention or a reference
+ * that starts it (`deadbeef@user`).
+ */
+function getTokenEnd(text: string, from: number): number {
+	const rest = text.slice(from).search(TOKEN_END)
+	return rest === -1 ? text.length : from + rest
+}
+
+/**
  * Escapes text from a model or a repository for one line of GitHub Markdown: every syntax
  * character gets a backslash, line breaks become spaces, and anything GitHub would turn into a
  * link, a mention or an issue or commit reference on its own becomes an inline code span. Format
@@ -38,10 +50,14 @@ export function escapeMarkdown(text: string): string {
 	const flat = text.replace(FORMAT_CHARACTERS, '').replace(LINE_BREAKS, ' ')
 	const links = [...flat.matchAll(AUTOLINK)]
 	const end = links.reduce(
-		(state, match) => ({
-			out: `${state.out}${escapeSyntax(flat.slice(state.from, match.index))}${toCodeSpan(match[0])}`,
-			from: match.index + match[0].length,
-		}),
+		(state, match) => {
+			if (match.index < state.from) return state
+			const to = getTokenEnd(flat, match.index + match[0].length)
+			return {
+				out: `${state.out}${escapeSyntax(flat.slice(state.from, match.index))}${toCodeSpan(flat.slice(match.index, to))}`,
+				from: to,
+			}
+		},
 		{ out: '', from: 0 }
 	)
 	return `${end.out}${escapeSyntax(flat.slice(end.from))}`
