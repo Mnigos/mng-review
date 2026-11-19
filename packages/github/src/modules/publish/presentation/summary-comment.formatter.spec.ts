@@ -108,6 +108,89 @@ function input(): SummaryInput {
 }
 
 describe('formatSummaryComment', () => {
+	test('metadata summary nits appear only about the pull request while code nits keep their location', () => {
+		const fixture = input()
+		const metadata = bug({
+			kind: 'nit',
+			placement: 'summary',
+			agents: ['metadata'],
+			title: 'Clarify the pull request scope',
+			path: 'made-up.ts',
+			line: 999,
+			evidence: [],
+		})
+		const diff = bug({
+			kind: 'nit',
+			placement: 'summary',
+			agents: ['diff'],
+			title: 'Use a clearer local name',
+		})
+		const reviewReport = {
+			...fixture.report,
+			bugs: [],
+			nits: [metadata, diff],
+			rejected: [],
+		}
+		const plan = planPublish(
+			{
+				outcome: reviewReport,
+				config: config(),
+				agents: new Map([
+					['metadata', agent('metadata', { input: 'metadata' })],
+					['diff', agent('diff', { input: 'incremental' })],
+				]),
+			},
+			{ threads: [], lines: new Map(), changedPlaces: new Set() }
+		)
+		const text = formatSummaryComment({
+			...fixture,
+			report: reviewReport,
+			plan,
+		})
+		expect(text).toContain(
+			`About the pull request (1):\n\n<details><summary>Nit finding 1</summary>\n\n- **Nit** ${metadata.title}\n`
+		)
+		expect(text).not.toContain(`${metadata.path}:${metadata.line}`)
+		expect(text).toContain(
+			`Nits not posted inline (1):\n\n- **Nit** \`${diff.path}:${diff.line}\` ${diff.title}`
+		)
+		const [, nitsSection] = text.split('Nits not posted inline (1):')
+		expect(nitsSection).not.toContain(metadata.title)
+		expect(text.split(metadata.title)).toHaveLength(2)
+	})
+
+	test('a lone metadata summary nit has no nits list or code location', () => {
+		const fixture = input()
+		const finding = bug({
+			kind: 'nit',
+			placement: 'summary',
+			agents: ['metadata'],
+			evidence: [],
+		})
+		const reviewReport = {
+			...fixture.report,
+			bugs: [],
+			nits: [finding],
+			rejected: [],
+		}
+		const text = formatSummaryComment({
+			...fixture,
+			report: reviewReport,
+			plan: planPublish(
+				{
+					outcome: reviewReport,
+					config: config(),
+					agents: new Map([
+						['metadata', agent('metadata', { input: 'metadata' })],
+					]),
+				},
+				{ threads: [], lines: new Map(), changedPlaces: new Set() }
+			),
+		})
+		expect(text).toContain('About the pull request (1):')
+		expect(text).not.toContain(`${finding.path}:${finding.line}`)
+		expect(text).not.toContain('Nits not posted inline')
+	})
 	test.each(['bug', 'unverified', 'nit'] as const)(
 		'lists a pull request %s collapsed without a code location',
 		kind => {
