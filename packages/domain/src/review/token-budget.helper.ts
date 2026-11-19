@@ -1,3 +1,4 @@
+import type { ChangedFile } from '../change/change.types'
 import type { ReviewConfig } from '../config/review-config.schema'
 import type { PlannedRun } from '../routing/review-plan.types'
 import type { Depth } from '../routing/routing.types'
@@ -14,6 +15,30 @@ export const RUN_TOKEN_WEIGHT = {
  * not leave it a few calls.
  */
 export const REVIEWER_MIN_SHARE = 0.4
+
+/**
+ * Least share of a reviewer's tokens a reviewer model limited to the focus files plans to spend,
+ * however few lines those files change: enough for a few calls on them.
+ */
+export const MIN_FOCUS_SHARE = 0.25
+
+/**
+ * Share of a reviewer's tokens a reviewer model limited to `paths` plans to spend: the changed lines
+ * of those files over the changed lines of every file in `files`, at least `MIN_FOCUS_SHARE`; 1
+ * without `paths`. The rest is not planned, so a narrow second look costs what it reviews.
+ */
+export function getFocusShare(
+	files: readonly Pick<ChangedFile, 'path' | 'additions' | 'deletions'>[],
+	paths: readonly string[]
+): number {
+	if (paths.length === 0) return 1
+	const lines = (entries: typeof files) =>
+		entries.reduce((sum, file) => sum + file.additions + file.deletions, 0)
+	const total = lines(files)
+	if (total === 0) return 1
+	const focused = lines(files.filter(file => paths.includes(file.path)))
+	return Math.min(1, Math.max(MIN_FOCUS_SHARE, focused / total))
+}
 
 /**
  * Tokens a run plans to spend: `limits.tokens_by_depth` for its depth, never more than

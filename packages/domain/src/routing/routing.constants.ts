@@ -2,6 +2,16 @@ import type { Depth, Risk } from './routing.types'
 
 /** The router's ratings of a change, from the least to the most risky. */
 export const RISK_LEVELS = ['trivial', 'normal', 'risky'] as const
+/**
+ * What a router signal may name as risky. Each is a kind of code where a defect leaks, loses or
+ * corrupts something, so one signal on a changed file makes the change `risky`.
+ */
+export const RISK_CATEGORIES = [
+	'access',
+	'money',
+	'stored_data',
+	'secrets',
+] as const
 /** Run and skip name of the built-in main reviewer. */
 export const REVIEWER_NAME = 'reviewer'
 export const REVIEWER_TITLE = 'Main reviewer'

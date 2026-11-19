@@ -1,4 +1,8 @@
-import type { MECHANICAL_CONDITIONS, RISK_LEVELS } from './routing.constants'
+import type {
+	MECHANICAL_CONDITIONS,
+	RISK_CATEGORIES,
+	RISK_LEVELS,
+} from './routing.constants'
 
 /** `manual`: started by a person (CLI, command); `auto`: started by an event. */
 export type RunTrigger = 'auto' | 'manual'
@@ -49,11 +53,23 @@ export interface RouterAddition {
 	readonly reason: string
 }
 
+export type RiskCategory = (typeof RISK_CATEGORIES)[number]
+
+/** One reason the router gives for a risky change: what kind of code, in which changed file, and how. */
+export interface RiskSignal {
+	readonly category: RiskCategory
+	readonly path: string
+	readonly reason: string
+}
+
 /** What the router model did for a run. */
 export interface RouterReport {
 	readonly status: 'ok' | 'failed' | 'skipped'
 	readonly detail?: string
+	/** Derived by `getRouterRisk` from `signals` and the router's trivial flag. */
 	readonly risk?: Risk
+	/** The risk signals that name a reviewable changed file; any one makes the change `risky`. */
+	readonly signals?: readonly RiskSignal[]
 	readonly added: readonly RouterAddition[]
 }
 

@@ -21,15 +21,19 @@ function toCandidateLine(agent: DeclaredAgent): string {
 }
 
 /**
- * The router's user message: the file list, the candidates and the diff budgeted across files to
- * `MAX_ROUTER_DIFF_CHARS`, each fenced as data with a fence longer than any backtick run inside.
+ * The router's user message: the file list sorted by path, the candidates and the diff budgeted
+ * across files to `MAX_ROUTER_DIFF_CHARS`, each fenced as data with a fence longer than any
+ * backtick run inside. The same change always gives the same message.
  */
 export function toRouterUserMessage(
 	files: readonly ChangedFile[],
 	candidates: readonly DeclaredAgent[],
 	diff: string
 ): string {
-	const fileList = files.map(toFileLine).join('\n')
+	const fileList = files
+		.toSorted((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
+		.map(toFileLine)
+		.join('\n')
 	const candidateList = candidates.map(toCandidateLine).join('\n')
 	return [
 		fenceData('Changed files:', fileList || NONE),

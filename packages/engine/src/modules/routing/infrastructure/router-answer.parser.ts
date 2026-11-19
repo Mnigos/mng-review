@@ -1,7 +1,9 @@
-import type {
-	DeclaredAgent,
-	RouterAddition,
-	RouterReport,
+import {
+	type DeclaredAgent,
+	getKnownSignals,
+	getRouterRisk,
+	type RouterAddition,
+	type RouterReport,
 } from '@mng-review/domain'
 import { Effect, Schema } from 'effect'
 import {
@@ -14,9 +16,16 @@ import { RouterAnswerError } from '../domain/routing.errors'
 /** A whole answer wrapped in one code fence; only that outer fence is removed. */
 const OUTER_FENCE = /^\s*(`{3,}|~{3,})[^\n]*\n([\s\S]*?)\n[ \t]*\1[ \t]*\s*$/u
 
-/** A successful router report: the risk and the additions that survived validation. */
-type RoutedReport = Required<Pick<RouterReport, 'risk'>> &
+/** A successful router report: the risk, its signals and the additions that survived validation. */
+type RoutedReport = Required<Pick<RouterReport, 'risk' | 'signals'>> &
 	Pick<RouterReport, 'added'> & { readonly status: 'ok' }
+
+/** What the router's answer is checked against. */
+export interface RouterAnswerContext {
+	readonly candidates: readonly Pick<DeclaredAgent, 'name'>[]
+	/** Reviewable changed files; a risk signal must name one. */
+	readonly paths: readonly string[]
+}
 
 /** Removes one fence around the whole text; backticks inside the JSON stay. */
 export function stripOuterFence(text: string): string {
@@ -73,22 +82,27 @@ function decodeTextAnswer(
 
 /**
  * Parses the router's answer: the `route` tool call when there is one, otherwise the text. Unknown
- * or repeated agents and empty reasons are dropped.
+ * or repeated agents and empty reasons are dropped, and so are risk signals on files the change
+ * does not touch; the risk follows from the signals that remain (`getRouterRisk`).
  */
 export function parseRouterAnswer(
 	toolArguments: unknown,
 	text: string,
-	candidates: readonly Pick<DeclaredAgent, 'name'>[]
+	context: RouterAnswerContext
 ): Effect.Effect<RoutedReport, RouterAnswerError> {
 	const answer =
 		toolArguments === undefined
 			? decodeTextAnswer(text)
 			: decodeToolArguments(toolArguments)
 	return answer.pipe(
-		Effect.map(({ add, risk }) => ({
-			status: 'ok',
-			risk,
-			added: getValidAdditions(add, candidates),
-		}))
+		Effect.map(({ add, signals, trivial }) => {
+			const known = getKnownSignals(signals, context.paths)
+			return {
+				status: 'ok',
+				risk: getRouterRisk(known, trivial),
+				signals: known,
+				added: getValidAdditions(add, context.candidates),
+			}
+		})
 	)
 }
