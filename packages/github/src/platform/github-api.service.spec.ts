@@ -176,6 +176,11 @@ layer(Layer.empty)('GitHubApiService reads', test => {
 							? REVIEW_THREADS_QUERY
 							: PULL_REQUEST_COMMENTS_QUERY
 					).toContain(`${connection}(first: ${PAGE_SIZE}, after: $cursor)`)
+					expect(
+						connection === 'reviewThreads'
+							? REVIEW_THREADS_QUERY
+							: PULL_REQUEST_COMMENTS_QUERY
+					).toMatch(/editor\s*\{\s*__typename\s+login\s*\}/u)
 					expectHeaders(fixture)
 				})
 		)

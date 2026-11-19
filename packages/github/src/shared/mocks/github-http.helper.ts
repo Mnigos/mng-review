@@ -26,7 +26,7 @@ export const ISSUE_COMMENT = {
 	databaseId: 17,
 	body: 'Conversation comment',
 	author: { __typename: 'Bot', login: 'review-bot' },
-	editor: { login: 'editor' },
+	editor: { __typename: 'User', login: 'editor' },
 } as const satisfies PullRequestComment
 export const REVIEW_THREAD = {
 	id: 'thread-1',
