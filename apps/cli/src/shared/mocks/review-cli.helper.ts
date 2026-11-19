@@ -21,6 +21,7 @@ import { Command } from 'effect/cli'
 import { HttpClient, HttpClientResponse } from 'effect/http'
 import { TestConsole } from 'effect/testing'
 import { mngReviewCommand } from '../../presentation/mng-review.command'
+import { toFixtureEnv } from './git-env.helper'
 
 const roots: string[] = []
 const NodeLayer = Layer.mergeAll(NodeFileSystem.layer, NodePath.layer)
@@ -52,7 +53,7 @@ export function createRepo(name = 'repo') {
 				cwd: root,
 				encoding: 'utf-8',
 				env: {
-					...process.env,
+					...toFixtureEnv(),
 					GIT_CONFIG_GLOBAL: '/dev/null',
 					GIT_CONFIG_NOSYSTEM: '1',
 					GIT_TERMINAL_PROMPT: '0',

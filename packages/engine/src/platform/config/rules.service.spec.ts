@@ -17,6 +17,7 @@ import {
 } from '@effect/platform-node-shared'
 import { layer } from '@effect/vitest'
 import { Effect, FileSystem, Layer, PlatformError } from 'effect'
+import { toFixtureEnv } from '../../shared/mocks/git-env.helper'
 import { GitServiceLive, GitWorkdir } from '../git/git.service'
 import { RulesService, RulesServiceLive } from './rules.service'
 
@@ -50,7 +51,7 @@ function createRepo(name = 'repo') {
 				cwd: root,
 				encoding: 'utf-8',
 				env: {
-					...process.env,
+					...toFixtureEnv(),
 					GIT_CONFIG_GLOBAL: '/dev/null',
 					GIT_CONFIG_NOSYSTEM: '1',
 					GIT_TERMINAL_PROMPT: '0',

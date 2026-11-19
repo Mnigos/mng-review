@@ -22,6 +22,7 @@ import { Cause, ConfigProvider, Effect, Exit, Layer, Schema } from 'effect'
 import { Command } from 'effect/cli'
 import { HttpClient, HttpClientResponse } from 'effect/http'
 import { TestConsole } from 'effect/testing'
+import { toFixtureEnv } from '../shared/mocks/git-env.helper'
 import { CliExit } from './cli-exit.errors'
 import { mngReviewCommand } from './mng-review.command'
 
@@ -55,7 +56,7 @@ function createRepo(name = 'repo') {
 				cwd: root,
 				encoding: 'utf-8',
 				env: {
-					...process.env,
+					...toFixtureEnv(),
 					GIT_CONFIG_GLOBAL: '/dev/null',
 					GIT_CONFIG_NOSYSTEM: '1',
 					GIT_TERMINAL_PROMPT: '0',
