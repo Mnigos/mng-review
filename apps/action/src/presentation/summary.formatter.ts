@@ -245,7 +245,7 @@ function toPublishText(report: PublishReport): string {
 	if (report.status === 'status-only')
 		return 'posted the status to the summary comment'
 	const { result } = report
-	return `posted run ${result.run}: verdict ${result.verdict}, ${result.openBugs} open bug thread(s); new threads: ${result.onLine} on lines, ${result.onFile} on files, ${result.inSummary} in the summary comment, ${result.unposted} not posted; ${result.repeated} already had a thread`
+	return `posted run ${result.run}: verdict ${result.verdict}, ${result.openBugs} open bug thread(s); new threads: ${result.onLine} on lines, ${result.onFile} on files, ${result.inSummary} in the summary comment, ${result.unposted} not posted; ${result.repeated} already had a thread, ${result.dismissed} found again under resolved threads`
 }
 
 /** The publish line of the job log; a GitHub message in it can never act as a workflow command. */

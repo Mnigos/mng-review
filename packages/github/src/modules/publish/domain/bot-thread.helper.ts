@@ -12,14 +12,17 @@ import type { BotThread } from './publish.types'
 /** The status GitHub answers when it refuses a comment's place, such as a line outside the diff. */
 const UNPROCESSABLE_STATUS = 422
 
+/** True for the job token's bot: a `Bot`, so a user account named like it does not count. */
+function isBot(actor: PullRequestComment['author']): boolean {
+	return actor?.__typename === 'Bot' && actor.login === BOT_LOGIN
+}
+
 /** True when the bot wrote the comment and nobody else edited it since. */
 export function isBotComment(
 	comment: Pick<PullRequestComment, 'author' | 'editor'>
 ): boolean {
 	return (
-		comment.author?.__typename === 'Bot' &&
-		comment.author.login === BOT_LOGIN &&
-		(comment.editor === null || comment.editor.login === BOT_LOGIN)
+		isBot(comment.author) && (comment.editor === null || isBot(comment.editor))
 	)
 }
 
@@ -49,11 +52,13 @@ export function isRefused(error: GitHubApiError): boolean {
 }
 
 /**
- * `incomplete` when the run did not finish and found nothing that blocks, so a run that reviewed
- * nothing never reads as ready.
+ * `incomplete` when nothing blocks but the run did not finish: an endpoint failure, the token
+ * budget, or a finder that failed or stopped, so a run that reviewed nothing never reads as ready.
  */
 export function getVerdict(report: ReviewReport, openBugs: number): Verdict {
 	if (openBugs > 0) return 'needs fixes'
-	if (report.endpointError || report.incomplete) return 'incomplete'
+	const unfinished = report.agents.some(agent => agent.status !== 'ok')
+	if (report.endpointError || report.incomplete || unfinished)
+		return 'incomplete'
 	return 'ready'
 }

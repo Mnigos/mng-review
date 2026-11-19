@@ -42,8 +42,10 @@ export interface PlannedThread extends PublishedFinding {
 /** What one run posts: new threads, the findings already open or resolved, and nits for the summary. */
 export interface PublishPlan {
 	readonly threads: readonly PlannedThread[]
-	/** Findings that match an open thread, or a resolved one whose place did not change. */
+	/** Findings an open thread of the bot already covers. */
 	readonly repeated: readonly PublishedFinding[]
+	/** Findings found again under threads resolved without a code change since; not blocking. */
+	readonly dismissed: readonly PublishedFinding[]
 	readonly summaryNits: readonly KeptFinding[]
 }
 
