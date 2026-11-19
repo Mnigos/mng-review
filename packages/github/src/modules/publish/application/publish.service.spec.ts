@@ -3,6 +3,7 @@ import { GitService } from '@mng-review/engine'
 import { Effect, Layer, Redacted } from 'effect'
 import { GitHubConfig } from '../../../platform/github.config'
 import { GitHubApiError } from '../../../platform/github.errors'
+import { agent } from '../../../shared/mocks/domain-test.helper'
 import {
 	cleanupRepos,
 	createRepo,
@@ -475,6 +476,124 @@ layer(Layer.empty, { excludeTestServices: true })(
 layer(Layer.empty, { excludeTestServices: true })(
 	'PublishServiceLive batching and status',
 	test => {
+		for (const kind of ['bug', 'unverified', 'nit'] as const)
+			test.effect(
+				`keeps a metadata ${kind} in the summary with its count and verdict`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = setup()
+						const finding = bug({
+							agents: ['metadata'],
+							kind: kind === 'nit' ? 'nit' : 'bug',
+							placement: kind === 'unverified' ? 'summary' : 'inline',
+							...(kind === 'unverified'
+								? ({
+										validation: {
+											status: 'unverified',
+											severity: 'high',
+											premise: 'Pull request scope',
+											reason: 'Missing description',
+											evidence: [],
+											model: 'validator',
+										},
+									} as const)
+								: {}),
+						})
+						const publisher = yield* PublishService.pipe(
+							Effect.provide(fixture.publisher)
+						)
+						expect(
+							yield* publisher.publish({
+								...fixture.input,
+								rules: {
+									...RULES,
+									agents: [agent('metadata', { input: 'metadata' })],
+								},
+								report: {
+									...fixture.input.report,
+									bugs: kind === 'nit' ? [] : [finding],
+									nits: kind === 'nit' ? [finding] : [],
+								},
+							})
+						).toMatchObject({
+							onLine: 0,
+							onFile: 0,
+							inSummary: 1,
+							unposted: 0,
+							openBugs: kind === 'bug' ? 1 : 0,
+							verdict: kind === 'bug' ? 'needs fixes' : 'ready',
+						})
+						expect(fixture.fake.writes.map(call => call.method)).toEqual([
+							'create',
+						])
+						expect(fixture.fake.threads).toEqual([])
+						expect(fixture.fake.comments[0]?.body).toContain(
+							'About the pull request (1):'
+						)
+					})
+			)
+		test.effect(
+			'counts metadata and outside-diff findings together while a diff finding at the same location stays inline',
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup()
+					const metadata = bug({
+						agents: ['metadata'],
+						fingerprint: 'metadata',
+					})
+					const diff = bug({ agents: ['diff'], fingerprint: 'diff' })
+					const outside = bug({ path: 'outside.ts', fingerprint: 'outside' })
+					const publisher = yield* PublishService.pipe(
+						Effect.provide(fixture.publisher)
+					)
+					expect(
+						yield* publisher.publish({
+							...fixture.input,
+							rules: {
+								...RULES,
+								agents: [
+									agent('metadata', { input: 'metadata' }),
+									agent('diff', { input: 'incremental' }),
+								],
+							},
+							report: {
+								...fixture.input.report,
+								bugs: [metadata, diff, outside],
+							},
+						})
+					).toMatchObject({
+						onLine: 1,
+						onFile: 0,
+						inSummary: 2,
+						unposted: 0,
+						openBugs: 3,
+						verdict: 'needs fixes',
+					})
+					expect(fixture.fake.writes.map(call => call.method)).toEqual([
+						'review',
+						'create',
+					])
+					const review = fixture.fake.writes.find(
+						call => call.method === 'review'
+					)
+					expect(review?.input.comments).toHaveLength(1)
+					expect(review?.input.comments[0]).toMatchObject({
+						path: diff.path,
+						line: diff.line,
+					})
+					expect(
+						parseFindingMarker(review?.input.comments[0]?.body ?? '')
+							?.fingerprint
+					).toBe(diff.fingerprint)
+					expect(fixture.fake.threads).toHaveLength(1)
+					expect(fixture.fake.comments[0]?.body).toContain(
+						'About the pull request (1):'
+					)
+					expect(fixture.fake.comments[0]?.body).toContain(
+						'Not in the diff (1):'
+					)
+				})
+		)
 		test.effect(
 			'batches bugs, unverified findings and nits in one review and only bugs block',
 			() =>

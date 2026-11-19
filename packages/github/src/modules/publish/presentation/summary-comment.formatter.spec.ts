@@ -108,6 +108,46 @@ function input(): SummaryInput {
 }
 
 describe('formatSummaryComment', () => {
+	test.each(['bug', 'unverified', 'nit'] as const)(
+		'lists a pull request %s collapsed without a code location',
+		kind => {
+			const fixture = input()
+			const finding = bug({
+				title: HOSTILE_TEXT,
+				agents: ['metadata'],
+				kind: kind === 'nit' ? 'nit' : 'bug',
+			})
+			const text = formatSummaryComment({
+				...fixture,
+				report: {
+					...fixture.report,
+					bugs: kind === 'nit' ? [] : [finding],
+					nits: kind === 'nit' ? [finding] : [],
+					rejected: [],
+				},
+				plan: {
+					threads: [{ finding, kind, place: 'pull_request' }],
+					repeated: [],
+					dismissed: [],
+					summaryNits: [],
+				},
+			})
+			const label =
+				kind === 'bug' ? 'High' : kind === 'nit' ? 'Nit' : 'Unverified, high'
+			expect(text).toContain(
+				`About the pull request (1):\n\n<details><summary>${label} finding 1</summary>\n\n- **${label}** ${escapeMarkdown(finding.title)}\n`
+			)
+			expect(text).toContain(finding.trigger)
+			expect(text).toContain(finding.impact)
+			expect(text).toContain('</details>')
+			expect(
+				text.split('\n').find(line => line.startsWith('- **'))
+			).not.toContain(`${finding.path}:${finding.line}`)
+			expect(text).not.toContain('New threads')
+			expect(text).not.toContain('Not in the diff')
+		}
+	)
+
 	test('lists bot closures separately with escaped reasons', () => {
 		const text = formatSummaryComment({
 			...input(),
@@ -184,7 +224,13 @@ describe('formatSummaryComment', () => {
 			expect(text).not.toContain('New threads')
 		}
 	)
-	test.each(['line', 'file', 'summary', 'unposted'] satisfies ThreadPlace[])(
+	test.each([
+		'line',
+		'file',
+		'summary',
+		'pull_request',
+		'unposted',
+	] satisfies ThreadPlace[])(
 		'a finding with a %s thread is absent from below the floor',
 		place => {
 			const fixture = input()
@@ -273,23 +319,31 @@ describe('formatSummaryComment', () => {
 				.find(line => line.startsWith('|') && line.includes('octocat')) ?? ''
 		expect(row.match(/(?<!\\)\|/gu)).toHaveLength(4)
 	})
-	test('says how many findings outside the diff the summary leaves out', () => {
-		const fixture = input()
-		const [finding] = fixture.report.bugs
-		expect(finding).toBeDefined()
-		if (!finding) return
-		const outside = Array.from({ length: 30 }, () => ({
-			finding,
-			kind: 'bug' as const,
-			place: 'summary' as const,
-		}))
-		const text = formatSummaryComment({
-			...fixture,
-			plan: { ...fixture.plan, threads: outside },
-		})
-		expect(text).toContain('Not in the diff (30):')
-		expect(text).toContain('- and 5 more')
-	})
+	test.each([
+		{ place: 'summary', section: 'Not in the diff' },
+		{ place: 'pull_request', section: 'About the pull request' },
+	] as const)(
+		'caps collapsed $place findings at the same limit',
+		({ place, section }) => {
+			const fixture = input()
+			const outside = Array.from({ length: 30 }, (_, index) => ({
+				finding: bug({ title: `Finding ${index + 1}` }),
+				kind: 'bug' as const,
+				place,
+			}))
+			const text = formatSummaryComment({
+				...fixture,
+				plan: { ...fixture.plan, threads: outside },
+			})
+			expect(text).toContain(`${section} (30):`)
+			expect(text).toContain('- and 5 more')
+			expect(
+				text.match(/<details><summary>High finding \d+<\/summary>/gu)
+			).toHaveLength(25)
+			expect(text).toContain('Finding 25')
+			expect(text).not.toContain('Finding 26')
+		}
+	)
 	test('hundreds of rejected findings stay bounded and preserve verdict and marker', () => {
 		const fixture = input()
 		const [rejected] = fixture.report.rejected
