@@ -144,33 +144,55 @@ function toFunctionUnits(file: FileDiff): ReviewUnit[] {
 	}))
 }
 
-/** Packs file units into `max` groups, the largest first, each into the smallest group so far. */
-function packUnits(units: readonly ReviewUnit[], max: number): ReviewUnit[] {
-	const bySize = units.toSorted((a, b) => b.size - a.size)
-	const groups = bySize.slice(0, max)
-	for (const unit of bySize.slice(max)) {
-		const smallest = groups.reduce(
-			(min, group, index) =>
-				group.size < (groups[min]?.size ?? 0) ? index : min,
-			0
-		)
-		const group = groups[smallest]
-		if (!group) continue
-		const paths = [...group.paths, ...unit.paths]
-		groups[smallest] = {
-			label: `${paths.length} files`,
-			paths,
-			diff: group.diff + unit.diff,
-			size: group.size + unit.size,
-		}
+/** The directory two paths share from the repository root, without a trailing slash. */
+function getSharedDirectory(a: string, b: string): string {
+	const left = a.split('/').slice(0, -1)
+	const right = b.split('/').slice(0, -1)
+	const differs = left.findIndex((segment, index) => segment !== right[index])
+	return left.slice(0, differs === -1 ? left.length : differs).join('/')
+}
+
+/** Units in one group, named by the directory their paths share. */
+function toGroupUnit(units: readonly ReviewUnit[]): ReviewUnit {
+	const paths = units.flatMap(unit => unit.paths)
+	const directory = getSharedDirectory(paths[0] ?? '', paths.at(-1) ?? '')
+	return {
+		label: directory
+			? `${directory}/ (${paths.length} files)`
+			: `${paths.length} files`,
+		paths,
+		diff: units.map(unit => unit.diff).join(''),
+		size: units.reduce((sum, unit) => sum + unit.size, 0),
 	}
-	return groups
+}
+
+/**
+ * Packs file units into at most `max` groups of neighbouring paths: in path order, a group closes
+ * once it holds its even share of the changed lines, so files of one directory stay together and
+ * the groups stay about the same size.
+ */
+function packUnits(units: readonly ReviewUnit[], max: number): ReviewUnit[] {
+	const sorted = units.toSorted((a, b) => {
+		const left = a.paths[0] ?? ''
+		const right = b.paths[0] ?? ''
+		return left < right ? -1 : Number(left > right)
+	})
+	const total = sorted.reduce((sum, unit) => sum + unit.size, 0)
+	const share = Math.max(1, Math.ceil(total / max))
+	const groups = sorted.reduce<ReviewUnit[][]>((acc, unit) => {
+		const current = acc.at(-1)
+		const size = current?.reduce((sum, entry) => sum + entry.size, 0) ?? 0
+		if (current && (size < share || acc.length >= max)) current.push(unit)
+		else acc.push([unit])
+		return acc
+	}, [])
+	return groups.map(toGroupUnit)
 }
 
 /**
  * Splits a unified diff into at most `max` units: one per enclosing function (the context after a
  * hunk's `@@` header), then one per file when there are too many, then files packed into `max`
- * groups by size.
+ * groups of neighbouring paths.
  */
 export function splitReviewUnits(
 	diff: string,
