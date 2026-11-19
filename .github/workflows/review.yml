@@ -1,4 +1,5 @@
-# Reusable review workflow, shadow mode: the result goes to the job summary and nothing is posted.
+# Reusable review workflow, shadow mode: the result goes to the job summary and to the
+# mng-review-result artifact, and nothing is posted.
 # The caller owns the trigger and the concurrency; see "GitHub Actions" in README.md.
 # Nothing from the caller's repository is installed, built or run: its base commit is checked out
 # only so git can read the change, and the rules come from that base commit.
@@ -132,4 +133,19 @@ jobs:
           MNG_REVIEW_LLM_KEY: ${{ secrets.llm-key }}
           MNG_REVIEW_ENGINE_COMMIT: ${{ job.workflow_sha }}
           MNG_REVIEW_REPO_DIR: ${{ github.workspace }}/repo
-        run: bun --no-env-file apps/action/src/main.ts
+          MNG_REVIEW_RESULT_PATH: ${{ runner.temp }}/mng-review-result/result.json
+        run: |
+          mkdir -p "$RUNNER_TEMP/mng-review-result"
+          bun --no-env-file apps/action/src/main.ts
+
+      # The review result as JSON, for analysis through the API; the job summary is not exposed there.
+      # Also after a failed review step, which still writes the file for an invalid configuration.
+      - name: Upload the result
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mng-review-result
+          path: ${{ runner.temp }}/mng-review-result/result.json
+          retention-days: 14
+          if-no-files-found: warn
+          overwrite: true

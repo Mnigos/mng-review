@@ -1,13 +1,12 @@
 import {
 	type ChangedFile,
-	type ChangeShape,
 	MECHANICAL_MAX_NET_SHARE,
 	MECHANICAL_MIN_FILES,
 	MECHANICAL_MIN_SMALL_SHARE,
 	MECHANICAL_REWRITE_MIN_LINES,
 	type PlannedRun,
 } from '@mng-review/domain'
-import type { PlanReport } from '@mng-review/engine'
+import { type PlanReport, toPlanJson } from '@mng-review/engine'
 
 const SHORT_SHA_LENGTH = 8
 const BYTES_PER_KB = 1024
@@ -90,12 +89,6 @@ function toShapeLines(plan: PlanReport['plan']): string[] {
 	]
 }
 
-/** The shape fields of the plan JSON. */
-function toShapeJson(shape: ChangeShape | undefined) {
-	if (!shape) return null
-	return { ...shape, mechanical: shape.failed.length === 0 }
-}
-
 /** Run and skip lines, then tokens per model when the router spent any. */
 function toPlanBodyLines(report: PlanReport): string[] {
 	const { plan, tokens } = report
@@ -137,30 +130,6 @@ export function formatPlanText(report: PlanReport): string {
 	if (report.plan.skippedRun)
 		return [...header, '', `Run skipped: ${report.plan.skippedRun}`].join('\n')
 	return [...header, ...toPlanBodyLines(report)].join('\n')
-}
-
-/** The plan as a JSON value. */
-export function toPlanJson(report: PlanReport) {
-	const { change, plan } = report
-	return {
-		base: change.base,
-		head: change.head,
-		mergeBase: change.mergeBase,
-		rules: report.rulesSource,
-		skipped: plan.skippedRun ?? null,
-		risk: {
-			level: plan.risk,
-			source: plan.riskSource,
-			riskPaths: plan.riskPathHits,
-			shape: toShapeJson(plan.shape),
-		},
-		depth: { level: plan.depth, source: plan.depthSource },
-		router: plan.router,
-		runs: plan.runs,
-		skips: plan.skips,
-		files: change.files,
-		tokens: report.tokens,
-	}
 }
 
 /** The plan as a JSON document. */

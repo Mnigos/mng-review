@@ -62,7 +62,7 @@ Publish (6), converse (7) and learn (8) run on GitHub and arrive with `packages/
 
 ## GitHub workflow, shadow mode
 
-`.github/workflows/review.yml` checks out the caller's base commit (history only; the head commit is fetched as objects, never checked out) and this repository at the workflow's own commit, installs it with `--production --ignore-scripts`, optionally joins a tailnet, and runs `apps/action/src/main.ts` in the caller's checkout. `ShadowRunService` reads the event, skips forks before anything else, loads `.mng/` from the base commit, applies `skip`, asks `EndpointProbeService` for `GET /models`, and reviews base..head through `ReviewRunService`. The summary formatter escapes every text that came from a model or the repository. Nothing is posted. ADR 0006.
+`.github/workflows/review.yml` checks out the caller's base commit (history only; the head commit is fetched as objects, never checked out) and this repository at the workflow's own commit, installs it with `--production --ignore-scripts`, optionally joins a tailnet, and runs `apps/action/src/main.ts` in the caller's checkout. `ShadowRunService` reads the event, skips forks before anything else, loads `.mng/` from the base commit, applies `skip`, asks `EndpointProbeService` for `GET /models`, and reviews base..head through `ReviewRunService`. The summary formatter escapes every text that came from a model or the repository. The result formatter writes the same outcome as JSON, with the review document `mng-review --json` prints (`toReviewJson` in the engine), and the workflow uploads it as the `mng-review-result` artifact. Nothing is posted. ADR 0006.
 
 ## Init
 

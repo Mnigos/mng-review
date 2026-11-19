@@ -3,8 +3,12 @@ import type {
 	KeptFinding,
 	RejectedFinding,
 } from '@mng-review/domain'
-import type { AgentRunReport, ReviewReport } from '@mng-review/engine'
-import { formatPlanText, toPlanJson } from './plan.formatter'
+import {
+	type AgentRunReport,
+	type ReviewReport,
+	toReviewJson,
+} from '@mng-review/engine'
+import { formatPlanText } from './plan.formatter'
 import { toModelTokenLines, toSourceTokenLines } from './tokens.formatter'
 
 const MILLIS_PER_SECOND = 1000
@@ -179,15 +183,5 @@ export function formatReviewText(report: ReviewReport): string {
 
 /** The review as a JSON document: the plan's fields and the outcome. */
 export function formatReviewJson(report: ReviewReport): string {
-	const { planReport, ...outcome } = report
-	return JSON.stringify(
-		{
-			...toPlanJson(planReport),
-			...outcome,
-			endpointError: report.endpointError ?? null,
-			incomplete: report.incomplete ?? null,
-		},
-		null,
-		2
-	)
+	return JSON.stringify(toReviewJson(report), null, 2)
 }

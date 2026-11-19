@@ -143,7 +143,9 @@ secrets:
 
 The node joins with `--shields-up` and then turns subnet routes off (`tailscale set --accept-routes=false`), so it takes no subnet routes and accepts no connections: the endpoint must be a tailnet node, addressed by its tailnet address or MagicDNS name, not a host behind a subnet router. Give its tag an access rule that reaches the endpoint's host and port and nothing else, for example `{"action": "accept", "src": ["tag:ci-review"], "dst": ["<endpoint-host>:443"]}` in the `acls` of your policy, and use an OAuth client with only the `auth_keys` scope and that one tag. Pull requests from forks are skipped. Drafts follow `skip.drafts`. When the endpoint does not answer `GET /models` within 10 seconds, refuses the key, rate limits or fails, the summary says "reviewer offline" and the job passes. An invalid `.mng/` at the base commit fails the job with exit code 2 and names the file and key. ADR 0006 records the trigger and this contract.
 
-On a public repository anyone can read the job summary, findings included, before the pull request merges. With `pull_request_target`, use a self-hosted `runner` only if it is ephemeral, since the job holds the endpoint key.
+The job also uploads the result as JSON, the artifact `mng-review-result`, kept 14 days: status, pull request number and commits, verdict, wall time, tokens per model and the document `mng-review --json` prints. Fetch it with `gh run download <run-id> --name mng-review-result`.
+
+On a public repository anyone can read the job summary and download the artifact, findings included, before the pull request merges. With `pull_request_target`, use a self-hosted `runner` only if it is ephemeral, since the job holds the endpoint key.
 
 ### Exit codes
 
