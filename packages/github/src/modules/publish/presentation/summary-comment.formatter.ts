@@ -2,7 +2,7 @@ import { getSeverityRank } from '@mng-review/domain'
 import type { ReviewReport, TokensByModel } from '@mng-review/engine'
 import { escapeMarkdown, toCodeSpan } from '../../../utils/markdown.util'
 import type { SummaryMarker } from '../domain/publish-marker.schema'
-import { SHORT_SHA_LENGTH } from '../domain/publish.constants'
+import { MARKER_PREFIX, SHORT_SHA_LENGTH } from '../domain/publish.constants'
 import type {
 	PlannedThread,
 	PublishPlan,
@@ -37,6 +37,11 @@ const MAX_TEXT_CHARS = 300
  * the verdict and the marker in.
  */
 export const MAX_SUMMARY_CHARS = 60_000
+/** The summary marker that ends a body; any other HTML comment in the body is kept. */
+const SUMMARY_MARKER_AT_END = new RegExp(
+	String.raw`<!-- ${MARKER_PREFIX}summary \{[^\n]*\} -->\s*$`,
+	'u'
+)
 
 /** What the sticky summary of a reviewed run shows. */
 export interface SummaryInput {
@@ -335,8 +340,8 @@ export function toUnfinishedSummary(
 	marker: SummaryMarker
 ): string {
 	const unfinished = toMarkerComment('summary', { ...marker, finished: false })
-	const end = body.lastIndexOf('<!-- ')
-	return end === -1
-		? `${body}\n\n${unfinished}`
-		: `${body.slice(0, end)}${unfinished}`
+	const match = SUMMARY_MARKER_AT_END.exec(body)
+	return match
+		? `${body.slice(0, match.index)}${unfinished}`
+		: `${body}\n\n${unfinished}`
 }
