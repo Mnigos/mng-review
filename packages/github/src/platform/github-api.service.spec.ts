@@ -18,6 +18,8 @@ import {
 	PULL_REQUEST_COMMENTS_QUERY,
 	REVIEW_THREADS_QUERY,
 	READ_RETRIES,
+	REPLY_TO_THREAD_MUTATION,
+	RESOLVE_THREAD_MUTATION,
 	REQUEST_TIMEOUT,
 } from './github-api.constants'
 import { GitHubApiService } from './github-api.service'
@@ -213,12 +215,14 @@ layer(Layer.empty)('GitHubApiService reads', test => {
 								})
 							)
 						)
-						const failure = yield* GitHubApiService.use((service): GitHubRead =>
+						const pending = yield* GitHubApiService.use((service): GitHubRead =>
 							service[operation](42)
-						).pipe(Effect.provide(fixture.layer), Effect.flip)
+						).pipe(Effect.provide(fixture.layer), Effect.flip, Effect.forkChild)
+						yield* TestClock.adjust('10 seconds')
+						const failure = yield* Fiber.join(pending)
 						expectApiFailure(failure, operation)
 						expect(failure.reason).toBe('Resource unavailable; Field denied')
-						expect(fixture.requests).toHaveLength(1)
+						expect(fixture.requests).toHaveLength(READ_RETRIES + 1)
 					})
 			)
 		for (const data of [
@@ -512,7 +516,7 @@ layer(Layer.empty)('GitHubApiService writes', test => {
 							)
 						)
 					)
-					const failure = yield* GitHubApiService.use(
+					const pending = yield* GitHubApiService.use(
 						(
 							service
 						): Effect.Effect<
@@ -522,7 +526,9 @@ layer(Layer.empty)('GitHubApiService writes', test => {
 							errorKind === 'REST'
 								? service.createIssueComment(42, 'Summary')
 								: service.listComments(42)
-					).pipe(Effect.provide(fixture.layer), Effect.flip)
+					).pipe(Effect.provide(fixture.layer), Effect.flip, Effect.forkChild)
+					yield* TestClock.adjust('10 seconds')
+					const failure = yield* Fiber.join(pending)
 					expectApiFailure(
 						failure,
 						errorKind === 'REST' ? 'createIssueComment' : 'listComments'
@@ -568,4 +574,54 @@ layer(Layer.empty)('GitHubApiService writes', test => {
 				expect(failure).toMatchObject({ status: 403, reason: 'no message' })
 			})
 	)
+})
+
+layer(Layer.empty)('GitHubApiService thread mutations', test => {
+	for (const operation of ['replyToThread', 'resolveThread'] as const) {
+		test.effect(
+			`${operation} sends the GraphQL mutation and thread node id`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = makeGitHubHttp(() =>
+						Effect.succeed(Response.json({ data: {} }))
+					)
+					yield* GitHubApiService.use(service =>
+						operation === 'replyToThread'
+							? service.replyToThread('thread-node', 'Resolution reason')
+							: service.resolveThread('thread-node')
+					).pipe(Effect.provide(fixture.layer))
+					expect(fixture.requests).toHaveLength(1)
+					expect(fixture.requests[0]).toMatchObject({
+						method: 'POST',
+						url: GITHUB_SETTINGS.graphqlUrl,
+					})
+					expect(getGitHubRequestBody(fixture.requests[0])).toEqual({
+						query:
+							operation === 'replyToThread'
+								? REPLY_TO_THREAD_MUTATION
+								: RESOLVE_THREAD_MUTATION,
+						variables:
+							operation === 'replyToThread'
+								? { thread: 'thread-node', body: 'Resolution reason' }
+								: { thread: 'thread-node' },
+					})
+				})
+		)
+		test.effect(
+			`${operation} rejects GraphQL errors without retrying a write`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = makeGitHubHttp(() =>
+						Effect.succeed(Response.json({ errors: [{ message: 'Denied' }] }))
+					)
+					const failure = yield* GitHubApiService.use(service =>
+						operation === 'replyToThread'
+							? service.replyToThread('thread-node', 'Resolution reason')
+							: service.resolveThread('thread-node')
+					).pipe(Effect.provide(fixture.layer), Effect.flip)
+					expect(failure.reason).toBe('Denied')
+					expect(fixture.requests).toHaveLength(1)
+				})
+		)
+	}
 })

@@ -1,5 +1,9 @@
 import { layer } from '@effect/vitest'
-import { PublishService, GitHubApiError } from '@mng-review/github'
+import {
+	PublishService,
+	GitHubApiError,
+	StatusReportService,
+} from '@mng-review/github'
 import { Effect, Layer } from 'effect'
 import { reviewReport, RULES } from '../shared/mocks/review-report.helper'
 import { PublishRunService, PublishRunServiceLive } from './publish-run.service'
@@ -21,6 +25,8 @@ const PUBLISHED = {
 	unposted: 0,
 	repeated: 0,
 	dismissed: 0,
+	rechecked: 0,
+	resolved: 0,
 	run: 1,
 } as const
 
@@ -46,10 +52,16 @@ function setup(fail = false) {
 	)
 	const service = PublishRunServiceLive.pipe(
 		Layer.provide(
-			Layer.succeed(PublishService, {
-				publish: publishSpy,
-				publishStatus: publishStatusSpy,
-			})
+			Layer.merge(
+				Layer.succeed(StatusReportService, {
+					report: () => Effect.succeed({ checks: 1, status: true }),
+				}),
+				Layer.succeed(PublishService, {
+					readPrior: () => Effect.succeed(undefined),
+					publish: publishSpy,
+					publishStatus: publishStatusSpy,
+				})
+			)
 		)
 	)
 	return { service, publishSpy, publishStatusSpy }
@@ -68,9 +80,14 @@ layer(Layer.empty)('PublishRunService', test => {
 					{ status: 'reviewed', event: EVENT, report, rules: RULES },
 					CONTEXT
 				)
-			).toEqual({ status: 'published', result: PUBLISHED })
+			).toEqual({
+				status: 'published',
+				result: PUBLISHED,
+				checks: { checks: 1, status: true },
+			})
 			expect(fixture.publishSpy).toHaveBeenCalledExactlyOnceWith({
 				pullNumber: EVENT.number,
+				pr: EVENT.pr,
 				report,
 				rules: RULES,
 				head: EVENT.headSha,

@@ -15,7 +15,7 @@ import {
 	type Rules,
 } from '@mng-review/engine'
 import { Effect, Layer } from 'effect'
-import { parsePullRequestEvent } from '../infrastructure/pull-request-event.parser'
+import * as eventParser from '../infrastructure/pull-request-event.parser'
 import {
 	cleanupRepos,
 	createRepo,
@@ -30,6 +30,7 @@ import {
 import { reviewReport } from '../shared/mocks/review-report.helper'
 import {
 	FORK_REASON,
+	getRunLimitReason,
 	ShadowRunService,
 	ShadowRunServiceLive,
 } from './shadow-run.service'
@@ -75,7 +76,10 @@ function harness(options: HarnessOptions = {}) {
 	return { run, loadSpy, runSpy, probeSpy, rules, report }
 }
 
-afterEach(cleanupRepos)
+afterEach(() => {
+	cleanupRepos()
+	vi.restoreAllMocks()
+})
 
 layer(Layer.empty)('ShadowRunService', test => {
 	for (const eventName of ['push', 'workflow_dispatch', ''])
@@ -144,6 +148,7 @@ layer(Layer.empty)('ShadowRunService', test => {
 					expect(outcome).toEqual({
 						status: 'reviewed',
 						event: {
+							action: 'opened',
 							number: 17,
 							baseSha: BASE_SHA,
 							headSha: HEAD_SHA,
@@ -287,7 +292,9 @@ layer(Layer.empty)('ShadowRunService', test => {
 				else
 					expect(outcome).toHaveProperty(
 						'event',
-						yield* parsePullRequestEvent(JSON.stringify(eventPayload()))
+						yield* eventParser.parsePullRequestEvent(
+							JSON.stringify(eventPayload())
+						)
 					)
 				if (outcome.status === 'invalid-config') {
 					if (stage === 'parse')
@@ -314,7 +321,9 @@ layer(Layer.empty)('ShadowRunService', test => {
 				expect(yield* fixture.run()).toEqual({
 					status: 'failed',
 					reason: `git: ${error.message}`,
-					event: yield* parsePullRequestEvent(JSON.stringify(eventPayload())),
+					event: yield* eventParser.parsePullRequestEvent(
+						JSON.stringify(eventPayload())
+					),
 				})
 			})
 		)
@@ -392,3 +401,145 @@ layer(FileSystemLayer, { excludeTestServices: true })(
 		)
 	}
 )
+
+layer(Layer.empty)('ShadowRunService prior runs', test => {
+	test.effect(
+		'at the limit skips before probing the endpoint or starting review',
+		() =>
+			Effect.gen(function* () {
+				const fixture = harness()
+				const readPriorSpy = vi.fn(() =>
+					Effect.succeed({
+						runs: fixture.rules.config.limits.max_runs_per_pr,
+						head: 'earlier-head',
+					})
+				)
+				expect(
+					yield* fixture.run({
+						eventName: 'pull_request_target',
+						readEvent: Effect.succeed(JSON.stringify(eventPayload())),
+						readPrior: readPriorSpy,
+					})
+				).toMatchObject({
+					status: 'skipped',
+				})
+				expect(readPriorSpy).toHaveBeenCalledTimes(1)
+				expect(fixture.probeSpy).not.toHaveBeenCalled()
+				expect(fixture.runSpy).not.toHaveBeenCalled()
+			})
+	)
+	test.effect(
+		'ready_for_review runs at the limit and passes the earlier head for incremental input',
+		() =>
+			Effect.gen(function* () {
+				const fixture = harness()
+				expect(
+					yield* fixture.run({
+						eventName: 'pull_request_target',
+						readEvent: Effect.succeed(
+							JSON.stringify({ ...eventPayload(), action: 'ready_for_review' })
+						),
+						readPrior: () =>
+							Effect.succeed({
+								runs: fixture.rules.config.limits.max_runs_per_pr,
+								head: 'earlier-head',
+							}),
+					})
+				).toMatchObject({ status: 'reviewed' })
+				expect(fixture.probeSpy).toHaveBeenCalledTimes(1)
+				expect(fixture.runSpy).toHaveBeenCalledWith(
+					expect.objectContaining({ since: 'earlier-head' })
+				)
+			})
+	)
+	for (const trigger of ['auto', 'manual'] as const)
+		test.effect(
+			`only an automatic trigger passes since, trigger=${trigger}`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = harness()
+					const event = yield* eventParser.parsePullRequestEvent(
+						JSON.stringify(eventPayload())
+					)
+					const parsePullRequestEventSpy = vi
+						.spyOn(eventParser, 'parsePullRequestEvent')
+						.mockReturnValueOnce(
+							Effect.succeed({ ...event, pr: { ...event.pr, trigger } })
+						)
+					expect(
+						yield* fixture.run({
+							eventName: 'pull_request_target',
+							readEvent: Effect.succeed(JSON.stringify(eventPayload())),
+							readPrior: () =>
+								Effect.succeed({ runs: 1, head: 'earlier-head' }),
+						})
+					).toMatchObject({ status: 'reviewed' })
+					expect(parsePullRequestEventSpy).toHaveBeenCalledTimes(1)
+					const request = fixture.runSpy.mock.calls[0]?.[0]
+					if (trigger === 'auto')
+						expect(request).toHaveProperty('since', 'earlier-head')
+					else expect(request).not.toHaveProperty('since')
+				})
+		)
+})
+
+describe('getRunLimitReason', () => {
+	test.each([
+		{
+			runs: 2,
+			limit: 3,
+			trigger: 'auto',
+			action: 'synchronize',
+			limited: false,
+		},
+		{
+			runs: 3,
+			limit: 3,
+			trigger: 'auto',
+			action: 'synchronize',
+			limited: true,
+		},
+		{
+			runs: 4,
+			limit: 3,
+			trigger: 'auto',
+			action: 'synchronize',
+			limited: true,
+		},
+		{
+			runs: 3,
+			limit: 3,
+			trigger: 'auto',
+			action: 'ready_for_review',
+			limited: false,
+		},
+		{
+			runs: 3,
+			limit: 3,
+			trigger: 'manual',
+			action: 'synchronize',
+			limited: false,
+		},
+	] as const)(
+		'$runs runs, limit=$limit, $trigger, $action',
+		({ runs, limit, trigger, action, limited }) => {
+			expect(
+				getRunLimitReason({ runs, head: 'prior' }, limit, {
+					action,
+					pr: { labels: [], draft: false, fork: false, trigger },
+				})
+			).toBe(
+				limited
+					? `run limit reached: ${runs} of ${limit} runs on this pull request; a manual command still runs`
+					: undefined
+			)
+		}
+	)
+	test('without a prior run no limit applies', () => {
+		expect(
+			getRunLimitReason(undefined, 0, {
+				pr: { labels: [], draft: false, fork: false, trigger: 'auto' },
+			})
+		).toBeUndefined()
+	})
+})

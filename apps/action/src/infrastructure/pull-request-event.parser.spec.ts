@@ -16,6 +16,7 @@ layer(Layer.empty)('parsePullRequestEvent', test => {
 			expect(
 				yield* parsePullRequestEvent(JSON.stringify(eventPayload()))
 			).toEqual({
+				action: 'opened',
 				number: 17,
 				baseSha: BASE_SHA,
 				headSha: HEAD_SHA,
@@ -112,6 +113,15 @@ layer(Layer.empty)('parsePullRequestEvent', test => {
 				expect(
 					yield* parsePullRequestEvent(text).pipe(Effect.flip)
 				).toMatchObject({ _tag: 'ConfigError', source: EVENT_PATH_VARIABLE })
+			})
+		)
+	for (const action of ['synchronize', 'ready_for_review', undefined])
+		test.effect(`reads optional event action ${action}`, () =>
+			Effect.gen(function* () {
+				const event = yield* parsePullRequestEvent(
+					JSON.stringify({ ...eventPayload(), action })
+				)
+				expect(event.action).toBe(action)
 			})
 		)
 })

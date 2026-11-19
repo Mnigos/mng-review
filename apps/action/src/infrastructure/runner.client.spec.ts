@@ -12,6 +12,7 @@ import { reviewReport, RULES } from '../shared/mocks/review-report.helper'
 import { parsePullRequestEvent } from './pull-request-event.parser'
 import {
 	maskEndpoint,
+	modeConfig,
 	readEventText,
 	repoDirConfig,
 	runnerEnvironmentConfig,
@@ -476,4 +477,21 @@ layer(RunnerLayer)('runner client', test => {
 				})
 			}).pipe(Effect.provide(Layer.fresh(TestConsole.layer)))
 	)
+})
+
+layer(Layer.empty)('modeConfig', test => {
+	for (const mode of ['shadow', 'publish', 'sweep'])
+		test.effect(`accepts ${mode}`, () =>
+			Effect.gen(function* () {
+				expect(
+					yield* modeConfig.pipe(
+						Effect.provide(
+							ConfigProvider.layer(
+								ConfigProvider.fromEnvRecord({ MNG_REVIEW_MODE: mode })
+							)
+						)
+					)
+				).toBe(mode)
+			})
+		)
 })
