@@ -7,10 +7,8 @@ export const commentAuthorSchema = Schema.Struct({
 })
 export type CommentAuthor = typeof commentAuthorSchema.Type
 
-/** Who last edited a comment; `null` when nobody did. */
-const commentEditorSchema = Schema.NullOr(
-	Schema.Struct({ login: Schema.String })
-)
+/** Who last edited a comment, with its type, so a user named like the bot is told apart; `null` when nobody did. */
+const commentEditorSchema = Schema.NullOr(commentAuthorSchema)
 
 /** A comment in a review thread, with its last editor and the commit it was written against. */
 export const threadCommentSchema = Schema.Struct({
