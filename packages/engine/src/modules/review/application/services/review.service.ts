@@ -16,6 +16,7 @@ import { TokenLedger } from '../../../../platform/llm/token-ledger.service'
 import type { PlanReport } from '../../../routing/domain/plan-report.types'
 import { ValidatorService } from '../../../validation/application/validator.service'
 import { getValidationTokens } from '../../domain/finder-budget.helper'
+import { makeTokenPool } from '../../domain/loop-budget.helper'
 import { toIncompleteRun } from '../../domain/review-report.helper'
 import type { ReviewReport } from '../../domain/review-report.types'
 import { FINDER_TOKEN_SHARE } from '../../domain/review.constants'
@@ -35,7 +36,8 @@ export interface ReviewRequest {
 /**
  * Finds, validates and places the findings of a planned run. The run plans to spend
  * `limits.tokens_by_depth` for its depth (never more than `limits.tokens_per_run`):
- * `FINDER_TOKEN_SHARE` of it split over the finders by weight, the rest over the validations. At
+ * `FINDER_TOKEN_SHARE` of it split over the finders by weight, the rest over the validations; what a
+ * finder leaves unspent goes to the main reviewer's conversations. At
  * deep depth under `risk_paths`, or when the router's signals made the change risky, reviewer models
  * after the first review only the units of those files and plan tokens for their changed lines
  * (`getFocusShare`). The main reviewer and the selected
@@ -74,6 +76,7 @@ export const ReviewServiceLive = Layer.effect(
 			const runTokens = Math.floor(plannedTokens * FINDER_TOKEN_SHARE)
 			const allowances = toRunAllowances(plan.runs, runTokens)
 			const [firstReviewer] = reviewerRuns
+			const pool = yield* makeTokenPool
 			const focusPaths = getFocusPaths(plan)
 			const focusShare = getFocusShare(
 				getReviewableFiles(change.files),
@@ -99,6 +102,7 @@ export const ReviewServiceLive = Layer.effect(
 								? Math.floor(allowance * focusShare)
 								: allowance,
 							runTokens,
+							pool,
 						},
 						...(narrowed ? { unitPaths: focusPaths } : {}),
 					})

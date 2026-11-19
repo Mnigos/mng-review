@@ -1,5 +1,6 @@
 import type { Finding, ModelSetting } from '@mng-review/domain'
 import type { Rules } from '../../../platform/config/rules.service'
+import type { TokenPool } from '../domain/loop-budget.helper'
 import type { AgentRunReport } from '../domain/review-report.types'
 import type { RepoToolName } from './repo.toolkit'
 import type { RepoScope } from './services/repo-tools.service'
@@ -23,6 +24,8 @@ export interface FinderTokens {
 	readonly allowance: number
 	/** Every finder answers once the whole run has spent this many tokens. */
 	readonly runTokens: number
+	/** Shares finders left unspent, which the main reviewer's conversations may claim. */
+	readonly pool?: TokenPool
 }
 
 /** A finder's report and its findings, `max_findings` applied. */

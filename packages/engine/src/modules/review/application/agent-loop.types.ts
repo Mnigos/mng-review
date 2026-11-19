@@ -53,6 +53,8 @@ export interface LoopResult<TValue> {
 	readonly value: TValue
 	readonly toolCalls: number
 	readonly turns: number
+	/** Tokens the conversation spent, input and output of every call. */
+	readonly spentTokens: number
 	/** The agent got a continuation turn for files it had not read. */
 	readonly continued?: boolean
 }
