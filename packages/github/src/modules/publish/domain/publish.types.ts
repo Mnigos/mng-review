@@ -5,7 +5,10 @@ import type { FindingMarker, ThreadKind } from './publish-marker.schema'
 export interface BotThread {
 	/** The GraphQL node id, used to resolve it. */
 	readonly id: string
+	/** Resolved on GitHub, or closed by the bot's own reply that the finding no longer holds. */
 	readonly resolved: boolean
+	/** Closed by the bot's reply while GitHub still shows the thread open. */
+	readonly closedByBot: boolean
 	/** A comment on the whole file, not on a line. */
 	readonly onFile: boolean
 	readonly path: string
