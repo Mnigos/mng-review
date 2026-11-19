@@ -274,3 +274,35 @@ layer(Layer.empty)('coverage token reserve', test => {
 		})
 	)
 })
+
+layer(Layer.empty)('settled coverage reserve', test => {
+	for (const opened of [false, true])
+		test.effect(
+			`refund includes the ${opened ? 'opened' : 'unopened'} reserve and pool grants`,
+			() =>
+				Effect.gen(function* () {
+					const pool = yield* makeTokenPool
+					yield* pool.release(10)
+					const budget = yield* makeConversationBudget(
+						{ ...BUDGET, reserve: 25, pool },
+						Effect.succeed(0)
+					)
+					yield* budget.record(5)
+					expect(
+						yield* budget.isSpent({ spentTokens: 5, nextInputTokens: 35 })
+					).toBe(false)
+					yield* budget.record(7)
+					if (opened) yield* budget.openReserve
+					expect(yield* budget.current).toMatchObject({
+						conversationTokens: opened ? 101 : 76,
+					})
+					expect(
+						yield* budget.settle({ spentTokens: 5, unspentTokens: 0 })
+					).toEqual({
+						spentTokens: 12,
+						unspentTokens: 89,
+					})
+					expect(yield* pool.available).toBe(9)
+				})
+		)
+})

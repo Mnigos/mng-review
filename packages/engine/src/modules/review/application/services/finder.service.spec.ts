@@ -813,6 +813,73 @@ layer(Layer.empty)('finder unit budgets and paths', test => {
 			expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(0)
 		}).pipe(Effect.provide(finderLayer(() => Effect.succeed(answer()))))
 	)
+	for (const hasDiff of [true, false])
+		test.effect(
+			`a narrowed reviewer with a one-unit allowance ${hasDiff ? 'reviews only focus files' : 'starts no job when focus files have no diff'}`,
+			() =>
+				Effect.gen(function* () {
+					const focusPaths = [BILLING_PATH, 'src/billing/refund.ts']
+					const scope = {
+						...SCOPE,
+						change: {
+							...SCOPE.change,
+							files: [...focusPaths.map(path => file(path)), file('other.ts')],
+						},
+					}
+					const readDiffSpy = vi.fn<ReturnType<typeof gitFixture>['readDiff']>(
+						(_range, files) =>
+							Effect.succeed(
+								files
+									.map(entry =>
+										entry.path === 'other.ts'
+											? unifiedDiff(entry.path, 1, 'unrelated-code')
+											: hasDiff
+												? unifiedDiff(entry.path, 1, 'focus-code')
+												: ''
+									)
+									.join('')
+							)
+					)
+					yield* Effect.gen(function* () {
+						expect(
+							yield* FinderService.use(finder =>
+								finder.run(
+									plannedRun({
+										files: scope.change.files.map(entry => entry.path),
+									}),
+									context({
+										scope,
+										fanOut: true,
+										unitPaths: focusPaths,
+										tokens: { allowance: MIN_UNIT_TOKENS, runTokens: 200_000 },
+									})
+								)
+							)
+						).toMatchObject({ report: { status: 'ok' }, findings: [] })
+						expect(readDiffSpy).toHaveBeenCalledExactlyOnceWith(
+							scope.change,
+							focusPaths.map(path => file(path))
+						)
+						const calls = yield* ScriptedLlm.use(script => script.calls)
+						expect(calls).toHaveLength(hasDiff ? 1 : 0)
+						if (!hasDiff) return
+						const prompt = userText(calls[0])
+						expect(prompt).toContain('Your unit:')
+						for (const path of focusPaths)
+							expect(prompt).toContain(`+++ b/${path}`)
+						expect(prompt).toContain('+focus-code')
+						expect(prompt).not.toContain('+++ b/other.ts')
+						expect(prompt).not.toContain('+unrelated-code')
+					}).pipe(
+						Effect.provide(
+							finderLayer(
+								() => Effect.succeed(answer()),
+								gitFixture({ readDiff: readDiffSpy })
+							)
+						)
+					)
+				})
+		)
 })
 
 layer(Layer.empty)('finder conversation allowances', test => {
@@ -1164,6 +1231,10 @@ layer(Layer.empty)('coverage allowance wiring', test => {
 								turns: 1,
 								toolCalls: 0,
 								spentTokens: 5,
+								unspentTokens: Math.max(
+									0,
+									(request.budget?.conversationTokens ?? 0) - 5
+								),
 							}))
 						)
 					}
