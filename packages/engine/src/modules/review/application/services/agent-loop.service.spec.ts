@@ -1907,6 +1907,7 @@ layer(Layer.empty)('reserved coverage after forced wrap-up', test => {
 						expect(output.spentTokens).toBe(
 							2500 + (maxToolCalls === 1 ? 5 : 15)
 						)
+						expect(output.unspentTokens).toBe(maxToolCalls === 1 ? 7495 : 7485)
 						const calls = yield* ScriptedLlm.use(script => script.calls)
 						expect(calls).toHaveLength(maxToolCalls === 1 ? 2 : 4)
 						expect(
