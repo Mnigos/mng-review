@@ -106,14 +106,19 @@ export const FinderServiceLive = Layer.effect(
 				...toContextNotes(context.rules.context),
 				FINDING_RULES_PROMPT,
 			].join('\n\n')
-			const diff = yield* readDiff(context.scope)
+			// A narrowed reviewer splits only its focus files, so a small share still keeps it to them.
+			const narrowed = context.fanOut && context.unitPaths !== undefined
+			const diff = yield* readDiff(
+				context.scope,
+				narrowed ? context.unitPaths : undefined
+			)
 			const { allowance } = context.tokens
 			const split = context.fanOut
 				? splitReviewUnits(diff, getUnitCount(allowance))
 				: []
 			const units = getUnitsToReview(split, context.unitPaths)
-			if (split.length > 0 && units.length === 0) return []
-			if (split.length > 1) {
+			if ((split.length > 0 || narrowed) && units.length === 0) return []
+			if (split.length > 1 || narrowed) {
 				const tokens = Math.floor(allowance / Math.max(1, units.length))
 				return units.map(unit => ({
 					unit: unit.label,
