@@ -6,13 +6,33 @@ description: Installs MNG Review from this checkout, reviews the caller's change
 
 inputs:
   mode:
-    description: shadow or publish.
+    description: shadow, publish or command.
     required: true
   engine-commit:
     description: The commit of MNG Review that runs.
     required: true
+  command-pull-number:
+    description: Command mode only, from the authorize job.
+    required: false
+    default: ''
+  command-base:
+    description: Command mode only, the base commit the authorize job checked.
+    required: false
+    default: ''
+  command-head:
+    description: Command mode only, the head commit the authorize job checked.
+    required: false
+    default: ''
+  command-depth:
+    description: Command mode only, deep or empty.
+    required: false
+    default: ''
+  command-agent:
+    description: Command mode only, the declared agent the command named, or empty.
+    required: false
+    default: ''
   token:
-    description: The job token, only in publish mode; empty in shadow mode.
+    description: The job token, only in publish and command mode; empty in shadow mode.
     required: false
     default: ''
   llm-url:
@@ -82,6 +102,11 @@ runs:
         MNG_REVIEW_REPO_DIR: ${{ github.workspace }}/repo
         MNG_REVIEW_RESULT_PATH: ${{ runner.temp }}/mng-review-result/result.json
         MNG_REVIEW_MODE: ${{ inputs.mode }}
+        MNG_REVIEW_COMMAND_PR: ${{ inputs.command-pull-number }}
+        MNG_REVIEW_COMMAND_BASE: ${{ inputs.command-base }}
+        MNG_REVIEW_COMMAND_HEAD: ${{ inputs.command-head }}
+        MNG_REVIEW_COMMAND_DEPTH: ${{ inputs.command-depth }}
+        MNG_REVIEW_COMMAND_AGENT: ${{ inputs.command-agent }}
         GITHUB_TOKEN: ${{ inputs.token }}
       run: |
         mkdir -p "$RUNNER_TEMP/mng-review-result"

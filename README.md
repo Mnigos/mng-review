@@ -189,6 +189,40 @@ jobs:
       statuses: write
 ```
 
+### Commands
+
+An admin, or a login listed in `commands.allow` with write access, can start a review from a pull request comment: `/mng-review`, `/mng-review deep`, or `/mng-review <agent>` for one declared agent. The command has to stand alone on its line. A first job with no secret checks the command and the commenter before anything else runs. Add a second caller:
+
+```yaml
+# .github/workflows/mng-review-command.yml
+name: MNG Review command
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mng-review-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  review:
+    uses: Mnigos/mng-review/.github/workflows/review-command.yml@<commit-sha>
+    permissions:
+      contents: read
+      pull-requests: write
+      checks: write
+      statuses: write
+    secrets:
+      llm-url: ${{ secrets.MNG_REVIEW_LLM_URL }}
+      llm-key: ${{ secrets.MNG_REVIEW_LLM_KEY }}
+```
+
+Anyone with write access to the repository can read its secrets through a workflow on their own branch. To keep the endpoint key from them, store it in a deployment environment that only the default branch may use. ADR 0009 records the rules.
+
 ### Exit codes
 
 | Code | `mng-review`                                              | `plan`, `init`                                                                 |

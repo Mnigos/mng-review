@@ -110,6 +110,11 @@ export const reviewConfigSchema = Schema.Struct({
 			deep: Schema.NonEmptyString,
 		}),
 	}),
+	/** Who may start a review with `/mng-review` besides admins, and how many such runs a pull request gets. */
+	commands: Schema.Struct({
+		allow: nameListSchema,
+		max_runs: positiveIntSchema,
+	}),
 	disputes: Schema.Struct({
 		accept_intentional_up_to: severitySchema,
 		max_rounds: countSchema,

@@ -146,3 +146,40 @@ export const commitStatusSchema = Schema.Struct({
 	),
 })
 export type CommitStatus = typeof commitStatusSchema.Type
+
+/** A pull request as a command run needs it: state, repositories, commits and what the planner sees. */
+export const pullRequestSchema = Schema.Struct({
+	number: Schema.Number,
+	state: Schema.String,
+	draft: Schema.optionalKey(Schema.Boolean),
+	title: Schema.String,
+	body: Schema.NullOr(Schema.String),
+	user: Schema.NullOr(Schema.Struct({ login: Schema.String })),
+	labels: Schema.Array(Schema.Struct({ name: Schema.String })),
+	base: Schema.Struct({
+		sha: Schema.String,
+		ref: Schema.String,
+		repo: Schema.Struct({ full_name: Schema.String }),
+	}),
+	head: Schema.Struct({
+		sha: Schema.String,
+		repo: Schema.NullOr(Schema.Struct({ full_name: Schema.String })),
+	}),
+})
+export type PullRequest = typeof pullRequestSchema.Type
+
+/** A conversation comment read by its id, with who wrote it and through which app. */
+export const issueCommentSchema = Schema.Struct({
+	id: Schema.Number,
+	body: Schema.NullOr(Schema.String),
+	user: Schema.NullOr(
+		Schema.Struct({ login: Schema.String, type: Schema.String })
+	),
+	performed_via_github_app: Schema.optionalKey(Schema.NullOr(Schema.Unknown)),
+})
+export type IssueComment = typeof issueCommentSchema.Type
+
+/** A collaborator's role on the repository: `admin`, `maintain`, `write`, `triage`, `read` or a custom role. */
+export const collaboratorRoleSchema = Schema.Struct({
+	role_name: Schema.String,
+})

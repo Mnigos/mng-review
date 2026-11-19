@@ -83,6 +83,9 @@ export const ShadowRunServiceLive = Layer.effect(
 				...(prior?.head && event.pr.trigger === 'auto'
 					? { since: prior.head }
 					: {}),
+				...(input.onlyAgent === undefined
+					? {}
+					: { onlyAgent: input.onlyAgent }),
 			})
 			return { status: 'reviewed', event, report, rules } as const
 		})
@@ -90,13 +93,19 @@ export const ShadowRunServiceLive = Layer.effect(
 		const run = Effect.fn('ShadowRunService.run')(function* (
 			input: ShadowRunInput
 		) {
-			if (!PULL_REQUEST_EVENTS.some(name => name === input.eventName))
+			if (
+				input.event === undefined &&
+				!PULL_REQUEST_EVENTS.some(name => name === input.eventName)
+			)
 				return {
 					status: 'skipped',
 					reason: `${input.eventName || 'unknown'} is not a pull request event`,
 				} satisfies ShadowOutcome
-			return yield* input.readEvent.pipe(
-				Effect.flatMap(parsePullRequestEvent),
+			const readEvent =
+				input.event === undefined
+					? input.readEvent.pipe(Effect.flatMap(parsePullRequestEvent))
+					: Effect.succeed(input.event)
+			return yield* readEvent.pipe(
 				Effect.flatMap(event =>
 					review(event, input).pipe(
 						Effect.catchTags({

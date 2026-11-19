@@ -3,7 +3,7 @@ import { DEPTH_FOR_RISK } from '../routing.constants'
 import type { DepthDecision, PullRequestInfo, Risk } from '../routing.types'
 
 /**
- * Picks the depth, first rule first: a change under `risk_paths` is deep, then the deep label, the
+ * Picks the depth, first rule first: a depth a command asked for, a change under `risk_paths` is deep, then the deep label, the
  * quick label, a fixed `depth` in `review.yml`, and for `auto` the risk level.
  */
 export function resolveDepth(
@@ -13,6 +13,7 @@ export function resolveDepth(
 	riskPathHits: readonly string[]
 ): DepthDecision {
 	const { deep, quick } = config.labels.depth
+	if (pr.depth) return { depth: pr.depth, source: 'command' }
 	if (riskPathHits.length > 0) return { depth: 'deep', source: 'risk_paths' }
 	if (pr.labels.includes(deep))
 		return { depth: 'deep', source: `label ${deep}` }

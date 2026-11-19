@@ -23,6 +23,7 @@ packages/
     src/platform/          config, the REST and GraphQL client on effect/http
     src/modules/publish/   which findings get a thread, comment and summary text, posting, re-check
     src/modules/status/    check runs, the MNG Review commit status, the status sweep
+    src/modules/command/   the /mng-review parser and the secretless authorization of a command
 tooling/
   typescript-config/       @mng-review/typescript-config: the strict tsconfig preset
   oxlint-plugin/           @mng-review/oxlint-plugin: the mng-review/* lint rules
@@ -95,3 +96,4 @@ Publish (6) runs in the workflow's publish mode through `packages/github`; conve
 | [0006](docs/decisions/0006-ci-shadow-mode.md)                  | `pull_request_target` with the base checked out only; shadow mode posts nothing   |
 | [0007](docs/decisions/0007-publish-mode.md)                    | Publish mode: its own workflow, comments only, marked threads, no duplicates      |
 | [0008](docs/decisions/0008-thread-resolution-and-status.md)    | The bot resolves its fixed threads; the status counts open bug threads            |
+| [0009](docs/decisions/0009-commands-and-replies.md)            | Commands need an admin and a secretless check; replies are polled                 |

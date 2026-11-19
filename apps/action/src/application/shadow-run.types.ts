@@ -29,6 +29,10 @@ export interface ShadowRunInput {
 	readonly readPrior?: (
 		event: PullRequestEvent
 	) => Effect.Effect<PriorRun | undefined>
+	/** A command run: the pull request read from the API instead of the event payload. */
+	readonly event?: PullRequestEvent
+	/** A command named one declared agent; only it runs. */
+	readonly onlyAgent?: string
 }
 
 /** Nothing was reviewed: not a pull request, a fork, or a `skip` rule at the base commit. */

@@ -1,0 +1,182 @@
+# Reusable review workflow for /mng-review commands in pull request comments. The caller runs it on
+# issue_comment (created). A first job, with no secret and no tailnet, checks the command and the
+# commenter and resolves the pull request; only an authorized command starts the review job, which
+# reviews and publishes like review-publish.yml. See ADR 0009.
+# The caller owns the trigger and the concurrency; see "GitHub Actions" in README.md.
+# Nothing from the caller's repository is installed, built or run: its base commit is checked out
+# only so git can read the change, and the rules come from that base commit.
+name: MNG Review (command)
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: Runner label for the job.
+        type: string
+        default: ubuntu-latest
+      tailscale:
+        description: Join a tailnet as an ephemeral node before the review, to reach a private endpoint.
+        type: boolean
+        default: false
+      tailscale-tags:
+        description: Comma-separated tags for the ephemeral node; the OAuth client must own them.
+        type: string
+        default: tag:ci
+      timeout-minutes:
+        description: Job timeout in minutes.
+        type: number
+        default: 20
+    secrets:
+      llm-url:
+        description: Base URL of the OpenAI-compatible endpoint, such as https://llm.example.com/v1.
+        required: true
+      llm-key:
+        description: Key sent to the endpoint as a bearer token.
+        required: true
+      tailscale-oauth-client-id:
+        description: Tailscale OAuth client id, needed when tailscale is true.
+        required: false
+      tailscale-oauth-secret:
+        description: Tailscale OAuth client secret, needed when tailscale is true.
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+  statuses: write
+
+jobs:
+  authorize:
+    name: MNG Review (authorize)
+    # A cheap filter only; the entry checks the command, the commenter's role and the pull request.
+    if: >-
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request &&
+      github.event.comment.user.type == 'User' &&
+      contains(github.event.comment.body, '/mng-review')
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      authorized: ${{ steps.authorize.outputs.authorized }}
+      pull_number: ${{ steps.authorize.outputs.pull_number }}
+      base_sha: ${{ steps.authorize.outputs.base_sha }}
+      head_sha: ${{ steps.authorize.outputs.head_sha }}
+      depth: ${{ steps.authorize.outputs.depth }}
+      agent: ${{ steps.authorize.outputs.agent }}
+    steps:
+      # Without these (GitHub Enterprise Server), checkout would fall back to the caller's repository.
+      - name: Check the workflow's own commit
+        if: job.workflow_repository == '' || job.workflow_sha == ''
+        run: |
+          echo "::error::job.workflow_repository and job.workflow_sha are not available on this GitHub; MNG Review cannot check out its own code."
+          exit 1
+
+      # The default branch, for the rules (commands.allow); issue_comment always runs there.
+      - name: Check out the default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: repo
+          persist-credentials: false
+
+      - name: Check out MNG Review
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .mng-review-engine
+          persist-credentials: false
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .mng-review-engine/package.json
+          no-cache: true
+
+      - name: Install MNG Review
+        working-directory: .mng-review-engine
+        run: bun install --frozen-lockfile --production --ignore-scripts
+
+      # The comment is read from the event file, never interpolated into this script.
+      - name: Authorize
+        id: authorize
+        working-directory: .mng-review-engine
+        env:
+          MNG_REVIEW_MODE: authorize
+          MNG_REVIEW_ENGINE_COMMIT: ${{ job.workflow_sha }}
+          MNG_REVIEW_REPO_DIR: ${{ github.workspace }}/repo
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bun --no-env-file apps/action/src/main.ts
+
+  review:
+    name: MNG Review (command)
+    needs: authorize
+    if: needs.authorize.outputs.authorized == 'true'
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+      pull-requests: write
+      checks: write
+      statuses: write
+    env:
+      BASE_SHA: ${{ needs.authorize.outputs.base_sha }}
+      HEAD_SHA: ${{ needs.authorize.outputs.head_sha }}
+    steps:
+      - name: Check the workflow's own commit
+        if: job.workflow_repository == '' || job.workflow_sha == ''
+        run: |
+          echo "::error::job.workflow_repository and job.workflow_sha are not available on this GitHub; MNG Review cannot check out its own code."
+          exit 1
+
+      # The base commit only, never the head; credentials are not left in .git/config.
+      - name: Check out the base commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.authorize.outputs.base_sha }}
+          path: repo
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Objects only: the head commit is never checked out, and git reads it with `git show`.
+      - name: Fetch the head commit
+        working-directory: repo
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          auth="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
+          echo "::add-mask::$auth"
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0="http.${GITHUB_SERVER_URL}/.extraheader" \
+          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth" \
+            git fetch --no-tags --quiet origin "$HEAD_SHA"
+          git cat-file -e "$HEAD_SHA^{commit}"
+
+      - name: Check out MNG Review
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .mng-review-engine
+          persist-credentials: false
+
+      - name: Review
+        uses: ./.mng-review-engine/.github/actions/review
+        with:
+          mode: command
+          engine-commit: ${{ job.workflow_sha }}
+          token: ${{ github.token }}
+          command-pull-number: ${{ needs.authorize.outputs.pull_number }}
+          command-base: ${{ needs.authorize.outputs.base_sha }}
+          command-head: ${{ needs.authorize.outputs.head_sha }}
+          command-depth: ${{ needs.authorize.outputs.depth }}
+          command-agent: ${{ needs.authorize.outputs.agent }}
+          llm-url: ${{ secrets.llm-url }}
+          llm-key: ${{ secrets.llm-key }}
+          tailscale: ${{ inputs.tailscale }}
+          tailscale-tags: ${{ inputs.tailscale-tags }}
+          tailscale-oauth-client-id: ${{ secrets.tailscale-oauth-client-id }}
+          tailscale-oauth-secret: ${{ secrets.tailscale-oauth-secret }}

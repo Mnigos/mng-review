@@ -5,11 +5,17 @@ import {
 	GitServiceLive,
 	GitWorkdir,
 	RecheckServiceLive,
+	RulesService,
 	ReviewRunServiceLive,
 	RulesServiceLive,
 	TokenLedgerLive,
 } from '@mng-review/engine'
 import {
+	type CommandDecision,
+	type CommandRun,
+	CommandAuthorizeService,
+	CommandAuthorizeServiceLive,
+	GitHubApiService,
 	GitHubApiServiceLive,
 	GitHubConfigLive,
 	GitHubStatusServiceLive,
@@ -23,6 +29,7 @@ import {
 } from '@mng-review/github'
 import { Clock, Console, Effect, FileSystem, Layer } from 'effect'
 import { FetchHttpClient } from 'effect/http'
+import { toCommandEvent } from './application/command-event.helper'
 import {
 	PublishRunService,
 	PublishRunServiceLive,
@@ -35,13 +42,18 @@ import type {
 	PullRequestEvent,
 	ShadowOutcome,
 } from './application/shadow-run.types'
+import { parseIssueCommentEvent } from './infrastructure/issue-comment-event.parser'
 import {
+	type CommandSettings,
+	commandConfig,
 	MODE_VARIABLE,
 	maskEndpoint,
 	modeConfig,
+	outputPathConfig,
 	readEventText,
 	repoDirConfig,
 	runnerEnvironmentConfig,
+	writeOutputs,
 	writeResult,
 	writeSummary,
 } from './infrastructure/runner.client'
@@ -50,6 +62,11 @@ import {
 	FAILED_EXIT_CODE,
 	INVALID_CONFIG_EXIT_CODE,
 } from './presentation/action-exit.errors'
+import {
+	formatAuthorizeLogLine,
+	formatAuthorizeSummary,
+	toAuthorizeOutputs,
+} from './presentation/authorize.formatter'
 import { formatResult } from './presentation/result.formatter'
 import {
 	formatLogLine,
@@ -132,13 +149,63 @@ const readPrior = (event: PullRequestEvent) =>
 /** Publishes the outcome; a missing token or repository is reported, never fatal. */
 const publishOutcome = (
 	outcome: ShadowOutcome,
-	engineCommit: string | undefined
+	engineCommit: string | undefined,
+	command: CommandRun | undefined
 ) =>
-	PublishRunService.use(service => service.run(outcome, { engineCommit })).pipe(
+	PublishRunService.use(service =>
+		service.run(outcome, {
+			engineCommit,
+			...(command === undefined ? {} : { command }),
+		})
+	).pipe(
 		Effect.provide(PublishLive),
 		Effect.catchTag('ConfigError', error =>
 			Effect.succeed({ status: 'failed', reason: error.message } as const)
 		)
+	)
+
+/**
+ * Checks a `/mng-review` comment without any secret: reads the comment from the event, the rules
+ * from the default branch's checkout, and writes the outputs the review job starts from. Every
+ * failure is a denied command, never a failed job.
+ */
+const runAuthorize = Effect.gen(function* () {
+	const env = yield* runnerEnvironmentConfig
+	const outputPath = yield* outputPathConfig
+	const decision: CommandDecision = yield* readEventText(env.eventPath).pipe(
+		Effect.flatMap(parseIssueCommentEvent),
+		Effect.flatMap(comment =>
+			RulesService.use(service => service.load('HEAD')).pipe(
+				Effect.flatMap(rules =>
+					CommandAuthorizeService.use(service =>
+						service.authorize(comment, rules)
+					)
+				)
+			)
+		),
+		Effect.provide(
+			CommandAuthorizeServiceLive.pipe(Layer.provide(PublishLive))
+		),
+		Effect.catchTags({
+			ConfigError: error =>
+				Effect.succeed({ status: 'denied', reason: error.message } as const),
+			GitError: error =>
+				Effect.succeed({
+					status: 'denied',
+					reason: `git: ${error.message}`,
+				} as const),
+		})
+	)
+	yield* writeOutputs(outputPath, toAuthorizeOutputs(decision))
+	yield* Console.log(formatAuthorizeLogLine(decision))
+	yield* writeSummary(env.summaryPath, formatAuthorizeSummary(decision))
+})
+
+/** The pull request an authorized command reviews, read again from the API. */
+const readCommandEvent = (settings: CommandSettings) =>
+	GitHubApiService.use(api => api.getPullRequest(settings.pullNumber)).pipe(
+		Effect.map(pr => toCommandEvent(pr, settings)),
+		Effect.provide(PublishLive)
 	)
 
 /**
@@ -154,7 +221,7 @@ const runAction = Effect.gen(function* () {
 		const invalid: ShadowOutcome = {
 			status: 'invalid-config',
 			source: MODE_VARIABLE,
-			reason: 'must be shadow, publish or sweep',
+			reason: 'must be shadow, publish, sweep, authorize or command',
 		}
 		yield* Console.log(formatLogLine(invalid))
 		yield* writeSummary(
@@ -172,6 +239,9 @@ const runAction = Effect.gen(function* () {
 		return yield* new ActionExit({ code: INVALID_CONFIG_EXIT_CODE })
 	}
 	if (mode.value === 'sweep') return yield* runSweep
+	if (mode.value === 'authorize') return yield* runAuthorize
+	const command = mode.value === 'command' ? yield* commandConfig : undefined
+	const commandEvent = command ? yield* readCommandEvent(command) : undefined
 	const fs = yield* FileSystem.FileSystem
 	const priorServices =
 		yield* Effect.context<Effect.Services<ReturnType<typeof readPrior>>>()
@@ -181,18 +251,24 @@ const runAction = Effect.gen(function* () {
 			readEvent: readEventText(env.eventPath).pipe(
 				Effect.provideService(FileSystem.FileSystem, fs)
 			),
-			...(mode.value === 'publish'
-				? {
+			...(mode.value === 'shadow'
+				? {}
+				: {
 						readPrior: (event: PullRequestEvent) =>
 							readPrior(event).pipe(Effect.provideContext(priorServices)),
-					}
-				: {}),
+					}),
+			...(commandEvent === undefined ? {} : { event: commandEvent }),
+			...(command?.agent === undefined ? {} : { onlyAgent: command.agent }),
 		})
 	)
 	const publish =
-		mode.value === 'publish'
-			? yield* publishOutcome(outcome, env.engineCommit)
-			: undefined
+		mode.value === 'shadow'
+			? undefined
+			: yield* publishOutcome(
+					outcome,
+					env.engineCommit,
+					command ? { agentOnly: command.agent !== undefined } : undefined
+				)
 	const wallMillis = (yield* Clock.currentTimeMillis) - startedAt
 	yield* Console.log(formatLogLine(outcome))
 	if (publish) yield* Console.log(formatPublishLogLine(publish))

@@ -30,6 +30,7 @@ import type {
 	CommentableLines,
 	PlannedThread,
 } from '../domain/publish.types'
+import { toNextSummaryMarker } from '../domain/summary-marker.helper'
 import {
 	formatStatusComment,
 	formatSummaryComment,
@@ -314,14 +315,12 @@ export const PublishServiceLive = Layer.effect(
 			const threads = found.map(thread =>
 				resolvedIds.has(thread.id) ? { ...thread, resolved: true } : thread
 			)
-			const finished = isFinished(report)
-			const reviewedHead = finished ? input.head : summary?.marker.head
-			const marker: SummaryMarker = {
-				v: MARKER_VERSION,
-				runs: (summary?.marker.runs ?? 0) + 1,
-				finished,
-				...(reviewedHead === undefined ? {} : { head: reviewedHead }),
-			}
+			const marker = toNextSummaryMarker(summary?.marker, {
+				head: input.head,
+				finished: isFinished(report),
+				agentOnly: input.command?.agentOnly === true,
+				manual: input.command !== undefined,
+			})
 			const lines = yield* readCommentableLines(report, input.head)
 			const changedPlaces = yield* getChangedPlaces(input, threads)
 			const planned = planPublish(

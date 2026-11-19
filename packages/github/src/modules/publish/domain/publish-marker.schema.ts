@@ -37,6 +37,8 @@ export const summaryMarkerSchema = Schema.Struct({
 	head: Schema.optionalKey(Schema.String),
 	/** Whether the last run finished; the status sweep reads it, never the status text. */
 	finished: Schema.optionalKey(Schema.Boolean),
+	/** Runs a `/mng-review` command started; `commands.max_runs` caps them. */
+	manualRuns: Schema.optionalKey(countSchema),
 })
 export type SummaryMarker = typeof summaryMarkerSchema.Type
 

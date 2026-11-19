@@ -10,8 +10,15 @@ export interface PublishTarget {
 	readonly engineCommit: string | undefined
 }
 
+/** A run a `/mng-review` command started. */
+export interface CommandRun {
+	/** Set when the command named one agent: the run is not a full review. */
+	readonly agentOnly: boolean
+}
+
 /** A reviewed run to publish on its pull request. */
 export interface PublishInput extends PublishTarget {
+	readonly command?: CommandRun
 	readonly report: ReviewReport
 	readonly rules: Rules
 	/** What the engine was told about the pull request; the re-check's validators get it too. */

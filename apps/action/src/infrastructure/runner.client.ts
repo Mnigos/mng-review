@@ -1,6 +1,14 @@
 import { ConfigError } from '@mng-review/domain'
 import { LLM_KEY_VARIABLE, LLM_URL_VARIABLE } from '@mng-review/engine'
-import { Config, Console, Effect, FileSystem, Option, Redacted } from 'effect'
+import {
+	Config,
+	Console,
+	Effect,
+	FileSystem,
+	Option,
+	Redacted,
+	Schema,
+} from 'effect'
 import { EVENT_PATH_VARIABLE } from './pull-request-event.parser'
 
 /** What the runner tells the entry through the environment. */
@@ -30,13 +38,21 @@ export const repoDirConfig = Config.String('MNG_REVIEW_REPO_DIR').pipe(
 )
 
 export const MODE_VARIABLE = 'MNG_REVIEW_MODE'
-export const RUN_MODES = ['shadow', 'publish', 'sweep'] as const
+export const RUN_MODES = [
+	'shadow',
+	'publish',
+	'sweep',
+	'authorize',
+	'command',
+] as const
 export type RunMode = (typeof RUN_MODES)[number]
 
 /**
  * `MNG_REVIEW_MODE`: `shadow` (the default) writes the job summary only, `publish` also posts on
  * the pull request, `sweep` reviews nothing and refreshes the `MNG Review` status of open pull
- * requests. Any other value fails, before the review spends anything.
+ * requests, `authorize` checks a `/mng-review` comment without any secret, and `command` reviews
+ * and publishes what an authorized command asked for. Any other value fails, before the review
+ * spends anything.
  */
 export const modeConfig = Config.Literals(RUN_MODES, MODE_VARIABLE).pipe(
 	Config.withDefault('shadow' as RunMode)
@@ -142,4 +158,61 @@ export const writeResult = Effect.fn('runner.writeResult')(function* (
 	if (!path) return yield* Effect.void
 	const fs = yield* FileSystem.FileSystem
 	return yield* fs.writeFileString(path, json)
+})
+
+/** A full commit SHA, SHA-1 or SHA-256. */
+export const COMMIT_SHA = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u
+const commitShaSchema = Schema.String.check(Schema.isPattern(COMMIT_SHA))
+
+/** What an authorized command asks for, passed from the authorize job: `MNG_REVIEW_COMMAND_*`. */
+export interface CommandSettings {
+	readonly pullNumber: number
+	/** The commits the authorize job checked; the review job checked out and fetched these. */
+	readonly base: string
+	readonly head: string
+	readonly depth: 'deep' | undefined
+	readonly agent: string | undefined
+}
+
+/** Reads the command a previous job authorized; a missing or malformed number fails. */
+export const commandConfig = Config.all({
+	pullNumber: Config.Int('MNG_REVIEW_COMMAND_PR'),
+	base: Config.schema(commitShaSchema, 'MNG_REVIEW_COMMAND_BASE'),
+	head: Config.schema(commitShaSchema, 'MNG_REVIEW_COMMAND_HEAD'),
+	depth: Config.option(Config.String('MNG_REVIEW_COMMAND_DEPTH')),
+	agent: Config.option(Config.String('MNG_REVIEW_COMMAND_AGENT')),
+}).pipe(
+	Config.map((settings): CommandSettings => ({
+		pullNumber: settings.pullNumber,
+		base: settings.base,
+		head: settings.head,
+		depth:
+			Option.getOrUndefined(settings.depth)?.trim() === 'deep'
+				? 'deep'
+				: undefined,
+		agent: Option.getOrUndefined(settings.agent)?.trim() || undefined,
+	}))
+)
+
+/** `GITHUB_OUTPUT`, where a step's outputs go; unset outside a workflow. */
+export const outputPathConfig = Config.option(
+	Config.String('GITHUB_OUTPUT')
+).pipe(Config.map(Option.getOrUndefined))
+
+/** A value safe for one `key=value` output line: no line breaks. */
+function toOutputValue(value: string): string {
+	return value.replaceAll(/[\r\n]+/gu, ' ')
+}
+
+/** Appends step outputs, one `key=value` line each; outside a workflow they are printed. */
+export const writeOutputs = Effect.fn('runner.writeOutputs')(function* (
+	path: string | undefined,
+	outputs: Readonly<Record<string, string>>
+) {
+	const text = Object.entries(outputs)
+		.map(([key, value]) => `${key}=${toOutputValue(value)}\n`)
+		.join('')
+	if (!path) return yield* Console.log(text)
+	const fs = yield* FileSystem.FileSystem
+	return yield* fs.writeFileString(path, text, { flag: 'a' })
 })

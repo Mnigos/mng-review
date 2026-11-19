@@ -1,4 +1,5 @@
 import {
+	type CommandRun,
 	type PublishResult,
 	PublishService,
 	type StatusReportResult,
@@ -7,9 +8,10 @@ import {
 import { Context, Effect, Layer } from 'effect'
 import type { ShadowOutcome } from './shadow-run.types'
 
-/** Which engine posts, named in every marker. */
+/** Which engine posts, named in every marker, and the command that started the run, if any. */
 export interface PublishContext {
 	readonly engineCommit: string | undefined
+	readonly command?: CommandRun
 }
 
 /** What publishing did with an outcome. */
@@ -71,6 +73,7 @@ export const PublishRunServiceLive = Layer.effect(
 					pr: event.pr,
 					head: event.headSha,
 					engineCommit: context.engineCommit,
+					...(context.command ? { command: context.command } : {}),
 				})
 				const checks = yield* statuses.report({
 					head: event.headSha,
