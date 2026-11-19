@@ -29,8 +29,8 @@ const TOKENS_PER_K = 1000
 const MAX_LIST_ITEMS = 25
 /** Entries a list shows when the full summary is too long. */
 const SHORT_LIST_ITEMS = 3
-/** Characters of a rejection reason the summary keeps. */
-const MAX_REASON_CHARS = 300
+/** Characters of a title, place or reason a summary list line keeps. */
+const MAX_TEXT_CHARS = 300
 /**
  * The longest summary body; GitHub refuses comments over 65,536 characters, and the margin keeps
  * the verdict and the marker in.
@@ -124,9 +124,14 @@ function toAgentRows(report: ReviewReport): string[] {
 }
 
 /** At most `limit` lines, then one saying how many were left out. */
-function toCapped(lines: readonly string[], limit: number): string[] {
-	if (lines.length <= limit) return [...lines]
-	return [...lines.slice(0, limit), `- and ${lines.length - limit} more`]
+function toCapped<TItem>(
+	items: readonly TItem[],
+	limit: number,
+	toLine: (item: TItem) => string
+): string[] {
+	const lines = items.slice(0, limit).map(toLine)
+	if (items.length <= limit) return lines
+	return [...lines, `- and ${items.length - limit} more`]
 }
 
 /** A finding as one list line: kind, place and title. */
@@ -134,7 +139,7 @@ function toFindingLine(
 	thread: Pick<PlannedThread, 'finding' | 'kind'>
 ): string {
 	const { finding, kind } = thread
-	return `- **${toKindLabel(kind, finding.severity)}** ${toCodeSpan(`${finding.path}:${finding.line}`)} ${escapeMarkdown(finding.title)}`
+	return `- **${toKindLabel(kind, finding.severity)}** ${toCodeSpan(toShortText(`${finding.path}:${finding.line}`))} ${escapeMarkdown(toShortText(finding.title))}`
 }
 
 /**
@@ -191,7 +196,7 @@ function toFindingLines(input: SummaryInput, limit: number): string[] {
 	return [
 		...toSection(
 			`New threads (${posted.length}):`,
-			toCapped(posted.map(toFindingLine), limit)
+			toCapped(posted, limit, toFindingLine)
 		),
 		...toSection(
 			`Not in the diff (${inSummary.length}):`,
@@ -201,7 +206,7 @@ function toFindingLines(input: SummaryInput, limit: number): string[] {
 		),
 		...toSection(
 			`Could not be posted, retried on the next run (${unposted.length}):`,
-			toCapped(unposted.map(toFindingLine), limit)
+			toCapped(unposted, limit, toFindingLine)
 		),
 		...(plan.repeated.length === 0
 			? []
@@ -211,40 +216,32 @@ function toFindingLines(input: SummaryInput, limit: number): string[] {
 				]),
 		...toSection(
 			`Found again under threads resolved without a code change, not blocking (${plan.dismissed.length}):`,
-			toCapped(plan.dismissed.map(toFindingLine), limit)
+			toCapped(plan.dismissed, limit, toFindingLine)
 		),
 		...toSection(
 			`Below the severity floor (${below.length}):`,
-			toCapped(
-				below.map(finding =>
-					toFindingLine({
-						finding,
-						kind:
-							finding.validation?.status === 'unverified'
-								? 'unverified'
-								: 'bug',
-					})
-				),
-				limit
+			toCapped(below, limit, finding =>
+				toFindingLine({
+					finding,
+					kind:
+						finding.validation?.status === 'unverified' ? 'unverified' : 'bug',
+				})
 			)
 		),
 		...toSection(
 			`Nits not posted inline (${plan.summaryNits.length}):`,
-			toCapped(
-				plan.summaryNits.map(finding =>
-					toFindingLine({ finding, kind: 'nit' })
-				),
-				limit
+			toCapped(plan.summaryNits, limit, finding =>
+				toFindingLine({ finding, kind: 'nit' })
 			)
 		),
 	]
 }
 
-/** A reason cut to `MAX_REASON_CHARS`. */
-function toShortReason(reason: string): string {
-	return reason.length > MAX_REASON_CHARS
-		? `${reason.slice(0, MAX_REASON_CHARS)}…`
-		: reason
+/** Model text cut to `MAX_TEXT_CHARS` before it is escaped, so a list line stays short. */
+function toShortText(text: string): string {
+	return text.length > MAX_TEXT_CHARS
+		? `${text.slice(0, MAX_TEXT_CHARS)}…`
+		: text
 }
 
 /** Rejected findings, collapsed, each with the validator's reason. */
@@ -255,11 +252,10 @@ function toRejectedLines(report: ReviewReport, limit: number): string[] {
 		`<details><summary>${report.rejected.length} finding(s) rejected by the validator</summary>`,
 		'',
 		...toCapped(
-			report.rejected.map(
-				finding =>
-					`- ${toSeverityLabel(finding.severity)} ${toCodeSpan(`${finding.path}:${finding.line}`)} ${escapeMarkdown(finding.title)}: ${escapeMarkdown(toShortReason(finding.reason))}`
-			),
-			limit
+			report.rejected,
+			limit,
+			finding =>
+				`- ${toSeverityLabel(finding.severity)} ${toCodeSpan(toShortText(`${finding.path}:${finding.line}`))} ${escapeMarkdown(toShortText(finding.title))}: ${escapeMarkdown(toShortText(finding.reason))}`
 		),
 		'',
 		'</details>',
