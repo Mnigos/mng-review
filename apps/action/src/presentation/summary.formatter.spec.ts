@@ -383,10 +383,27 @@ describe('formatSummary', () => {
 })
 
 describe('toVerdictLine', () => {
-	test('ready with no blocking bugs', () => {
+	test('ready with no blocking bugs and every agent finished', () => {
+		const report = reviewReport()
 		expect(
-			toVerdictLine({ ...reviewReport(), blocking: false, bugs: [] })
+			toVerdictLine({
+				...report,
+				blocking: false,
+				bugs: [],
+				agents: report.agents.filter(agent => agent.status === 'ok'),
+			})
 		).toBe('ready, no bug at or above the severity floor')
+	})
+	test('a failed agent makes a run without blocking bugs incomplete', () => {
+		const report = reviewReport()
+		expect(
+			toVerdictLine({
+				...report,
+				blocking: false,
+				bugs: [],
+				endpointError: undefined,
+			})
+		).toMatch(/^incomplete, \d+ agent\(s\) did not finish/u)
 	})
 	test('incomplete reports keep the verdict and name the incomplete run', () => {
 		const report = {
