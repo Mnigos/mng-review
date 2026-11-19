@@ -1,6 +1,12 @@
 import { MIN_FILE_DIFF_CHARS, type ReviewUnit } from '@mng-review/domain'
 import { file, unifiedDiff } from '../../../shared/mocks/domain-test.helper'
-import { toChangeMessage, toUnitMessage } from './finder-message.helper'
+import {
+	getChangedUnits,
+	toChangeMessage,
+	toUnitMessage,
+} from './finder-message.helper'
+
+import { MAX_LISTED_UNIT_CHARS, MAX_LISTED_UNITS } from './review.constants'
 
 describe('finder messages', () => {
 	test('lists scope, other changed files and skip reasons with their actual line counts', () => {
@@ -103,5 +109,87 @@ describe('finder messages', () => {
 		expect(message).toContain('Diff (base to head):\n```text\n(none)\n```')
 		expect(message).not.toContain('Other changed files:')
 		expect(message).not.toContain('Read each one')
+	})
+})
+
+describe('changed units in first messages', () => {
+	test('lists unique non-empty hunk contexts per file and caps their count and length', () => {
+		const contexts = [
+			'charge()',
+			'charge()',
+			'',
+			'x'.repeat(MAX_LISTED_UNIT_CHARS + 10),
+			...Array.from(
+				{ length: MAX_LISTED_UNITS },
+				(_, index) => `unit${index}()`
+			),
+		]
+		const diff =
+			unifiedDiff('src/billing/charge.ts').replace(
+				'@@ -1 +1,1 @@\n-before\n+after\n',
+				contexts
+					.map(
+						(context, index) =>
+							`@@ -${index + 1} +${index + 1} @@ ${context}\n-before\n+after\n`
+					)
+					.join('')
+			) +
+			unifiedDiff('src/billing/refund.ts').replace(
+				'@@ -1 +1,1 @@',
+				'@@ -1 +1 @@ refund()'
+			)
+		const units = getChangedUnits(diff)
+		expect(units.get('src/billing/charge.ts')).toEqual([
+			'charge()',
+			'x'.repeat(MAX_LISTED_UNIT_CHARS),
+			...Array.from(
+				{ length: MAX_LISTED_UNITS - 2 },
+				(_, index) => `unit${index}()`
+			),
+		])
+		expect(units.get('src/billing/refund.ts')).toEqual(['refund()'])
+		expect(getChangedUnits('')).toEqual(new Map())
+	})
+	for (const maxChars of [0, MIN_FILE_DIFF_CHARS, 100_000])
+		test(`only incomplete diffs name their changed code at budget ${maxChars}`, () => {
+			const diff = unifiedDiff('src/billing/charge.ts', 2000).replace(
+				'@@ -1 +1,2000 @@',
+				'@@ -1 +1,2000 @@ charge()'
+			)
+			const message = toChangeMessage({
+				files: [file('src/billing/charge.ts')],
+				scope: ['src/billing/charge.ts'],
+				pr: {},
+				diff,
+				maxChars,
+			})
+			if (maxChars < diff.length)
+				expect(message).toContain('; changes `charge()`')
+			else expect(message).not.toContain('; changes')
+			const unitMessage = toUnitMessage({
+				files: [file('src/billing/charge.ts')],
+				pr: {},
+				maxChars,
+				unit: {
+					label: 'charge()',
+					paths: ['src/billing/charge.ts'],
+					diff,
+					size: 2001,
+				},
+			})
+			if (maxChars < diff.length)
+				expect(unitMessage).toContain('; changes `charge()`')
+			else expect(unitMessage).not.toContain('; changes')
+		})
+	test('context-free hunks do not add an empty changed-code note', () => {
+		expect(
+			toChangeMessage({
+				files: [file('src/billing/charge.ts')],
+				scope: ['src/billing/charge.ts'],
+				pr: {},
+				diff: unifiedDiff('src/billing/charge.ts'),
+				maxChars: 0,
+			})
+		).not.toContain('; changes')
 	})
 })

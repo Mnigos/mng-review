@@ -29,6 +29,7 @@ import {
 	toolCall,
 } from '../../../../shared/mocks/review-test.helper'
 import { getFirstDiffChars } from '../../domain/finder-budget.helper'
+import { makeTokenPool } from '../../domain/loop-budget.helper'
 import {
 	MIN_UNIT_TOKENS,
 	FINDER_TOKEN_SHARE,
@@ -823,7 +824,12 @@ layer(Layer.empty)('finder conversation allowances', test => {
 					requests.push(request)
 					return request.parse({ findings: [] }).pipe(
 						Effect.orDie,
-						Effect.map(value => ({ value, turns: 1, toolCalls: 0 }))
+						Effect.map(value => ({
+							value,
+							turns: 1,
+							toolCalls: 0,
+							spentTokens: 5,
+						}))
 					)
 				}
 				const allowance = MIN_UNIT_TOKENS * 2 + 1
@@ -869,7 +875,12 @@ layer(Layer.empty)('finder coverage jobs', test => {
 						coverages.push(request.coverage?.paths)
 						return request.parse({ findings: [] }).pipe(
 							Effect.orDie,
-							Effect.map(value => ({ value, turns: 1, toolCalls: 0 }))
+							Effect.map(value => ({
+								value,
+								turns: 1,
+								toolCalls: 0,
+								spentTokens: 5,
+							}))
 						)
 					}
 					const scope = {
@@ -978,5 +989,99 @@ layer(Layer.empty)('finder coverage jobs', test => {
 					)
 				)
 			)
+	)
+})
+
+layer(Layer.empty)('finder returned tokens', test => {
+	for (const role of ['reviewer', 'agent'] as const)
+		for (const spentTokens of [5, 1001])
+			test.effect(
+				`${role} releases only unused tokens after spending ${spentTokens} and receives the pool only as reviewer`,
+				() =>
+					Effect.gen(function* () {
+						const pool = yield* makeTokenPool
+						const requests: Omit<LoopRequest<unknown>, 'coverage'>[] = []
+						const run: AgentLoopService['Service']['run'] = request => {
+							requests.push(request)
+							return request.parse({ findings: [] }).pipe(
+								Effect.orDie,
+								Effect.map(value => ({
+									value,
+									turns: 1,
+									toolCalls: 0,
+									spentTokens,
+								}))
+							)
+						}
+						yield* FinderService.use(finder =>
+							finder.run(
+								plannedRun({
+									role,
+									name: role === 'agent' ? 'billing' : 'reviewer',
+								}),
+								context({
+									rules: { agents: [agent('billing')] },
+									tokens: { allowance: 1000, runTokens: 10_000, pool },
+								})
+							)
+						).pipe(
+							Effect.provide(
+								FinderServiceLive.pipe(
+									Layer.provide(Layer.succeed(AgentLoopService, { run })),
+									Layer.provide(
+										reviewDependencies(() =>
+											Effect.die('unexpected model call')
+										)
+									)
+								)
+							)
+						)
+						expect(requests).toHaveLength(1)
+						expect(requests[0]?.budget?.pool).toBe(
+							role === 'reviewer' ? pool : undefined
+						)
+						expect(yield* pool.available).toBe(Math.max(0, 1000 - spentTokens))
+					})
+			)
+})
+
+layer(Layer.empty)('failed continuation token accounting', test => {
+	test.effect.fails(
+		'known defect: releases the allowance minus every charged turn when a continuation keeps the first answer',
+		() =>
+			Effect.gen(function* () {
+				const pool = yield* makeTokenPool
+				const allowance = 10_000
+				yield* Effect.gen(function* () {
+					expect(
+						yield* FinderService.use(finder =>
+							finder.run(
+								plannedRun(),
+								context({ tokens: { allowance, runTokens: 100_000, pool } })
+							)
+						)
+					).toMatchObject({ report: { status: 'ok', continued: 1 } })
+					const spent = Object.values(
+						yield* TokenLedger.use(ledger => ledger.snapshot)
+					).reduce((total, usage) => total + usage.totalTokens, 0)
+					expect(spent).toBeGreaterThan(5)
+					expect(yield* pool.available).toBe(allowance - spent)
+				}).pipe(
+					Effect.provide(
+						finderLayer(
+							(_call, index) =>
+								Effect.succeed(
+									index === 0
+										? answer()
+										: [{ type: 'text', text: 'invalid' }, finishWithUsage(5)]
+								),
+							gitFixture({
+								readDiff: () =>
+									Effect.succeed(unifiedDiff(BILLING_PATH, 20_000)),
+							})
+						)
+					)
+				)
+			})
 	)
 })

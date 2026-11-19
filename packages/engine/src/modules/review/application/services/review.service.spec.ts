@@ -502,6 +502,7 @@ layer(Layer.empty)('review token allocation', test => {
 						)
 						expect(context?.fanOut).toBe(true)
 						expect(context?.tokens).toEqual({
+							pool: expect.any(Object) as unknown,
 							runTokens,
 							allowance: Math.floor(
 								(allowances[index] ?? 0) * (narrowed ? scenario.share : 1)
@@ -630,6 +631,40 @@ layer(Layer.empty)('judged duplicate outcome', test => {
 					},
 				])
 				expect(report.blocking).toBe(true)
+			})
+	)
+})
+
+layer(Layer.empty)('per-review token pool', test => {
+	test.effect(
+		'every finder shares one pool and the next review starts with a fresh pool',
+		() =>
+			Effect.gen(function* () {
+				const findSpy = vi.fn<FinderService['Service']['run']>(run =>
+					Effect.succeed(finderResult([], run.name))
+				)
+				const request = reviewRequest(config(), [agent('billing')])
+				yield* Effect.gen(function* () {
+					yield* ReviewService.use(review => review.review(request))
+					const firstPool = findSpy.mock.calls[0]?.[1].tokens.pool
+					expect(firstPool).toBeDefined()
+					expect(findSpy.mock.calls).toHaveLength(2)
+					for (const [, context] of findSpy.mock.calls)
+						expect(context.tokens.pool).toBe(firstPool)
+					if (firstPool) yield* firstPool.release(25)
+					yield* ReviewService.use(review => review.review(request))
+					const secondPool = findSpy.mock.calls[2]?.[1].tokens.pool
+					expect(secondPool).toBeDefined()
+					expect(secondPool).not.toBe(firstPool)
+					expect(findSpy.mock.calls[3]?.[1].tokens.pool).toBe(secondPool)
+					if (secondPool) expect(yield* secondPool.available).toBe(0)
+				}).pipe(
+					Effect.provide(
+						reviewLayer(findSpy, () =>
+							Effect.succeed({ status: 'unvalidated', error: 'unused' })
+						)
+					)
+				)
 			})
 	)
 })
