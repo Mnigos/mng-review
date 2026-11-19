@@ -829,6 +829,10 @@ layer(Layer.empty)('finder conversation allowances', test => {
 							turns: 1,
 							toolCalls: 0,
 							spentTokens: 5,
+							unspentTokens: Math.max(
+								0,
+								(request.budget?.conversationTokens ?? 0) - 5
+							),
 						}))
 					)
 				}
@@ -880,6 +884,10 @@ layer(Layer.empty)('finder coverage jobs', test => {
 								turns: 1,
 								toolCalls: 0,
 								spentTokens: 5,
+								unspentTokens: Math.max(
+									0,
+									(request.budget?.conversationTokens ?? 0) - 5
+								),
 							}))
 						)
 					}
@@ -994,9 +1002,13 @@ layer(Layer.empty)('finder coverage jobs', test => {
 
 layer(Layer.empty)('finder returned tokens', test => {
 	for (const role of ['reviewer', 'agent'] as const)
-		for (const spentTokens of [5, 1001])
+		for (const { spentTokens, unspentTokens } of [
+			{ spentTokens: 5, unspentTokens: 995 },
+			{ spentTokens: 1001, unspentTokens: 0 },
+			{ spentTokens: 5, unspentTokens: 1200 },
+		])
 			test.effect(
-				`${role} releases only unused tokens after spending ${spentTokens} and receives the pool only as reviewer`,
+				`${role} releases the reported ${unspentTokens} unused tokens after spending ${spentTokens} and receives the pool only as reviewer`,
 				() =>
 					Effect.gen(function* () {
 						const pool = yield* makeTokenPool
@@ -1010,6 +1022,7 @@ layer(Layer.empty)('finder returned tokens', test => {
 									turns: 1,
 									toolCalls: 0,
 									spentTokens,
+									unspentTokens,
 								}))
 							)
 						}
@@ -1040,14 +1053,59 @@ layer(Layer.empty)('finder returned tokens', test => {
 						expect(requests[0]?.budget?.pool).toBe(
 							role === 'reviewer' ? pool : undefined
 						)
-						expect(yield* pool.available).toBe(Math.max(0, 1000 - spentTokens))
+						expect(yield* pool.available).toBe(unspentTokens)
 					})
 			)
+	test.effect('a job that falls back to another model releases no tokens', () =>
+		Effect.gen(function* () {
+			const pool = yield* makeTokenPool
+			yield* Effect.gen(function* () {
+				expect(
+					yield* FinderService.use(finder =>
+						finder.run(
+							plannedRun(),
+							context({
+								fallback: REVIEWERS,
+								tokens: { allowance: 10_000, runTokens: 100_000, pool },
+							})
+						)
+					)
+				).toMatchObject({
+					report: { status: 'ok', model: 'model-b', fellBackFrom: 'model-a' },
+				})
+				expect(yield* pool.available).toBe(0)
+				expect(
+					(yield* TokenLedger.use(ledger => ledger.snapshot))['model-a']
+						?.totalTokens
+				).toBe(100)
+				expect(
+					(yield* ScriptedLlm.use(script => script.calls)).map(
+						call => call.model.model
+					)
+				).toEqual(['model-a', 'model-a', 'model-b'])
+			}).pipe(
+				Effect.provide(
+					finderLayer((call, index) =>
+						call.model.model === 'model-b'
+							? Effect.succeed(
+									answer('report_findings', { findings: [rawFinding()] })
+								)
+							: index === 0
+								? Effect.succeed([
+										toolCall('read_file', { path: BILLING_PATH }),
+										finishWithUsage(100),
+									])
+								: Effect.fail(providerError(503))
+					)
+				)
+			)
+		})
+	)
 })
 
 layer(Layer.empty)('failed continuation token accounting', test => {
-	test.effect.fails(
-		'known defect: releases the allowance minus every charged turn when a continuation keeps the first answer',
+	test.effect(
+		'releases the allowance minus every charged turn when a malformed continuation keeps the first answer',
 		() =>
 			Effect.gen(function* () {
 				const pool = yield* makeTokenPool
@@ -1064,8 +1122,9 @@ layer(Layer.empty)('failed continuation token accounting', test => {
 					const spent = Object.values(
 						yield* TokenLedger.use(ledger => ledger.snapshot)
 					).reduce((total, usage) => total + usage.totalTokens, 0)
-					expect(spent).toBeGreaterThan(5)
-					expect(yield* pool.available).toBe(allowance - spent)
+					expect(spent).toBe(20)
+					expect(yield* pool.available).toBe(9980)
+					expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(4)
 				}).pipe(
 					Effect.provide(
 						finderLayer(

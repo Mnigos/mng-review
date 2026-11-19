@@ -259,6 +259,7 @@ layer(Layer.empty)('AgentLoopService', test => {
 						toolCalls: 0,
 						turns: 1,
 						spentTokens: 5,
+						unspentTokens: 0,
 					})
 					expect(callSpy).not.toHaveBeenCalled()
 					const calls = yield* ScriptedLlm.use(script => script.calls)
@@ -698,6 +699,7 @@ layer(Layer.empty)('AgentLoopService', test => {
 						toolCalls: 1,
 						turns: 2,
 						spentTokens: 10,
+						unspentTokens: 0,
 					})
 					yield* Deferred.await(cancelled)
 					expect(callSpy).toHaveBeenCalledExactlyOnceWith(SCOPE, 'read_file', {
@@ -1099,6 +1101,7 @@ layer(Layer.empty)('conversation token budget and sources', test => {
 						toolCalls: 5,
 						turns: 2,
 						spentTokens: 1150 + nextInputTokens,
+						unspentTokens: conversationTokens - 1150 - nextInputTokens,
 					})
 					expect(callSpy).toHaveBeenCalledTimes(5)
 					const calls = yield* ScriptedLlm.use(script => script.calls)
@@ -1441,6 +1444,7 @@ layer(Layer.empty)('coverage continuation', test => {
 							value: { ...first, dropped: 0 },
 							turns: 1,
 							spentTokens,
+							unspentTokens: conversationTokens - spentTokens,
 							toolCalls: 0,
 						})
 						expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(
@@ -1477,6 +1481,7 @@ layer(Layer.empty)('coverage continuation', test => {
 					value: { findings: [], dropped: 0 },
 					turns: 2,
 					spentTokens: 10,
+					unspentTokens: 0,
 					toolCalls: 1,
 				})
 				expect(callSpy).toHaveBeenCalledExactlyOnceWith(SCOPE, 'diff', {})
@@ -1526,6 +1531,7 @@ layer(Layer.empty)('coverage continuation', test => {
 							continued: true,
 							turns: 3,
 							spentTokens: 15,
+							unspentTokens: conversationTokens - 15,
 							toolCalls: 1,
 						})
 						expect(callSpy).toHaveBeenCalledExactlyOnceWith(SCOPE, name, params)
@@ -1572,6 +1578,7 @@ layer(Layer.empty)('coverage continuation', test => {
 					value: { findings: [], dropped: 0 },
 					turns: 2,
 					spentTokens: 10,
+					unspentTokens: 0,
 					toolCalls: 1,
 				})
 				expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(2)
@@ -1591,7 +1598,13 @@ layer(Layer.empty)('coverage continuation', test => {
 		Effect.gen(function* () {
 			expect(
 				yield* AgentLoopService.use(loop => loop.run(COVERED_REQUEST))
-			).toEqual({ value: rawParsed(), turns: 1, toolCalls: 0, spentTokens: 5 })
+			).toEqual({
+				value: rawParsed(),
+				turns: 1,
+				toolCalls: 0,
+				spentTokens: 5,
+				unspentTokens: 0,
+			})
 			expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(1)
 		}).pipe(
 			Effect.provide(
@@ -1611,6 +1624,7 @@ layer(Layer.empty)('coverage continuation', test => {
 					toolCalls: 1,
 					turns: 3,
 					spentTokens: 15,
+					unspentTokens: 0,
 				})
 				const calls = yield* ScriptedLlm.use(script => script.calls)
 				expect(calls).toHaveLength(3)
@@ -1654,6 +1668,7 @@ layer(Layer.empty)('coverage continuation', test => {
 						continued: true,
 						turns: 2,
 						spentTokens: 10,
+						unspentTokens: 0,
 						toolCalls: 0,
 					})
 					const calls = yield* ScriptedLlm.use(script => script.calls)
@@ -1696,6 +1711,13 @@ layer(Layer.empty)('coverage continuation', test => {
 							dropped: 0,
 						},
 						continued: true,
+						spentTokens:
+							failure === 'budget'
+								? LIMITS.tokensPerRun
+								: failure === 'loop'
+									? 18
+									: 3,
+						unspentTokens: 0,
 					})
 					const calls = yield* ScriptedLlm.use(script => script.calls)
 					expect(calls).toHaveLength(
