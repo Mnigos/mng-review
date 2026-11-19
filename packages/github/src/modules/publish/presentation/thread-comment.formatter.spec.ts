@@ -42,7 +42,12 @@ describe('formatThreadComment', () => {
 			true
 		)
 		expect(text.length).toBeLessThan(65_536)
-		expect(parseFindingMarker(text)?.title.length).toBeLessThanOrEqual(301)
+		const marker = parseFindingMarker(text)
+		expect(marker?.title.length).toBeLessThanOrEqual(301)
+		expect(marker?.trigger).toBe(`${huge.slice(0, 3000)}…`)
+		expect(marker?.trigger?.length).toBe(3001)
+		expect(marker?.impact).toBe(`${huge.slice(0, 3000)}…`)
+		expect(marker?.impact?.length).toBe(3001)
 	})
 	test('escapes unverified premise, evidence, agents and validator model', () => {
 		const text = formatThreadComment(

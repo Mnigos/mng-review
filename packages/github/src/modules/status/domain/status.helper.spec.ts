@@ -24,6 +24,21 @@ describe('toCommitStatus', () => {
 })
 
 describe('toSweptStatus', () => {
+	test('an unfinished marker repairs a success overwritten after an unfinished run', () => {
+		expect(toSweptStatus(toCommitStatus('ready', 0, true), 0, false)).toEqual(
+			toCommitStatus('ready', 0, false)
+		)
+	})
+	test('a finished marker overrides both a previous error and its unfinished note', () => {
+		expect(toSweptStatus(toCommitStatus('ready', 0, false), 0, true)).toEqual(
+			toCommitStatus('ready', 0, true)
+		)
+	})
+	test('open bugs keep the unfinished note when the marker says the run did not finish', () => {
+		expect(
+			toSweptStatus(toCommitStatus('needs fixes', 2, true), 1, false)
+		).toEqual(toCommitStatus('needs fixes', 1, false))
+	})
 	test.each(['success', 'failure', 'error', 'pending'])(
 		'open bugs turn %s into failure and preserve whether it finished',
 		state => {

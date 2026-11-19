@@ -4,8 +4,14 @@ import { GitHubApiService } from '../../../platform/github-api.service'
 import { GitHubApiError } from '../../../platform/github.errors'
 import { githubApiFake } from '../../../shared/mocks/github-api-fake.helper'
 import { githubStatusFake } from '../../../shared/mocks/github-status-fake.helper'
-import { reviewThread, bug } from '../../../shared/mocks/publish-test.helper'
-import { UNFINISHED_NOTE } from '../domain/status.helper'
+import {
+	reviewThread,
+	bug,
+	SUMMARY_MARKER,
+} from '../../../shared/mocks/publish-test.helper'
+import { BOT_LOGIN } from '../../publish/domain/publish.constants'
+import { toMarkerComment } from '../../publish/presentation/thread-comment.formatter'
+import { toCommitStatus, UNFINISHED_NOTE } from '../domain/status.helper'
 import {
 	StatusSweepService,
 	StatusSweepServiceLive,
@@ -257,4 +263,132 @@ layer(Layer.empty)('StatusSweepService latest status', test => {
 				])
 			})
 	)
+})
+
+layer(Layer.empty)('StatusSweepService summary marker', test => {
+	for (const finished of [true, false])
+		for (const edited of [true, false])
+			test.effect(
+				`${edited ? 'bot-edited' : 'unedited'} summary with finished=${finished} repairs an overwritten status`,
+				() =>
+					Effect.gen(function* () {
+						const api = githubApiFake()
+						api.comments.push({
+							databaseId: 101,
+							body: toMarkerComment('summary', { ...SUMMARY_MARKER, finished }),
+							author: { __typename: 'Bot', login: BOT_LOGIN },
+							editor: edited ? { __typename: 'Bot', login: BOT_LOGIN } : null,
+						})
+						api.threads.push(reviewThread(undefined, { isResolved: true }))
+						const previous = {
+							id: 1,
+							...toCommitStatus('ready', 0, !finished),
+							context: 'MNG Review',
+							creator: null,
+						}
+						const repaired = toCommitStatus('ready', 0, finished)
+						const getStatusSpy = vi
+							.fn()
+							.mockReturnValueOnce(Effect.succeed(previous))
+							.mockReturnValueOnce(Effect.succeed(previous))
+							.mockReturnValue(
+								Effect.succeed({ ...previous, ...repaired, id: 2 })
+							)
+						const fake = githubStatusFake({
+							listOpenPullRequests: () =>
+								Effect.succeed([{ number: 17, head: { sha: 'head' } }]),
+							getStatus: getStatusSpy,
+						})
+						const sweeper = yield* StatusSweepService.pipe(
+							Effect.provide(
+								StatusSweepServiceLive.pipe(
+									Layer.provide(Layer.merge(fake.layer, api.api))
+								)
+							)
+						)
+						expect(yield* sweeper.sweep()).toEqual({
+							checked: 1,
+							updated: 1,
+							failed: 0,
+						})
+						expect(fake.statuses).toEqual([{ sha: 'head', ...repaired }])
+						expect(yield* sweeper.sweep()).toEqual({
+							checked: 1,
+							updated: 0,
+							failed: 0,
+						})
+						expect(getStatusSpy.mock.calls).toEqual([
+							['head'],
+							['head'],
+							['head'],
+						])
+						expect(fake.statuses).toHaveLength(1)
+						expect(api.writes).toEqual([])
+					})
+			)
+	for (const source of [
+		'user-editor',
+		'user-editor-bot-login',
+		'user-author',
+		'foreign-bot',
+		'legacy',
+		'invalid',
+		'unmarked',
+	] as const)
+		test.effect(`${source} summary falls back to the existing status`, () =>
+			Effect.gen(function* () {
+				const api = githubApiFake()
+				api.comments.push({
+					databaseId: 101,
+					body:
+						source === 'unmarked'
+							? 'No summary marker'
+							: toMarkerComment('summary', {
+									...SUMMARY_MARKER,
+									...(source === 'legacy'
+										? {}
+										: { finished: source === 'invalid' ? 'false' : false }),
+								}),
+					author:
+						source === 'user-author'
+							? { __typename: 'User', login: BOT_LOGIN }
+							: {
+									__typename: 'Bot',
+									login: source === 'foreign-bot' ? 'other-bot' : BOT_LOGIN,
+								},
+					editor:
+						source === 'user-editor' || source === 'user-editor-bot-login'
+							? {
+									__typename: 'User',
+									login:
+										source === 'user-editor-bot-login'
+											? BOT_LOGIN
+											: 'contributor',
+								}
+							: null,
+				})
+				const fake = githubStatusFake({
+					listOpenPullRequests: () =>
+						Effect.succeed([{ number: 17, head: { sha: 'head' } }]),
+					getStatus: () =>
+						Effect.succeed({
+							id: 1,
+							...toCommitStatus('ready', 0, true),
+							context: 'MNG Review',
+							creator: null,
+						}),
+				})
+				expect(
+					yield* StatusSweepService.use(service => service.sweep()).pipe(
+						Effect.provide(
+							StatusSweepServiceLive.pipe(
+								Layer.provide(Layer.merge(fake.layer, api.api))
+							)
+						)
+					)
+				).toEqual({ checked: 1, updated: 0, failed: 0 })
+				expect(fake.statuses).toEqual([])
+				expect(api.writes).toEqual([])
+			})
+		)
 })
