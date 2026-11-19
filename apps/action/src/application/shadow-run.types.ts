@@ -12,10 +12,10 @@ export interface PullRequestEvent {
 	readonly pr: PullRequestInfo
 }
 
-/** What an earlier run on the pull request left: how many runs there were and the head it reviewed. */
+/** What earlier runs on the pull request left: how many there were and the last head one finished. */
 export interface PriorRun {
 	readonly runs: number
-	readonly head: string
+	readonly head?: string
 }
 
 /** What the workflow entry is given: the event's name and how to read its payload, read only for a pull request event. */

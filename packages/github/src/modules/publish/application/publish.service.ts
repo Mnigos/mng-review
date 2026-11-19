@@ -7,6 +7,7 @@ import { toCodeSpan } from '../../../utils/markdown.util'
 import {
 	getVerdict,
 	isBotComment,
+	isFinished,
 	isRefused,
 	toBotThread,
 } from '../domain/bot-thread.helper'
@@ -34,8 +35,8 @@ import {
 	formatSummaryComment,
 } from '../presentation/summary-comment.formatter'
 import {
-	type BlobLinks,
 	formatThreadComment,
+	toBlobLinks,
 } from '../presentation/thread-comment.formatter'
 import type {
 	PublishInput,
@@ -84,13 +85,7 @@ export const PublishServiceLive = Layer.effect(
 		const rechecker = yield* ThreadRecheckService
 
 		/** Links to the repository at the target's head. */
-		const toLinks = (target: PublishTarget): BlobLinks => ({
-			serverUrl: config.serverUrl,
-			owner: config.owner,
-			name: config.name,
-			head: target.head,
-			engineCommit: target.engineCommit,
-		})
+		const toLinks = (target: PublishTarget) => toBlobLinks(config, target)
 
 		/** The bot's sticky summary: its oldest unedited comment that ends with a summary marker. */
 		const readSummary = Effect.fn('PublishService.readSummary')(function* (
@@ -299,10 +294,13 @@ export const PublishServiceLive = Layer.effect(
 			const found = (yield* api.listReviewThreads(pullNumber)).flatMap(
 				thread => toBotThread(thread) ?? []
 			)
+			const summary = yield* readSummary(pullNumber)
 			const agents = new Map(
 				input.rules.agents.map(agent => [agent.name, agent])
 			)
 			const recheck = yield* rechecker.recheck({
+				pullNumber,
+				rotation: summary?.marker.runs ?? 0,
 				pr: input.pr,
 				rules: input.rules,
 				links,
@@ -319,11 +317,13 @@ export const PublishServiceLive = Layer.effect(
 			const threads = found.map(thread =>
 				resolvedIds.has(thread.id) ? { ...thread, resolved: true } : thread
 			)
-			const summary = yield* readSummary(pullNumber)
+			const reviewedHead = isFinished(report)
+				? input.head
+				: summary?.marker.head
 			const marker: SummaryMarker = {
 				v: MARKER_VERSION,
 				runs: (summary?.marker.runs ?? 0) + 1,
-				head: input.head,
+				...(reviewedHead === undefined ? {} : { head: reviewedHead }),
 			}
 			const lines = yield* readCommentableLines(report, input.head)
 			const changedPlaces = yield* getChangedPlaces(input, threads)
@@ -376,7 +376,7 @@ export const PublishServiceLive = Layer.effect(
 				input.pullNumber,
 				formatStatusComment(
 					input.status,
-					{ v: MARKER_VERSION, runs: 0, head: input.head },
+					{ v: MARKER_VERSION, runs: 0 },
 					toLinks(input)
 				)
 			)

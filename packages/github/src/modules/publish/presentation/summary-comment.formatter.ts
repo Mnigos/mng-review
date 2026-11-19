@@ -155,11 +155,10 @@ function toFindingLines(input: SummaryInput, limit: number): string[] {
 		...toSection(
 			`Resolved by this run, no longer found at the head (${input.resolved.length}):`,
 			toCapped(
-				input.resolved.map(
-					entry =>
-						`- ${toCodeSpan(`${entry.thread.path}:${entry.thread.line ?? entry.thread.originalLine ?? entry.thread.marker.line}`)} ${escapeMarkdown(entry.thread.marker.title)}: ${escapeMarkdown(toShortReason(entry.reason))}`
-				),
-				limit
+				input.resolved,
+				limit,
+				entry =>
+					`- ${toCodeSpan(`${entry.thread.path}:${entry.thread.line ?? entry.thread.originalLine ?? entry.thread.marker.line}`)} ${escapeMarkdown(toShortText(entry.thread.marker.title))}: ${escapeMarkdown(toShortText(entry.reason))}`
 			)
 		),
 		...toSection(

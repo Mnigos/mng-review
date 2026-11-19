@@ -80,7 +80,9 @@ export const ShadowRunServiceLive = Layer.effect(
 				baseRef: event.baseSha,
 				headRef: event.headSha,
 				pr: event.pr,
-				...(prior && event.pr.trigger === 'auto' ? { since: prior.head } : {}),
+				...(prior?.head && event.pr.trigger === 'auto'
+					? { since: prior.head }
+					: {}),
 			})
 			return { status: 'reviewed', event, report, rules } as const
 		})

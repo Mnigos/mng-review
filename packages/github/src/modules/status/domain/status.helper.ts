@@ -7,23 +7,29 @@ export interface CommitStatusText {
 	readonly description: string
 }
 
+/** Ends the description of a status whose run did not finish, so the sweep never turns it green. */
+export const UNFINISHED_NOTE = 'the run did not finish'
+
 /**
- * The status for a verdict: `failure` while confirmed bug threads are open, `error` when the run
- * did not finish and nothing blocks, `success` when ready. `needs owner` blocks like open bugs.
+ * The status for a verdict: `failure` while confirmed bug threads are open or the verdict is
+ * `needs owner`, `error` when the run did not finish and nothing blocks, `success` when ready. A
+ * run that did not finish says so in the description, also when bugs block.
  */
 export function toCommitStatus(
 	verdict: Verdict,
-	openBugs: number
+	openBugs: number,
+	finished: boolean
 ): CommitStatusText {
-	if (verdict === 'needs fixes' || verdict === 'needs owner')
+	const note = finished ? '' : `; ${UNFINISHED_NOTE}`
+	if (openBugs > 0 || verdict === 'needs owner')
 		return {
 			state: 'failure',
-			description: `${openBugs} open bug thread(s); ${verdict}`,
+			description: `${openBugs} open bug thread(s); ${verdict}${note}`,
 		}
-	if (verdict === 'incomplete')
+	if (!finished || verdict === 'incomplete')
 		return {
 			state: 'error',
-			description: 'the review did not finish; no open bug thread so far',
+			description: `no open bug thread; ${UNFINISHED_NOTE}`,
 		}
 	return { state: 'success', description: 'no open bug thread' }
 }
@@ -36,20 +42,21 @@ export interface PreviousStatus {
 
 /**
  * The status the sweep sets after counting the bot's open bug threads again, or `undefined` when
- * it stays: open threads make it `failure`; none left turns a `failure` into `success`; an `error`
- * (a run that did not finish) stays until a run finishes.
+ * it stays. Open threads make it `failure`; none left makes it `success` only when the run that set
+ * it finished, so an unfinished run stays `error` until a run finishes.
  */
 export function toSweptStatus(
 	previous: PreviousStatus,
 	openBugs: number
 ): CommitStatusText | undefined {
-	const next =
-		openBugs > 0
-			? toCommitStatus('needs fixes', openBugs)
-			: previous.state === 'error'
-				? undefined
-				: toCommitStatus('ready', 0)
-	if (!next) return undefined
+	const finished =
+		previous.state !== 'error' &&
+		!(previous.description ?? '').includes(UNFINISHED_NOTE)
+	const next = toCommitStatus(
+		openBugs > 0 ? 'needs fixes' : 'ready',
+		openBugs,
+		finished
+	)
 	if (
 		next.state === previous.state &&
 		next.description === previous.description

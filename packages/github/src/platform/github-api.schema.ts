@@ -133,6 +133,7 @@ export type OpenPullRequest = typeof openPullRequestSchema.Type
 
 /** One commit status with who set it. */
 export const commitStatusSchema = Schema.Struct({
+	id: Schema.Number,
 	state: Schema.String,
 	context: Schema.String,
 	description: Schema.NullOr(Schema.String),

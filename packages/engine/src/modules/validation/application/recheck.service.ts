@@ -41,7 +41,8 @@ export interface RecheckReport {
 /**
  * Checks earlier findings again at a newer head: one fresh validator per finding, told to refute
  * it, over the change from the commit it was reported on to the head. A rejection means the
- * finding no longer holds there. A finding whose base git cannot read is not checked, and nothing
+ * finding no longer holds there. A finding whose base git cannot read, or that is no longer an
+ * ancestor of the head after a force-push, is not checked, and nothing
  * is checked when the endpoint is not configured. Runs inside `limits.tokens_per_run`, shared with
  * the review of the same job.
  */
@@ -60,6 +61,12 @@ export const RecheckServiceLive = Layer.effect(
 		const services = yield* Effect.context<
 			GitService | TokenLedger | HttpClient.HttpClient
 		>()
+
+		/** True when the base is an ancestor of the head; after a force-push it may not be. */
+		const isAncestor = (base: string, head: string) =>
+			git
+				.exec(['merge-base', '--is-ancestor', base, head])
+				.pipe(Effect.map(result => result.exitCode === 0))
 
 		const recheck = Effect.fn('RecheckService.recheck')(function* (
 			request: RecheckRequest
@@ -87,17 +94,16 @@ export const RecheckServiceLive = Layer.effect(
 			const results = yield* Effect.forEach(
 				request.items,
 				item =>
-					git.readChange(item.base, request.headRef).pipe(
-						Effect.flatMap(change =>
-							validator.value.validate(item.finding, {
-								scope: { change, pr: request.pr },
-								config,
-								rules: request.rules,
-							})
-						),
-						Effect.map(validation => [{ ...item, validation }]),
-						Effect.orElseSucceed(() => [])
-					),
+					Effect.gen(function* () {
+						if (!(yield* isAncestor(item.base, request.headRef))) return []
+						const change = yield* git.readChange(item.base, request.headRef)
+						const validation = yield* validator.value.validate(item.finding, {
+							scope: { change, pr: request.pr },
+							config,
+							rules: request.rules,
+						})
+						return [{ ...item, validation }]
+					}).pipe(Effect.orElseSucceed(() => [])),
 				{ concurrency: config.limits.concurrency }
 			)
 			return { results: results.flat(), tokens: yield* ledger.snapshot }
