@@ -8,6 +8,8 @@ import {
 } from '@mng-review/github'
 import { Context, Effect, Layer } from 'effect'
 import type { OutcomeFile } from '../infrastructure/outcome-file.schema'
+import { getGateReason } from './run-gate.helper'
+import type { PullRequestEvent } from './shadow-run.types'
 
 /**
  * What publishing trusts besides the outcome file: which engine posts, named in every marker, and
@@ -18,6 +20,8 @@ export interface PublishContext {
 	readonly engineCommit: string | undefined
 	readonly pullNumber: number
 	readonly head: string
+	/** The pull request as this job's own event payload gives it, for the base rules' gates. */
+	readonly event: Pick<PullRequestEvent, 'action' | 'pr'>
 }
 
 /** What publishing did with an outcome. */
@@ -68,13 +72,29 @@ export const PublishRunServiceLive = Layer.effect(
 			context: PublishContext
 		) {
 			const { report, recheck } = outcome
+			if (outcome.status !== 'reviewed' && outcome.status !== 'offline')
+				return {
+					status: 'not-published',
+					reason: `the run ended ${outcome.status}`,
+				} satisfies PublishReport
+			// The review job decided the gates too, but a file never decides whether this job writes.
+			const rules = yield* rulesService.load(outcome.binding.baseSha)
+			const gated = getGateReason(
+				context.event,
+				rules.config,
+				yield* publisher.readPrior(context.pullNumber)
+			)
+			if (gated !== undefined)
+				return {
+					status: 'not-published',
+					reason: gated,
+				} satisfies PublishReport
 			if (outcome.status === 'reviewed' && report) {
 				if (report.planReport.plan.skippedRun)
 					return {
 						status: 'not-published',
 						reason: report.planReport.plan.skippedRun,
 					} satisfies PublishReport
-				const rules = yield* rulesService.load(outcome.binding.baseSha)
 				const placed = toTrustedPlacement(report, rules)
 				const result = yield* publisher.publish({
 					pullNumber: context.pullNumber,
