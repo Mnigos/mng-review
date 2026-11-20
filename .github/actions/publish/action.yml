@@ -1,7 +1,7 @@
 # The publish job's steps once the base commit, the head objects and MNG Review are checked out:
 # install, download this run's outcome and result, publish, upload the result with what was posted.
-# Only the publish job of review-publish.yml uses it, from the engine checkout at the workflow's
-# own commit. Nothing here calls the model or holds an endpoint secret.
+# Only the publish jobs of review-publish.yml and review-command.yml use it, from the engine
+# checkout at the workflow's own commit. Nothing here calls the model or holds an endpoint secret.
 name: MNG Review publish steps
 description: Posts the outcome the review job of this run uploaded, and calls no model.
 
@@ -25,6 +25,32 @@ inputs:
     default: ''
   app-token-slug:
     description: The slug of the app the token was minted for, checked against app-slug.
+    required: false
+    default: ''
+  trigger:
+    description: >-
+      push (a pull request event) or command (the target inputs, from the authorize job, name the
+      pull request and its commits).
+    required: false
+    default: push
+  target-pr:
+    description: Command mode only, the pull request number from the authorize job.
+    required: false
+    default: ''
+  target-base:
+    description: Command mode only, the base commit the authorize job checked.
+    required: false
+    default: ''
+  target-head:
+    description: Command mode only, the head commit the authorize job checked.
+    required: false
+    default: ''
+  command-depth:
+    description: Command mode only, deep, quick or empty.
+    required: false
+    default: ''
+  command-agent:
+    description: Command mode only, the declared agent the command named, or empty.
     required: false
     default: ''
 
@@ -70,6 +96,12 @@ runs:
         MNG_REVIEW_APP_SLUG: ${{ inputs.app-slug }}
         MNG_REVIEW_APP_TOKEN: ${{ inputs.app-token }}
         MNG_REVIEW_MINTED_APP_SLUG: ${{ inputs.app-token-slug }}
+        MNG_REVIEW_TRIGGER: ${{ inputs.trigger }}
+        MNG_REVIEW_TARGET_PR: ${{ inputs.target-pr }}
+        MNG_REVIEW_TARGET_BASE: ${{ inputs.target-base }}
+        MNG_REVIEW_TARGET_HEAD: ${{ inputs.target-head }}
+        MNG_REVIEW_COMMAND_DEPTH: ${{ inputs.command-depth }}
+        MNG_REVIEW_COMMAND_AGENT: ${{ inputs.command-agent }}
         GITHUB_TOKEN: ${{ inputs.token }}
       run: bun --no-env-file apps/action/src/main.ts
 

@@ -97,15 +97,8 @@ jobs:
           # Review threads read through GraphQL name each comment's commit, which needs contents read.
           permission-contents: read
 
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version-file: .mng-review-engine/package.json
-          no-cache: true
-
-      - name: Install MNG Review
-        working-directory: .mng-review-engine
-        run: bun install --frozen-lockfile --production --ignore-scripts
+      - name: Set up MNG Review
+        uses: ./.mng-review-engine/.github/actions/setup-engine
 
       - name: Sweep
         working-directory: .mng-review-engine

@@ -1,13 +1,16 @@
-# The steps both entry workflows share once the base commit, the head objects and MNG Review are
-# checked out: install, prepare (publish mode only), join the tailnet, review, upload the result
-# and, in publish mode, the outcome for the publish job. Only review.yml and the review job of
-# review-publish.yml use it, from the engine checkout at the workflow's own commit.
+# The steps the entry workflows share once the base commit, the head objects and MNG Review are
+# checked out: install, prepare (publish and command mode), join the tailnet, review, upload the
+# result and, in publish and command mode, the outcome for the publish job. Only review.yml and the
+# review jobs of review-publish.yml and review-command.yml use it, from the engine checkout at the
+# workflow's own commit.
 name: MNG Review steps
 description: Installs MNG Review from this checkout, reviews the caller's change and uploads the result.
 
 inputs:
   mode:
-    description: shadow or publish.
+    description: >-
+      shadow, publish (a pull request event) or command (a run an authorized command asked for,
+      whose pull request the target inputs name).
     required: true
   engine-commit:
     description: The commit of MNG Review that runs.
@@ -22,6 +25,26 @@ inputs:
     description: >-
       Slug of the GitHub App the bot posts as, in publish mode; empty for github-actions[bot]. The
       prepare step reads it to know which bot wrote the summary and the threads.
+    required: false
+    default: ''
+  target-pr:
+    description: Command mode only, the pull request number from the authorize job.
+    required: false
+    default: ''
+  target-base:
+    description: Command mode only, the base commit the authorize job checked.
+    required: false
+    default: ''
+  target-head:
+    description: Command mode only, the head commit the authorize job checked.
+    required: false
+    default: ''
+  command-depth:
+    description: Command mode only, deep, quick or empty.
+    required: false
+    default: ''
+  command-agent:
+    description: Command mode only, the declared agent the command named, or empty.
     required: false
     default: ''
   llm-url:
@@ -66,8 +89,9 @@ runs:
       working-directory: ${{ github.action_path }}/../../..
       run: bun install --frozen-lockfile --production --ignore-scripts
 
-    # Publish mode: the checks before the probe and the GitHub reads, with the read token and no
-    # endpoint variable; it writes the prepared file and `ready`.
+    # Publish and command mode: the checks before the probe and the GitHub reads, with the read
+    # token and no endpoint variable; it writes the prepared file and `ready`. A command run reads
+    # its pull request again instead of the event, which is the comment's.
     - name: Prepare
       id: prepare
       if: inputs.mode != 'shadow'
@@ -79,6 +103,12 @@ runs:
         MNG_REVIEW_REPO_DIR: ${{ github.workspace }}/repo
         MNG_REVIEW_PREPARED_PATH: ${{ runner.temp }}/mng-review/prepared.json
         MNG_REVIEW_APP_SLUG: ${{ inputs.app-slug }}
+        MNG_REVIEW_TRIGGER: ${{ inputs.mode == 'command' && 'command' || 'push' }}
+        MNG_REVIEW_TARGET_PR: ${{ inputs.target-pr }}
+        MNG_REVIEW_TARGET_BASE: ${{ inputs.target-base }}
+        MNG_REVIEW_TARGET_HEAD: ${{ inputs.target-head }}
+        MNG_REVIEW_COMMAND_DEPTH: ${{ inputs.command-depth }}
+        MNG_REVIEW_COMMAND_AGENT: ${{ inputs.command-agent }}
         GITHUB_TOKEN: ${{ inputs.token }}
       run: |
         mkdir -p "$RUNNER_TEMP/mng-review"
@@ -119,6 +149,12 @@ runs:
         MNG_REVIEW_PREPARED_PATH: ${{ runner.temp }}/mng-review/prepared.json
         MNG_REVIEW_OUTCOME_PATH: ${{ runner.temp }}/mng-review-outcome/outcome.json
         MNG_REVIEW_MODE: ${{ inputs.mode == 'shadow' && 'shadow' || 'review' }}
+        MNG_REVIEW_TRIGGER: ${{ inputs.mode == 'command' && 'command' || 'push' }}
+        MNG_REVIEW_TARGET_PR: ${{ inputs.target-pr }}
+        MNG_REVIEW_TARGET_BASE: ${{ inputs.target-base }}
+        MNG_REVIEW_TARGET_HEAD: ${{ inputs.target-head }}
+        MNG_REVIEW_COMMAND_DEPTH: ${{ inputs.command-depth }}
+        MNG_REVIEW_COMMAND_AGENT: ${{ inputs.command-agent }}
         GITHUB_TOKEN: ''
         GH_TOKEN: ''
       run: |

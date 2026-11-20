@@ -6,6 +6,7 @@ import {
 	tokensByModelSchema,
 } from '@mng-review/github'
 import { Schema } from 'effect'
+import { RUN_TRIGGERS } from './command-run.config'
 
 /** Bumped when a field of the outcome file changes meaning or goes away. */
 export const OUTCOME_VERSION = 1
@@ -34,6 +35,8 @@ export const outcomeBindingSchema = Schema.Struct({
 	pullNumber: Schema.Int,
 	baseSha: commitShaSchema,
 	headSha: commitShaSchema,
+	/** What started the run, `MNG_REVIEW_TRIGGER`; a push outcome never publishes for a command. */
+	trigger: Schema.Literals(RUN_TRIGGERS),
 })
 export type OutcomeBinding = typeof outcomeBindingSchema.Type
 

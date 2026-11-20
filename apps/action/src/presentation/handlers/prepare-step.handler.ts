@@ -7,12 +7,17 @@ import {
 	toLogText,
 } from '@mng-review/github'
 import { Console, Effect, FileSystem } from 'effect'
+import type { CommandEventRead } from '../../application/command-run.types'
 import { PrepareRunService } from '../../application/prepare-run.service'
 import type {
 	PreparedRun,
 	PriorRun,
 	PullRequestEvent,
 } from '../../application/shadow-run.types'
+import {
+	commandTargetConfig,
+	triggerConfig,
+} from '../../infrastructure/command-run.config'
 import {
 	outputPathConfig,
 	writeOutputs,
@@ -22,12 +27,29 @@ import {
 	runnerEnvironmentConfig,
 	writePrepared,
 } from '../../infrastructure/runner.client'
+import { readCommandEvent } from './command-event.handler'
 
 /** The prepare step's log line: the prepared status and, unless it is ready, why. */
 function toPrepareLine(prepared: PreparedRun): string {
 	const reason = prepared.status === 'ready' ? '' : `: ${prepared.reason}`
 	return toLogText(`mng-review: prepare ${prepared.status}${reason}`)
 }
+
+/**
+ * A command run's pull request, read again instead of the comment's event; a closed, moved or
+ * fork pull request skips the run. `undefined` for a push run.
+ */
+const readCommandRun = Effect.gen(function* () {
+	if ((yield* triggerConfig) !== 'command') return undefined
+	return yield* readCommandEvent(yield* commandTargetConfig)
+}).pipe(
+	Effect.catchTag('ConfigError', error =>
+		Effect.succeed({
+			status: 'skipped',
+			reason: `the command's target cannot be read: ${error.message}`,
+		} satisfies CommandEventRead)
+	)
+)
 
 /**
  * The prepare step of the review job: the checks before the probe and the GitHub reads over the
@@ -59,16 +81,21 @@ export const runPrepareStep = Effect.gen(function* () {
 			provideOwnedIdentities(identity, rules.config.identity.previous),
 			Effect.orElseSucceed(() => [])
 		)
-	const prepared = yield* PrepareRunService.use(service =>
-		service.prepare({
-			eventName: env.eventName,
-			readEvent: readEventText(env.eventPath).pipe(
-				Effect.provideService(FileSystem.FileSystem, fs)
-			),
-			readPrior,
-			readThreads,
-		})
-	)
+	const command = yield* readCommandRun
+	const prepared: PreparedRun =
+		command?.status === 'skipped'
+			? command
+			: yield* PrepareRunService.use(service =>
+					service.prepare({
+						eventName: env.eventName,
+						readEvent: readEventText(env.eventPath).pipe(
+							Effect.provideService(FileSystem.FileSystem, fs)
+						),
+						readPrior,
+						readThreads,
+						...(command ? { event: command.event } : {}),
+					})
+				)
 	yield* writePrepared(env.preparedPath, prepared)
 	yield* Console.log(toPrepareLine(prepared))
 	yield* writeOutputs(yield* outputPathConfig, {
