@@ -25,7 +25,11 @@ const textListSchema = Schema.Array(textSchema)
 /** Most characters in a name: an agent, a model, a unit. */
 export const MAX_REPORT_NAME = 200
 const nameSchema = Schema.String.check(Schema.isMaxLength(MAX_REPORT_NAME))
-const nameListSchema = Schema.Array(nameSchema).check(Schema.isMaxLength(50))
+/** Most names in one list: the agents or models of a merged finding. */
+export const MAX_REPORT_NAMES = 50
+const nameListSchema = Schema.Array(nameSchema).check(
+	Schema.isMaxLength(MAX_REPORT_NAMES)
+)
 /** A finding's fingerprint as the engine makes it: a fixed number of lowercase hex characters. */
 const fingerprintSchema = Schema.String.check(
 	Schema.isPattern(new RegExp(`^[0-9a-f]{${FINGERPRINT_LENGTH}}$`, 'u'))

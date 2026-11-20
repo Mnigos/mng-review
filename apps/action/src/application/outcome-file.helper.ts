@@ -1,6 +1,7 @@
 import {
 	MAX_REPORT_ENTRIES,
 	MAX_REPORT_NAME,
+	MAX_REPORT_NAMES,
 	MAX_REPORT_TEXT,
 	type ThreadRecheckProposals,
 } from '@mng-review/github'
@@ -138,18 +139,26 @@ function toBoundedText(
 	return toRedacted(text, masked).slice(0, max)
 }
 
-/** A list of texts redacted and cut, at most `MAX_REPORT_ENTRIES` of them. */
+/** How long each entry of a bounded list may be and how many entries it keeps. */
+interface ListBounds {
+	readonly chars: number
+	readonly entries: number
+}
+
+/** A list of texts redacted and cut to its bounds. */
 function toBoundedList(
 	value: unknown,
 	masked: readonly string[],
-	max: number
+	bounds: ListBounds
 ): unknown {
 	if (!Array.isArray(value)) return value
 	const entries: readonly unknown[] = value
 	return entries
-		.slice(0, MAX_REPORT_ENTRIES)
+		.slice(0, bounds.entries)
 		.map(entry =>
-			Predicate.isString(entry) ? toBoundedText(entry, masked, max) : entry
+			Predicate.isString(entry)
+				? toBoundedText(entry, masked, bounds.chars)
+				: entry
 		)
 }
 
@@ -169,9 +178,15 @@ function toOutcomeValue(
 		return value
 	}
 	if (TEXT_LIST_KEYS.has(key))
-		return toBoundedList(value, masked, MAX_REPORT_TEXT)
+		return toBoundedList(value, masked, {
+			chars: MAX_REPORT_TEXT,
+			entries: MAX_REPORT_ENTRIES,
+		})
 	if (NAME_LIST_KEYS.has(key))
-		return toBoundedList(value, masked, MAX_REPORT_NAME)
+		return toBoundedList(value, masked, {
+			chars: MAX_REPORT_NAME,
+			entries: MAX_REPORT_NAMES,
+		})
 	return toRedactedValue(key, value, masked)
 }
 
