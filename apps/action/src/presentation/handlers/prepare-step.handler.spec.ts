@@ -11,6 +11,11 @@ import {
 	reviewThread,
 	SUMMARY_MARKER,
 } from '../../../../../packages/github/src/shared/mocks/publish-test.helper'
+// oxlint-disable-next-line no-restricted-imports -- The test brief requires shared GitHub reply fixtures.
+import {
+	pendingReply,
+	pendingReviewThread,
+} from '../../../../../packages/github/src/shared/mocks/thread-reply-test.helper'
 import { PrepareRunServiceLive } from '../../application/prepare-run.service'
 import { parsePreparedRun } from '../../infrastructure/prepared-run.parser'
 import {
@@ -254,5 +259,45 @@ layer(FileSystemLayer)('prepare command target', test => {
 					expect(fixture.loads).toEqual(moved ? [] : [fixture.base])
 					expect(fixture.api.writes).toEqual([])
 				})
+		)
+})
+
+layer(FileSystemLayer)('prepare author replies', test => {
+	for (const failure of [
+		undefined,
+		'getCollaboratorRole',
+		'listThreadComments',
+	] as const)
+		test.effect(`writes prepared replies, GitHub failure=${failure}`, () =>
+			Effect.gen(function* () {
+				const fixture = stepFixture()
+				const fs = yield* FileSystem.FileSystem
+				fixture.api.command.role = 'write'
+				fixture.api.threads.push(pendingReviewThread())
+				if (failure)
+					fixture.api.failures[failure].push(
+						new GitHubApiError({
+							operation: failure,
+							reason: 'unavailable',
+							status: 503,
+						})
+					)
+				yield* runPrepareStep.pipe(
+					Effect.provide(
+						PrepareRunServiceLive.pipe(Layer.provide(fixture.rulesLayer))
+					),
+					Effect.provide(fixture.publisherLayer),
+					Effect.provide(fixture.envLayer())
+				)
+				const prepared = yield* parsePreparedRun(
+					yield* fs.readFileString(fixture.paths.prepared)
+				)
+				expect(prepared.status).toBe('ready')
+				if (prepared.status === 'ready')
+					expect(prepared.replies ?? []).toEqual(
+						failure ? [] : [pendingReply()]
+					)
+				expect(fixture.api.writes).toEqual([])
+			})
 		)
 })

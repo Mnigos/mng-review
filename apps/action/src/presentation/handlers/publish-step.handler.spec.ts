@@ -1,6 +1,10 @@
 import { layer } from '@effect/vitest'
 import { GitHubConfig, GitHubWriteConfigLive } from '@mng-review/github'
 import { Effect, FileSystem } from 'effect'
+// oxlint-disable-next-line no-restricted-imports -- The test brief requires shared GitHub fixtures.
+import { reviewThread } from '../../../../../packages/github/src/shared/mocks/publish-test.helper'
+// oxlint-disable-next-line no-restricted-imports -- The test brief requires shared GitHub reply fixtures.
+import { decidedReply } from '../../../../../packages/github/src/shared/mocks/thread-reply-test.helper'
 import { PublishRunService } from '../../application/publish-run.service'
 import {
 	MAX_OUTCOME_BYTES,
@@ -571,6 +575,44 @@ layer(FileSystemLayer, { excludeTestServices: true })(
 					expect(fixture.api.comments[0]?.body).not.toContain('Verdict: ready')
 					expect(fixture.status.statuses).toHaveLength(1)
 					expect(fixture.status.statuses[0]).toHaveProperty('state', 'error')
+				})
+		)
+	}
+)
+
+layer(FileSystemLayer, { excludeTestServices: true })(
+	'publish planted reply decision',
+	test => {
+		test.effect(
+			'a decision in the outcome cannot answer a thread with no pending reply',
+			() =>
+				Effect.gen(function* () {
+					const fixture = stepFixture()
+					const fs = yield* FileSystem.FileSystem
+					fixture.api.threads.push(reviewThread())
+					yield* fs.writeFileString(
+						fixture.paths.outcome,
+						JSON.stringify({
+							...fixture.file,
+							replies: { decided: [decidedReply()], tokens: {} },
+						})
+					)
+					yield* fs.writeFileString(
+						fixture.paths.result,
+						JSON.stringify({ version: 1 })
+					)
+					yield* runPublishStep.pipe(
+						Effect.provide(fixture.publishRunLayer),
+						Effect.provide(fixture.envLayer())
+					)
+					expect(
+						fixture.api.writes.filter(
+							write => write.method === 'reply' || write.method === 'resolve'
+						)
+					).toEqual([])
+					expect(
+						fixture.api.writes.some(write => write.method === 'create')
+					).toBeTruthy()
 				})
 		)
 	}

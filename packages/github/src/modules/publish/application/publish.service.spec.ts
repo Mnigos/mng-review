@@ -27,6 +27,10 @@ import {
 	TOKEN_MODE_OWNED,
 } from '../../../shared/mocks/publish-test.helper'
 import {
+	decidedReply,
+	pendingReviewThread,
+} from '../../../shared/mocks/thread-reply-test.helper'
+import {
 	StatusReportService,
 	StatusReportServiceLive,
 } from '../../status/application/status-report.service'
@@ -41,6 +45,7 @@ import {
 import {
 	parseSummaryMarker,
 	parseFindingMarker,
+	parseReplyMarker,
 } from '../domain/publish-marker.parser'
 import { SHORT_SHA_LENGTH } from '../domain/publish.constants'
 import { PublishIncompleteError } from '../domain/publish.errors'
@@ -2557,5 +2562,107 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 					expect(fixture.fake.threadReads).toEqual([17, 17])
 				})
 		)
+	}
+)
+
+layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
+	'PublishService author replies',
+	test => {
+		test.effect(
+			'needs-owner writes one answer without extending the summary marker',
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup()
+					fixture.fake.threads.push(pendingReviewThread())
+					yield* PublishService.use(service =>
+						service.publish({
+							...fixture.input,
+							replies: {
+								tokens: {},
+								decisions: [
+									decidedReply({
+										action: 'needs-owner',
+										reason: 'The disagreement remains.',
+									}),
+								],
+							},
+						})
+					).pipe(Effect.provide(fixture.publisher))
+					expect(fixture.fake.writes.map(write => write.method)).toEqual([
+						'reply',
+						'create',
+					])
+					const answer = fixture.fake.writes.find(
+						write => write.method === 'reply'
+					)
+					expect(answer?.method).toBe('reply')
+					if (answer?.method !== 'reply') return
+					expect(answer.body).toContain(
+						'This goes to the owner: The disagreement remains.'
+					)
+					expect(parseReplyMarker(answer.body)).toEqual({
+						v: SUMMARY_MARKER.v,
+						action: 'needs-owner',
+						commit: fixture.head,
+						reply: 42,
+					})
+					expect(
+						JSON.parse(
+							/<!-- mng-review:summary (.*) -->$/u.exec(
+								fixture.fake.comments[0]?.body ?? ''
+							)?.[1] ?? '{}'
+						)
+					).toEqual({
+						v: SUMMARY_MARKER.v,
+						runs: 1,
+						finished: true,
+						head: fixture.head,
+					})
+				})
+		)
+		for (const action of ['resolved', 'accepted'] as const)
+			test.effect(
+				`${action} closes the thread before the verdict even if GitHub refuses resolution`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = setup()
+						const thread = pendingReviewThread()
+						fixture.fake.threads.push({
+							...thread,
+							comments: {
+								...thread.comments,
+								nodes: thread.comments.nodes.map(comment => ({
+									...comment,
+									originalCommit: { oid: fixture.head },
+								})),
+							},
+						})
+						fixture.fake.failures.resolve.push(error(403))
+						const decision =
+							action === 'accepted'
+								? {
+										action,
+										reason: 'The guard is intentional.',
+										memory: 'Keep the guard.',
+										evidence: ['src/store.ts:10'],
+									}
+								: { action, reason: 'The guard fixes it.' }
+						const published = yield* PublishService.use(service =>
+							service.publish({
+								...fixture.input,
+								replies: { tokens: {}, decisions: [decidedReply(decision)] },
+							})
+						).pipe(Effect.provide(fixture.publisher))
+						expect(published).toMatchObject({
+							verdict: 'ready',
+							openBugs: 0,
+							answered: { [action]: 1 },
+						})
+						expect(fixture.fake.writes).toContainEqual({
+							method: 'resolve',
+							id: 'thread',
+						})
+					})
+			)
 	}
 )
