@@ -1,5 +1,5 @@
 import { Effect, Layer } from 'effect'
-import { BOT_LOGIN } from '../../modules/publish/domain/publish.constants'
+import { GITHUB_ACTIONS_IDENTITY } from '../../platform/bot-identity.helper'
 import type {
 	PullRequestComment,
 	ReviewThread,
@@ -28,6 +28,8 @@ export type ApiWrite =
 			readonly body: string
 	  }
 	| { readonly method: 'update'; readonly id: number; readonly body: string }
+	| { readonly method: 'delete'; readonly id: number }
+	| { readonly method: 'minimize'; readonly id: string }
 	| { readonly method: 'reply'; readonly id: string; readonly body: string }
 	| { readonly method: 'resolve'; readonly id: string }
 
@@ -41,12 +43,14 @@ export function githubApiFake() {
 		comment: [] as GitHubApiError[],
 		create: [] as GitHubApiError[],
 		update: [] as GitHubApiError[],
+		delete: [] as GitHubApiError[],
+		minimize: [] as GitHubApiError[],
 		reply: [] as GitHubApiError[],
 		resolve: [] as GitHubApiError[],
 		listThreads: [] as GitHubApiError[],
 		listComments: [] as GitHubApiError[],
 	}
-	const author = { __typename: 'Bot', login: BOT_LOGIN }
+	const author = { __typename: 'Bot', login: GITHUB_ACTIONS_IDENTITY.login }
 	const addThread = (input: ReviewCommentInput) => {
 		threads.push({
 			id: `thread-${threads.length}`,
@@ -147,8 +151,34 @@ export function githubApiFake() {
 				const error = failures.create.shift()
 				if (error) return yield* error
 				const id = writes.length
-				comments.push({ databaseId: id, body, author, editor: null })
+				comments.push({
+					id: `comment-${id}`,
+					databaseId: id,
+					isMinimized: false,
+					body,
+					author,
+					editor: null,
+				})
 				return id
+			}),
+		deleteIssueComment: id =>
+			Effect.gen(function* () {
+				writes.push({ method: 'delete', id })
+				const error = failures.delete.shift()
+				if (error) return yield* error
+				const index = comments.findIndex(comment => comment.databaseId === id)
+				if (index !== -1) comments.splice(index, 1)
+				return undefined
+			}),
+		minimizeComment: id =>
+			Effect.gen(function* () {
+				writes.push({ method: 'minimize', id })
+				const error = failures.minimize.shift()
+				if (error) return yield* error
+				const index = comments.findIndex(comment => comment.id === id)
+				const existing = comments[index]
+				if (existing) comments[index] = { ...existing, isMinimized: true }
+				return undefined
 			}),
 		updateIssueComment: (id, body) =>
 			Effect.gen(function* () {

@@ -1,8 +1,9 @@
 # Reusable review workflow, publish mode: like review.yml, and it also comments on the pull request
-# as github-actions[bot]: threads for findings, a sticky summary, a check run per agent and the
-# MNG Review commit status, never an approval. The caller grants pull-requests, checks and statuses
-# write. Two jobs: `review` holds the endpoint secrets and a read-only token and makes every model
-# call; `publish` holds the write token, downloads the outcome and posts it without a model call.
+# as github-actions[bot], or as a GitHub App when app-slug and its two secrets are set: threads for
+# findings, a sticky summary, a check run per agent and the MNG Review commit status, never an
+# approval. The caller grants pull-requests, checks and statuses write. Two jobs: `review` holds
+# the endpoint secrets and a read-only token and makes every model call; `publish` holds the write
+# token and the app key, downloads the outcome and posts it without a model call.
 # The review job shares its steps with review.yml in .github/actions/review.
 # The caller owns the trigger and the concurrency; see "GitHub Actions" in README.md.
 # Nothing from the caller's repository is installed, built or run: its base commit is checked out
@@ -28,6 +29,10 @@ on:
         description: Job timeout in minutes.
         type: number
         default: 20
+      app-slug:
+        description: Slug of the GitHub App the bot posts as. Empty posts as github-actions[bot].
+        type: string
+        default: ''
     secrets:
       llm-url:
         description: Base URL of the OpenAI-compatible endpoint, such as https://llm.example.com/v1.
@@ -40,6 +45,12 @@ on:
         required: false
       tailscale-oauth-secret:
         description: Tailscale OAuth client secret, needed when tailscale is true.
+        required: false
+      app-client-id:
+        description: Client id of the GitHub App, needed when app-slug is set.
+        required: false
+      app-private-key:
+        description: Private key of the GitHub App, needed when app-slug is set.
         required: false
 
 permissions:
@@ -107,7 +118,8 @@ jobs:
           persist-credentials: false
 
       # Keep the steps above in step with review.yml; the rest is shared. The read token reaches
-      # the prepare step alone, never the step that calls the model.
+      # the prepare step alone, never the step that calls the model. The slug only tells the prepare
+      # step which bot wrote the summary and the threads; this job holds no app secret.
       - name: Review
         id: review
         uses: ./.mng-review-engine/.github/actions/review
@@ -115,6 +127,7 @@ jobs:
           mode: publish
           engine-commit: ${{ job.workflow_sha }}
           token: ${{ github.token }}
+          app-slug: ${{ inputs.app-slug }}
           llm-url: ${{ secrets.llm-url }}
           llm-key: ${{ secrets.llm-key }}
           tailscale: ${{ inputs.tailscale }}
@@ -128,7 +141,8 @@ jobs:
     needs: review
     if: needs.review.outputs.publish == 'true'
     runs-on: ${{ inputs.runner }}
-    # No endpoint or tailnet secret is named here, and the job never joins the tailnet.
+    # No endpoint or tailnet secret is named here, and the job never joins the tailnet. In app mode
+    # the job token keeps write, since permissions are static text, but only checks out and fetches.
     permissions:
       contents: read
       pull-requests: write
@@ -178,8 +192,41 @@ jobs:
           persist-credentials: false
 
       # Keep the steps above in step with the review job.
+      # All three app settings, or none: anything else fails here, before any write.
+      - name: Check the app credentials
+        env:
+          APP_SLUG: ${{ inputs.app-slug }}
+          HAS_CLIENT_ID: ${{ secrets.app-client-id != '' }}
+          HAS_PRIVATE_KEY: ${{ secrets.app-private-key != '' }}
+        run: |
+          if [ -n "$APP_SLUG" ]; then
+            if [ "$HAS_CLIENT_ID" != true ] || [ "$HAS_PRIVATE_KEY" != true ]; then
+              echo "::error::app-slug is set, so app-client-id and app-private-key are required."
+              exit 1
+            fi
+          elif [ "$HAS_CLIENT_ID" = true ] || [ "$HAS_PRIVATE_KEY" = true ]; then
+            echo "::error::app-client-id or app-private-key is set without app-slug."
+            exit 1
+          fi
+
+      # The calling repository only and the listed permissions only; revoked when the job ends.
+      - name: Mint the app token
+        id: app
+        if: inputs.app-slug != ''
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.app-client-id }}
+          private-key: ${{ secrets.app-private-key }}
+          permission-pull-requests: write
+          permission-checks: write
+          permission-statuses: write
+
+      # In app mode the entry gets the app token and never the job token.
       - name: Publish
         uses: ./.mng-review-engine/.github/actions/publish
         with:
           engine-commit: ${{ job.workflow_sha }}
-          token: ${{ github.token }}
+          token: ${{ inputs.app-slug == '' && github.token || '' }}
+          app-slug: ${{ inputs.app-slug }}
+          app-token: ${{ steps.app.outputs.token }}
+          app-token-slug: ${{ steps.app.outputs.app-slug }}

@@ -524,6 +524,7 @@ test.each(['published', 'failed', 'status-only', 'not-published'] as const)(
 							rechecked: 8,
 							resolved: 3,
 							run: 6,
+							cleanup: 'none',
 						},
 					} as const)
 				: status === 'status-only'

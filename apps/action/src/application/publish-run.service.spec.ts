@@ -2,13 +2,16 @@ import { layer } from '@effect/vitest'
 import { ConfigError, type KeptFinding } from '@mng-review/domain'
 import { RulesService, type Rules } from '@mng-review/engine'
 import {
+	GITHUB_ACTIONS_IDENTITY,
+	GitHubConfig,
 	PublishService,
 	GitHubApiError,
 	StatusReportService,
 	MARKER_VERSION,
+	SummaryCommentService,
 	type SummaryMarker,
 } from '@mng-review/github'
-import { Effect, Layer } from 'effect'
+import { Effect, Layer, Redacted } from 'effect'
 import { parseOutcomeFile } from '../infrastructure/outcome-file.parser'
 import type {
 	OutcomeBinding,
@@ -67,6 +70,7 @@ const PUBLISHED = {
 	rechecked: 0,
 	resolved: 0,
 	run: 1,
+	cleanup: 'none',
 } as const
 
 /** Publisher test layer records which outcome path is taken and can fail either write. */
@@ -112,10 +116,23 @@ function setup(
 					reportOffline: reportOfflineSpy,
 				}),
 				Layer.succeed(PublishService, {
-					readPrior: readPriorSpy,
 					readThreads: () => Effect.succeed([]),
 					publish: publishSpy,
+				}),
+				Layer.succeed(SummaryCommentService, {
+					read: () => Effect.succeed(undefined),
+					write: () => Effect.die('the run never writes the summary itself'),
+					readPrior: readPriorSpy,
 					publishStatus: publishStatusSpy,
+				}),
+				Layer.succeed(GitHubConfig, {
+					serverUrl: 'https://github.com',
+					apiUrl: 'https://api.github.com',
+					graphqlUrl: 'https://api.github.com/graphql',
+					owner: 'example',
+					name: 'project',
+					token: Redacted.make('fixture'),
+					identity: GITHUB_ACTIONS_IDENTITY,
 				})
 			)
 		)

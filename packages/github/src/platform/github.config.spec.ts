@@ -4,7 +4,7 @@ import { GITHUB_CREDENTIAL } from '../shared/mocks/github-http.helper'
 import {
 	GITHUB_TOKEN_VARIABLE,
 	GitHubConfig,
-	GitHubConfigLive,
+	GitHubWriteConfigLive,
 } from './github.config'
 
 const ENVIRONMENT = {
@@ -15,7 +15,7 @@ const ENVIRONMENT = {
 /** Loads only the supplied environment, without consulting the process environment. */
 function loadConfig(environment: Record<string, string>) {
 	return GitHubConfig.pipe(
-		Effect.provide(GitHubConfigLive),
+		Effect.provide(GitHubWriteConfigLive),
 		Effect.provide(
 			ConfigProvider.layer(ConfigProvider.fromEnvRecord(environment))
 		)

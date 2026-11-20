@@ -1,5 +1,3 @@
-/** The login GraphQL gives the job token's identity, `github-actions[bot]` in REST. */
-export const BOT_LOGIN = 'github-actions'
 /** The opening of every hidden marker the bot writes; a marker sits alone at the end of a body. */
 export const MARKER_PREFIX = 'mng-review:'
 export const MARKER_VERSION = 1

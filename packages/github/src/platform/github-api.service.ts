@@ -1,6 +1,7 @@
 import { Context, Effect, Layer } from 'effect'
 import { HttpClientRequest } from 'effect/http'
 import {
+	MINIMIZE_COMMENT_MUTATION,
 	PULL_REQUEST_COMMENTS_QUERY,
 	REPLY_TO_THREAD_MUTATION,
 	RESOLVE_THREAD_MUTATION,
@@ -66,6 +67,13 @@ export class GitHubApiService extends Context.Service<
 			commentId: number,
 			body: string
 		) => Effect.Effect<void, GitHubApiError>
+		readonly deleteIssueComment: (
+			commentId: number
+		) => Effect.Effect<void, GitHubApiError>
+		/** Hides a conversation comment as outdated, by its GraphQL node id. */
+		readonly minimizeComment: (
+			nodeId: string
+		) => Effect.Effect<void, GitHubApiError>
 		/** Replies in a review thread by its GraphQL node id. */
 		readonly replyToThread: (
 			threadId: string,
@@ -80,7 +88,8 @@ export class GitHubApiService extends Context.Service<
 export const GitHubApiServiceLive = Layer.effect(
 	GitHubApiService,
 	Effect.gen(function* () {
-		const { config, repo, sendJson, graphql, query } = yield* makeGitHubHttp
+		const { config, repo, sendJson, sendEmpty, graphql, query } =
+			yield* makeGitHubHttp
 
 		/** The variables every pull request query takes. */
 		const toVariables = (pullNumber: number, cursor: string | null) => ({
@@ -201,6 +210,26 @@ export const GitHubApiServiceLive = Layer.effect(
 			}
 		)
 
+		const deleteIssueComment = Effect.fn('GitHubApiService.deleteIssueComment')(
+			function* (commentId: number) {
+				yield* sendEmpty(
+					'deleteIssueComment',
+					HttpClientRequest.delete(`${repo}/issues/comments/${commentId}`)
+				)
+			}
+		)
+
+		const minimizeComment = Effect.fn('GitHubApiService.minimizeComment')(
+			function* (nodeId: string) {
+				yield* graphql(
+					'minimizeComment',
+					MINIMIZE_COMMENT_MUTATION,
+					{ id: nodeId },
+					mutationAnswerSchema
+				)
+			}
+		)
+
 		const replyToThread = Effect.fn('GitHubApiService.replyToThread')(
 			function* (threadId: string, body: string) {
 				yield* graphql(
@@ -232,6 +261,8 @@ export const GitHubApiServiceLive = Layer.effect(
 			createReviewComment,
 			createIssueComment,
 			updateIssueComment,
+			deleteIssueComment,
+			minimizeComment,
 		}
 	})
 )

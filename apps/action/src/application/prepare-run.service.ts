@@ -39,7 +39,9 @@ export const PrepareRunServiceLive = Layer.effect(
 			const skipped = gateRun(rules.config, event.pr)
 			if (skipped !== undefined)
 				return { status: 'skipped', reason: skipped, event } as const
-			const prior = input.readPrior ? yield* input.readPrior(event) : undefined
+			const prior = input.readPrior
+				? yield* input.readPrior(event, rules)
+				: undefined
 			const limited = getRunLimitReason(
 				prior,
 				rules.config.limits.max_runs_per_pr,
@@ -47,7 +49,9 @@ export const PrepareRunServiceLive = Layer.effect(
 			)
 			if (limited !== undefined)
 				return { status: 'skipped', reason: limited, event } as const
-			const threads = input.readThreads ? yield* input.readThreads(event) : []
+			const threads = input.readThreads
+				? yield* input.readThreads(event, rules)
+				: []
 			return {
 				status: 'ready',
 				event,

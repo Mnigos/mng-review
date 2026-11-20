@@ -5,6 +5,7 @@ import {
 	type HttpClientRequest,
 	HttpClientResponse,
 } from 'effect/http'
+import { GITHUB_ACTIONS_IDENTITY } from '../../platform/bot-identity.helper'
 import type {
 	ConnectionPage,
 	PullRequestComment,
@@ -22,9 +23,12 @@ export const GITHUB_SETTINGS = {
 	apiUrl: 'https://github.example.test/api/v3',
 	graphqlUrl: 'https://github.example.test/api/graphql',
 	token: Redacted.make(GITHUB_CREDENTIAL),
+	identity: GITHUB_ACTIONS_IDENTITY,
 } as const satisfies GitHubConfig['Service']
 export const ISSUE_COMMENT = {
+	id: 'comment-node-17',
 	databaseId: 17,
+	isMinimized: false,
 	body: 'Conversation comment',
 	author: { __typename: 'Bot', login: 'review-bot' },
 	editor: { __typename: 'User', login: 'editor' },
@@ -39,7 +43,15 @@ export const REVIEW_THREAD = {
 	subjectType: 'LINE',
 	comments: {
 		totalCount: 2,
-		nodes: [{ ...ISSUE_COMMENT, originalCommit: { oid: 'abcdef1234567' } }],
+		nodes: [
+			{
+				databaseId: ISSUE_COMMENT.databaseId,
+				body: ISSUE_COMMENT.body,
+				author: ISSUE_COMMENT.author,
+				editor: ISSUE_COMMENT.editor,
+				originalCommit: { oid: 'abcdef1234567' },
+			},
+		],
 	},
 } as const satisfies ReviewThread
 

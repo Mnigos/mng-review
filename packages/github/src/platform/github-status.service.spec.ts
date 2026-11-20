@@ -1,28 +1,26 @@
 import { layer } from '@effect/vitest'
-import { Effect, Layer } from 'effect'
+import { Effect } from 'effect'
 import { UrlParams } from 'effect/http'
 import {
 	makeGitHubHttp,
 	getGitHubRequestBody,
 	GITHUB_SETTINGS,
 } from '../shared/mocks/github-http.helper'
+import { TOKEN_MODE_OWNED } from '../shared/mocks/publish-test.helper'
+import { GITHUB_ACTIONS_IDENTITY } from './bot-identity.helper'
 import { PAGE_SIZE } from './github-api.constants'
-import {
-	GitHubStatusService,
-	STATUS_CONTEXT,
-	BOT_REST_LOGIN,
-} from './github-status.service'
+import { GitHubStatusService, STATUS_CONTEXT } from './github-status.service'
 
 const BOT_STATUS = {
 	id: 17,
 	state: 'failure',
 	context: STATUS_CONTEXT,
 	description: '1 open bug',
-	creator: { login: BOT_REST_LOGIN, type: 'Bot' },
+	creator: { login: GITHUB_ACTIONS_IDENTITY.restLogin, type: 'Bot' },
 } as const
 const REPO_URL = `${GITHUB_SETTINGS.apiUrl}/repos/${GITHUB_SETTINGS.owner}/${GITHUB_SETTINGS.name}`
 
-layer(Layer.empty)('GitHubStatusService', test => {
+layer(TOKEN_MODE_OWNED)('GitHubStatusService', test => {
 	test.effect(
 		'posts a completed check with a nonblocking conclusion and output',
 		() =>
@@ -90,7 +88,10 @@ layer(Layer.empty)('GitHubStatusService', test => {
 							{ ...BOT_STATUS, creator: null },
 							{
 								...BOT_STATUS,
-								creator: { login: BOT_REST_LOGIN, type: 'User' },
+								creator: {
+									login: GITHUB_ACTIONS_IDENTITY.restLogin,
+									type: 'User',
+								},
 							},
 							{ ...BOT_STATUS, creator: { login: 'other-bot', type: 'Bot' } },
 							BOT_STATUS,

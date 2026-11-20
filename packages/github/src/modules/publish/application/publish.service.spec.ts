@@ -1,6 +1,7 @@
 import { layer } from '@effect/vitest'
 import { GitService } from '@mng-review/engine'
 import { Effect, Layer, Redacted } from 'effect'
+import { GITHUB_ACTIONS_IDENTITY } from '../../../platform/bot-identity.helper'
 import { GitHubConfig } from '../../../platform/github.config'
 import { GitHubApiError } from '../../../platform/github.errors'
 import { agent } from '../../../shared/mocks/domain-test.helper'
@@ -20,6 +21,7 @@ import {
 	RULES,
 	reviewThread,
 	SUMMARY_MARKER,
+	TOKEN_MODE_OWNED,
 } from '../../../shared/mocks/publish-test.helper'
 import {
 	StatusSweepService,
@@ -30,9 +32,13 @@ import {
 	parseSummaryMarker,
 	parseFindingMarker,
 } from '../domain/publish-marker.parser'
-import { BOT_LOGIN, SHORT_SHA_LENGTH } from '../domain/publish.constants'
+import { SHORT_SHA_LENGTH } from '../domain/publish.constants'
 import { toMarkerComment } from '../presentation/thread-comment.formatter'
 import { PublishService, PublishServiceLive } from './publish.service'
+import {
+	SummaryCommentService,
+	SummaryCommentServiceLive,
+} from './summary-comment.service'
 import {
 	ThreadResolutionService,
 	ThreadResolutionServiceLive,
@@ -59,9 +65,11 @@ function setup(apply?: ThreadResolutionService['Service']['apply']) {
 			owner: 'example',
 			name: 'project',
 			token: Redacted.make('fixture'),
+			identity: GITHUB_ACTIONS_IDENTITY,
 		})
 	)
 	const publisher = PublishServiceLive.pipe(
+		Layer.provideMerge(SummaryCommentServiceLive),
 		Layer.provide(Layer.merge(dependencies, gitLayer(repo.root)))
 	)
 	const input = {
@@ -97,9 +105,11 @@ function setup(apply?: ThreadResolutionService['Service']['apply']) {
 /** A known existing bot-owned summary. */
 function summary() {
 	return {
+		id: 'summary-node',
 		databaseId: 101,
+		isMinimized: false,
 		body: toMarkerComment('summary', SUMMARY_MARKER),
-		author: { __typename: 'Bot', login: BOT_LOGIN },
+		author: { __typename: 'Bot', login: GITHUB_ACTIONS_IDENTITY.login },
 		editor: null,
 	}
 }
@@ -115,7 +125,7 @@ function error(status?: number) {
 
 afterEach(cleanupRepos)
 
-layer(Layer.empty, { excludeTestServices: true })(
+layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 	'PublishServiceLive',
 	test => {
 		test.effect(
@@ -165,7 +175,7 @@ layer(Layer.empty, { excludeTestServices: true })(
 					).toMatchObject({ runs: 2, head: fixture.head, finished: true })
 				})
 		)
-		for (const login of ['contributor', BOT_LOGIN])
+		for (const login of ['contributor', GITHUB_ACTIONS_IDENTITY.login])
 			test.effect(
 				`a thread edited by User ${login} does not suppress the finding`,
 				() =>
@@ -277,7 +287,7 @@ layer(Layer.empty, { excludeTestServices: true })(
 			() =>
 				Effect.gen(function* () {
 					const fixture = setup()
-					const publisher = yield* PublishService.pipe(
+					const publisher = yield* SummaryCommentService.pipe(
 						Effect.provide(fixture.publisher)
 					)
 					const input = {
@@ -390,6 +400,7 @@ layer(Layer.empty, { excludeTestServices: true })(
 					const publisher = yield* PublishService.pipe(
 						Effect.provide(
 							PublishServiceLive.pipe(
+								Layer.provide(SummaryCommentServiceLive),
 								Layer.provide(
 									Layer.merge(
 										fixture.dependencies,
@@ -487,7 +498,7 @@ layer(Layer.empty, { excludeTestServices: true })(
 	}
 )
 
-layer(Layer.empty, { excludeTestServices: true })(
+layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 	'PublishServiceLive batching and status',
 	test => {
 		for (const source of ['metadata', 'outside-diff'] as const)
@@ -805,7 +816,10 @@ layer(Layer.empty, { excludeTestServices: true })(
 						{
 							...summary(),
 							databaseId: 1,
-							author: { __typename: 'User', login: BOT_LOGIN },
+							author: {
+								__typename: 'User',
+								login: GITHUB_ACTIONS_IDENTITY.login,
+							},
 						},
 						{
 							...summary(),
@@ -815,7 +829,10 @@ layer(Layer.empty, { excludeTestServices: true })(
 						{
 							...summary(),
 							databaseId: 5,
-							editor: { __typename: 'User', login: BOT_LOGIN },
+							editor: {
+								__typename: 'User',
+								login: GITHUB_ACTIONS_IDENTITY.login,
+							},
 						},
 						{ ...summary(), databaseId: 3 },
 						{ ...summary(), databaseId: 4 }
@@ -841,7 +858,7 @@ layer(Layer.empty, { excludeTestServices: true })(
 						body: `Verdict: ready\n${toMarkerComment('summary', { ...SUMMARY_MARKER, finished: true })}`,
 					}
 					fixture.fake.comments.push(existing)
-					const publisher = yield* PublishService.pipe(
+					const publisher = yield* SummaryCommentService.pipe(
 						Effect.provide(fixture.publisher)
 					)
 					expect(
@@ -862,7 +879,7 @@ layer(Layer.empty, { excludeTestServices: true })(
 	}
 )
 
-layer(Layer.empty, { excludeTestServices: true })(
+layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 	'PublishService recheck summary',
 	test => {
 		test.effect(
@@ -898,7 +915,7 @@ layer(Layer.empty, { excludeTestServices: true })(
 					})
 					fixture.fake.threads.push(botClosedReviewThread())
 					expect(
-						yield* PublishService.use(publisher =>
+						yield* SummaryCommentService.use(publisher =>
 							publisher.publishStatus({
 								pullNumber: 17,
 								head: fixture.head,
@@ -945,7 +962,7 @@ layer(Layer.empty, { excludeTestServices: true })(
 					const failure = error(403)
 					fixture.fake.failures.update.push(failure)
 					expect(
-						yield* PublishService.use(publisher =>
+						yield* SummaryCommentService.use(publisher =>
 							publisher.publishStatus({
 								pullNumber: 17,
 								head: fixture.head,
@@ -1027,7 +1044,7 @@ layer(Layer.empty, { excludeTestServices: true })(
 	}
 )
 
-layer(Layer.empty, { excludeTestServices: true })(
+layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 	'PublishService last finished head',
 	test => {
 		for (const prior of ['absent', 'without-head', 'with-head'] as const)
@@ -1079,6 +1096,9 @@ layer(Layer.empty, { excludeTestServices: true })(
 							const publisher = yield* PublishService.pipe(
 								Effect.provide(fixture.publisher)
 							)
+							const summaries = yield* SummaryCommentService.pipe(
+								Effect.provide(fixture.publisher)
+							)
 							yield* publisher.publish({ ...fixture.input, report: reviewed })
 							const expectedHead =
 								outcome === 'finished'
@@ -1096,14 +1116,14 @@ layer(Layer.empty, { excludeTestServices: true })(
 								parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
 							).toEqual(marker)
 							expect(
-								yield* publisher.readPrior(fixture.input.pullNumber)
+								yield* summaries.readPrior(fixture.input.pullNumber)
 							).toEqual(marker)
 						})
 				)
 		test.effect('offline summary has no reviewed head and zero runs', () =>
 			Effect.gen(function* () {
 				const fixture = setup()
-				const publisher = yield* PublishService.pipe(
+				const publisher = yield* SummaryCommentService.pipe(
 					Effect.provide(fixture.publisher)
 				)
 				yield* publisher.publishStatus({
@@ -1125,7 +1145,7 @@ layer(Layer.empty, { excludeTestServices: true })(
 	}
 )
 
-layer(Layer.empty, { excludeTestServices: true })(
+layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 	'PublishService outcome proposals',
 	test => {
 		test.effect(
@@ -1212,7 +1232,9 @@ layer(Layer.empty, { excludeTestServices: true })(
 												author: {
 													__typename: ownership === 'user' ? 'User' : 'Bot',
 													login:
-														ownership === 'user' ? BOT_LOGIN : 'another-bot',
+														ownership === 'user'
+															? GITHUB_ACTIONS_IDENTITY.login
+															: 'another-bot',
 												},
 											}),
 								})),

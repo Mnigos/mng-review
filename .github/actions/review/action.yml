@@ -18,6 +18,12 @@ inputs:
       it; the review step, which calls the model, never does.
     required: false
     default: ''
+  app-slug:
+    description: >-
+      Slug of the GitHub App the bot posts as, in publish mode; empty for github-actions[bot]. The
+      prepare step reads it to know which bot wrote the summary and the threads.
+    required: false
+    default: ''
   llm-url:
     description: Base URL of the OpenAI-compatible endpoint.
     required: true
@@ -72,6 +78,7 @@ runs:
         MNG_REVIEW_ENGINE_COMMIT: ${{ inputs.engine-commit }}
         MNG_REVIEW_REPO_DIR: ${{ github.workspace }}/repo
         MNG_REVIEW_PREPARED_PATH: ${{ runner.temp }}/mng-review/prepared.json
+        MNG_REVIEW_APP_SLUG: ${{ inputs.app-slug }}
         GITHUB_TOKEN: ${{ inputs.token }}
       run: |
         mkdir -p "$RUNNER_TEMP/mng-review"

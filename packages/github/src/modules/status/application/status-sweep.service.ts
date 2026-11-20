@@ -2,11 +2,12 @@ import { Context, Effect, Layer } from 'effect'
 import { GitHubApiService } from '../../../platform/github-api.service'
 import { GitHubStatusService } from '../../../platform/github-status.service'
 import type { GitHubApiError } from '../../../platform/github.errors'
+import { OwnedIdentities } from '../../../platform/owned-identities.context'
+import { toBotThread } from '../../publish/domain/bot-thread.helper'
 import {
-	isBotComment,
-	toBotThread,
-} from '../../publish/domain/bot-thread.helper'
-import { parseSummaryMarker } from '../../publish/domain/publish-marker.parser'
+	getSummary,
+	toSummaryComments,
+} from '../../publish/domain/summary-comment.helper'
 import { toSweptStatus } from '../domain/status.helper'
 
 /** What a sweep did. */
@@ -19,15 +20,21 @@ export interface SweepResult {
 }
 
 /**
- * Refreshes the `MNG Review` status of open pull requests whose head already carries it, from the
- * bot's open bug threads now, so a thread resolved by hand counts. It runs no model and posts no
+ * Refreshes the `MNG Review` status of open pull requests whose head already carries one of an
+ * owned identity, from the open bug threads of the owned identities now, so a thread resolved by hand counts. It runs no model and posts no
  * comment; pull requests the bot never reviewed are left alone. It reads the status again right
  * before it writes and leaves a newer one alone; a publish run that lands between that read and
  * the write can still be overwritten until the next sweep or push.
  */
 export class StatusSweepService extends Context.Service<
 	StatusSweepService,
-	{ readonly sweep: () => Effect.Effect<SweepResult, GitHubApiError> }
+	{
+		readonly sweep: () => Effect.Effect<
+			SweepResult,
+			GitHubApiError,
+			OwnedIdentities
+		>
+	}
 >()('mng-review/StatusSweepService') {}
 
 export const StatusSweepServiceLive = Layer.effect(
@@ -43,20 +50,20 @@ export const StatusSweepServiceLive = Layer.effect(
 		) {
 			const previous = yield* github.getStatus(head)
 			if (!previous) return 'unknown' as const
+			const { current, identities } = yield* OwnedIdentities
 			const threads = (yield* api.listReviewThreads(pullNumber)).flatMap(
-				thread => toBotThread(thread) ?? []
+				thread => toBotThread(thread, identities) ?? []
 			)
 			const openBugs = threads.filter(
 				thread => !thread.resolved && thread.marker.kind === 'bug'
 			).length
-			const [summary] = (yield* api.listComments(pullNumber)).flatMap(
-				comment => {
-					const marker = isBotComment(comment)
-						? parseSummaryMarker(comment.body)
-						: undefined
-					return marker ? [marker] : []
-				}
-			)
+			const summary = getSummary(
+				toSummaryComments(
+					yield* api.listComments(pullNumber),
+					identities,
+					current
+				)
+			)?.marker
 			// Bugs the last finished run on this head left without a thread still block it.
 			const unthreaded =
 				summary?.head === head ? (summary.unthreadedBugs ?? 0) : 0

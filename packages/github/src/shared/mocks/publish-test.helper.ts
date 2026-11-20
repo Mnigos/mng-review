@@ -5,10 +5,8 @@ import {
 	buildPlan,
 } from '@mng-review/domain'
 import { toEmptyReviewReport } from '@mng-review/engine'
-import {
-	MARKER_VERSION,
-	BOT_LOGIN,
-} from '../../modules/publish/domain/publish.constants'
+import { Layer } from 'effect'
+import { MARKER_VERSION } from '../../modules/publish/domain/publish.constants'
 import type {
 	BotThread,
 	PublishedFinding,
@@ -19,10 +17,12 @@ import {
 	toMarkerComment,
 	type BlobLinks,
 } from '../../modules/publish/presentation/thread-comment.formatter'
+import { GITHUB_ACTIONS_IDENTITY } from '../../platform/bot-identity.helper'
 import type {
 	ReviewThread,
 	ThreadComment,
 } from '../../platform/github-api.schema'
+import { OwnedIdentities } from '../../platform/owned-identities.context'
 import { planInput } from '../../shared/mocks/domain-test.helper'
 
 export const LINKS = {
@@ -121,7 +121,7 @@ export function reviewThread(
 				{
 					databaseId: 1,
 					body: toMarkerComment('finding', toFindingMarker(published, LINKS)),
-					author: { __typename: 'Bot', login: BOT_LOGIN },
+					author: { __typename: 'Bot', login: GITHUB_ACTIONS_IDENTITY.login },
 					editor: null,
 					originalCommit: { oid: LINKS.head },
 				},
@@ -164,7 +164,7 @@ export function threadReply(
 	return {
 		databaseId: 2,
 		body: formatResolvedReply('The write is guarded.', LINKS),
-		author: { __typename: 'Bot', login: BOT_LOGIN },
+		author: { __typename: 'Bot', login: GITHUB_ACTIONS_IDENTITY.login },
 		editor: null,
 		originalCommit: { oid: LINKS.head },
 		...overrides,
@@ -183,3 +183,9 @@ export function botClosedReviewThread(
 		...overrides,
 	}
 }
+
+/** Token mode with the preset's `identity.previous`: only `github-actions` is owned. */
+export const TOKEN_MODE_OWNED = Layer.succeed(OwnedIdentities, {
+	current: GITHUB_ACTIONS_IDENTITY,
+	identities: [GITHUB_ACTIONS_IDENTITY],
+})

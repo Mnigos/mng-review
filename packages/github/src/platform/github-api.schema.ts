@@ -41,9 +41,12 @@ export const reviewThreadSchema = Schema.Struct({
 })
 export type ReviewThread = typeof reviewThreadSchema.Type
 
-/** A conversation comment on the pull request, with its last editor. */
+/** A conversation comment on the pull request, with its last editor and whether it is hidden. */
 export const pullRequestCommentSchema = Schema.Struct({
+	/** The GraphQL node id, which `minimizeComment` takes. */
+	id: Schema.String,
 	databaseId: Schema.NullOr(Schema.Number),
+	isMinimized: Schema.Boolean,
 	body: Schema.String,
 	author: Schema.NullOr(commentAuthorSchema),
 	editor: commentEditorSchema,

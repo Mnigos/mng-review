@@ -16,6 +16,25 @@ interface GraphqlAnswer {
 	readonly errors?: readonly { readonly message: string }[] | undefined
 }
 
+/** Gives the exchange `REQUEST_TIMEOUT` and turns any other failure into a `GitHubApiError`. */
+function withTimeout<TValue, TError>(
+	operation: string,
+	exchange: Effect.Effect<TValue, TError>
+): Effect.Effect<TValue, GitHubApiError> {
+	return exchange.pipe(
+		Effect.timeout(REQUEST_TIMEOUT),
+		Effect.mapError(error => {
+			if (error instanceof GitHubApiError) return error
+			if (Predicate.isTagged(error, 'TimeoutError'))
+				return new GitHubApiError({
+					operation,
+					reason: `no answer within ${Duration.format(REQUEST_TIMEOUT)}`,
+				})
+			return new GitHubApiError({ operation, reason: 'unexpected answer' })
+		})
+	)
+}
+
 /**
  * Requests to the configured GitHub with the token, the API version and a timeout: REST through
  * `send` and `sendJson`, GraphQL through `graphql` (sent once) and `query` (retried like every
@@ -80,20 +99,20 @@ export const makeGitHubHttp = Effect.gen(function* () {
 		request: HttpClientRequest.HttpClientRequest,
 		schema: Schema.Decoder<TValue>
 	): Effect.Effect<TValue, GitHubApiError> =>
-		send(operation, request).pipe(
-			Effect.flatMap(response => response.json),
-			Effect.flatMap(Schema.decodeUnknownEffect(schema)),
-			Effect.timeout(REQUEST_TIMEOUT),
-			Effect.mapError(error => {
-				if (Predicate.isTagged(error, 'GitHubApiError')) return error
-				if (Predicate.isTagged(error, 'TimeoutError'))
-					return new GitHubApiError({
-						operation,
-						reason: `no answer within ${Duration.format(REQUEST_TIMEOUT)}`,
-					})
-				return new GitHubApiError({ operation, reason: 'unexpected answer' })
-			})
+		withTimeout(
+			operation,
+			send(operation, request).pipe(
+				Effect.flatMap(response => response.json),
+				Effect.flatMap(Schema.decodeUnknownEffect(schema))
+			)
 		)
+
+	/** Sends a request whose answer has no body, such as a `DELETE`, within `REQUEST_TIMEOUT`. */
+	const sendEmpty = (
+		operation: string,
+		request: HttpClientRequest.HttpClientRequest
+	): Effect.Effect<void, GitHubApiError> =>
+		withTimeout(operation, send(operation, request).pipe(Effect.asVoid))
 
 	/** A GraphQL request, sent once; errors beside data fail it. */
 	const graphql = <TAnswer extends GraphqlAnswer>(
@@ -128,5 +147,5 @@ export const makeGitHubHttp = Effect.gen(function* () {
 	): Effect.Effect<TAnswer, GitHubApiError> =>
 		read(graphql(operation, text, variables, schema))
 
-	return { config, repo, send, sendJson, graphql, query }
+	return { config, repo, send, sendJson, sendEmpty, graphql, query }
 })

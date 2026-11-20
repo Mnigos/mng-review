@@ -1,5 +1,6 @@
 import { layer } from '@effect/vitest'
 import { Effect, Layer } from 'effect'
+import { GITHUB_ACTIONS_IDENTITY } from '../../../platform/bot-identity.helper'
 import { GitHubApiService } from '../../../platform/github-api.service'
 import { GitHubApiError } from '../../../platform/github.errors'
 import { githubApiFake } from '../../../shared/mocks/github-api-fake.helper'
@@ -9,8 +10,8 @@ import {
 	botClosedReviewThread,
 	bug,
 	SUMMARY_MARKER,
+	TOKEN_MODE_OWNED,
 } from '../../../shared/mocks/publish-test.helper'
-import { BOT_LOGIN } from '../../publish/domain/publish.constants'
 import { toMarkerComment } from '../../publish/presentation/thread-comment.formatter'
 import { toCommitStatus, UNFINISHED_NOTE } from '../domain/status.helper'
 import {
@@ -18,7 +19,7 @@ import {
 	StatusSweepServiceLive,
 } from './status-sweep.service'
 
-layer(Layer.empty)('StatusSweepService', test => {
+layer(TOKEN_MODE_OWNED)('StatusSweepService', test => {
 	test.effect(
 		'heads without a bot status are skipped without reading their threads',
 		() =>
@@ -195,7 +196,7 @@ layer(Layer.empty)('StatusSweepService', test => {
 		)
 })
 
-layer(Layer.empty)('StatusSweepService latest status', test => {
+layer(TOKEN_MODE_OWNED)('StatusSweepService latest status', test => {
 	for (const latest of ['same', 'newer', 'gone', 'read-failed'] as const)
 		test.effect(
 			`a ${latest} status at the second read controls the write`,
@@ -294,7 +295,7 @@ layer(Layer.empty)('StatusSweepService latest status', test => {
 	)
 })
 
-layer(Layer.empty)('StatusSweepService summary marker', test => {
+layer(TOKEN_MODE_OWNED)('StatusSweepService summary marker', test => {
 	for (const scenario of [
 		{
 			name: 'matching head without a thread',
@@ -315,14 +316,16 @@ layer(Layer.empty)('StatusSweepService summary marker', test => {
 			Effect.gen(function* () {
 				const api = githubApiFake()
 				api.comments.push({
+					id: 'summary-node',
 					databaseId: 101,
+					isMinimized: false,
 					body: toMarkerComment('summary', {
 						...SUMMARY_MARKER,
 						head: scenario.head,
 						finished: true,
 						unthreadedBugs: 2,
 					}),
-					author: { __typename: 'Bot', login: BOT_LOGIN },
+					author: { __typename: 'Bot', login: GITHUB_ACTIONS_IDENTITY.login },
 					editor: null,
 				})
 				if (scenario.openBugs > 0) api.threads.push(reviewThread())
@@ -368,10 +371,17 @@ layer(Layer.empty)('StatusSweepService summary marker', test => {
 					Effect.gen(function* () {
 						const api = githubApiFake()
 						api.comments.push({
+							id: 'summary-node',
 							databaseId: 101,
+							isMinimized: false,
 							body: toMarkerComment('summary', { ...SUMMARY_MARKER, finished }),
-							author: { __typename: 'Bot', login: BOT_LOGIN },
-							editor: edited ? { __typename: 'Bot', login: BOT_LOGIN } : null,
+							author: {
+								__typename: 'Bot',
+								login: GITHUB_ACTIONS_IDENTITY.login,
+							},
+							editor: edited
+								? { __typename: 'Bot', login: GITHUB_ACTIONS_IDENTITY.login }
+								: null,
 						})
 						api.threads.push(reviewThread(undefined, { isResolved: true }))
 						const previous = {
@@ -433,7 +443,9 @@ layer(Layer.empty)('StatusSweepService summary marker', test => {
 			Effect.gen(function* () {
 				const api = githubApiFake()
 				api.comments.push({
+					id: 'summary-node',
 					databaseId: 101,
+					isMinimized: false,
 					body:
 						source === 'unmarked'
 							? 'No summary marker'
@@ -445,10 +457,13 @@ layer(Layer.empty)('StatusSweepService summary marker', test => {
 								}),
 					author:
 						source === 'user-author'
-							? { __typename: 'User', login: BOT_LOGIN }
+							? { __typename: 'User', login: GITHUB_ACTIONS_IDENTITY.login }
 							: {
 									__typename: 'Bot',
-									login: source === 'foreign-bot' ? 'other-bot' : BOT_LOGIN,
+									login:
+										source === 'foreign-bot'
+											? 'other-bot'
+											: GITHUB_ACTIONS_IDENTITY.login,
 								},
 					editor:
 						source === 'user-editor' || source === 'user-editor-bot-login'
@@ -456,7 +471,7 @@ layer(Layer.empty)('StatusSweepService summary marker', test => {
 									__typename: 'User',
 									login:
 										source === 'user-editor-bot-login'
-											? BOT_LOGIN
+											? GITHUB_ACTIONS_IDENTITY.login
 											: 'contributor',
 								}
 							: null,
