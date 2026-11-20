@@ -1,4 +1,6 @@
+import { GitHubApiService } from '@mng-review/github'
 import { Console, Effect } from 'effect'
+import { toCommandEvent } from '../../application/command-event.helper'
 import {
 	getBindingMismatch,
 	toMismatchReason,
@@ -8,6 +10,10 @@ import {
 	PublishRunService,
 	type PublishReport,
 } from '../../application/publish-run.service'
+import {
+	commandTargetConfig,
+	triggerConfig,
+} from '../../infrastructure/command-run.config'
 import { OutcomeFileError } from '../../infrastructure/outcome-file.errors'
 import { parseOutcomeFile } from '../../infrastructure/outcome-file.parser'
 import { parsePullRequestEvent } from '../../infrastructure/pull-request-event.parser'
@@ -30,25 +36,73 @@ import {
 } from '../summary.formatter'
 
 /**
+ * The pull request a push run publishes, from the event payload parsed again; a payload that is
+ * not a pull request event refuses the file.
+ */
+const readPushEvent = Effect.fn('publishStep.readPushEvent')(function* (
+	env: RunnerEnvironment
+) {
+	return yield* readEventText(env.eventPath).pipe(
+		Effect.flatMap(parsePullRequestEvent),
+		Effect.mapError(
+			error =>
+				new OutcomeFileError({
+					message: `the event cannot be read again: ${error.source} ${error.reason}`,
+				})
+		)
+	)
+})
+
+/**
+ * The pull request a command run publishes: the number and both commits from the authorize job's
+ * outputs, what the gates read from the API. A target or a pull request that cannot be read
+ * refuses the file.
+ */
+const readCommandTarget = Effect.gen(function* () {
+	const target = yield* commandTargetConfig
+	const pr = yield* GitHubApiService.use(api =>
+		api.getPullRequest(target.pullNumber)
+	)
+	return {
+		event: toCommandEvent(pr, target),
+		command: { agentOnly: target.agent !== undefined },
+	}
+}).pipe(
+	Effect.catchTags({
+		ConfigError: error =>
+			Effect.fail(
+				new OutcomeFileError({
+					message: `the command's target cannot be read: ${error.message}`,
+				})
+			),
+		GitHubApiError: error =>
+			Effect.fail(
+				new OutcomeFileError({
+					message: `the pull request cannot be read again: ${error.message}`,
+				})
+			),
+	})
+)
+
+/**
  * The downloaded outcome file, parsed and checked against what this job trusts: the repository,
- * run, attempt and engine commit from the runner, and the pull request and both commits from the
- * event payload, parsed again. The file's binding is never trusted on its own.
+ * run, attempt and engine commit from the runner, the trigger, and the pull request and both
+ * commits from the event payload parsed again, or for a command from the authorize job's outputs.
+ * The file's binding is never trusted on its own.
  */
 const readTrustedOutcome = Effect.fn('publishStep.readTrustedOutcome')(
 	function* (env: RunnerEnvironment) {
 		const file = yield* parseOutcomeFile(
 			yield* readOutcomeText(env.outcomePath)
 		)
-		const event = yield* readEventText(env.eventPath).pipe(
-			Effect.flatMap(parsePullRequestEvent),
-			Effect.mapError(
-				error =>
-					new OutcomeFileError({
-						message: `the event cannot be read again: ${error.source} ${error.reason}`,
-					})
-			)
+		const trigger = yield* triggerConfig.pipe(
+			Effect.mapError(error => new OutcomeFileError({ message: error.message }))
 		)
-		const trusted = toOutcomeBinding(event, env)
+		const { event, command } =
+			trigger === 'command'
+				? yield* readCommandTarget
+				: { event: yield* readPushEvent(env), command: undefined }
+		const trusted = toOutcomeBinding(event, { ...env, trigger })
 		const mismatch = getBindingMismatch(file.binding, trusted)
 		if (mismatch !== undefined)
 			return yield* new OutcomeFileError({
@@ -61,6 +115,7 @@ const readTrustedOutcome = Effect.fn('publishStep.readTrustedOutcome')(
 				pullNumber: trusted.pullNumber,
 				head: trusted.headSha,
 				event,
+				...(command ? { command } : {}),
 			},
 		}
 	}

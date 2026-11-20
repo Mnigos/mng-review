@@ -1,0 +1,404 @@
+# Reusable review workflow for mention commands in pull request comments: `@<handle> review`,
+# `@<handle> review deep`, `@<handle> review quick` and `@<handle> run <agent>`. The caller runs it
+# on issue_comment (created). The handle is app-slug in app mode or handle without the app; there
+# is no default. Four jobs, each holding only what it needs:
+# - authorize: no secret and no tailnet; checks the comment, the commenter and the pull request
+#   over a read-only token, with the rules of the default branch.
+# - reserve: the app key; counts the manual run in the summary before anything reaches the
+#   endpoint. Its token is revoked when the job ends.
+# - review: the endpoint and tailnet secrets and a read-only token, as review-publish.yml.
+# - publish: the app key; posts the outcome without a model call, as review-publish.yml.
+# Only the first attempt reviews: a re-run does nothing after authorize, and a failed command is
+# started again with a new comment. Callers set no concurrency of their own. See ADR 0009.
+# Nothing from the caller's repository is installed, built or run.
+name: MNG Review (command)
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: Runner label for the jobs.
+        type: string
+        default: ubuntu-latest
+      tailscale:
+        description: Join a tailnet as an ephemeral node before the review, to reach a private endpoint.
+        type: boolean
+        default: false
+      tailscale-tags:
+        description: Comma-separated tags for the ephemeral node; the OAuth client must own them.
+        type: string
+        default: tag:ci
+      timeout-minutes:
+        description: Timeout of the review job in minutes.
+        type: number
+        default: 20
+      app-slug:
+        description: Slug of the GitHub App the bot posts as; commands mention it. Empty without the app.
+        type: string
+        default: ''
+      handle:
+        description: The login commands mention when app-slug is empty. Set exactly one of the two.
+        type: string
+        default: ''
+    secrets:
+      llm-url:
+        description: Base URL of the OpenAI-compatible endpoint, such as https://llm.example.com/v1.
+        required: true
+      llm-key:
+        description: Key sent to the endpoint as a bearer token.
+        required: true
+      tailscale-oauth-client-id:
+        description: Tailscale OAuth client id, needed when tailscale is true.
+        required: false
+      tailscale-oauth-secret:
+        description: Tailscale OAuth client secret, needed when tailscale is true.
+        required: false
+      app-client-id:
+        description: Client id of the GitHub App, needed when app-slug is set.
+        required: false
+      app-private-key:
+        description: Private key of the GitHub App, needed when app-slug is set.
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+  statuses: write
+
+jobs:
+  authorize:
+    name: MNG Review (authorize)
+    # A cheap filter; the entry checks every rule again. A Bot, a comment posted through an app and
+    # an edit never start a runner, so the bot's own comments start nothing.
+    if: >-
+      github.event_name == 'issue_comment' && github.event.action == 'created' &&
+      github.event.issue.pull_request &&
+      github.event.comment.user.type == 'User' &&
+      !github.event.comment.performed_via_github_app &&
+      (inputs.app-slug != '' || inputs.handle != '') &&
+      contains(github.event.comment.body, format('@{0}', inputs.app-slug || inputs.handle))
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      authorized: ${{ steps.authorize.outputs.authorized }}
+      pull_number: ${{ steps.authorize.outputs.pull_number }}
+      base_sha: ${{ steps.authorize.outputs.base_sha }}
+      head_sha: ${{ steps.authorize.outputs.head_sha }}
+      depth: ${{ steps.authorize.outputs.depth }}
+      agent: ${{ steps.authorize.outputs.agent }}
+    steps:
+      # Without these (GitHub Enterprise Server), checkout would fall back to the caller's repository.
+      - name: Check the workflow's own commit
+        if: job.workflow_repository == '' || job.workflow_sha == ''
+        run: |
+          echo "::error::job.workflow_repository and job.workflow_sha are not available on this GitHub; MNG Review cannot check out its own code."
+          exit 1
+
+      # The default branch, for the rules (commands.allow, identity.previous); issue_comment runs there.
+      - name: Check out the default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: repo
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check out MNG Review
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .mng-review-engine
+          persist-credentials: false
+
+      - name: Set up MNG Review
+        uses: ./.mng-review-engine/.github/actions/setup-engine
+
+      # The comment is read from the event file, never interpolated into this script. Every
+      # failure is a denial and the step passes.
+      - name: Authorize
+        id: authorize
+        working-directory: .mng-review-engine
+        env:
+          MNG_REVIEW_MODE: authorize
+          MNG_REVIEW_ENGINE_COMMIT: ${{ job.workflow_sha }}
+          MNG_REVIEW_REPO_DIR: ${{ github.workspace }}/repo
+          MNG_REVIEW_APP_SLUG: ${{ inputs.app-slug }}
+          MNG_REVIEW_HANDLE: ${{ inputs.handle }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bun --no-env-file apps/action/src/main.ts
+
+  reserve:
+    name: MNG Review (reserve)
+    # A re-run would reuse the first attempt's authorization for whoever re-runs it.
+    needs: authorize
+    if: github.run_attempt == '1' && needs.authorize.outputs.authorized == 'true'
+    # Every summary writer on one pull request in one group: reservations are counted one at a time
+    # and never overlap a publish job. Only authorized commands get here, so an unchecked comment
+    # never waits in the group.
+    concurrency:
+      group: mng-review-publish-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    outputs:
+      reserved: ${{ steps.reserve.outputs.reserved }}
+    steps:
+      - name: Check the workflow's own commit
+        if: job.workflow_repository == '' || job.workflow_sha == ''
+        run: |
+          echo "::error::job.workflow_repository and job.workflow_sha are not available on this GitHub; MNG Review cannot check out its own code."
+          exit 1
+
+      # The base commit only, for the rules the run is gated by; credentials are not left behind.
+      - name: Check out the base commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.authorize.outputs.base_sha }}
+          path: repo
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check out MNG Review
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .mng-review-engine
+          persist-credentials: false
+
+      # All three app settings, or none: anything else fails here, before any write.
+      - name: Check the app credentials
+        env:
+          APP_SLUG: ${{ inputs.app-slug }}
+          HAS_CLIENT_ID: ${{ secrets.app-client-id != '' }}
+          HAS_PRIVATE_KEY: ${{ secrets.app-private-key != '' }}
+        run: |
+          if [ -n "$APP_SLUG" ]; then
+            if [ "$HAS_CLIENT_ID" != true ] || [ "$HAS_PRIVATE_KEY" != true ]; then
+              echo "::error::app-slug is set, so app-client-id and app-private-key are required."
+              exit 1
+            fi
+          elif [ "$HAS_CLIENT_ID" = true ] || [ "$HAS_PRIVATE_KEY" = true ]; then
+            echo "::error::app-client-id or app-private-key is set without app-slug."
+            exit 1
+          fi
+
+      # The calling repository only, pull requests write and contents read only; revoked when the
+      # job ends, before the review job starts.
+      - name: Mint the app token
+        id: app
+        if: inputs.app-slug != ''
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.app-client-id }}
+          private-key: ${{ secrets.app-private-key }}
+          permission-pull-requests: write
+          # Summary and thread reads through GraphQL name commits, which needs contents read.
+          permission-contents: read
+
+      - name: Set up MNG Review
+        uses: ./.mng-review-engine/.github/actions/setup-engine
+
+      # The entry checks the minted slug against app-slug before any request, reads the pull
+      # request again and counts the run; anything that stops it writes reserved=false.
+      - name: Reserve
+        id: reserve
+        working-directory: .mng-review-engine
+        env:
+          MNG_REVIEW_MODE: reserve
+          MNG_REVIEW_TRIGGER: command
+          MNG_REVIEW_ENGINE_COMMIT: ${{ job.workflow_sha }}
+          MNG_REVIEW_REPO_DIR: ${{ github.workspace }}/repo
+          MNG_REVIEW_TARGET_PR: ${{ needs.authorize.outputs.pull_number }}
+          MNG_REVIEW_TARGET_BASE: ${{ needs.authorize.outputs.base_sha }}
+          MNG_REVIEW_TARGET_HEAD: ${{ needs.authorize.outputs.head_sha }}
+          MNG_REVIEW_COMMAND_DEPTH: ${{ needs.authorize.outputs.depth }}
+          MNG_REVIEW_COMMAND_AGENT: ${{ needs.authorize.outputs.agent }}
+          MNG_REVIEW_HANDLE: ${{ inputs.handle }}
+          MNG_REVIEW_APP_SLUG: ${{ inputs.app-slug }}
+          MNG_REVIEW_APP_TOKEN: ${{ steps.app.outputs.token }}
+          MNG_REVIEW_MINTED_APP_SLUG: ${{ steps.app.outputs.app-slug }}
+          GITHUB_TOKEN: ${{ inputs.app-slug == '' && github.token || '' }}
+        run: bun --no-env-file apps/action/src/main.ts
+
+  review:
+    name: MNG Review (review)
+    needs: [authorize, reserve]
+    if: github.run_attempt == '1' && needs.reserve.outputs.reserved == 'true'
+    runs-on: ${{ inputs.runner }}
+    # Read only: this job holds the endpoint and never writes to GitHub.
+    permissions:
+      contents: read
+      pull-requests: read
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    outputs:
+      publish: ${{ steps.review.outputs.publish }}
+    env:
+      BASE_SHA: ${{ needs.authorize.outputs.base_sha }}
+      HEAD_SHA: ${{ needs.authorize.outputs.head_sha }}
+    steps:
+      - name: Check the workflow's own commit
+        if: job.workflow_repository == '' || job.workflow_sha == ''
+        run: |
+          echo "::error::job.workflow_repository and job.workflow_sha are not available on this GitHub; MNG Review cannot check out its own code."
+          exit 1
+
+      # The base commit only, never the head; credentials are not left in .git/config.
+      - name: Check out the base commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.authorize.outputs.base_sha }}
+          path: repo
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Objects only: the head commit is never checked out, and git reads it with `git show`.
+      - name: Fetch the head commit
+        working-directory: repo
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          auth="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
+          echo "::add-mask::$auth"
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0="http.${GITHUB_SERVER_URL}/.extraheader" \
+          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth" \
+            git fetch --no-tags --quiet origin "$HEAD_SHA"
+          git cat-file -e "$HEAD_SHA^{commit}"
+
+      - name: Check out MNG Review
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .mng-review-engine
+          persist-credentials: false
+
+      # The read token reaches the prepare step alone, never the step that calls the model.
+      - name: Review
+        id: review
+        uses: ./.mng-review-engine/.github/actions/review
+        with:
+          mode: command
+          engine-commit: ${{ job.workflow_sha }}
+          token: ${{ github.token }}
+          app-slug: ${{ inputs.app-slug }}
+          target-pr: ${{ needs.authorize.outputs.pull_number }}
+          target-base: ${{ needs.authorize.outputs.base_sha }}
+          target-head: ${{ needs.authorize.outputs.head_sha }}
+          command-depth: ${{ needs.authorize.outputs.depth }}
+          command-agent: ${{ needs.authorize.outputs.agent }}
+          llm-url: ${{ secrets.llm-url }}
+          llm-key: ${{ secrets.llm-key }}
+          tailscale: ${{ inputs.tailscale }}
+          tailscale-tags: ${{ inputs.tailscale-tags }}
+          tailscale-oauth-client-id: ${{ secrets.tailscale-oauth-client-id }}
+          tailscale-oauth-secret: ${{ secrets.tailscale-oauth-secret }}
+
+  publish:
+    name: MNG Review (publish)
+    needs: [authorize, review]
+    if: github.run_attempt == '1' && needs.review.outputs.publish == 'true'
+    # The same group as the reserve job and review-publish.yml's publish job.
+    concurrency:
+      group: mng-review-publish-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    runs-on: ${{ inputs.runner }}
+    # No endpoint or tailnet secret is named here, and the job never joins the tailnet.
+    permissions:
+      contents: read
+      pull-requests: write
+      checks: write
+      statuses: write
+    timeout-minutes: 10
+    env:
+      BASE_SHA: ${{ needs.authorize.outputs.base_sha }}
+      HEAD_SHA: ${{ needs.authorize.outputs.head_sha }}
+    steps:
+      - name: Check the workflow's own commit
+        if: job.workflow_repository == '' || job.workflow_sha == ''
+        run: |
+          echo "::error::job.workflow_repository and job.workflow_sha are not available on this GitHub; MNG Review cannot check out its own code."
+          exit 1
+
+      - name: Check out the base commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.authorize.outputs.base_sha }}
+          path: repo
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch the head commit
+        working-directory: repo
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          auth="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
+          echo "::add-mask::$auth"
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0="http.${GITHUB_SERVER_URL}/.extraheader" \
+          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth" \
+            git fetch --no-tags --quiet origin "$HEAD_SHA"
+          git cat-file -e "$HEAD_SHA^{commit}"
+
+      - name: Check out MNG Review
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .mng-review-engine
+          persist-credentials: false
+
+      - name: Check the app credentials
+        env:
+          APP_SLUG: ${{ inputs.app-slug }}
+          HAS_CLIENT_ID: ${{ secrets.app-client-id != '' }}
+          HAS_PRIVATE_KEY: ${{ secrets.app-private-key != '' }}
+        run: |
+          if [ -n "$APP_SLUG" ]; then
+            if [ "$HAS_CLIENT_ID" != true ] || [ "$HAS_PRIVATE_KEY" != true ]; then
+              echo "::error::app-slug is set, so app-client-id and app-private-key are required."
+              exit 1
+            fi
+          elif [ "$HAS_CLIENT_ID" = true ] || [ "$HAS_PRIVATE_KEY" = true ]; then
+            echo "::error::app-client-id or app-private-key is set without app-slug."
+            exit 1
+          fi
+
+      - name: Mint the app token
+        id: app
+        if: inputs.app-slug != ''
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.app-client-id }}
+          private-key: ${{ secrets.app-private-key }}
+          permission-pull-requests: write
+          permission-checks: write
+          permission-statuses: write
+          # Review threads read through GraphQL name each comment's commit, which needs contents read.
+          permission-contents: read
+
+      # The pull request and both commits come from the authorize job's outputs, never from the
+      # outcome file; in app mode the entry gets the app token and never the job token.
+      - name: Publish
+        uses: ./.mng-review-engine/.github/actions/publish
+        with:
+          engine-commit: ${{ job.workflow_sha }}
+          token: ${{ inputs.app-slug == '' && github.token || '' }}
+          app-slug: ${{ inputs.app-slug }}
+          app-token: ${{ steps.app.outputs.token }}
+          app-token-slug: ${{ steps.app.outputs.app-slug }}
+          trigger: command
+          target-pr: ${{ needs.authorize.outputs.pull_number }}
+          target-base: ${{ needs.authorize.outputs.base_sha }}
+          target-head: ${{ needs.authorize.outputs.head_sha }}
+          command-depth: ${{ needs.authorize.outputs.depth }}
+          command-agent: ${{ needs.authorize.outputs.agent }}

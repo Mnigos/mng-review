@@ -246,6 +246,62 @@ Before you switch:
 - Set `identity.previous: []` once the pull requests opened before the switch are closed. On a pull request that is still open, the bot then posts the findings of the old threads again, and an old summary stays visible next to the new one.
 - Pass the two app secrets by name as above. Never use `secrets: inherit`: it exposes every secret of the repository to the reusable workflow, and the names `MNG_REVIEW_APP_CLIENT_ID` and `MNG_REVIEW_APP_PRIVATE_KEY` do not map to its inputs `app-client-id` and `app-private-key`.
 
+### Commands
+
+A person starts a review by mentioning the bot in a pull request comment, alone on its line:
+
+```
+@mng-review review
+@mng-review review deep
+@mng-review review quick
+@mng-review run <agent>
+```
+
+`review` runs a full review, `deep` and `quick` set its depth, and `run <agent>` runs only that declared agent, on every reviewable file when its `when` rules do not select it. A run of one agent never counts as a full review, so the verdict and the status stay those of the last full review. An agent called `review` is reached with `run review`. The first command in a comment wins. The verbs are lower case, and the handle is compared without case.
+
+Only an admin of the repository, or a login listed in `commands.allow` in the default branch's `.mng/review.yml` that still has write or maintain access, starts a review, at most `commands.max_runs` times per pull request (3 by default). Drafts and `skip.labels` skip a command as they skip a push, unless a `labels.always_review` label is set. A command is a manual run, so `limits.max_runs_per_pr` does not stop it.
+
+A command counts only in a new comment on the pull request's conversation. Editing a comment, the pull request body, a review and a review thread never start one. A mention inside a quote, a code block, an indented block or an HTML comment is ignored, and so is a line that runs on directly after a quote; GitHub's quote reply leaves a blank line after the quote, so a command typed under it still counts. A comment posted through an OAuth app with a user token counts as that user's, since GitHub does not mark it.
+
+Call `review-command.yml` from a workflow of its own:
+
+```yaml
+# .github/workflows/mng-review-command.yml
+name: MNG Review command
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    if: >-
+      github.event.issue.pull_request &&
+      github.event.comment.user.type == 'User' &&
+      !github.event.comment.performed_via_github_app &&
+      contains(github.event.comment.body, '@mng-review')
+    uses: Mnigos/mng-review/.github/workflows/review-command.yml@<commit-sha>
+    permissions:
+      contents: read
+      pull-requests: write
+      checks: write
+      statuses: write
+    with:
+      app-slug: mng-review
+    secrets:
+      llm-url: ${{ secrets.MNG_REVIEW_LLM_URL }}
+      llm-key: ${{ secrets.MNG_REVIEW_LLM_KEY }}
+      app-client-id: ${{ secrets.MNG_REVIEW_APP_CLIENT_ID }}
+      app-private-key: ${{ secrets.MNG_REVIEW_APP_PRIVATE_KEY }}
+```
+
+The handle is `app-slug`; use the same text in the caller's `if`, which cannot read the inputs. Without the app, set `handle` to a login instead and leave out the app secrets. There is no default handle: with neither input set the workflow starts no job, and setting both is refused. Reserve the user login that matches the handle, for example by creating an empty organization with that name, so a command never mentions someone else's account.
+
+Each command run shows four jobs. `MNG Review (authorize)` holds no secret and a read-only token and checks the comment, the commenter, the agent and the pull request. `MNG Review (reserve)` counts the manual run in the summary before the endpoint is used, so a run that fails later still counts. `MNG Review (review)` and `MNG Review (publish)` then work as in publish mode. Re-running a command run does nothing after `authorize`; start a failed command again with a new comment. An offline endpoint posts nothing for a command.
+
 ### Exit codes
 
 | Code | `mng-review`                                              | `plan`, `init`                                                                 |

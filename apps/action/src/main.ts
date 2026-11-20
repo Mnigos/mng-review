@@ -11,6 +11,7 @@ import {
 	TokenLedgerLive,
 } from '@mng-review/engine'
 import {
+	CommandAuthorizeServiceLive,
 	GitHubApiServiceLive,
 	type GitHubConfig,
 	GitHubReadConfigLive,
@@ -43,11 +44,19 @@ import {
 	ActionExit,
 	INVALID_CONFIG_EXIT_CODE,
 } from './presentation/action-exit.errors'
+import {
+	denyAuthorizeConfig,
+	runAuthorizeStep,
+} from './presentation/handlers/authorize-step.handler'
 import { runPrepareStep } from './presentation/handlers/prepare-step.handler'
 import {
 	failPublishConfig,
 	runPublishStep,
 } from './presentation/handlers/publish-step.handler'
+import {
+	failReserveConfig,
+	runReserveStep,
+} from './presentation/handlers/reserve-step.handler'
 import {
 	runReviewStep,
 	runShadowStep,
@@ -119,6 +128,20 @@ const PublishLive = PublishRunServiceLive.pipe(
 	Layer.provideMerge(RulesLive)
 )
 
+/** The authorize step: the comment checks over the read token and the default branch's rules. */
+const AuthorizeLive = CommandAuthorizeServiceLive.pipe(
+	Layer.provideMerge(SummaryCommentServiceLive),
+	Layer.provideMerge(toGitHubLive(GitHubReadConfigLive)),
+	Layer.provideMerge(RulesLive)
+)
+
+/** The reserve step: the gates at the base rules and the count, over the write token. */
+const ReserveLive = PrepareRunServiceLive.pipe(
+	Layer.provideMerge(SummaryCommentServiceLive),
+	Layer.provideMerge(toGitHubLive(GitHubWriteConfigLive)),
+	Layer.provideMerge(RulesLive)
+)
+
 /** The status sweep over the write token, with the rules of the default branch checkout. */
 const SweepLive = StatusSweepServiceLive.pipe(
 	Layer.provideMerge(toGitHubLive(GitHubWriteConfigLive)),
@@ -133,7 +156,8 @@ const runInvalidMode = Effect.gen(function* () {
 	const invalid: ShadowOutcome = {
 		status: 'invalid-config',
 		source: MODE_VARIABLE,
-		reason: 'must be shadow, prepare, review, publish or sweep',
+		reason:
+			'must be shadow, prepare, review, publish, sweep, authorize or reserve',
 	}
 	yield* Console.log(formatLogLine(invalid))
 	yield* writeSummary(
@@ -162,6 +186,16 @@ const runAction = Effect.gen(function* () {
 		return yield* maskAppToken().pipe(
 			Effect.andThen(runSweepStep.pipe(Effect.provide(SweepLive))),
 			Effect.catchTag('ConfigError', failSweepConfig)
+		)
+	if (mode.value === 'authorize')
+		return yield* runAuthorizeStep.pipe(
+			Effect.provide(AuthorizeLive),
+			Effect.catchTag('ConfigError', denyAuthorizeConfig)
+		)
+	if (mode.value === 'reserve')
+		return yield* maskAppToken().pipe(
+			Effect.andThen(runReserveStep.pipe(Effect.provide(ReserveLive))),
+			Effect.catchTag('ConfigError', failReserveConfig)
 		)
 	if (mode.value === 'prepare')
 		return yield* runPrepareStep.pipe(Effect.provide(PrepareLive))

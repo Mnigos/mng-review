@@ -61,9 +61,30 @@ export const PrepareRunServiceLive = Layer.effect(
 			} as const
 		})
 
+		/** The checks for one event; a rules or git failure becomes the run's outcome. */
+		const checkEvent = (event: PullRequestEvent, input: ShadowRunInput) =>
+			check(event, input).pipe(
+				Effect.catchTags({
+					ConfigError: error =>
+						Effect.succeed({
+							status: 'invalid-config',
+							source: error.source,
+							reason: error.reason,
+							event,
+						} satisfies PreparedRun),
+					GitError: error =>
+						Effect.succeed({
+							status: 'failed',
+							reason: `git: ${error.message}`,
+							event,
+						} satisfies PreparedRun),
+				})
+			)
+
 		const prepare = Effect.fn('PrepareRunService.prepare')(function* (
 			input: ShadowRunInput
 		) {
+			if (input.event) return yield* checkEvent(input.event, input)
 			if (!PULL_REQUEST_EVENTS.some(name => name === input.eventName))
 				return {
 					status: 'skipped',
@@ -71,25 +92,7 @@ export const PrepareRunServiceLive = Layer.effect(
 				} satisfies PreparedRun
 			return yield* input.readEvent.pipe(
 				Effect.flatMap(parsePullRequestEvent),
-				Effect.flatMap(event =>
-					check(event, input).pipe(
-						Effect.catchTags({
-							ConfigError: error =>
-								Effect.succeed({
-									status: 'invalid-config',
-									source: error.source,
-									reason: error.reason,
-									event,
-								} satisfies PreparedRun),
-							GitError: error =>
-								Effect.succeed({
-									status: 'failed',
-									reason: `git: ${error.message}`,
-									event,
-								} satisfies PreparedRun),
-						})
-					)
-				),
+				Effect.flatMap(event => checkEvent(event, input)),
 				Effect.catchTag('ConfigError', error =>
 					Effect.succeed({
 						status: 'invalid-config',

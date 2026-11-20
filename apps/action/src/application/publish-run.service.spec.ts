@@ -51,6 +51,7 @@ const BINDING = {
 	pullNumber: EVENT.number,
 	baseSha: EVENT.baseSha,
 	headSha: EVENT.headSha,
+	trigger: 'push',
 } as const satisfies OutcomeBinding
 
 /** An outcome file bound to the fixture's pull request. */

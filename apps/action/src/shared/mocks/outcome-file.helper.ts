@@ -46,6 +46,7 @@ export function outcomeFile(): OutcomeFile {
 			pullNumber: EVENT.number,
 			baseSha: BASE_SHA,
 			headSha: HEAD_SHA,
+			trigger: 'push',
 		},
 		status: 'reviewed',
 		report: boundReviewReport(),

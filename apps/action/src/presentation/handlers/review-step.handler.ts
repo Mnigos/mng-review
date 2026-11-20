@@ -18,6 +18,11 @@ import type {
 	ReviewedRun,
 	ShadowOutcome,
 } from '../../application/shadow-run.types'
+import {
+	commandTargetConfig,
+	type RunTrigger,
+	triggerConfig,
+} from '../../infrastructure/command-run.config'
 import { OutcomeFileError } from '../../infrastructure/outcome-file.errors'
 import { parseOutcomeFile } from '../../infrastructure/outcome-file.parser'
 import { parsePreparedRun } from '../../infrastructure/prepared-run.parser'
@@ -160,9 +165,14 @@ const writeCheckedOutcome = Effect.fn('reviewStep.writeCheckedOutcome')(
 	}
 )
 
+/** The runner's variables and what started the run. */
+interface ReviewEnvironment extends RunnerEnvironment {
+	readonly trigger: RunTrigger
+}
+
 /** What the outcome file is built from besides the outcome. */
 interface OutcomeContext {
-	readonly env: RunnerEnvironment
+	readonly env: ReviewEnvironment
 	readonly recheck: ThreadRecheckProposals | undefined
 	readonly masked: readonly string[]
 }
@@ -189,15 +199,18 @@ export const runReviewStep = Effect.gen(function* () {
 			} satisfies PreparedRun)
 		)
 	)
+	const trigger = yield* triggerConfig
+	const onlyAgent =
+		trigger === 'command' ? (yield* commandTargetConfig).agent : undefined
 	const outcome = yield* ShadowRunService.use(service =>
-		service.review(prepared)
+		service.review(prepared, onlyAgent ? { onlyAgent } : {})
 	)
 	const recheck =
 		outcome.status === 'reviewed' && !outcome.report.planReport.plan.skippedRun
 			? yield* proposeRecheck(outcome, prepared)
 			: undefined
 	const refused = yield* writeCheckedOutcome(outcome, {
-		env,
+		env: { ...env, trigger },
 		recheck,
 		masked,
 	}).pipe(
@@ -205,9 +218,10 @@ export const runReviewStep = Effect.gen(function* () {
 		Effect.catchTag('OutcomeFileError', error => Effect.succeed(error.message))
 	)
 	yield* finishReview(outcome, { step: 'review', env, startedAt, masked })
-	const publish = refused === undefined && isPublishable(outcome)
+	const publishable = isPublishable(outcome, trigger)
+	const publish = refused === undefined && publishable
 	yield* writeOutputs(yield* outputPathConfig, { publish: String(publish) })
-	if (refused !== undefined && isPublishable(outcome)) {
+	if (refused !== undefined && publishable) {
 		yield* Console.log(
 			formatPublishLogLine({ status: 'failed', reason: refused })
 		)

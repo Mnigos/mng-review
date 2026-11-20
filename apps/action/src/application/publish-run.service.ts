@@ -1,5 +1,6 @@
 import { RulesService } from '@mng-review/engine'
 import {
+	type CommandRun,
 	GitHubConfig,
 	provideOwnedIdentities,
 	type PublishResult,
@@ -23,8 +24,13 @@ export interface PublishContext {
 	readonly engineCommit: string | undefined
 	readonly pullNumber: number
 	readonly head: string
-	/** The pull request as this job's own event payload gives it, for the base rules' gates. */
+	/**
+	 * The pull request as this job's own event payload gives it, or for a command as read again
+	 * from the API, for the base rules' gates.
+	 */
 	readonly event: Pick<PullRequestEvent, 'action' | 'pr'>
+	/** Set for a command run, from the job's trusted context; never from the outcome file. */
+	readonly command?: CommandRun
 }
 
 /** What publishing did with an outcome. */
@@ -113,6 +119,7 @@ export const PublishRunServiceLive = Layer.effect(
 						rules,
 						head: context.head,
 						engineCommit: context.engineCommit,
+						...(context.command ? { command: context.command } : {}),
 						...(recheck
 							? {
 									recheck: {

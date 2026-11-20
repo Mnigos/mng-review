@@ -6,6 +6,7 @@ import {
 	type ThreadRecheckProposals,
 } from '@mng-review/github'
 import { Predicate } from 'effect'
+import type { RunTrigger } from '../infrastructure/command-run.config'
 import {
 	type OutcomeBinding,
 	type OutcomeFile,
@@ -19,11 +20,13 @@ import type {
 	ShadowOutcome,
 } from './shadow-run.types'
 
-/** The runner's variables an outcome is bound to. */
-export type BindingEnvironment = Pick<
+/** The runner's variables an outcome is bound to, and the trigger, `push` when unset. */
+export interface BindingEnvironment extends Pick<
 	RunnerEnvironment,
 	'repository' | 'runId' | 'runAttempt' | 'engineCommit'
->
+> {
+	readonly trigger?: RunTrigger
+}
 
 /** The binding's fields in the order a mismatch is reported. */
 const BINDING_FIELDS = [
@@ -34,6 +37,7 @@ const BINDING_FIELDS = [
 	'pullNumber',
 	'baseSha',
 	'headSha',
+	'trigger',
 ] as const satisfies readonly (keyof OutcomeBinding)[]
 
 /**
@@ -52,6 +56,7 @@ export function toOutcomeBinding(
 		pullNumber: event.number,
 		baseSha: event.baseSha,
 		headSha: event.headSha,
+		trigger: env.trigger ?? 'push',
 	}
 }
 
@@ -217,10 +222,14 @@ export function getBindingMismatch(
 
 /**
  * True when the publish job has something to post: a reviewed run whose plan did not skip it, or
- * an offline endpoint. Every other outcome posts nothing, so the publish job does not start.
+ * an offline endpoint on a push run. An offline command posts nothing. Every other outcome posts
+ * nothing, so the publish job does not start.
  */
-export function isPublishable(outcome: ShadowOutcome): boolean {
-	if (outcome.status === 'offline') return true
+export function isPublishable(
+	outcome: ShadowOutcome,
+	trigger: RunTrigger = 'push'
+): boolean {
+	if (outcome.status === 'offline') return trigger === 'push'
 	return (
 		outcome.status === 'reviewed' && !outcome.report.planReport.plan.skippedRun
 	)
