@@ -13,6 +13,7 @@ import { githubApiFake } from '../../../shared/mocks/github-api-fake.helper'
 import { githubStatusFake } from '../../../shared/mocks/github-status-fake.helper'
 import {
 	bug,
+	botThread,
 	botClosedReviewThread,
 	agentReport,
 	report,
@@ -32,13 +33,13 @@ import {
 import { BOT_LOGIN, SHORT_SHA_LENGTH } from '../domain/publish.constants'
 import { toMarkerComment } from '../presentation/thread-comment.formatter'
 import { PublishService, PublishServiceLive } from './publish.service'
-import { ThreadRecheckService } from './thread-recheck.service'
+import {
+	ThreadResolutionService,
+	ThreadResolutionServiceLive,
+} from './thread-resolution.service'
 
 /** Real git history with a finding on a changed head line and a recording API. */
-function setup(
-	recheck: ThreadRecheckService['Service']['recheck'] = () =>
-		Effect.succeed({ resolved: [], checked: 0, tokens: undefined })
-) {
+function setup(apply?: ThreadResolutionService['Service']['apply']) {
 	const repo = createRepo()
 	const original = `${Array.from({ length: 40 }, (_, index) => `line ${index + 1}`).join('\n')}\n`
 	repo.write(bug().path, original)
@@ -48,7 +49,9 @@ function setup(
 	const fake = githubApiFake()
 	const dependencies = Layer.mergeAll(
 		fake.api,
-		Layer.succeed(ThreadRecheckService, { recheck }),
+		apply
+			? Layer.succeed(ThreadResolutionService, { apply })
+			: ThreadResolutionServiceLive.pipe(Layer.provide(fake.api)),
 		Layer.succeed(GitHubConfig, {
 			serverUrl: 'https://github.com',
 			apiUrl: 'https://api.github.com',
@@ -63,7 +66,6 @@ function setup(
 	)
 	const input = {
 		pullNumber: 17,
-		pr: { labels: [], draft: false, fork: false, trigger: 'auto' as const },
 		head,
 		engineCommit: 'engine',
 		rules: RULES,
@@ -867,10 +869,8 @@ layer(Layer.empty, { excludeTestServices: true })(
 			'an earlier bot closure permits a ready verdict while GitHub still shows the thread open',
 			() =>
 				Effect.gen(function* () {
-					const recheckSpy = vi.fn(() =>
-						Effect.succeed({ checked: 0, resolved: [], tokens: undefined })
-					)
-					const fixture = setup(recheckSpy)
+					const applySpy = vi.fn(() => Effect.succeed([]))
+					const fixture = setup(applySpy)
 					fixture.fake.threads.push(botClosedReviewThread())
 					expect(
 						yield* PublishService.use(publisher =>
@@ -880,7 +880,7 @@ layer(Layer.empty, { excludeTestServices: true })(
 							})
 						).pipe(Effect.provide(fixture.publisher))
 					).toMatchObject({ openBugs: 0, verdict: 'ready', resolved: 0 })
-					expect(recheckSpy.mock.calls).toHaveLength(1)
+					expect(applySpy).not.toHaveBeenCalled()
 					expect(fixture.fake.threads[0]?.isResolved).toBe(false)
 					expect(fixture.fake.writes.map(write => write.method)).toEqual([
 						'create',
@@ -976,24 +976,28 @@ layer(Layer.empty, { excludeTestServices: true })(
 								totalTokens: 2000,
 							},
 						}
-						const fixture = setup(input =>
-							Effect.succeed({
-								checked: ran ? 1 : 0,
-								resolved: ran
-									? input.threads.map(found => ({
-											thread: found,
-											reason: 'The write is guarded.',
-										}))
-									: [],
-								tokens: ran ? tokens : undefined,
-							})
-						)
+						const fixture = setup()
 						fixture.fake.threads.push(
 							reviewThread({ finding: bug(), kind: 'bug' })
 						)
 						const published = yield* PublishService.use(publisher =>
 							publisher.publish({
 								...fixture.input,
+								...(ran
+									? {
+											recheck: {
+												checked: 1,
+												proposals: [
+													{
+														threadId: 'thread',
+														fingerprint: bug().fingerprint,
+														reason: 'The write is guarded.',
+													},
+												],
+												tokens,
+											},
+										}
+									: {}),
 								report: {
 									...fixture.input.report,
 									bugs: [],
@@ -1038,12 +1042,7 @@ layer(Layer.empty, { excludeTestServices: true })(
 					`${outcome} run with prior ${prior} writes only the last finished head`,
 					() =>
 						Effect.gen(function* () {
-							const recheckSpy = vi.fn<
-								ThreadRecheckService['Service']['recheck']
-							>(() =>
-								Effect.succeed({ resolved: [], checked: 0, tokens: undefined })
-							)
-							const fixture = setup(recheckSpy)
+							const fixture = setup()
 							if (prior !== 'absent')
 								fixture.fake.comments.push({
 									...summary(),
@@ -1099,12 +1098,6 @@ layer(Layer.empty, { excludeTestServices: true })(
 							expect(
 								yield* publisher.readPrior(fixture.input.pullNumber)
 							).toEqual(marker)
-							expect(recheckSpy).toHaveBeenCalledExactlyOnceWith(
-								expect.objectContaining({
-									pullNumber: fixture.input.pullNumber,
-									rotation: prior === 'absent' ? 0 : 3,
-								})
-							)
 						})
 				)
 		test.effect('offline summary has no reviewed head and zero runs', () =>
@@ -1128,6 +1121,145 @@ layer(Layer.empty, { excludeTestServices: true })(
 					finished: false,
 				})
 			})
+		)
+	}
+)
+
+layer(Layer.empty, { excludeTestServices: true })(
+	'PublishService outcome proposals',
+	test => {
+		test.effect(
+			'an applied proposal is resolved in the plan, verdict and summary in the same run',
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup()
+					const thread = reviewThread()
+					fixture.fake.threads.push({
+						...thread,
+						comments: {
+							...thread.comments,
+							nodes: thread.comments.nodes.map(comment => ({
+								...comment,
+								originalCommit: { oid: fixture.head },
+							})),
+						},
+					})
+					fixture.repo.write(
+						bug().path,
+						fixture.original
+							.replace('line 10\n', 'changed 10\n')
+							.replace('line 35\n', 'changed 35\n')
+					)
+					const head = fixture.repo.commit()
+					const published = yield* PublishService.use(publisher =>
+						publisher.publish({
+							...fixture.input,
+							head,
+							recheck: {
+								checked: 1,
+								proposals: [
+									{
+										threadId: thread.id,
+										fingerprint: bug().fingerprint,
+										reason: 'The guard covers this write.',
+									},
+								],
+								tokens: {},
+							},
+						})
+					).pipe(Effect.provide(fixture.publisher))
+					expect(published).toMatchObject({
+						dismissed: 1,
+						repeated: 0,
+						onLine: 0,
+						openBugs: 0,
+						resolved: 1,
+						rechecked: 1,
+						verdict: 'ready',
+					})
+					expect(fixture.fake.writes.map(write => write.method)).toEqual([
+						'reply',
+						'resolve',
+						'create',
+					])
+					const body = fixture.fake.comments[0]?.body ?? ''
+					expect(body).toContain(
+						'Closed by this run, no longer found at the head (1)'
+					)
+					expect(body).toContain(
+						'Found again under threads resolved without a code change, not blocking (1)'
+					)
+					expect(body).toContain('**Verdict: ready**')
+					expect(body).toContain('0 open bug thread(s)')
+				})
+		)
+		for (const ownership of ['user', 'other-bot', 'edited'] as const)
+			test.effect(
+				`a proposal for a ${ownership} thread writes no reply or resolution`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = setup()
+						const thread = reviewThread()
+						fixture.fake.threads.push({
+							...thread,
+							comments: {
+								...thread.comments,
+								nodes: thread.comments.nodes.map(comment => ({
+									...comment,
+									...(ownership === 'edited'
+										? { editor: { __typename: 'User', login: 'contributor' } }
+										: {
+												author: {
+													__typename: ownership === 'user' ? 'User' : 'Bot',
+													login:
+														ownership === 'user' ? BOT_LOGIN : 'another-bot',
+												},
+											}),
+								})),
+							},
+						})
+						const publisher = yield* PublishService.pipe(
+							Effect.provide(fixture.publisher)
+						)
+						expect(
+							yield* publisher.readThreads(fixture.input.pullNumber)
+						).toEqual([])
+						expect(
+							yield* publisher.publish({
+								...fixture.input,
+								report: { ...fixture.input.report, bugs: [] },
+								recheck: {
+									checked: 1,
+									proposals: [
+										{
+											threadId: thread.id,
+											fingerprint: bug().fingerprint,
+											reason: 'Do not apply.',
+										},
+									],
+									tokens: {},
+								},
+							})
+						).toMatchObject({ resolved: 0 })
+						expect(fixture.fake.writes.map(write => write.method)).toEqual([
+							'create',
+						])
+					})
+			)
+		test.effect(
+			'readThreads exposes only fresh bot-owned threads and preserves their fingerprint',
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup()
+					fixture.fake.threads.push(reviewThread())
+					expect(
+						yield* PublishService.use(publisher =>
+							publisher.readThreads(17)
+						).pipe(Effect.provide(fixture.publisher))
+					).toEqual([botThread()])
+					expect(fixture.fake.threadReads).toEqual([17])
+					expect(fixture.fake.writes).toEqual([])
+				})
 		)
 	}
 )
