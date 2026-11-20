@@ -5,6 +5,7 @@ import {
 	countSchema,
 	DEPTHS,
 	effortSchema,
+	FINGERPRINT_LENGTH,
 	MECHANICAL_CONDITIONS,
 	normalizeRepoPath,
 	RISK_CATEGORIES,
@@ -21,6 +22,14 @@ export const MAX_REPORT_FILES = 5000
 export const MAX_REPORT_TEXT = 20_000
 const textSchema = Schema.String.check(Schema.isMaxLength(MAX_REPORT_TEXT))
 const textListSchema = Schema.Array(textSchema)
+/** Most characters in a name: an agent, a model, a unit. */
+export const MAX_REPORT_NAME = 200
+const nameSchema = Schema.String.check(Schema.isMaxLength(MAX_REPORT_NAME))
+const nameListSchema = Schema.Array(nameSchema).check(Schema.isMaxLength(50))
+/** A finding's fingerprint as the engine makes it: a fixed number of lowercase hex characters. */
+const fingerprintSchema = Schema.String.check(
+	Schema.isPattern(new RegExp(`^[0-9a-f]{${FINGERPRINT_LENGTH}}$`, 'u'))
+)
 /** A repository-relative path as `normalizeRepoPath` returns it; nothing absolute or outside. */
 const repoPathSchema = textSchema.check(
 	Schema.makeFilter(
@@ -68,10 +77,10 @@ const findingFields = {
 	evidence: textListSchema,
 	suggestion: Schema.optional(textSchema),
 	kind: agentKindSchema,
-	agents: textListSchema,
-	models: textListSchema,
-	fingerprint: textSchema,
-}
+	agents: nameListSchema,
+	models: nameListSchema,
+	fingerprint: fingerprintSchema,
+} as const
 
 const judgementFields = {
 	severity: severitySchema,
@@ -80,7 +89,7 @@ const judgementFields = {
 	model: textSchema,
 	loweredBecause: Schema.optional(textSchema),
 	note: Schema.optional(textSchema),
-}
+} as const
 
 /** The three answers a finding's validation can hold: a judgement, unverified, or none. */
 const validationSchema = Schema.Union([
@@ -146,7 +155,7 @@ const routerReportSchema = Schema.Struct({
 		Schema.Array(
 			Schema.Struct({
 				category: Schema.Literals(RISK_CATEGORIES),
-				path: textSchema,
+				path: repoPathSchema,
 				reason: textSchema,
 			})
 		)

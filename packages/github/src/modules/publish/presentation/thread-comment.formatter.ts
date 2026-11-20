@@ -198,19 +198,32 @@ export function toFindingDetailLines(
 	]
 }
 
-/** The first comment of a finding's thread: heading, details and the hidden marker. */
+/** Characters a comment may hold; GitHub refuses a longer body. */
+export const MAX_COMMENT_CHARS = 65_000
+/** What a comment says in place of details that would not fit in it. */
+const TOO_LONG_NOTE =
+	'The details are too long for one comment; the job summary has the run.'
+
+/**
+ * The first comment of a finding's thread: heading, details and the hidden marker. Details that
+ * would push the body past what GitHub accepts are left out, never the heading or the marker.
+ */
 export function formatThreadComment(
 	published: PublishedFinding,
 	links: BlobLinks,
 	onLine: boolean
 ): string {
-	return [
-		toHeading(published),
+	const heading = toHeading(published)
+	const marker = toMarkerComment('finding', toFindingMarker(published, links))
+	const full = [
+		heading,
 		'',
 		...toFindingDetailLines(published.finding, links, !onLine),
 		'',
-		toMarkerComment('finding', toFindingMarker(published, links)),
+		marker,
 	].join('\n')
+	if (full.length <= MAX_COMMENT_CHARS) return full
+	return [heading, '', TOO_LONG_NOTE, '', marker].join('\n')
 }
 
 /** A kind and severity for the summary list. */
@@ -224,7 +237,7 @@ export function toKindLabel(kind: ThreadKind, severity: Severity): string {
 export function formatResolvedReply(reason: string, links: BlobLinks): string {
 	const head = toCodeSpan(links.head.slice(0, SHORT_SHA_LENGTH))
 	return [
-		`No longer found at ${head}: ${escapeMarkdown(reason)} The bot no longer counts this thread as open.`,
+		`No longer found at ${head}: ${escapeMarkdown(toShort(reason, MAX_TEXT_CHARS))} The bot no longer counts this thread as open.`,
 		'',
 		toMarkerComment('reply', {
 			v: MARKER_VERSION,
