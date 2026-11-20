@@ -251,6 +251,17 @@ describe('mention command workflow boundaries', () => {
 		expect(commandMint).toBeDefined()
 		expect(
 			commandMint
+				?.match(/^\s+permission-[\w-]+:\s*\w+/gmu)
+				?.map(value => value.trim())
+				.toSorted()
+		).toEqual([
+			'permission-checks: write',
+			'permission-contents: read',
+			'permission-pull-requests: write',
+			'permission-statuses: write',
+		])
+		expect(
+			commandMint
 				?.split('\n')
 				.filter(line => !line.trim().startsWith('#') && line.trim())
 				.join('\n')
