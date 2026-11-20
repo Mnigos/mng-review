@@ -2,6 +2,7 @@ import { Clock, Context, Duration, Effect, Layer, Ref, Result } from 'effect'
 import { Chat, type Prompt, type Response, Toolkit } from 'effect/ai'
 import { TokenLedger } from '../../../../platform/llm/token-ledger.service'
 import { fenceData } from '../../../../utils/fence.util'
+import { ReportReplyTool } from '../../../converse/application/report-reply.tool'
 import {
 	type CallStop,
 	makeConversationBudget,
@@ -33,7 +34,8 @@ import { RepoToolsService } from './repo-tools.service'
 const AGENT_TOOLKIT = Toolkit.make(
 	...REPO_TOOLS,
 	ReportFindingsTool,
-	ReportVerdictTool
+	ReportVerdictTool,
+	ReportReplyTool
 )
 type ToolCall = Response.ToolCallPart<string, unknown>
 
