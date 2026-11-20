@@ -110,6 +110,10 @@ labels:
   always_review: [review]
   depth: {quick: mng-review-quick, deep: mng-review-deep}
 
+commands:
+  allow: []                      # logins besides admins that may run commands, with write access
+  max_runs: 3                    # command runs per pull request, counted before the endpoint is used
+
 disputes:
   accept_intentional_up_to: medium
   max_rounds: 1

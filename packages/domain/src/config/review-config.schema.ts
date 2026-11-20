@@ -115,6 +115,11 @@ export const reviewConfigSchema = Schema.Struct({
 			deep: Schema.NonEmptyString,
 		}),
 	}),
+	/** Who may start a review with a mention command besides admins, and how many a pull request gets. */
+	commands: Schema.Struct({
+		allow: nameListSchema,
+		max_runs: positiveIntSchema,
+	}),
 	disputes: Schema.Struct({
 		accept_intentional_up_to: severitySchema,
 		max_rounds: countSchema,

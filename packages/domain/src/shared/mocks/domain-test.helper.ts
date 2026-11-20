@@ -24,6 +24,7 @@ import type { Verdict } from '../../validation/verdict.schema'
 interface ConfigOverrides extends Partial<
 	Omit<
 		ReviewConfig,
+		| 'commands'
 		| 'features'
 		| 'comments'
 		| 'limits'
@@ -34,6 +35,7 @@ interface ConfigOverrides extends Partial<
 		| 'models'
 	>
 > {
+	readonly commands?: Partial<ReviewConfig['commands']>
 	readonly features?: Partial<ReviewConfig['features']>
 	readonly comments?: Partial<ReviewConfig['comments']>
 	readonly limits?: Partial<ReviewConfig['limits']>
@@ -57,6 +59,7 @@ export function config(overrides: ConfigOverrides = {}): ReviewConfig {
 	return structuredClone({
 		...preset,
 		...overrides,
+		commands: { ...preset.commands, ...overrides.commands },
 		features: { ...preset.features, ...overrides.features },
 		comments: { ...preset.comments, ...overrides.comments },
 		limits: { ...preset.limits, ...overrides.limits },

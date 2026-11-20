@@ -32,6 +32,7 @@ const SPEC_DEFAULTS = {
 		always_review: ['review'],
 		depth: { quick: 'mng-review-quick', deep: 'mng-review-deep' },
 	},
+	commands: DEFAULT_PRESET.commands,
 	disputes: { accept_intentional_up_to: 'medium', max_rounds: 1 },
 	verdict: { blocking_severity: 'medium', mode: 'preview', never_approve: [] },
 	models: {
@@ -91,6 +92,7 @@ layer(Layer.empty)('parseReviewConfig', test => {
 				const first = yield* parseReviewConfig(undefined)
 				const second = yield* parseReviewConfig('{}')
 				const presetArrays = [
+					DEFAULT_PRESET.commands.allow,
 					DEFAULT_PRESET.risk_paths,
 					DEFAULT_PRESET.skip.authors,
 					DEFAULT_PRESET.skip.labels,
@@ -101,6 +103,7 @@ layer(Layer.empty)('parseReviewConfig', test => {
 					DEFAULT_PRESET.models.reviewer,
 				]
 				const firstArrays = [
+					first.commands.allow,
 					first.risk_paths,
 					first.skip.authors,
 					first.skip.labels,
@@ -111,6 +114,7 @@ layer(Layer.empty)('parseReviewConfig', test => {
 					first.models.reviewer,
 				]
 				const secondArrays = [
+					second.commands.allow,
 					second.risk_paths,
 					second.skip.authors,
 					second.skip.labels,
@@ -195,6 +199,7 @@ layer(Layer.empty)('parseReviewConfig', test => {
 		['limits: {unknown: 1}', 'limits.unknown'],
 		['labels: {depth: {typo: deep}}', 'labels.depth.typo'],
 		['disputes: {unknown: 1}', 'disputes.unknown'],
+		['commands: {unknown: 1}', 'commands.unknown'],
 		['verdict: {unknown: true}', 'verdict.unknown'],
 		['models: {reviewer: {model: custom, temp: 1}}', 'models.reviewer.temp'],
 	])
@@ -214,6 +219,8 @@ layer(Layer.empty)('parseReviewConfig', test => {
 		['comments: {max_nits: 1.5}', 'comments.max_nits'],
 		['features: {agents: sometimes}', 'features.agents'],
 		['risk_paths: src/auth', 'risk_paths'],
+		['commands: {allow: author-a}', 'commands.allow'],
+		['commands: {allow: [42]}', 'commands.allow.0'],
 		['depth: extreme', 'depth'],
 		['models: {reviewer: []}', 'models.reviewer'],
 		[
@@ -350,4 +357,47 @@ layer(Layer.empty)('previous bot identities', test => {
 				).toEqual(['mng-review'])
 			})
 	)
+})
+
+layer(Layer.empty)('mention command config', test => {
+	test.effect('inherits command defaults when the section is absent', () =>
+		Effect.gen(function* () {
+			expect((yield* parseReviewConfig('{}')).commands).toEqual(
+				DEFAULT_PRESET.commands
+			)
+		})
+	)
+	test.effect('reads the allowed logins and manual run limit', () =>
+		Effect.gen(function* () {
+			expect(
+				(yield* parseReviewConfig(
+					'commands: {allow: [author-a, AUTHOR-B], max_runs: 7}'
+				)).commands
+			).toEqual({ allow: ['author-a', 'AUTHOR-B'], max_runs: 7 })
+		})
+	)
+	test.effect('inherits omitted command settings on partial overrides', () =>
+		Effect.gen(function* () {
+			expect(
+				(yield* parseReviewConfig('commands: {allow: [author-a]}')).commands
+			).toEqual({ ...DEFAULT_PRESET.commands, allow: ['author-a'] })
+			expect(
+				(yield* parseReviewConfig('commands: {max_runs: 1}')).commands
+			).toEqual({ ...DEFAULT_PRESET.commands, max_runs: 1 })
+			expect((yield* parseReviewConfig('{}')).commands).toEqual(
+				DEFAULT_PRESET.commands
+			)
+		})
+	)
+	for (const value of ['0', '-1', '1.5', 'null', '"3"'])
+		test.effect(`rejects commands.max_runs ${value}`, () =>
+			Effect.gen(function* () {
+				const error = yield* parseReviewConfig(
+					`commands: {max_runs: ${value}}`
+				).pipe(Effect.flip)
+				expect(error).toBeInstanceOf(ConfigError)
+				expect(error.source).toBe(CONFIG_PATH)
+				expect(error.reason).toContain('commands.max_runs')
+			})
+		)
 })

@@ -21,6 +21,7 @@ packages/
     src/modules/           routing, review, validation, init, bench
   github/                  @mng-review/github: the GitHub API and publishing, used only by the action
     src/platform/          config and the bot identity, the REST and GraphQL client on effect/http
+    src/modules/command/   the mention command grammar and who may run a command
     src/modules/publish/   which findings get a thread, comment and summary text, posting, re-check
     src/modules/status/    check runs, the MNG Review commit status, the status sweep
 tooling/
