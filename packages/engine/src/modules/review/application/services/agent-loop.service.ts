@@ -39,6 +39,11 @@ const AGENT_TOOLKIT = Toolkit.make(
 )
 type ToolCall = Response.ToolCallPart<string, unknown>
 
+/** A call's answer when the tool did not run or did not finish. */
+function refuse(output: string) {
+	return Effect.succeed({ output })
+}
+
 /**
  * Runs one agent as a tool loop on `effect/ai` `Chat`: one model call per turn, the turn's tool
  * calls resolved in parallel by the loop, until the agent calls its finish tool or answers with
@@ -184,20 +189,16 @@ export const AgentLoopServiceLive = Layer.effect(
 					calls,
 					call => {
 						if (!allowed.includes(call))
-							return Effect.succeed(`error: tool ${call.name} is not available`)
+							return refuse(`error: tool ${call.name} is not available`)
 						if (stop.outOfTokens)
-							return Effect.succeed(
-								`error: token budget reached; call ${finish} now`
-							)
+							return refuse(`error: token budget reached; call ${finish} now`)
 						if (!runnable.has(call.id))
-							return Effect.succeed(
-								`error: tool call limit reached; call ${finish}`
-							)
-						return repoTools.call(request.scope, call.name, call.params).pipe(
+							return refuse(`error: tool call limit reached; call ${finish}`)
+						return repoTools.run(request.scope, call.name, call.params).pipe(
 							Effect.timeoutOrElse({
 								duration: Math.max(0, deadline - now),
 								orElse: () =>
-									Effect.succeed(
+									refuse(
 										`error: tool ${call.name} ran past the agent's wall time`
 									),
 							})
@@ -327,7 +328,7 @@ export const AgentLoopServiceLive = Layer.effect(
 							),
 						])
 					}
-					const outputs = yield* resolveCalls(
+					const results = yield* resolveCalls(
 						calls,
 						state,
 						{
@@ -338,17 +339,17 @@ export const AgentLoopServiceLive = Layer.effect(
 					)
 					const refusal = `error: token budget reached; call ${finish} now`
 					const fenced = toAffordableOutputs(
-						outputs.map(output => fenceData(TOOL_OUTPUT_LABEL, output)),
+						results.map(({ output }) => fenceData(TOOL_OUTPUT_LABEL, output)),
 						yield* tokens.current,
 						sent,
 						refusal
 					)
 					// Only an output the model receives counts as read.
-					const shown = calls.map((call, index) => ({
-						call,
-						output:
-							fenced[index] === refusal ? refusal : (outputs[index] ?? ''),
-					}))
+					const shown = calls.map((call, index) =>
+						fenced[index] === refusal
+							? { call, output: refusal }
+							: { call, output: '', ...results[index] }
+					)
 					const read = shown.flatMap(({ call, output }) =>
 						getReadPaths(call, output, call.name === DiffTool.name)
 					)

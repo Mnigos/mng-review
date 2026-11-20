@@ -16,7 +16,7 @@ export function parseReplyAnswer(answer: unknown) {
 	)
 }
 
-/** A classifier's claim and the keys of the lines its conversation showed it; see `getReadKeys`. */
+/** A classifier's claim and the keys of the lines its conversation showed it whole; see `getShownKeys`. */
 export interface Classified {
 	readonly claim: ReplyClaim
 	readonly reads: ReadonlySet<string>

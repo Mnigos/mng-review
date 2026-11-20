@@ -20,9 +20,9 @@ describe('reply text helpers', () => {
 			expect(toCutLine(text, max)).toBe(expected)
 		}
 	)
-	test('removes every markup delimiter and mention character while preserving other text', () => {
+	test('replaces every markup delimiter and mention character with a space while preserving other text', () => {
 		expect(toPlainText('<!-- a --> `<b>` @name @@next')).toBe(
-			'!-- a -- b name next'
+			'  -- a --    b    name   next'
 		)
 	})
 })

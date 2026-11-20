@@ -375,13 +375,13 @@ describe('reply decision output bounds', () => {
 			})
 		).toBe('risk_paths')
 	})
-	test('memory removes markup, code delimiters and mentions from reason and path', () => {
+	test('memory replaces markup, code delimiters and mentions in reason and path with spaces', () => {
 		const memory = toMemoryCandidate(
 			{ path: 'src/<policy>@file`name`.ts' },
 			'<!-- policy --> uses `integer cents` per @reviewer'
 		)
 		expect(memory).toBe(
-			'src/policyfilename.ts: !-- policy -- uses integer cents per reviewer'
+			'src/ policy file name .ts: -- policy -- uses integer cents per reviewer'
 		)
 		expect(memory).not.toMatch(/[<>`@]/u)
 	})

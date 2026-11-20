@@ -4,7 +4,7 @@ import {
 } from '../domain/review.constants'
 import { addGrepMatch, addNumberedLine } from './tool-output.parser'
 
-const EMPTY_LINES = { text: '', seen: 0, binary: false } as const
+const EMPTY_LINES = { text: '', seen: 0, binary: false, whole: 0 } as const
 const EMPTY_MATCHES = { text: '', shown: 0, rest: 0 } as const
 
 describe('addNumberedLine', () => {
@@ -14,7 +14,7 @@ describe('addNumberedLine', () => {
 				addNumberedLine({ start: 2, end: 3 }),
 				EMPTY_LINES
 			)
-		).toEqual({ text: '2| two\n3| three', seen: 4, binary: true })
+		).toEqual({ text: '2| two\n3| three', seen: 4, binary: true, whole: 3 })
 	})
 	test('stops keeping lines once the kept text passes the output cap', () => {
 		const line = 'x'.repeat(MAX_TOOL_OUTPUT_CHARS)

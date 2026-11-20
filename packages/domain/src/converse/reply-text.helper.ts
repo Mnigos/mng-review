@@ -1,7 +1,11 @@
 /** Whitespace runs, line breaks included. */
 const WHITESPACE = /\s+/gu
-/** Characters that could open markup, a code span or a mention wherever the text is rendered. */
-const MARKUP_CHARS = /[<>`@]/gu
+/** Anything but letters, digits, spaces and punctuation that opens no link, image, code, HTML or mention. */
+const UNSAFE_CHARS = /[^\p{L}\p{N} .,;:'"/_\-()]/gu
+/** A URL scheme's separator, which GitHub autolinks. */
+const SCHEME_SEPARATOR = /:\/\//gu
+/** `www.`, which GitHub autolinks at a word's start; broken wherever it stands. */
+const WWW_PREFIX = /(www)\./giu
 
 /** The text on one line with its whitespace runs collapsed. */
 export function toOneLine(text: string): string {
@@ -15,7 +19,14 @@ export function toCutLine(text: string, maxChars: number): string {
 	return `${line.slice(0, maxChars - 1).trimEnd()}…`
 }
 
-/** The text without `<`, `>`, backticks and `@`, so no later rendering reads markup or a mention in it. */
+/**
+ * The text as plain text: every character but letters, digits, spaces and `. , ; : ' " / _ - ( )`
+ * becomes a space, and `://` and a leading `www.` are broken, so Markdown renders no link, image,
+ * code, HTML or mention in it.
+ */
 export function toPlainText(text: string): string {
-	return text.replace(MARKUP_CHARS, '')
+	return text
+		.replace(UNSAFE_CHARS, ' ')
+		.replace(SCHEME_SEPARATOR, ': //')
+		.replace(WWW_PREFIX, '$1 ')
 }

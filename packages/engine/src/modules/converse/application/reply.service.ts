@@ -47,13 +47,12 @@ import {
 import {
 	BINARY_DIFF,
 	MAX_EVIDENCE_CHECKED,
-	MAX_FILE_CHARS,
 	MAX_REPLY_CHARS,
 	NO_MODEL_LEFT,
 	REPLY_SOURCE,
 	SYMLINK_MODE,
 } from '../domain/reply.constants'
-import { getReadKeys, isRangeRead } from './reply-read.helper'
+import { getShownKeys, isRangeRead } from './reply-read.helper'
 import { REPLY_PROMPT } from './reply.prompt'
 
 /** Attempts per reply before it counts as unclear. */
@@ -108,23 +107,20 @@ export const ReplyServiceLive = Layer.effect(
 		const ledger = yield* TokenLedger
 		const rechecker = yield* RecheckService
 
+		/**
+		 * The classifier's first message and the keys of the window lines it holds whole; a line the
+		 * tool's output limit cut inside counts as unread.
+		 */
 		const toUserMessage = Effect.fn('ReplyService.toUserMessage')(function* (
 			item: ReplyItem,
 			scope: RepoScope
 		) {
 			const { finding } = item
-			const call = {
-				name: ReadFileTool.name,
-				params: {
-					ref: 'head',
-					path: finding.path,
-					range: toFileWindow(finding.line),
-				},
-			}
-			const file = truncateText(
-				yield* repoTools.call(scope, call.name, call.params),
-				MAX_FILE_CHARS
-			)
+			const file = yield* repoTools.run(scope, ReadFileTool.name, {
+				ref: 'head',
+				path: finding.path,
+				range: toFileWindow(finding.line),
+			})
 			const user = [
 				fenceData(
 					'The finding:',
@@ -132,19 +128,21 @@ export const ReplyServiceLive = Layer.effect(
 				),
 				fenceData(
 					`${finding.path} at head, lines around the finding (read more with read_file):`,
-					file
+					file.output
 				),
 				fenceData(
 					"The author's reply, a claim to test:",
 					truncateText(item.reply, MAX_REPLY_CHARS)
 				),
 			].join('\n\n')
-			return { user, window: getReadKeys(call, file) }
+			return { user, window: file.shown ? getShownKeys(file.shown) : [] }
 		})
 
 		/**
 		 * One classifier conversation on the first validator model still available, with the lines
-		 * it was shown: the first message's window and its repository calls' outputs.
+		 * it was shown whole: the first message's window and its `read_file` calls whose output was
+		 * not cut. `grep` and `blame` output shows lines too, but the repository shapes its text, so
+		 * it is never evidence that a line was read.
 		 */
 		const attempt = (
 			item: ReplyItem,
@@ -173,10 +171,10 @@ export const ReplyServiceLive = Layer.effect(
 					source: REPLY_SOURCE,
 					onToolOutputs: outputs =>
 						Ref.update(reads, keys => {
-							const shown = outputs.flatMap(entry =>
-								getReadKeys(entry.call, entry.output)
+							const read = outputs.flatMap(({ shown }) =>
+								shown && !shown.truncated ? getShownKeys(shown) : []
 							)
-							return new Set([...keys, ...shown])
+							return new Set([...keys, ...read])
 						}),
 				})
 				return {

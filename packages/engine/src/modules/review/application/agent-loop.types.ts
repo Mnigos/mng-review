@@ -2,6 +2,7 @@ import type { ModelSetting } from '@mng-review/domain'
 import type { Effect } from 'effect'
 import type { Prompt, Response } from 'effect/ai'
 import type { LoopBudget, SpentTokens } from '../domain/loop-budget.helper'
+import type { ToolResult } from './repo-tools.types'
 import type { RepoToolName } from './repo.toolkit'
 import type { ReportFindingsTool } from './report-findings.tool'
 import type { ReportReplyTool } from './report-reply.tool'
@@ -13,10 +14,12 @@ export type FinishToolName =
 	| typeof ReportVerdictTool.name
 	| typeof ReportReplyTool.name
 
-/** A repository call of a turn and the output the agent received; a refused one starts `error:`. */
-export interface ToolOutput {
+/**
+ * A repository call of a turn and the output the agent received; a refused one starts `error:`.
+ * `shown` comes from the tool, only for an output the agent received.
+ */
+export interface ToolOutput extends ToolResult {
 	readonly call: Response.ToolCallPart<string, unknown>
-	readonly output: string
 }
 
 /** A problem with an answer, told back to the model. */
