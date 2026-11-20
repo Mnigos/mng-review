@@ -24,8 +24,8 @@ export const pendingReplySchema = Schema.Struct({
 export type PendingReply = typeof pendingReplySchema.Type
 
 /**
- * The engine's `ReplyDecision` as the outcome file carries it. `accepted` names the evidence
- * entries the engine's check passed, which the answer shows.
+ * The engine's `ReplyDecision` as the outcome file carries it. `accepted` names at least one
+ * evidence entry the engine's check passed; publishing checks each again and shows those that pass.
  */
 export const replyDecisionSchema = Schema.Union([
 	Schema.Struct({ action: Schema.Literal('resolved'), ...reasonFields }),
@@ -34,6 +34,7 @@ export const replyDecisionSchema = Schema.Union([
 		...reasonFields,
 		memory: textSchema,
 		evidence: Schema.Array(textSchema).check(
+			Schema.isMinLength(1),
 			Schema.isMaxLength(MAX_REPORT_ENTRIES)
 		),
 	}),

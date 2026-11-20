@@ -2,6 +2,7 @@
 export * from './modules/bench/application/bench.service'
 export * from './modules/bench/domain/bench-report.helper'
 export type * from './modules/bench/domain/bench-report.types'
+export * from './modules/converse/application/reply-evidence.service'
 export * from './modules/converse/application/reply.service'
 export * from './modules/review/application/report-reply.tool'
 export * from './modules/converse/infrastructure/converse.layers'

@@ -1,6 +1,9 @@
 import type { Change, ReviewConfig } from '@mng-review/domain'
 import { Context, Effect, Layer, Option } from 'effect'
-import type { CollaboratorRole } from '../../../platform/github-api.schema'
+import type {
+	CollaboratorRole,
+	ThreadComment,
+} from '../../../platform/github-api.schema'
 import { GitHubApiService } from '../../../platform/github-api.service'
 import { OwnedIdentities } from '../../../platform/owned-identities.context'
 import { hasWriteAccess } from '../../command/domain/command-access.helper'
@@ -69,9 +72,10 @@ export class ThreadReplyService extends Context.Service<
 		) => Effect.Effect<readonly PendingReply[], never, OwnedIdentities>
 		/**
 		 * Answers each decision that still holds (`getApplicableReplies`) and whose reply's author
-		 * still has write access, and tries to resolve a thread it closes; a failed answer leaves the
-		 * thread out of the result. An `accepted` decision on a finding past the limit (`isPastLimit`)
-		 * is dropped.
+		 * still has write access, reading each thread again right before its answer and skipping it
+		 * when the reply is no longer the latest comment or was edited, and tries to resolve a thread
+		 * it closes; a skipped or failed answer leaves the thread out of the result. An `accepted`
+		 * decision on a finding past the limit (`isPastLimit`) is dropped.
 		 */
 		readonly apply: (
 			input: ReplyApplyInput
@@ -154,11 +158,32 @@ export const ThreadReplyServiceLive = Layer.effect(
 			return replies.flatMap(Option.toArray)
 		})
 
+		/**
+		 * True when the thread's latest comment is still the decided reply with the digest it was
+		 * decided on; a failed read is false. The reply mutation has no precondition, so this read
+		 * right before it narrows the window for an edit or a newer comment but cannot close it.
+		 */
+		const isStillLatest = Effect.fn('ThreadReplyService.isStillLatest')(
+			function* (applied: AppliedReply) {
+				const comments = yield* api
+					.listThreadComments(applied.thread.id)
+					.pipe(Effect.orElseSucceed((): readonly ThreadComment[] => []))
+				const last = comments.at(-1)
+				return (
+					last !== undefined &&
+					last.databaseId === applied.commentId &&
+					toBodyDigest(last.body) === applied.thread.latestDigest
+				)
+			}
+		)
+
 		const answer = Effect.fn('ThreadReplyService.answer')(function* (
 			applied: AppliedReply,
 			links: BlobLinks
 		) {
 			const { thread, decision } = applied
+			// Someone edited the reply or answered it since the first read: a later run decides again.
+			if (!(yield* isStillLatest(applied))) return []
 			const body = formatReplyAnswer(decision, links, applied.commentId)
 			return yield* api.replyToThread(thread.id, body).pipe(
 				Effect.tap(() =>
