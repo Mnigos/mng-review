@@ -15,6 +15,10 @@ const COMMENT_CLOSE = '-->'
 /** Indentation that makes an indented code block: a tab or four spaces. */
 const CODE_INDENT = /^(?: {4}| {0,3}\t)/u
 const LEADING_SPACES = /^ {0,3}/u
+/** A blank line: spaces and tabs only, as Markdown counts it (a no-break space is not blank). */
+const BLANK_LINE = /^[ \t]*$/u
+/** Line breaks as Markdown reads them: CRLF, a bare CR or LF. */
+const LINE_BREAK = /\r\n?|\n/u
 const TRAILING_BLANKS = /[ \t]+$/u
 const WORD_SEPARATOR = /[ \t]+/u
 /** A command line has at most four words: the mention, the verb and up to two more. */
@@ -35,6 +39,8 @@ interface ScanState {
 	readonly fence: string | undefined
 	readonly quoted: boolean
 	readonly inComment: boolean
+	/** The last line was paragraph text, so an indented line continues it instead of starting code. */
+	readonly afterText: boolean
 }
 
 /** The text of one line outside HTML comments, and whether a comment is still open at its end. */
@@ -55,6 +61,16 @@ function toVisibleLine(line: string, inComment: boolean): VisibleLine {
 		text: line.replace(HTML_COMMENT, ''),
 		inComment: last !== undefined && last[1] === '',
 	}
+}
+
+/** The fence a line opens, or `undefined`; a backtick fence whose info string holds a backtick opens none. */
+function getOpenedFence(line: string): string | undefined {
+	const trimmed = line.replace(LEADING_SPACES, '')
+	const [, fence] = FENCE.exec(trimmed) ?? []
+	if (fence === undefined) return undefined
+	if (fence.startsWith('`') && trimmed.slice(fence.length).includes('`'))
+		return undefined
+	return fence
 }
 
 /** True when the line closes the block the fence opened: the same character, at least as long. */
@@ -105,33 +121,40 @@ export function parseMentionCommand(
 ): ReviewCommand | undefined {
 	if (!BOT_SLUG_PATTERN.test(handle)) return undefined
 	const mention = `@${handle.toLowerCase()}`
-	const lines = body.split(/\r?\n/u)
+	const lines = body.split(LINE_BREAK)
 	const state: { current: ScanState } = {
-		current: { fence: undefined, quoted: false, inComment: false },
+		current: {
+			fence: undefined,
+			quoted: false,
+			inComment: false,
+			afterText: false,
+		},
 	}
 	for (const raw of lines) {
-		const { fence, quoted, inComment } = state.current
+		const { fence, quoted, inComment, afterText } = state.current
 		if (fence !== undefined) {
 			if (isClosingFence(raw, fence))
 				state.current = { ...state.current, fence: undefined }
 			continue
 		}
 		if (!inComment) {
-			if (raw.trim() === '') {
-				state.current = { ...state.current, quoted: false }
+			if (BLANK_LINE.test(raw)) {
+				state.current = { ...state.current, quoted: false, afterText: false }
 				continue
 			}
-			const [, opened] = FENCE.exec(raw.replace(LEADING_SPACES, '')) ?? []
+			const opened = getOpenedFence(raw)
 			if (opened !== undefined) {
-				state.current = { ...state.current, fence: opened }
+				state.current = { ...state.current, fence: opened, afterText: false }
 				continue
 			}
-			// Indented code shows `<!--` as text, so it never opens a comment that could hide a fence.
-			if (CODE_INDENT.test(raw)) continue
+			// Indented code shows `<!--` as text, so it never opens a comment that could hide a fence;
+			// after paragraph text an indented line only continues the paragraph.
+			if (CODE_INDENT.test(raw) && !afterText) continue
 		}
 		const visible = toVisibleLine(raw, inComment)
 		state.current = { ...state.current, inComment: visible.inComment }
 		if (visible.text.trim() === '') continue
+		state.current = { ...state.current, afterText: true }
 		const line = visible.text.replace(LEADING_SPACES, '')
 		if (line.startsWith(QUOTE_START)) {
 			state.current = { ...state.current, quoted: true }
