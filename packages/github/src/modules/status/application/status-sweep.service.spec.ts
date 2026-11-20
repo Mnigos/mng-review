@@ -1,6 +1,7 @@
 import { layer } from '@effect/vitest'
 import { Effect, Layer, Redacted } from 'effect'
 import { GITHUB_ACTIONS_IDENTITY } from '../../../platform/bot-identity.helper'
+import { RECENT_COMMENTS } from '../../../platform/github-api.constants'
 import { GitHubApiService } from '../../../platform/github-api.service'
 import { GitHubConfig } from '../../../platform/github.config'
 import { GitHubApiError } from '../../../platform/github.errors'
@@ -21,6 +22,11 @@ import {
 	SUMMARY_MARKER,
 	TOKEN_MODE_OWNED,
 } from '../../../shared/mocks/publish-test.helper'
+import {
+	editedOwnerReviewThread,
+	markedThreadReply,
+	ownerReviewThread,
+} from '../../../shared/mocks/thread-reply-test.helper'
 import {
 	SummaryCommentService,
 	SummaryCommentServiceLive,
@@ -1094,6 +1100,372 @@ layer(TOKEN_MODE_OWNED)('StatusSweepService unthreaded bugs', test => {
 				expect(fake.statuses).toEqual([
 					{ sha: 'head', ...toCommitStatus('needs fixes', 1, true) },
 				])
+				expect(api.writes).toEqual([])
+			})
+	)
+})
+
+layer(TOKEN_MODE_OWNED)('StatusSweepService owner escalation', test => {
+	for (const [role, allow, cleared] of [
+		['write', [], false],
+		['admin', [], true],
+		['write', ['contributor'], true],
+		['read', ['contributor'], false],
+	] as const)
+		test.effect(
+			`resolved by ${role}, allow=${allow.join(',')}, cleared=${cleared}`,
+			() =>
+				Effect.gen(function* () {
+					const api = githubApiFake()
+					api.command.role = role
+					api.threads.push(
+						reviewThread(undefined, {
+							isResolved: true,
+							resolvedBy: { login: 'contributor' },
+						})
+					)
+					api.comments.push(
+						appSummary(
+							{ ...SUMMARY_MARKER, finished: true, needsOwner: ['thread'] },
+							{
+								author: {
+									__typename: 'Bot',
+									login: GITHUB_ACTIONS_IDENTITY.login,
+								},
+							}
+						)
+					)
+					const before = structuredClone(api.comments)
+					const fake = githubStatusFake({
+						listOpenPullRequests: () =>
+							Effect.succeed([
+								{ number: 17, head: { sha: SUMMARY_MARKER.head } },
+							]),
+						getStatus: () =>
+							Effect.succeed({
+								id: 1,
+								state: 'failure',
+								description: 'stale',
+								context: 'MNG Review',
+								creator: null,
+							}),
+					})
+					expect(
+						yield* StatusSweepService.use(service => service.sweep(allow)).pipe(
+							Effect.provide(
+								StatusSweepServiceLive.pipe(
+									Layer.provide(Layer.merge(fake.layer, api.api))
+								)
+							)
+						)
+					).toEqual({ checked: 1, updated: 1, failed: 0 })
+					expect(fake.statuses).toEqual([
+						{
+							sha: SUMMARY_MARKER.head,
+							...toCommitStatus(cleared ? 'ready' : 'needs owner', 0, true),
+						},
+					])
+					expect(api.writes).toEqual([])
+					expect(api.comments).toEqual(before)
+				})
+		)
+})
+
+layer(APP_MODE_OWNED)('StatusSweepService recovered owner state', test => {
+	for (const scenario of [
+		'hidden-summary',
+		'recent-answer',
+		'outside-window',
+		'missing-summary',
+		'edited-root',
+	] as const)
+		for (const resolver of ['writer', 'admin', 'allowed-writer'] as const)
+			test.effect(
+				`${scenario} stays failure for a writer and clears for an owner: ${resolver}`,
+				() =>
+					Effect.gen(function* () {
+						const api = githubApiFake(APP_IDENTITY)
+						api.command.role = resolver === 'admin' ? 'admin' : 'write'
+						const raw =
+							scenario === 'hidden-summary' || scenario === 'edited-root'
+								? reviewThread()
+								: ownerReviewThread(
+										scenario === 'outside-window' ? RECENT_COMMENTS + 1 : 1
+									)
+						api.threads.push({
+							...raw,
+							isResolved: true,
+							resolvedBy: { login: 'contributor' },
+							...(scenario === 'edited-root'
+								? {
+										comments: {
+											...raw.comments,
+											nodes: raw.comments.nodes.map(comment => ({
+												...comment,
+												editor: { __typename: 'User', login: 'editor' },
+											})),
+										},
+									}
+								: {}),
+						})
+						if (scenario === 'outside-window')
+							api.threadComments.set('thread', [
+								markedThreadReply(),
+								...(raw.latest?.nodes ?? []),
+							])
+						if (scenario !== 'missing-summary')
+							api.comments.push(
+								appSummary(
+									{
+										...SUMMARY_MARKER,
+										head: 'head',
+										finished: true,
+										...(scenario === 'hidden-summary' ||
+										scenario === 'edited-root'
+											? { needsOwner: ['thread'] }
+											: {}),
+									},
+									{ isMinimized: true }
+								)
+							)
+						const previous = {
+							id: 1,
+							state: 'failure',
+							description: 'stale',
+							context: 'MNG Review',
+							creator: null,
+						}
+						const statusHistory: ReturnType<typeof toCommitStatus>[] = []
+						const statuses = githubStatusFake({
+							setStatus: input =>
+								Effect.sync(() => {
+									statusHistory.push(input)
+								}),
+							listOpenPullRequests: () =>
+								Effect.succeed([{ number: 17, head: { sha: 'head' } }]),
+							getStatus: () =>
+								Effect.succeed({ ...previous, ...statusHistory.at(-1) }),
+						})
+						const sweeper = yield* StatusSweepService.pipe(
+							Effect.provide(
+								StatusSweepServiceLive.pipe(
+									Layer.provide(Layer.merge(statuses.layer, api.api))
+								)
+							)
+						)
+						const allow = resolver === 'allowed-writer' ? ['CONTRIBUTOR'] : []
+						expect(yield* sweeper.sweep(allow)).toEqual({
+							checked: 1,
+							updated: 1,
+							failed: 0,
+						})
+						expect(statuses.statuses).toEqual([
+							{
+								sha: 'head',
+								...toCommitStatus(
+									resolver === 'writer' ? 'needs owner' : 'ready',
+									0,
+									true
+								),
+							},
+						])
+						expect(yield* sweeper.sweep(allow)).toEqual({
+							checked: 1,
+							updated: 0,
+							failed: 0,
+						})
+						expect(statuses.statuses).toHaveLength(1)
+						expect(api.writes).toEqual([])
+						expect(
+							api.reads.filter(read => read.startsWith('listThreadComments:'))
+						).toEqual(
+							scenario === 'outside-window'
+								? ['listThreadComments:thread', 'listThreadComments:thread']
+								: []
+						)
+					})
+			)
+	test.effect(
+		'a failed whole-thread read counts as failed and leaves the status unchanged',
+		() =>
+			Effect.gen(function* () {
+				const api = githubApiFake(APP_IDENTITY)
+				api.threads.push(
+					ownerReviewThread(RECENT_COMMENTS + 1, {
+						isResolved: true,
+						resolvedBy: { login: 'contributor' },
+					})
+				)
+				api.comments.push(
+					appSummary(
+						{ ...SUMMARY_MARKER, needsOwner: ['thread'] },
+						{ isMinimized: true }
+					)
+				)
+				api.failures.listThreadComments.push(
+					new GitHubApiError({
+						operation: 'listThreadComments',
+						reason: 'unavailable',
+						status: 503,
+					})
+				)
+				const getStatusSpy = vi.fn(() =>
+					Effect.succeed({
+						id: 1,
+						state: 'failure',
+						description: 'Waiting for owner',
+						context: 'MNG Review',
+						creator: null,
+					})
+				)
+				const statuses = githubStatusFake({
+					listOpenPullRequests: () =>
+						Effect.succeed([{ number: 17, head: { sha: 'head' } }]),
+					getStatus: getStatusSpy,
+				})
+				expect(
+					yield* StatusSweepService.use(service => service.sweep()).pipe(
+						Effect.provide(
+							StatusSweepServiceLive.pipe(
+								Layer.provide(Layer.merge(statuses.layer, api.api))
+							)
+						)
+					)
+				).toEqual({ checked: 1, updated: 0, failed: 1 })
+				expect(getStatusSpy).toHaveBeenCalledTimes(1)
+				expect(statuses.statuses).toEqual([])
+				expect(api.writes).toEqual([])
+			})
+	)
+})
+
+layer(TOKEN_MODE_OWNED)('StatusSweepService edited waiting threads', test => {
+	for (const listed of [false, true])
+		for (const resolver of ['writer', 'admin', 'allowed-writer'] as const)
+			for (const initialState of ['success', 'failure'] as const)
+				test.effect(
+					`an edited root resolved by ${resolver} ${listed ? 'with' : 'without'} a summary waiting id repairs ${initialState}`,
+					() =>
+						Effect.gen(function* () {
+							const api = githubApiFake()
+							api.command.role = resolver === 'admin' ? 'admin' : 'write'
+							api.threads.push(
+								editedOwnerReviewThread(1, {
+									isResolved: true,
+									resolvedBy: { login: 'contributor' },
+								})
+							)
+							api.comments.push(
+								appSummary(
+									{
+										...SUMMARY_MARKER,
+										head: 'head',
+										finished: true,
+										...(listed ? { needsOwner: ['thread'] } : {}),
+									},
+									{
+										author: {
+											__typename: 'Bot',
+											login: GITHUB_ACTIONS_IDENTITY.login,
+										},
+									}
+								)
+							)
+							const before = structuredClone(api.comments)
+							const statuses = githubStatusFake({
+								listOpenPullRequests: () =>
+									Effect.succeed([{ number: 17, head: { sha: 'head' } }]),
+								getStatus: () =>
+									Effect.succeed({
+										id: 1,
+										state: initialState,
+										description: 'stale',
+										context: 'MNG Review',
+										creator: null,
+									}),
+							})
+							expect(
+								yield* StatusSweepService.use(service =>
+									service.sweep(
+										resolver === 'allowed-writer' ? ['CONTRIBUTOR'] : []
+									)
+								).pipe(
+									Effect.provide(
+										StatusSweepServiceLive.pipe(
+											Layer.provide(Layer.merge(statuses.layer, api.api))
+										)
+									)
+								)
+							).toEqual({ checked: 1, updated: 1, failed: 0 })
+							expect(statuses.statuses).toEqual([
+								{
+									sha: 'head',
+									...toCommitStatus(
+										resolver === 'writer' ? 'needs owner' : 'ready',
+										0,
+										true
+									),
+								},
+							])
+							expect(statuses.statuses.at(-1)?.state).toBe(
+								resolver === 'writer' ? 'failure' : 'success'
+							)
+							expect(api.comments).toEqual(before)
+							expect(api.writes).toEqual([])
+						})
+				)
+	test.effect(
+		'a long edited root recovers a needs-owner answer outside the latest comments without a summary waiting id',
+		() =>
+			Effect.gen(function* () {
+				const api = githubApiFake()
+				api.command.role = 'write'
+				const raw = editedOwnerReviewThread(RECENT_COMMENTS, {
+					isResolved: true,
+					resolvedBy: { login: 'contributor' },
+				})
+				api.threads.push(raw)
+				api.threadComments.set('thread', [
+					markedThreadReply(),
+					...(raw.latest?.nodes ?? []),
+				])
+				api.comments.push(
+					appSummary(
+						{ ...SUMMARY_MARKER, head: 'head', finished: true },
+						{
+							author: {
+								__typename: 'Bot',
+								login: GITHUB_ACTIONS_IDENTITY.login,
+							},
+						}
+					)
+				)
+				const statuses = githubStatusFake({
+					listOpenPullRequests: () =>
+						Effect.succeed([{ number: 17, head: { sha: 'head' } }]),
+					getStatus: () =>
+						Effect.succeed({
+							id: 1,
+							...toCommitStatus('ready', 0, true),
+							context: 'MNG Review',
+							creator: null,
+						}),
+				})
+				expect(
+					yield* StatusSweepService.use(service => service.sweep()).pipe(
+						Effect.provide(
+							StatusSweepServiceLive.pipe(
+								Layer.provide(Layer.merge(statuses.layer, api.api))
+							)
+						)
+					)
+				).toEqual({ checked: 1, updated: 1, failed: 0 })
+				expect(statuses.statuses).toEqual([
+					{ sha: 'head', ...toCommitStatus('needs owner', 0, true) },
+				])
+				expect(
+					api.reads.filter(read => read.startsWith('listThreadComments:'))
+				).toEqual(['listThreadComments:thread'])
 				expect(api.writes).toEqual([])
 			})
 	)

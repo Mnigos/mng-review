@@ -1533,3 +1533,82 @@ layer(APP_MODE_OWNED)(
 		)
 	}
 )
+
+layer(APP_MODE_OWNED)('SummaryCommentService readWaiting', test => {
+	test.effect(
+		'reads the union from all owned summaries including hidden previous identities',
+		() =>
+			Effect.gen(function* () {
+				const { fake, service } = setup()
+				fake.comments.push(
+					appSummary({ ...SUMMARY_MARKER, needsOwner: ['current', 'shared'] }),
+					appSummary(
+						{ ...SUMMARY_MARKER, needsOwner: ['hidden', 'shared'] },
+						{ id: 'hidden', databaseId: 102, isMinimized: true }
+					),
+					appSummary(
+						{ ...SUMMARY_MARKER, needsOwner: ['previous', 'shared'] },
+						{
+							id: 'previous',
+							databaseId: 103,
+							author: {
+								__typename: 'Bot',
+								login: GITHUB_ACTIONS_IDENTITY.login,
+							},
+						}
+					),
+					appSummary(
+						{ ...SUMMARY_MARKER, needsOwner: ['previous-hidden'] },
+						{
+							id: 'previous-hidden',
+							databaseId: 104,
+							isMinimized: true,
+							author: {
+								__typename: 'Bot',
+								login: GITHUB_ACTIONS_IDENTITY.login,
+							},
+						}
+					),
+					appSummary(
+						{ ...SUMMARY_MARKER, needsOwner: ['foreign'] },
+						{ author: { __typename: 'Bot', login: 'other-bot' } }
+					),
+					appSummary(
+						{ ...SUMMARY_MARKER, needsOwner: ['pasted'] },
+						{ author: { __typename: 'User', login: APP_IDENTITY.login } }
+					),
+					appSummary(
+						{ ...SUMMARY_MARKER, needsOwner: ['edited'] },
+						{ editor: { __typename: 'User', login: 'editor' } }
+					)
+				)
+				expect(
+					yield* SummaryCommentService.use(api => api.readWaiting(17)).pipe(
+						Effect.provide(service)
+					)
+				).toEqual([
+					'current',
+					'shared',
+					'hidden',
+					'previous',
+					'previous-hidden',
+				])
+				expect(fake.commentReads).toEqual([17])
+				expect(fake.writes).toEqual([])
+			})
+	)
+	test.effect('a failed waiting-list read fails the call without writing', () =>
+		Effect.gen(function* () {
+			const { fake, service } = setup()
+			const failure = writeError(503)
+			fake.failures.listComments.push(failure)
+			expect(
+				yield* SummaryCommentService.use(api => api.readWaiting(17)).pipe(
+					Effect.flip,
+					Effect.provide(service)
+				)
+			).toEqual(failure)
+			expect(fake.writes).toEqual([])
+		})
+	)
+})

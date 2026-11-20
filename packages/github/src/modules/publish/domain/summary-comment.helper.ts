@@ -90,3 +90,19 @@ export function toSummaryCleanup(
 		'none'
 	)
 }
+
+/**
+ * The thread ids every summary of an owned identity lists as waiting for the owner, hidden ones
+ * included: a writer may hide the bot's summary, but cannot write one, so a hidden list still holds.
+ */
+export function getListedWaiting(
+	comments: readonly PullRequestComment[],
+	owned: readonly BotIdentity[]
+): string[] {
+	const ids = comments.flatMap(comment =>
+		isBotComment(comment, owned)
+			? (parseSummaryMarker(comment.body)?.needsOwner ?? [])
+			: []
+	)
+	return [...new Set(ids)]
+}

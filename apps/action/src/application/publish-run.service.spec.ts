@@ -74,6 +74,8 @@ const PUBLISHED = {
 	run: 1,
 	finished: true,
 	answered: {},
+	waiting: 0,
+	label: 'none',
 	cleanup: 'none',
 } as const
 
@@ -132,6 +134,7 @@ function setup(
 					write: () => Effect.die('the run never writes the summary itself'),
 					readPrior: readPriorSpy,
 					publishStatus: publishStatusSpy,
+					readWaiting: () => Effect.die('the run never reads the waiting list'),
 					reserveManualRun: () =>
 						Effect.die('the run never reserves a manual run'),
 				}),

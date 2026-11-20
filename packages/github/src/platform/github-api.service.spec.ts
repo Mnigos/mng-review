@@ -16,6 +16,7 @@ import {
 	toGitHubPage,
 } from '../shared/mocks/github-http.helper'
 import { botClosedReviewThread } from '../shared/mocks/publish-test.helper'
+import { ownerReviewThread } from '../shared/mocks/thread-reply-test.helper'
 import {
 	API_VERSION,
 	MAX_PAGES,
@@ -23,6 +24,7 @@ import {
 	PULL_REQUEST_COMMENTS_QUERY,
 	REVIEW_THREADS_QUERY,
 	READ_RETRIES,
+	RECENT_COMMENTS,
 	REPLY_TO_THREAD_MUTATION,
 	RESOLVE_THREAD_MUTATION,
 	REQUEST_TIMEOUT,
@@ -140,6 +142,26 @@ function expectApiFailure(failure: GitHubApiError, operation: string) {
 }
 
 layer(Layer.empty)('GitHubApiService reads', test => {
+	test.effect(
+		'requests and preserves the ten latest comments in chronological order',
+		() =>
+			Effect.gen(function* () {
+				const thread = ownerReviewThread(RECENT_COMMENTS - 1)
+				const fixture = makeGitHubHttp(() =>
+					Effect.succeed(Response.json(toGitHubPage('reviewThreads', [thread])))
+				)
+				const threads = yield* GitHubApiService.use(service =>
+					service.listReviewThreads(42)
+				).pipe(Effect.provide(fixture.layer))
+				expect(threads).toEqual([thread])
+				expect(threads[0]?.latest?.nodes).toHaveLength(10)
+				expect(getGitHubRequestBody(fixture.requests[0])).toMatchObject({
+					query: REVIEW_THREADS_QUERY,
+				})
+				expect(REVIEW_THREADS_QUERY).toContain('latest: comments(last: 10)')
+			})
+	)
+
 	for (const { label, latest } of [
 		{ label: 'missing', latest: undefined },
 		{ label: 'empty', latest: { nodes: [] } },
@@ -167,7 +189,10 @@ layer(Layer.empty)('GitHubApiService reads', test => {
 						query: REVIEW_THREADS_QUERY,
 					})
 					expect(REVIEW_THREADS_QUERY).toMatch(
-						/latest:\s*comments\(last: 1\)\s*\{\s*nodes\s*\{\s*databaseId body author \{ __typename login \} editor \{ __typename login \} originalCommit \{ oid \}/u
+						new RegExp(
+							String.raw`latest:\s*comments\(last: ${RECENT_COMMENTS}\)\s*\{\s*nodes\s*\{\s*databaseId body author \{ __typename login \} editor \{ __typename login \} originalCommit \{ oid \}`,
+							'u'
+						)
 					)
 				})
 		)

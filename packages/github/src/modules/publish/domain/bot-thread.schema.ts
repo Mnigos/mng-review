@@ -4,8 +4,8 @@ import { findingMarkerSchema } from './publish-marker.schema'
 
 /**
  * One of the bot's threads as a file between two steps of a job holds it. JSON has no
- * `undefined`, so the line, original line, commit and latest comment are left out when unknown; the
- * reader turns them back into a `BotThread`. The marker is decoded again, so a thread with a broken marker fails.
+ * `undefined`, so the line, original line, commit, latest comment and resolver are left out when unknown; the reader turns
+ * them back into a `BotThread`. The marker is decoded again, so a thread with a broken marker fails.
  */
 export const botThreadSchema = Schema.Struct({
 	id: Schema.String,
@@ -25,5 +25,6 @@ export const botThreadSchema = Schema.Struct({
 	latestMarked: Schema.Boolean,
 	latestDigest: Schema.optionalKey(Schema.String),
 	closedAt: Schema.optionalKey(Schema.String),
+	sentToOwner: Schema.Boolean,
 })
 export type BotThreadFile = typeof botThreadSchema.Type

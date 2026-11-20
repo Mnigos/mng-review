@@ -39,6 +39,11 @@ export interface BotThread {
 	 * the baseline for whether the finding's code changed since the thread was closed.
 	 */
 	readonly closedAt: string | undefined
+	/**
+	 * An owned bot's unedited `needs-owner` answer is among the latest comments the read brings
+	 * (`RECENT_COMMENTS`); `ThreadReplyService.getSentToOwner` reads longer threads whole.
+	 */
+	readonly sentToOwner: boolean
 }
 
 /** A comment's author as the thread read names it. */
@@ -134,6 +139,12 @@ export interface AppliedReply {
 	/** The `databaseId` of the author's comment the answer names. */
 	readonly commentId: number
 }
+
+/**
+ * What became of the `needs-owner` label: added while a thread waits, removed when the last one is
+ * cleared, `failed` when GitHub refused (the next run tries again while a thread waits), `none`.
+ */
+export type LabelOutcome = 'added' | 'removed' | 'failed' | 'none'
 
 /** Answers a run wrote, by action. */
 export type AnswerCounts = Partial<Record<ReplyAction, number>>

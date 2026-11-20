@@ -2,6 +2,7 @@ import { layer } from '@effect/vitest'
 import { GitService } from '@mng-review/engine'
 import { Effect, Layer, Redacted } from 'effect'
 import { GITHUB_ACTIONS_IDENTITY } from '../../../platform/bot-identity.helper'
+import { RECENT_COMMENTS } from '../../../platform/github-api.constants'
 import type { ReviewThread } from '../../../platform/github-api.schema'
 import { GitHubConfig } from '../../../platform/github.config'
 import { GitHubApiError } from '../../../platform/github.errors'
@@ -31,6 +32,9 @@ import {
 } from '../../../shared/mocks/publish-test.helper'
 import {
 	ACCEPTED_DECISION,
+	editedOwnerReviewThread,
+	markedThreadReply,
+	ownerReviewThread,
 	decidedReply,
 	pendingReviewThread,
 } from '../../../shared/mocks/thread-reply-test.helper'
@@ -48,9 +52,9 @@ import {
 } from '../../status/domain/status.helper'
 import { toBodyDigest } from '../domain/bot-thread.helper'
 import {
-	parseSummaryMarker,
 	parseFindingMarker,
 	parseReplyMarker,
+	parseSummaryMarker,
 } from '../domain/publish-marker.parser'
 import {
 	SHORT_SHA_LENGTH,
@@ -3196,7 +3200,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 						})
 				)
 		test.effect(
-			'needs-owner writes one answer without extending the summary marker',
+			'needs-owner writes one answer, records the thread in the marker and adds the label',
 			() =>
 				Effect.gen(function* () {
 					const fixture = setup()
@@ -3219,6 +3223,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 					expect(fixture.fake.writes.map(write => write.method)).toEqual([
 						'reply',
 						'create',
+						'label',
 					])
 					const answer = fixture.fake.writes.find(
 						write => write.method === 'reply'
@@ -3245,6 +3250,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 						runs: 1,
 						finished: true,
 						head: fixture.head,
+						needsOwner: ['thread'],
 					})
 				})
 		)
@@ -3290,6 +3296,695 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 							method: 'resolve',
 							id: 'thread',
 						})
+					})
+			)
+		test.effect(
+			'needs-owner persists its id, labels the pull and names the thread in the summary',
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup()
+					fixture.fake.threads.push(pendingReviewThread())
+					const published = yield* PublishService.use(service =>
+						service.publish({
+							...fixture.input,
+							replies: {
+								tokens: {},
+								base: fixture.base,
+								decisions: [
+									decidedReply({
+										action: 'needs-owner',
+										reason: 'The premise is disputed again.',
+									}),
+								],
+							},
+						})
+					).pipe(Effect.provide(fixture.publisher))
+					expect(published).toMatchObject({
+						verdict: 'needs owner',
+						waiting: 1,
+						label: 'added',
+						answered: { 'needs-owner': 1 },
+					})
+					expect(
+						toCommitStatus(
+							published.verdict,
+							published.openBugs,
+							published.finished
+						).state
+					).toBe('failure')
+					expect(fixture.fake.writes).toContainEqual({
+						method: 'label',
+						pullNumber: 17,
+						name: 'needs-owner',
+					})
+					const body = fixture.fake.comments[0]?.body ?? ''
+					expect(parseSummaryMarker(body)?.needsOwner).toEqual(['thread'])
+					expect(body).toContain('Waiting for the owner (1):')
+					expect(body).toContain('thread')
+					expect(body).toContain(`- \`src/store.ts:10\` ${bug().title}`)
+				})
+		)
+		for (const [role, allowed, cleared] of [
+			['write', false, false],
+			['admin', false, true],
+			['write', true, true],
+			['read', true, false],
+		] as const)
+			test.effect(
+				`a resolver with ${role}, allowed=${allowed} clears=${cleared}`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = setup()
+						fixture.fake.command.role = role
+						fixture.fake.threads.push(
+							reviewThread(undefined, {
+								isResolved: true,
+								resolvedBy: { login: 'contributor' },
+							})
+						)
+						fixture.fake.comments.push({
+							...summary(),
+							body: toMarkerComment('summary', {
+								...SUMMARY_MARKER,
+								head: fixture.head,
+								finished: true,
+								needsOwner: ['thread'],
+							}),
+						})
+						const rules = {
+							...RULES,
+							config: {
+								...RULES.config,
+								commands: {
+									...RULES.config.commands,
+									allow: allowed ? ['contributor'] : [],
+								},
+							},
+						}
+						const published = yield* PublishService.use(service =>
+							service.publish({
+								...fixture.input,
+								rules,
+								report: { ...fixture.input.report, bugs: [] },
+							})
+						).pipe(Effect.provide(fixture.publisher))
+						expect(published).toMatchObject({
+							verdict: cleared ? 'ready' : 'needs owner',
+							waiting: cleared ? 0 : 1,
+							label: cleared ? 'removed' : 'added',
+						})
+						expect(
+							parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
+								?.needsOwner
+						).toEqual(cleared ? undefined : ['thread'])
+						expect(fixture.fake.writes).toContainEqual({
+							method: cleared ? 'unlabel' : 'label',
+							pullNumber: 17,
+							name: 'needs-owner',
+						})
+					})
+			)
+		for (const scenario of [
+			'partial',
+			'moved-head',
+			'identity-switch',
+		] as const)
+			test.effect(`carries waiting threads across ${scenario}`, () =>
+				Effect.gen(function* () {
+					const fixture = setup(
+						undefined,
+						scenario === 'identity-switch'
+							? APP_IDENTITY
+							: GITHUB_ACTIONS_IDENTITY
+					)
+					fixture.fake.comments.push({
+						...summary(),
+						body: toMarkerComment('summary', {
+							...SUMMARY_MARKER,
+							head: fixture.head,
+							finished: true,
+							needsOwner: ['waiting-thread'],
+						}),
+					})
+					if (scenario === 'moved-head')
+						fixture.fake.command.pullRequest = {
+							...fixture.fake.command.pullRequest,
+							head: {
+								...fixture.fake.command.pullRequest.head,
+								sha: 'c'.repeat(40),
+							},
+						}
+					const published = yield* PublishService.use(service =>
+						service.publish({
+							...fixture.input,
+							report: { ...fixture.input.report, bugs: [] },
+							...(scenario === 'identity-switch'
+								? {}
+								: { command: { agentOnly: scenario === 'partial' } }),
+						})
+					).pipe(
+						Effect.provide(fixture.publisher),
+						provideOwnedIdentities(
+							scenario === 'identity-switch'
+								? APP_IDENTITY
+								: GITHUB_ACTIONS_IDENTITY,
+							RULES.config.identity.previous
+						)
+					)
+					expect(published).toMatchObject({
+						verdict: 'needs owner',
+						waiting: 1,
+						label: 'added',
+					})
+					const summaryWrite = fixture.fake.writes.find(
+						write => write.method === 'create' || write.method === 'update'
+					)
+					expect(summaryWrite).toBeDefined()
+					if (
+						summaryWrite?.method !== 'create' &&
+						summaryWrite?.method !== 'update'
+					)
+						return
+					expect(parseSummaryMarker(summaryWrite.body)).toMatchObject({
+						needsOwner: ['waiting-thread'],
+						runs: published.run,
+					})
+				})
+			)
+	}
+)
+
+layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
+	'PublishService recovered owner state',
+	test => {
+		for (const scenario of [
+			'hidden-summary',
+			'recent-answer',
+			'outside-window',
+			'missing-summary',
+			'edited-root',
+		] as const)
+			for (const resolver of ['writer', 'admin', 'allowed-writer'] as const) {
+				const cleared = resolver !== 'writer'
+				const expected = {
+					verdict: cleared ? 'ready' : 'needs owner',
+					waiting: cleared ? 0 : 1,
+					label: cleared ? 'removed' : 'added',
+				} as const
+				const expectedState = cleared ? 'success' : 'failure'
+				const expectedIds = cleared ? undefined : ['thread']
+				const expectedLabel = cleared ? 'unlabel' : 'label'
+				test.effect(
+					`${scenario} recovers waiting ids before clearing and writing the next marker: ${resolver}`,
+					() =>
+						Effect.gen(function* () {
+							const fixture = setup()
+							fixture.fake.command.role =
+								resolver === 'admin' ? 'admin' : 'write'
+							const raw =
+								scenario === 'hidden-summary' || scenario === 'edited-root'
+									? reviewThread()
+									: ownerReviewThread(
+											scenario === 'outside-window' ? RECENT_COMMENTS + 1 : 1
+										)
+							fixture.fake.threads.push({
+								...raw,
+								isResolved: true,
+								resolvedBy: { login: 'contributor' },
+								...(scenario === 'edited-root'
+									? {
+											comments: {
+												...raw.comments,
+												nodes: raw.comments.nodes.map(comment => ({
+													...comment,
+													editor: { __typename: 'User', login: 'editor' },
+												})),
+											},
+										}
+									: {}),
+							})
+							if (scenario === 'outside-window')
+								fixture.fake.threadComments.set('thread', [
+									markedThreadReply(),
+									...(raw.latest?.nodes ?? []),
+								])
+							if (scenario !== 'missing-summary')
+								fixture.fake.comments.push({
+									...summary(),
+									isMinimized: true,
+									body: toMarkerComment('summary', {
+										...SUMMARY_MARKER,
+										head: fixture.head,
+										finished: true,
+										...(scenario === 'hidden-summary' ||
+										scenario === 'edited-root'
+											? { needsOwner: ['thread'] }
+											: {}),
+									}),
+								})
+							const published = yield* PublishService.use(service =>
+								service.publish({
+									...fixture.input,
+									rules: {
+										...RULES,
+										config: {
+											...RULES.config,
+											commands: {
+												...RULES.config.commands,
+												allow:
+													resolver === 'allowed-writer' ? ['CONTRIBUTOR'] : [],
+											},
+										},
+									},
+									report: { ...fixture.input.report, bugs: [] },
+								})
+							).pipe(Effect.provide(fixture.publisher))
+							expect(published).toMatchObject(expected)
+							expect(
+								toCommitStatus(
+									published.verdict,
+									published.openBugs,
+									published.finished
+								).state
+							).toBe(expectedState)
+							const written = fixture.fake.writes.findLast(
+								write => write.method === 'create' || write.method === 'update'
+							)
+							expect(written).toBeDefined()
+							if (written?.method !== 'create' && written?.method !== 'update')
+								return
+							expect(parseSummaryMarker(written.body)?.needsOwner).toEqual(
+								expectedIds
+							)
+							expect(fixture.fake.writes).toContainEqual({
+								method: expectedLabel,
+								pullNumber: 17,
+								name: 'needs-owner',
+							})
+							expect(
+								fixture.fake.reads.filter(read =>
+									read.startsWith('listThreadComments:')
+								)
+							).toEqual(
+								scenario === 'outside-window'
+									? ['listThreadComments:thread']
+									: []
+							)
+						})
+				)
+			}
+		test.effect(
+			'a failed summary write after needs-owner is recovered on the next publish and sweep',
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup()
+					fixture.fake.command.role = 'write'
+					fixture.fake.threads.push(pendingReviewThread())
+					fixture.fake.comments.push(summary())
+					fixture.fake.failures.update.push(error(503))
+					const publisher = yield* PublishService.pipe(
+						Effect.provide(fixture.publisher)
+					)
+					expect(
+						yield* publisher
+							.publish({
+								...fixture.input,
+								report: { ...fixture.input.report, bugs: [] },
+								replies: {
+									tokens: {},
+									base: fixture.base,
+									decisions: [
+										decidedReply({
+											action: 'needs-owner',
+											reason: 'Owner required.',
+										}),
+									],
+								},
+							})
+							.pipe(Effect.flip)
+					).toBeInstanceOf(PublishIncompleteError)
+					expect(
+						parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')?.needsOwner
+					).toBeUndefined()
+					expect(
+						fixture.fake.writes.filter(write => write.method === 'reply')
+					).toHaveLength(1)
+					fixture.fake.threads.splice(0, 1, {
+						...(fixture.fake.threads[0] ?? pendingReviewThread()),
+						isResolved: true,
+						resolvedBy: { login: 'contributor' },
+					})
+					const statuses = githubStatusFake({
+						listOpenPullRequests: () =>
+							Effect.succeed([{ number: 17, head: { sha: fixture.head } }]),
+						getStatus: () =>
+							Effect.succeed({
+								id: 1,
+								state: 'failure',
+								description: 'stale',
+								context: 'MNG Review',
+								creator: null,
+							}),
+					})
+					expect(
+						yield* StatusSweepService.use(service => service.sweep()).pipe(
+							Effect.provide(
+								StatusSweepServiceLive.pipe(
+									Layer.provide(Layer.merge(statuses.layer, fixture.fake.api))
+								)
+							)
+						)
+					).toEqual({ checked: 1, updated: 1, failed: 0 })
+					expect(statuses.statuses.at(-1)?.state).toBe('failure')
+					expect(
+						yield* publisher.publish({
+							...fixture.input,
+							report: { ...fixture.input.report, bugs: [] },
+						})
+					).toMatchObject({
+						verdict: 'needs owner',
+						waiting: 1,
+						label: 'added',
+						answered: {},
+					})
+					expect(
+						parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')?.needsOwner
+					).toEqual(['thread'])
+					expect(
+						fixture.fake.writes.filter(write => write.method === 'reply')
+					).toHaveLength(1)
+				})
+		)
+		test.effect(
+			'a failed whole-thread read falls back to window hits and preserves the hidden summary list',
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup()
+					fixture.fake.command.role = 'write'
+					fixture.fake.threads.push(
+						ownerReviewThread(1, { id: 'recent', isResolved: true }),
+						ownerReviewThread(RECENT_COMMENTS + 1, {
+							id: 'long',
+							isResolved: true,
+						})
+					)
+					fixture.fake.comments.push({
+						...summary(),
+						isMinimized: true,
+						body: toMarkerComment('summary', {
+							...SUMMARY_MARKER,
+							needsOwner: ['hidden'],
+						}),
+					})
+					fixture.fake.failures.listThreadComments.push(error(503))
+					expect(
+						yield* PublishService.use(service =>
+							service.publish({
+								...fixture.input,
+								report: { ...fixture.input.report, bugs: [] },
+							})
+						).pipe(Effect.provide(fixture.publisher))
+					).toMatchObject({
+						verdict: 'needs owner',
+						waiting: 2,
+						label: 'added',
+					})
+					const written = fixture.fake.writes.findLast(
+						write => write.method === 'create' || write.method === 'update'
+					)
+					expect(written).toBeDefined()
+					if (written?.method !== 'create' && written?.method !== 'update')
+						return
+					expect(parseSummaryMarker(written.body)?.needsOwner).toEqual([
+						'hidden',
+						'recent',
+					])
+					expect(
+						fixture.fake.reads.filter(read =>
+							read.startsWith('listThreadComments:')
+						)
+					).toEqual(['listThreadComments:long'])
+				})
+		)
+	}
+)
+
+layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
+	'PublishService edited waiting threads',
+	test => {
+		for (const listed of [false, true])
+			for (const resolver of ['writer', 'admin', 'allowed-writer'] as const)
+				test.effect(
+					`an edited root resolved by ${resolver} ${listed ? 'with' : 'without'} a summary waiting id only clears for an owner`,
+					() =>
+						Effect.gen(function* () {
+							const fixture = setup()
+							const cleared = resolver !== 'writer'
+							fixture.fake.command.role =
+								resolver === 'admin' ? 'admin' : 'write'
+							fixture.fake.threads.push(
+								editedOwnerReviewThread(1, {
+									isResolved: true,
+									resolvedBy: { login: 'contributor' },
+								})
+							)
+							fixture.fake.comments.push({
+								...summary(),
+								body: toMarkerComment('summary', {
+									...SUMMARY_MARKER,
+									head: fixture.head,
+									finished: true,
+									...(listed ? { needsOwner: ['thread'] } : {}),
+								}),
+							})
+							const published = yield* PublishService.use(service =>
+								service.publish({
+									...fixture.input,
+									report: { ...fixture.input.report, bugs: [] },
+									rules: {
+										...RULES,
+										config: {
+											...RULES.config,
+											commands: {
+												...RULES.config.commands,
+												allow:
+													resolver === 'allowed-writer' ? ['CONTRIBUTOR'] : [],
+											},
+										},
+									},
+								})
+							).pipe(Effect.provide(fixture.publisher))
+							expect(published).toMatchObject({
+								verdict: cleared ? 'ready' : 'needs owner',
+								waiting: cleared ? 0 : 1,
+								label: cleared ? 'removed' : 'added',
+							})
+							expect(
+								parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
+									?.needsOwner
+							).toEqual(cleared ? undefined : ['thread'])
+							expect(fixture.fake.writes).toContainEqual({
+								method: cleared ? 'unlabel' : 'label',
+								pullNumber: 17,
+								name: 'needs-owner',
+							})
+							expect(
+								fixture.fake.writes.filter(write => write.method === 'reply')
+							).toEqual([])
+						})
+				)
+		test.effect(
+			'an edited root recovers its waiting id from an answer outside the latest comments without a summary waiting id',
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup()
+					fixture.fake.command.role = 'write'
+					const raw = editedOwnerReviewThread(RECENT_COMMENTS, {
+						isResolved: true,
+						resolvedBy: { login: 'contributor' },
+					})
+					fixture.fake.threads.push(raw)
+					fixture.fake.threadComments.set('thread', [
+						markedThreadReply(),
+						...(raw.latest?.nodes ?? []),
+					])
+					expect(
+						yield* PublishService.use(service =>
+							service.publish({
+								...fixture.input,
+								report: { ...fixture.input.report, bugs: [] },
+							})
+						).pipe(Effect.provide(fixture.publisher))
+					).toMatchObject({
+						verdict: 'needs owner',
+						waiting: 1,
+						label: 'added',
+					})
+					expect(
+						parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')?.needsOwner
+					).toEqual(['thread'])
+					expect(
+						fixture.fake.reads.filter(read =>
+							read.startsWith('listThreadComments:')
+						)
+					).toEqual(['listThreadComments:thread'])
+				})
+		)
+	}
+)
+
+layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
+	'PublishService needs-owner git boundary',
+	test => {
+		for (const scenario of [
+			'git-protected-in-place',
+			'git-protected-rename',
+			'forged-protected-rename',
+		] as const)
+			test.effect(
+				`first-reply needs-owner follows git rather than the outcome rename: ${scenario}`,
+				() =>
+					Effect.gen(function* () {
+						const renamedFrom =
+							scenario === 'git-protected-rename'
+								? 'src/protected.ts'
+								: undefined
+						const fixture = setup(
+							undefined,
+							GITHUB_ACTIONS_IDENTITY,
+							renamedFrom
+						)
+						const stands = scenario !== 'forged-protected-rename'
+						const riskPath =
+							scenario === 'git-protected-in-place'
+								? bug().path
+								: 'src/protected.ts'
+						fixture.fake.command.role = 'write'
+						fixture.fake.threads.push(pendingReviewThread())
+						const forgedChange = {
+							...fixture.input.report.planReport.change,
+							files: fixture.input.report.planReport.change.files.map(
+								changed => ({
+									...changed,
+									status:
+										scenario === 'git-protected-rename'
+											? ('modified' as const)
+											: ('renamed' as const),
+									...(scenario === 'git-protected-rename'
+										? {}
+										: {
+												oldPath:
+													scenario === 'git-protected-in-place'
+														? 'docs/store.ts'
+														: riskPath,
+											}),
+								})
+							),
+						}
+						const published = yield* PublishService.use(service =>
+							service.publish({
+								...fixture.input,
+								report: {
+									...fixture.input.report,
+									bugs: [],
+									planReport: {
+										...fixture.input.report.planReport,
+										change: forgedChange,
+									},
+								},
+								rules: {
+									...ACCEPTING_RULES,
+									config: { ...ACCEPTING_RULES.config, risk_paths: [riskPath] },
+								},
+								replies: {
+									base: fixture.base,
+									tokens: {},
+									decisions: [
+										decidedReply({
+											action: 'needs-owner',
+											reason: 'Owner required.',
+										}),
+									],
+								},
+							})
+						).pipe(Effect.provide(fixture.publisher))
+						expect(published).toMatchObject({
+							verdict: stands ? 'needs owner' : 'needs fixes',
+							waiting: stands ? 1 : 0,
+							answered: stands ? { 'needs-owner': 1 } : {},
+						})
+						expect(
+							fixture.fake.writes.filter(write => write.method === 'reply')
+						).toHaveLength(stands ? 1 : 0)
+						expect(
+							parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
+								?.needsOwner
+						).toEqual(stands ? ['thread'] : undefined)
+						// One read either way: the check before the answer, or the rounds when the limit fails.
+						expect(
+							fixture.fake.reads.filter(read =>
+								read.startsWith('listThreadComments:')
+							)
+						).toEqual(['listThreadComments:thread'])
+					})
+			)
+		for (const rounds of ['first-reply', 'max-rounds'] as const)
+			test.effect(
+				`a missing git base drops needs-owner unless owned disputes reach max_rounds: ${rounds}`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = setup()
+						const stands = rounds === 'max-rounds'
+						fixture.fake.command.role = 'write'
+						fixture.fake.threads.push(pendingReviewThread())
+						fixture.fake.threadComments.set('thread', [
+							...Array.from(
+								{ length: stands ? RULES.config.disputes.max_rounds : 0 },
+								(_, index) =>
+									markedThreadReply('disputed', { databaseId: 100 + index })
+							),
+							...(pendingReviewThread().latest?.nodes ?? []),
+						])
+						const published = yield* PublishService.use(service =>
+							service.publish({
+								...fixture.input,
+								report: { ...fixture.input.report, bugs: [] },
+								rules: {
+									...RULES,
+									config: { ...RULES.config, risk_paths: [bug().path] },
+								},
+								replies: {
+									base: '0'.repeat(40),
+									tokens: {},
+									decisions: [
+										decidedReply({
+											action: 'needs-owner',
+											reason: 'Owner required.',
+										}),
+									],
+								},
+							})
+						).pipe(Effect.provide(fixture.publisher))
+						expect(published).toMatchObject({
+							verdict: stands ? 'needs owner' : 'needs fixes',
+							waiting: stands ? 1 : 0,
+							answered: stands ? { 'needs-owner': 1 } : {},
+						})
+						expect(
+							fixture.fake.writes.filter(write => write.method === 'reply')
+						).toHaveLength(stands ? 1 : 0)
+						expect(
+							parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
+								?.needsOwner
+						).toEqual(stands ? ['thread'] : undefined)
+						expect(
+							fixture.fake.reads.filter(read =>
+								read.startsWith('listThreadComments:')
+							)
+						).toEqual([
+							'listThreadComments:thread',
+							...(stands ? ['listThreadComments:thread'] : []),
+						])
 					})
 			)
 	}

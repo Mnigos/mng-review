@@ -64,6 +64,16 @@ export class GitHubApiService extends Context.Service<
 		readonly listThreadComments: (
 			threadId: string
 		) => Effect.Effect<readonly ThreadComment[], GitHubApiError>
+		/** Adds a label to the pull request; GitHub creates a label the repository lacks. */
+		readonly addLabel: (
+			pullNumber: number,
+			name: string
+		) => Effect.Effect<void, GitHubApiError>
+		/** Removes a label from the pull request; one it does not carry fails with 404. */
+		readonly removeLabel: (
+			pullNumber: number,
+			name: string
+		) => Effect.Effect<void, GitHubApiError>
 		readonly createReview: (
 			pullNumber: number,
 			input: ReviewInput
@@ -179,6 +189,30 @@ export const GitHubApiServiceLive = Layer.effect(
 				)
 			}
 		)
+
+		const addLabel = Effect.fn('GitHubApiService.addLabel')(function* (
+			pullNumber: number,
+			name: string
+		) {
+			yield* sendEmpty(
+				'addLabel',
+				HttpClientRequest.post(`${repo}/issues/${pullNumber}/labels`).pipe(
+					HttpClientRequest.bodyJsonUnsafe({ labels: [name] })
+				)
+			)
+		})
+
+		const removeLabel = Effect.fn('GitHubApiService.removeLabel')(function* (
+			pullNumber: number,
+			name: string
+		) {
+			yield* sendEmpty(
+				'removeLabel',
+				HttpClientRequest.delete(
+					`${repo}/issues/${pullNumber}/labels/${encodeURIComponent(name)}`
+				)
+			)
+		})
 
 		const createReview = Effect.fn('GitHubApiService.createReview')(function* (
 			pullNumber: number,
@@ -340,6 +374,8 @@ export const GitHubApiServiceLive = Layer.effect(
 			listReviewThreads,
 			listComments,
 			listThreadComments,
+			addLabel,
+			removeLabel,
 			createReview,
 			createReviewComment,
 			createIssueComment,

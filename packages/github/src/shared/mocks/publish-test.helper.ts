@@ -112,6 +112,7 @@ export function botThread(overrides: Partial<BotThread> = {}): BotThread {
 		latestMarked: true,
 		latestDigest: undefined,
 		closedAt: undefined,
+		sentToOwner: false,
 		...overrides,
 	}
 }

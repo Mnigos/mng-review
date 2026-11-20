@@ -45,6 +45,12 @@ export const summaryMarkerSchema = Schema.Struct({
 	 * sweep count them, since no thread holds them; the next full review replaces the count.
 	 */
 	unthreadedBugs: Schema.optionalKey(countSchema),
+	/**
+	 * Node ids of threads whose last answer was `needs-owner` and that no owner has cleared. It lives
+	 * here because a later comment in the thread would hide the bot's answer from a read of the
+	 * latest comment.
+	 */
+	needsOwner: Schema.optionalKey(Schema.Array(Schema.String)),
 })
 export type SummaryMarker = typeof summaryMarkerSchema.Type
 

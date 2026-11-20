@@ -30,11 +30,18 @@ export const reviewThreadSchema = Schema.Struct({
 	line: Schema.NullOr(Schema.Number),
 	originalLine: Schema.NullOr(Schema.Number),
 	subjectType: Schema.optionalKey(Schema.String),
+	/** Who resolved the thread; `null` while it is open. */
+	resolvedBy: Schema.optionalKey(
+		Schema.NullOr(Schema.Struct({ login: Schema.String }))
+	),
 	comments: Schema.Struct({
 		totalCount: Schema.Number,
 		nodes: Schema.Array(threadCommentSchema),
 	}),
-	/** The thread's latest comment, which tells whether the bot's last reply closed it. */
+	/**
+	 * The thread's latest comments (`RECENT_COMMENTS`), oldest first: the last tells whether the bot's
+	 * reply closed it, the others whether the bot sent it to the owner.
+	 */
 	latest: Schema.optionalKey(
 		Schema.Struct({ nodes: Schema.Array(threadCommentSchema) })
 	),

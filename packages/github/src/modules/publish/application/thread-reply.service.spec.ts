@@ -1,25 +1,31 @@
 import { layer } from '@effect/vitest'
 import { Deferred, Effect, Fiber, Layer } from 'effect'
 import { GITHUB_ACTIONS_IDENTITY } from '../../../platform/bot-identity.helper'
+import { RECENT_COMMENTS } from '../../../platform/github-api.constants'
 import { GitHubApiService } from '../../../platform/github-api.service'
 import { GitHubApiError } from '../../../platform/github.errors'
-import { file } from '../../../shared/mocks/domain-test.helper'
+import { config, file } from '../../../shared/mocks/domain-test.helper'
 import { githubApiFake } from '../../../shared/mocks/github-api-fake.helper'
 import { HOSTILE_TEXT } from '../../../shared/mocks/hostile-text.helper'
 import {
 	ACCEPTING_RULES,
-	LINKS,
 	botThread,
 	bug,
+	reviewThread,
+	LINKS,
 	TOKEN_MODE_OWNED,
 	threadReply,
 } from '../../../shared/mocks/publish-test.helper'
 import {
 	ACCEPTED_DECISION,
+	editedOwnerReviewThread,
+	markedThreadReply,
 	decidedReply,
 	pendingBotThread,
 	pendingReply,
 	pendingReviewThread,
+	ownerReviewThread,
+	rawThread,
 	replyRules,
 } from '../../../shared/mocks/thread-reply-test.helper'
 import { parseMentionCommand } from '../../command/domain/mention-command.parser'
@@ -29,8 +35,10 @@ import {
 	MARKER_VERSION,
 	MAX_REPLY_CHARS,
 	MAX_REPLY_THREADS,
+	NEEDS_OWNER_LABEL,
 	SHORT_SHA_LENGTH,
 } from '../domain/publish.constants'
+import { toResolvers } from '../domain/thread-conversation.helper'
 import type { ThreadReplyDecision } from '../domain/thread-reply.schema'
 import { toMarkerComment } from '../presentation/thread-comment.formatter'
 import {
@@ -90,6 +98,7 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService collect', test => {
 						pullNumber: 17,
 						threads: [pendingBotThread()],
 						rotation: 0,
+						waiting: [],
 					})
 				}
 				const before = yield* collect('before')
@@ -119,6 +128,7 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService collect', test => {
 						pullNumber: 17,
 						threads: [pendingBotThread()],
 						rotation: 0,
+						waiting: [],
 					})
 				).pipe(
 					Effect.provide(ThreadReplyServiceLive.pipe(Layer.provide(fake.api)))
@@ -145,6 +155,7 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService collect', test => {
 							pullNumber: 17,
 							threads: [pendingBotThread()],
 							rotation: 0,
+							waiting: [],
 						})
 					).pipe(
 						Effect.provide(ThreadReplyServiceLive.pipe(Layer.provide(fake.api)))
@@ -170,11 +181,13 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService collect', test => {
 					pullNumber: 17,
 					threads,
 					rotation: 0,
+					waiting: [],
 				})
 				const next = yield* service.collect({
 					pullNumber: 17,
 					threads,
 					rotation: 1,
+					waiting: [],
 				})
 				expect(first).toHaveLength(MAX_REPLY_THREADS)
 				expect(next).toHaveLength(MAX_REPLY_THREADS)
@@ -210,6 +223,7 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService collect', test => {
 							pullNumber: 17,
 							threads: [pendingBotThread()],
 							rotation: 0,
+							waiting: [],
 						})
 					).pipe(
 						Effect.provide(ThreadReplyServiceLive.pipe(Layer.provide(fake.api)))
@@ -235,6 +249,7 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService collect', test => {
 							pullNumber: 17,
 							threads: [pendingBotThread()],
 							rotation: 0,
+							waiting: [],
 						})
 					).pipe(
 						Effect.provide(ThreadReplyServiceLive.pipe(Layer.provide(fake.api)))
@@ -296,6 +311,7 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService apply', test => {
 					expect(
 						yield* ThreadReplyService.use(service =>
 							service.apply({
+								waiting: [],
 								...replyRules(),
 								config: scenario.config,
 								change: scenario.change,
@@ -320,6 +336,7 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService apply', test => {
 				expect(
 					yield* ThreadReplyService.use(service =>
 						service.apply({
+							waiting: [],
 							...replyRules(),
 							config: ACCEPTING_RULES.config,
 							links: LINKS,
@@ -344,6 +361,7 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService apply', test => {
 				expect(
 					yield* ThreadReplyService.use(service =>
 						service.apply({
+							waiting: [],
 							...replyRules(),
 							change: undefined,
 							links: LINKS,
@@ -377,6 +395,7 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService apply', test => {
 						yield* ThreadReplyService.use(service =>
 							service.apply({
 								...replyRules(),
+								waiting: [],
 								links: LINKS,
 								decisions: [
 									decidedReply({ action: 'resolved', reason: 'guarded' }),
@@ -405,12 +424,14 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService apply', test => {
 					pullNumber: 17,
 					threads: [pendingBotThread()],
 					rotation: 0,
+					waiting: [],
 				})
 				expect(replies).toEqual([pendingReply()])
 				fake.command.role = 'read'
 				expect(
 					yield* service.apply({
 						...replyRules(),
+						waiting: [],
 						links: LINKS,
 						decisions: [decidedReply()],
 						threads: [pendingBotThread()],
@@ -435,6 +456,7 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService apply', test => {
 				const answered = yield* ThreadReplyService.use(service =>
 					service.apply({
 						...replyRules(),
+						waiting: [],
 						links: LINKS,
 						decisions: [
 							decidedReply(),
@@ -473,6 +495,7 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService apply', test => {
 					yield* ThreadReplyService.use(service =>
 						service.apply({
 							...replyRules(),
+							waiting: [],
 							links: LINKS,
 							decisions: [
 								decidedReply(),
@@ -508,6 +531,7 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService apply', test => {
 					yield* ThreadReplyService.use(service =>
 						service.apply({
 							...replyRules(),
+							waiting: [],
 							links: LINKS,
 							decisions: [decidedReply()],
 							threads: [
@@ -541,7 +565,12 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService apply', test => {
 					)
 					const threads = [pendingBotThread()]
 					expect(
-						yield* service.collect({ pullNumber: 17, threads, rotation: 0 })
+						yield* service.collect({
+							pullNumber: 17,
+							threads,
+							rotation: 0,
+							waiting: [],
+						})
 					).toEqual([pendingReply()])
 					const original = threadReply({
 						databaseId: 42,
@@ -564,6 +593,7 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService apply', test => {
 					)
 					expect(
 						yield* service.apply({
+							waiting: [],
 							...replyRules(),
 							links: LINKS,
 							decisions: [
@@ -593,7 +623,12 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService apply', test => {
 				)
 				const threads = [pendingBotThread(), pendingBotThread({ id: 'second' })]
 				expect(
-					yield* service.collect({ pullNumber: 17, threads, rotation: 0 })
+					yield* service.collect({
+						pullNumber: 17,
+						threads,
+						rotation: 0,
+						waiting: [],
+					})
 				).toEqual([pendingReply(), pendingReply({ threadId: 'second' })])
 				fake.failures.listThreadComments.push(apiError())
 				const decision = {
@@ -602,6 +637,7 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService apply', test => {
 				} as const satisfies ThreadReplyDecision
 				expect(
 					yield* service.apply({
+						waiting: [],
 						...replyRules(),
 						links: LINKS,
 						decisions: [
@@ -637,7 +673,12 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService apply', test => {
 				)
 				const threads = [pendingBotThread()]
 				expect(
-					yield* service.collect({ pullNumber: 17, threads, rotation: 0 })
+					yield* service.collect({
+						pullNumber: 17,
+						threads,
+						rotation: 0,
+						waiting: [],
+					})
 				).toEqual([pendingReply()])
 				const pushReadsSpy = vi.spyOn(fake.reads, 'push')
 				const pushWritesSpy = vi.spyOn(fake.writes, 'push')
@@ -647,6 +688,7 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService apply', test => {
 				} as const satisfies ThreadReplyDecision
 				expect(
 					yield* service.apply({
+						waiting: [],
 						...replyRules(),
 						links: LINKS,
 						decisions: [decidedReply(decision)],
@@ -679,8 +721,11 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService apply', test => {
 					const answered = yield* ThreadReplyService.use(service =>
 						service.apply({
 							...replyRules(),
-							config: ACCEPTING_RULES.config,
+							...(decision.action === 'accepted'
+								? { config: ACCEPTING_RULES.config }
+								: {}),
 							links: LINKS,
+							waiting: [],
 							decisions: [decidedReply(decision)],
 							threads: [pendingBotThread()],
 						})
@@ -692,6 +737,10 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService apply', test => {
 					expect(write?.method).toBe('reply')
 					if (write?.method === 'reply') {
 						expect(write.body).toContain(TEXTS[decision.action])
+						if (decision.action === 'needs-owner')
+							expect(write.body).toContain(
+								'The bot no longer answers in this thread. An admin, or a login in `commands.allow`, resolves it to clear the pull request.'
+							)
 						if ('reason' in decision)
 							expect(write.body).toContain(decision.reason)
 						expect(parseReplyMarker(write.body)).toEqual({
@@ -710,7 +759,13 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService apply', test => {
 					)
 				})
 		)
-	for (const invalid of ['stale', 'fingerprint', 'unknown', 'foreign'] as const)
+	for (const invalid of [
+		'stale',
+		'fingerprint',
+		'unknown',
+		'foreign',
+		'waiting',
+	] as const)
 		test.effect(`a ${invalid} decision writes nothing`, () =>
 			Effect.gen(function* () {
 				const { fake } = setup()
@@ -748,6 +803,7 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService apply', test => {
 						service.apply({
 							...replyRules(),
 							links: LINKS,
+							waiting: invalid === 'waiting' ? ['thread'] : [],
 							decisions: [decision],
 							threads,
 						})
@@ -775,6 +831,7 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService apply', test => {
 							service.apply({
 								...replyRules(),
 								links: LINKS,
+								waiting: [],
 								decisions: [decidedReply()],
 								threads: [thread],
 							})
@@ -795,6 +852,7 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService apply', test => {
 					service.apply({
 						...replyRules(),
 						links: LINKS,
+						waiting: [],
 						decisions: [decidedReply(), decidedReply()],
 						threads: [pendingBotThread()],
 					})
@@ -822,6 +880,7 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService apply', test => {
 						...replyRules(),
 						config: ACCEPTING_RULES.config,
 						links: LINKS,
+						waiting: [],
 						decisions: [decidedReply(decision)],
 						threads: [pendingBotThread()],
 					})
@@ -853,6 +912,7 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService apply', test => {
 					service.apply({
 						...replyRules(),
 						links: LINKS,
+						waiting: [],
 						decisions: [
 							decidedReply({ action: 'resolved', reason: 'guarded' }),
 						],
@@ -874,6 +934,7 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService apply', test => {
 					service.apply({
 						...replyRules(),
 						links: LINKS,
+						waiting: [],
 						decisions: [
 							decidedReply({ action: 'resolved', reason: 'guarded' }),
 						],
@@ -911,6 +972,7 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService apply', test => {
 				const input = {
 					...replyRules(),
 					links: LINKS,
+					waiting: [],
 					decisions: [
 						decidedReply({ action: 'resolved', reason: 'The guard fixes it.' }),
 					],
@@ -924,6 +986,7 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService apply', test => {
 				).pipe(Effect.provide(fake.api))
 				expect(
 					yield* service.apply({
+						...replyRules(),
 						...input,
 						threads: fresh.flatMap(
 							thread => toBotThread(thread, [GITHUB_ACTIONS_IDENTITY]) ?? []
@@ -935,6 +998,460 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService apply', test => {
 				expect(
 					fake.writes.filter(entry => entry.method === 'reply')
 				).toHaveLength(1)
+			})
+	)
+})
+
+layer(TOKEN_MODE_OWNED)('ThreadReplyService syncLabel', test => {
+	for (const [before, after, failure, expected] of [
+		[0, 1, undefined, 'added'],
+		[1, 2, undefined, 'added'],
+		[1, 0, undefined, 'removed'],
+		[1, 0, 404, 'removed'],
+		[1, 0, 503, 'failed'],
+		[0, 1, 403, 'failed'],
+		[0, 1, 503, 'failed'],
+		[1, 0, 403, 'failed'],
+		[0, 0, undefined, 'none'],
+	] as const)
+		test.effect(
+			`${before} to ${after}, failure=${failure} gives ${expected}`,
+			() =>
+				Effect.gen(function* () {
+					const { fake } = setup()
+					if (failure)
+						fake.failures[after > 0 ? 'label' : 'unlabel'].push(
+							apiError(failure)
+						)
+					expect(
+						yield* ThreadReplyService.use(service =>
+							service.syncLabel(17, before, after)
+						).pipe(
+							Effect.provide(
+								ThreadReplyServiceLive.pipe(Layer.provide(fake.api))
+							)
+						)
+					).toBe(expected)
+					expect(fake.writes).toEqual(
+						expected === 'none'
+							? []
+							: [
+									{
+										method: after > 0 ? 'label' : 'unlabel',
+										pullNumber: 17,
+										name: NEEDS_OWNER_LABEL,
+									},
+								]
+					)
+				})
+		)
+})
+
+layer(TOKEN_MODE_OWNED)('ThreadReplyService owner waiting', test => {
+	test.effect(
+		'collect skips a waiting thread before any role or comment read',
+		() =>
+			Effect.gen(function* () {
+				const { fake } = setup()
+				expect(
+					yield* ThreadReplyService.use(service =>
+						service.collect({
+							pullNumber: 17,
+							threads: [pendingBotThread()],
+							rotation: 0,
+							waiting: ['thread'],
+						})
+					).pipe(
+						Effect.provide(ThreadReplyServiceLive.pipe(Layer.provide(fake.api)))
+					)
+				).toEqual([])
+				expect(fake.reads).toEqual([])
+				expect(fake.writes).toEqual([])
+			})
+	)
+	test.effect('a failed resolver role lookup clears nothing', () =>
+		Effect.gen(function* () {
+			const { fake } = setup()
+			fake.command.role = 'admin'
+			fake.failures.getCollaboratorRole.push(apiError())
+			expect(
+				yield* ThreadReplyService.use(service =>
+					service.getCleared({
+						waiting: ['thread'],
+						resolvers: new Map([['thread', 'Contributor']]),
+						allow: ['contributor'],
+					})
+				).pipe(
+					Effect.provide(ThreadReplyServiceLive.pipe(Layer.provide(fake.api)))
+				)
+			).toEqual(new Set())
+			expect(fake.reads).toEqual(['getCollaboratorRole:contributor'])
+			expect(fake.writes).toEqual([])
+		})
+	)
+})
+
+layer(TOKEN_MODE_OWNED)('ThreadReplyService recovered owner state', test => {
+	test.effect(
+		'getSentToOwner returns open and resolved window hits and reads only overflowing non-nits',
+		() =>
+			Effect.gen(function* () {
+				const { fake } = setup()
+				const nit = reviewThread({ finding: bug(), kind: 'nit' }, { id: 'nit' })
+				const unverified = reviewThread(
+					{ finding: bug(), kind: 'unverified' },
+					{ id: 'long-unverified' }
+				)
+				const threads = [
+					ownerReviewThread(5, { id: 'open' }),
+					ownerReviewThread(1, { id: 'resolved', isResolved: true }),
+					rawThread('boundary', RECENT_COMMENTS),
+					{ ...nit, comments: { ...nit.comments, totalCount: 20 } },
+					rawThread('long-bug', RECENT_COMMENTS + 1),
+					{
+						...unverified,
+						isResolved: true,
+						comments: { ...unverified.comments, totalCount: 20 },
+					},
+					rawThread('long-without-answer', RECENT_COMMENTS + 1),
+				]
+				for (const id of ['long-bug', 'long-unverified'])
+					fake.threadComments.set(id, [markedThreadReply()])
+				fake.threadComments.set('long-without-answer', [threadReply()])
+				expect(
+					yield* ThreadReplyService.use(service =>
+						service.getSentToOwner(threads)
+					).pipe(
+						Effect.provide(ThreadReplyServiceLive.pipe(Layer.provide(fake.api)))
+					)
+				).toEqual(['open', 'resolved', 'long-bug', 'long-unverified'])
+				expect(fake.reads).toEqual([
+					'listThreadComments:long-bug',
+					'listThreadComments:long-unverified',
+					'listThreadComments:long-without-answer',
+				])
+				expect(fake.writes).toEqual([])
+			})
+	)
+	test.effect('a failed whole-thread recovery fails getSentToOwner', () =>
+		Effect.gen(function* () {
+			const { fake } = setup()
+			const failure = apiError()
+			fake.failures.listThreadComments.push(failure)
+			expect(
+				yield* ThreadReplyService.use(service =>
+					service.getSentToOwner([
+						ownerReviewThread(),
+						rawThread('long', RECENT_COMMENTS + 1),
+					])
+				).pipe(
+					Effect.flip,
+					Effect.provide(ThreadReplyServiceLive.pipe(Layer.provide(fake.api)))
+				)
+			).toEqual(failure)
+			expect(fake.writes).toEqual([])
+		})
+	)
+	for (const operation of ['collect', 'apply'] as const)
+		test.effect(
+			`${operation} skips sentToOwner before any read or write even without a waiting marker`,
+			() =>
+				Effect.gen(function* () {
+					const { fake } = setup()
+					const service = yield* ThreadReplyService.pipe(
+						Effect.provide(ThreadReplyServiceLive.pipe(Layer.provide(fake.api)))
+					)
+					const threads = [pendingBotThread({ sentToOwner: true })]
+					expect(
+						yield* operation === 'collect'
+							? service.collect({
+									pullNumber: 17,
+									threads,
+									rotation: 0,
+									waiting: [],
+								})
+							: service.apply({
+									...replyRules(),
+									links: LINKS,
+									threads,
+									waiting: [],
+									decisions: [decidedReply()],
+								})
+					).toEqual([])
+					expect(fake.reads).toEqual([])
+					expect(fake.writes).toEqual([])
+				})
+		)
+	for (const [role, allowed, fails, clears] of [
+		['admin', false, false, true],
+		['write', true, false, true],
+		['write', false, false, false],
+		['admin', true, true, false],
+	] as const)
+		test.effect(
+			`edited root clears from raw resolver with role=${role}, allowed=${allowed}, failed=${fails}`,
+			() =>
+				Effect.gen(function* () {
+					const { fake } = setup()
+					fake.command.role = role
+					if (fails) fake.failures.getCollaboratorRole.push(apiError())
+					const root = reviewThread()
+					const raw = reviewThread(undefined, {
+						isResolved: true,
+						resolvedBy: { login: 'Contributor' },
+						comments: {
+							...root.comments,
+							nodes: root.comments.nodes.map(comment => ({
+								...comment,
+								editor: { __typename: 'User', login: 'editor' },
+							})),
+						},
+					})
+					expect(toBotThread(raw, [GITHUB_ACTIONS_IDENTITY])).toBeUndefined()
+					expect(
+						yield* ThreadReplyService.use(service =>
+							service.getCleared({
+								waiting: ['thread'],
+								resolvers: toResolvers([raw]),
+								allow: allowed ? ['CONTRIBUTOR'] : [],
+							})
+						).pipe(
+							Effect.provide(
+								ThreadReplyServiceLive.pipe(Layer.provide(fake.api))
+							)
+						)
+					).toEqual(new Set(clears ? ['thread'] : []))
+					expect(fake.reads).toEqual(['getCollaboratorRole:contributor'])
+					expect(fake.writes).toEqual([])
+				})
+		)
+})
+
+layer(TOKEN_MODE_OWNED)(
+	'ThreadReplyService owner decision validation',
+	test => {
+		for (const limit of [
+			'critical',
+			'risk-path',
+			'renamed-risk-path',
+			'severity',
+		] as const)
+			test.effect(
+				`accepts needs-owner from the thread marker at the ${limit} limit without reading rounds`,
+				() =>
+					Effect.gen(function* () {
+						const { fake } = setup()
+						const cfg = config({
+							disputes: {
+								accept_intentional_up_to:
+									limit === 'severity' ? 'medium' : 'critical',
+							},
+							risk_paths:
+								limit === 'risk-path'
+									? ['src/**']
+									: limit === 'renamed-risk-path'
+										? ['src/risk/**']
+										: [],
+						})
+						const thread = pendingBotThread({
+							marker: {
+								...botThread().marker,
+								severity:
+									limit === 'critical'
+										? 'critical'
+										: limit === 'severity'
+											? 'high'
+											: 'low',
+							},
+						})
+						expect(
+							yield* ThreadReplyService.use(service =>
+								service.apply({
+									...replyRules(),
+									config: cfg,
+									change: {
+										files:
+											limit === 'renamed-risk-path'
+												? [
+														file(thread.path, {
+															status: 'renamed',
+															oldPath: 'src/risk/store.ts',
+														}),
+													]
+												: [],
+									},
+									links: LINKS,
+									waiting: [],
+									threads: [thread],
+									decisions: [
+										decidedReply({
+											action: 'needs-owner',
+											reason: 'Owner required.',
+										}),
+									],
+								})
+							).pipe(
+								Effect.provide(
+									ThreadReplyServiceLive.pipe(Layer.provide(fake.api))
+								)
+							)
+						).toHaveLength(1)
+						// The one thread read is the check right before the answer, not the rounds.
+						expect(fake.reads).toEqual([
+							'getCollaboratorRole:contributor',
+							'listThreadComments:thread',
+						])
+						expect(fake.writes.map(write => write.method)).toEqual(['reply'])
+					})
+			)
+		for (const rounds of [
+			'first-reply',
+			'below-rounds',
+			'at-rounds',
+			'above-rounds',
+			'pasted',
+			'edited',
+			'failed-read',
+		] as const)
+			test.effect(
+				`needs-owner below the intentional limit validates ${rounds} against owned disputed answers`,
+				() =>
+					Effect.gen(function* () {
+						const { fake } = setup()
+						const maxRounds = 2
+						const disputed = markedThreadReply('disputed')
+						const count =
+							rounds === 'first-reply'
+								? 0
+								: rounds === 'above-rounds'
+									? 3
+									: rounds === 'below-rounds'
+										? 1
+										: maxRounds
+						fake.threadComments.set('thread', [
+							...Array.from({ length: count }, (_, index) => ({
+								...disputed,
+								databaseId: index + 3,
+								...(rounds === 'pasted'
+									? { author: { __typename: 'User', login: 'contributor' } }
+									: {}),
+								...(rounds === 'edited'
+									? { editor: { __typename: 'User', login: 'editor' } }
+									: {}),
+							})),
+							threadReply({
+								databaseId: 42,
+								body: pendingReply().body,
+								author: { __typename: 'User', login: 'contributor' },
+							}),
+						])
+						if (rounds === 'failed-read')
+							fake.failures.listThreadComments.push(apiError())
+						const accepted = rounds === 'at-rounds' || rounds === 'above-rounds'
+						expect(
+							yield* ThreadReplyService.use(service =>
+								service.apply({
+									...replyRules(),
+									config: config({
+										disputes: {
+											max_rounds: maxRounds,
+											accept_intentional_up_to: 'high',
+										},
+									}),
+									links: LINKS,
+									waiting: [],
+									threads: [pendingBotThread()],
+									decisions: [
+										decidedReply({
+											action: 'needs-owner',
+											reason: 'Disputed again.',
+										}),
+									],
+								})
+							).pipe(
+								Effect.provide(
+									ThreadReplyServiceLive.pipe(Layer.provide(fake.api))
+								)
+							)
+						).toHaveLength(accepted ? 1 : 0)
+						// The rounds read, then the check right before an answer that stands.
+						expect(fake.reads).toEqual([
+							'getCollaboratorRole:contributor',
+							'listThreadComments:thread',
+							...(accepted ? ['listThreadComments:thread'] : []),
+						])
+						expect(fake.writes.map(write => write.method)).toEqual(
+							accepted ? ['reply'] : []
+						)
+					})
+			)
+		for (const decision of DECISIONS.filter(
+			entry => entry.action !== 'needs-owner'
+		))
+			test.effect(
+				`${decision.action} never reads rounds, only the thread right before its answer`,
+				() =>
+					Effect.gen(function* () {
+						const { fake } = setup()
+						expect(
+							yield* ThreadReplyService.use(service =>
+								service.apply({
+									...replyRules(),
+									config: ACCEPTING_RULES.config,
+									links: LINKS,
+									waiting: [],
+									threads: [pendingBotThread()],
+									decisions: [decidedReply(decision)],
+								})
+							).pipe(
+								Effect.provide(
+									ThreadReplyServiceLive.pipe(Layer.provide(fake.api))
+								)
+							)
+						).toHaveLength(1)
+						expect(fake.reads).toEqual([
+							'getCollaboratorRole:contributor',
+							'listThreadComments:thread',
+						])
+					})
+			)
+	}
+)
+
+layer(TOKEN_MODE_OWNED)('ThreadReplyService edited root recovery', test => {
+	test.effect(
+		'reads a long edited bot root whole to recover a needs-owner answer outside the latest comments, never a human root',
+		() =>
+			Effect.gen(function* () {
+				const fake = githubApiFake()
+				const edited = editedOwnerReviewThread(RECENT_COMMENTS, {
+					id: 'edited',
+				})
+				const human = {
+					...edited,
+					id: 'human',
+					comments: {
+						...edited.comments,
+						nodes: edited.comments.nodes.map(comment => ({
+							...comment,
+							author: { __typename: 'User', login: 'contributor' },
+						})),
+					},
+				}
+				for (const id of ['edited', 'human'])
+					fake.threadComments.set(id, [
+						markedThreadReply(),
+						...(edited.latest?.nodes ?? []),
+					])
+				expect(
+					yield* ThreadReplyService.use(service =>
+						service.getSentToOwner([edited, human])
+					).pipe(
+						Effect.provide(ThreadReplyServiceLive.pipe(Layer.provide(fake.api)))
+					)
+				).toEqual(['edited'])
+				expect(fake.reads).toEqual(['listThreadComments:edited'])
+				expect(fake.writes).toEqual([])
 			})
 	)
 })
