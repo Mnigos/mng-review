@@ -3,15 +3,19 @@ import { Deferred, Effect, Fiber, Layer } from 'effect'
 import { GITHUB_ACTIONS_IDENTITY } from '../../../platform/bot-identity.helper'
 import { GitHubApiService } from '../../../platform/github-api.service'
 import { GitHubApiError } from '../../../platform/github.errors'
+import { file } from '../../../shared/mocks/domain-test.helper'
 import { githubApiFake } from '../../../shared/mocks/github-api-fake.helper'
 import { HOSTILE_TEXT } from '../../../shared/mocks/hostile-text.helper'
 import {
 	ACCEPTING_RULES,
 	LINKS,
+	botThread,
+	bug,
 	TOKEN_MODE_OWNED,
 	threadReply,
 } from '../../../shared/mocks/publish-test.helper'
 import {
+	ACCEPTED_DECISION,
 	decidedReply,
 	pendingBotThread,
 	pendingReply,
@@ -49,12 +53,7 @@ function apiError(status = 503) {
 
 const DECISIONS = [
 	{ action: 'resolved', reason: 'The write is guarded.' },
-	{
-		action: 'accepted',
-		reason: 'The caller guards it.',
-		memory: 'Keep the guard.',
-		evidence: ['src/store.ts:10'],
-	},
+	ACCEPTED_DECISION,
 	{ action: 'still-found', reason: 'The write repeats.' },
 	{ action: 'disputed', reason: 'The premise is false.' },
 	{ action: 'needs-owner', reason: 'The disagreement remains.' },
@@ -246,6 +245,127 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService collect', test => {
 })
 
 layer(TOKEN_MODE_OWNED)('ThreadReplyService apply', test => {
+	for (const scenario of [
+		{
+			name: 'critical marker severity',
+			config: {
+				...ACCEPTING_RULES.config,
+				disputes: {
+					...ACCEPTING_RULES.config.disputes,
+					accept_intentional_up_to: 'critical',
+				},
+			},
+			change: replyRules().change,
+			thread: pendingBotThread({
+				marker: { ...botThread().marker, severity: 'critical' },
+			}),
+		},
+		{
+			name: 'a current path under risk_paths',
+			config: { ...ACCEPTING_RULES.config, risk_paths: ['src/**'] },
+			change: { files: [file(bug().path)] },
+			thread: pendingBotThread(),
+		},
+		{
+			name: 'an old rename path under risk_paths',
+			config: { ...ACCEPTING_RULES.config, risk_paths: ['src/risk/**'] },
+			change: {
+				files: [
+					file(bug().path, { status: 'renamed', oldPath: 'src/risk/store.ts' }),
+				],
+			},
+			thread: pendingBotThread(),
+		},
+		{
+			name: 'severity above the configured limit',
+			...replyRules(),
+			thread: pendingBotThread(),
+		},
+		{
+			name: 'a failed git read',
+			config: ACCEPTING_RULES.config,
+			change: undefined,
+			thread: pendingBotThread(),
+		},
+	] as const)
+		test.effect(
+			`accepted drops ${scenario.name} without a reply or resolve write`,
+			() =>
+				Effect.gen(function* () {
+					const { fake } = setup()
+					expect(
+						yield* ThreadReplyService.use(service =>
+							service.apply({
+								...replyRules(),
+								config: scenario.config,
+								change: scenario.change,
+								links: LINKS,
+								decisions: [decidedReply(ACCEPTED_DECISION)],
+								threads: [scenario.thread],
+							})
+						).pipe(
+							Effect.provide(
+								ThreadReplyServiceLive.pipe(Layer.provide(fake.api))
+							)
+						)
+					).toEqual([])
+					expect(fake.writes).toEqual([])
+				})
+		)
+	test.effect(
+		'accepted at the configured high limit replies and resolves',
+		() =>
+			Effect.gen(function* () {
+				const { fake } = setup()
+				expect(
+					yield* ThreadReplyService.use(service =>
+						service.apply({
+							...replyRules(),
+							config: ACCEPTING_RULES.config,
+							links: LINKS,
+							decisions: [decidedReply(ACCEPTED_DECISION)],
+							threads: [pendingBotThread()],
+						})
+					).pipe(
+						Effect.provide(ThreadReplyServiceLive.pipe(Layer.provide(fake.api)))
+					)
+				).toMatchObject([{ decision: ACCEPTED_DECISION }])
+				expect(fake.writes.map(write => write.method)).toEqual([
+					'reply',
+					'resolve',
+				])
+			})
+	)
+	test.effect(
+		'resolved still replies and resolves when the git read failed',
+		() =>
+			Effect.gen(function* () {
+				const { fake } = setup()
+				expect(
+					yield* ThreadReplyService.use(service =>
+						service.apply({
+							...replyRules(),
+							change: undefined,
+							links: LINKS,
+							decisions: [
+								decidedReply({
+									action: 'resolved',
+									reason: 'The guard fixes it.',
+								}),
+							],
+							threads: [pendingBotThread()],
+						})
+					).pipe(
+						Effect.provide(ThreadReplyServiceLive.pipe(Layer.provide(fake.api)))
+					)
+				).toMatchObject([{ decision: { action: 'resolved' } }])
+				expect(fake.writes.map(write => write.method)).toEqual([
+					'reply',
+					'resolve',
+				])
+			})
+	)
+
 	for (const role of ['read', 'triage'])
 		test.effect(
 			`a forged decision naming a ${role} author's comment writes nothing`,

@@ -5,7 +5,7 @@ import { GITHUB_ACTIONS_IDENTITY } from '../../../platform/bot-identity.helper'
 import { GitHubConfig } from '../../../platform/github.config'
 import { GitHubApiError } from '../../../platform/github.errors'
 import { provideOwnedIdentities } from '../../../platform/owned-identities.context'
-import { agent } from '../../../shared/mocks/domain-test.helper'
+import { agent, file } from '../../../shared/mocks/domain-test.helper'
 import {
 	cleanupRepos,
 	createRepo,
@@ -28,6 +28,7 @@ import {
 	TOKEN_MODE_OWNED,
 } from '../../../shared/mocks/publish-test.helper'
 import {
+	ACCEPTED_DECISION,
 	decidedReply,
 	pendingReviewThread,
 } from '../../../shared/mocks/thread-reply-test.helper'
@@ -68,12 +69,14 @@ import {
 /** Real git history with a finding on a changed head line and a recording API. */
 function setup(
 	apply?: ThreadResolutionService['Service']['apply'],
-	identity = GITHUB_ACTIONS_IDENTITY
+	identity = GITHUB_ACTIONS_IDENTITY,
+	basePath = bug().path
 ) {
 	const repo = createRepo()
 	const original = `${Array.from({ length: 40 }, (_, index) => `line ${index + 1}`).join('\n')}\n`
-	repo.write(bug().path, original)
+	repo.write(basePath, original)
 	const base = repo.commit()
+	if (basePath !== bug().path) repo.git('mv', basePath, bug().path)
 	repo.write(bug().path, original.replace('line 10\n', 'changed 10\n'))
 	const head = repo.commit()
 	const fake = githubApiFake(identity)
@@ -2576,6 +2579,271 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 	'PublishService author replies',
 	test => {
+		for (const scenario of [
+			{
+				name: 'critical severity from the bot marker',
+				severity: 'critical',
+				config: {
+					...ACCEPTING_RULES.config,
+					disputes: {
+						...ACCEPTING_RULES.config.disputes,
+						accept_intentional_up_to: 'critical',
+					},
+				},
+			},
+			{
+				name: 'a file under the base rules risk_paths',
+				severity: 'high',
+				config: { ...ACCEPTING_RULES.config, risk_paths: ['src/**'] },
+			},
+			{
+				name: 'severity above the base rules limit',
+				severity: 'high',
+				config: RULES.config,
+			},
+		] as const)
+			test.effect(`accepted drops ${scenario.name} through publishing`, () =>
+				Effect.gen(function* () {
+					const fixture = setup()
+					fixture.fake.threads.push(
+						pendingReviewThread({
+							comments: reviewThread({
+								finding: bug({ severity: scenario.severity }),
+								kind: 'bug',
+							}).comments,
+						})
+					)
+					expect(
+						yield* PublishService.use(service =>
+							service.publish({
+								...fixture.input,
+								rules: { ...ACCEPTING_RULES, config: scenario.config },
+								replies: {
+									base: fixture.base,
+									tokens: {},
+									decisions: [decidedReply(ACCEPTED_DECISION)],
+								},
+							})
+						).pipe(Effect.provide(fixture.publisher))
+					).toMatchObject({
+						answered: {},
+						openBugs: 1,
+						verdict: 'needs fixes',
+					})
+					expect(
+						fixture.fake.writes.filter(
+							write => write.method === 'reply' || write.method === 'resolve'
+						)
+					).toEqual([])
+				})
+			)
+		for (const forged of ['rename', 'omitted'] as const)
+			test.effect(
+				`accepted on a real risk path is dropped when the outcome claims ${forged}`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = setup()
+						fixture.fake.threads.push(pendingReviewThread())
+						expect(
+							fixture.repo.git(
+								'diff',
+								'--name-status',
+								fixture.base,
+								fixture.head
+							)
+						).toBe(`M\t${bug().path}`)
+						expect(
+							yield* PublishService.use(service =>
+								service.publish({
+									...fixture.input,
+									rules: {
+										...ACCEPTING_RULES,
+										config: {
+											...ACCEPTING_RULES.config,
+											risk_paths: ['src/**'],
+										},
+									},
+									report: {
+										...fixture.input.report,
+										planReport: {
+											...fixture.input.report.planReport,
+											change: {
+												...fixture.input.report.planReport.change,
+												files:
+													forged === 'rename'
+														? [
+																file('lib/store.ts', {
+																	status: 'renamed',
+																	oldPath: bug().path,
+																}),
+															]
+														: [],
+											},
+										},
+									},
+									replies: {
+										base: fixture.base,
+										tokens: {},
+										decisions: [decidedReply(ACCEPTED_DECISION)],
+									},
+								})
+							).pipe(Effect.provide(fixture.publisher))
+						).toMatchObject({ answered: {}, openBugs: 1 })
+						expect(
+							fixture.fake.writes.filter(
+								write => write.method === 'reply' || write.method === 'resolve'
+							)
+						).toEqual([])
+					})
+			)
+		test.effect(
+			'accepted is dropped for a real rename out of risk_paths that the outcome hides',
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup(
+						undefined,
+						GITHUB_ACTIONS_IDENTITY,
+						'src/risk/store.ts'
+					)
+					fixture.fake.threads.push(pendingReviewThread())
+					expect(
+						(yield* GitService.use(git =>
+							git.readChange(fixture.base, fixture.head)
+						).pipe(Effect.provide(gitLayer(fixture.repo.root)))).files
+					).toMatchObject([
+						{
+							path: bug().path,
+							status: 'renamed',
+							oldPath: 'src/risk/store.ts',
+						},
+					])
+					expect(fixture.input.report.planReport.change.files).toMatchObject([
+						{ path: bug().path, status: 'modified' },
+					])
+					expect(
+						yield* PublishService.use(service =>
+							service.publish({
+								...fixture.input,
+								rules: {
+									...ACCEPTING_RULES,
+									config: {
+										...ACCEPTING_RULES.config,
+										risk_paths: ['src/risk/**'],
+									},
+								},
+								replies: {
+									base: fixture.base,
+									tokens: {},
+									decisions: [decidedReply(ACCEPTED_DECISION)],
+								},
+							})
+						).pipe(Effect.provide(fixture.publisher))
+					).toMatchObject({ answered: {}, openBugs: 1 })
+					expect(
+						fixture.fake.writes.filter(
+							write => write.method === 'reply' || write.method === 'resolve'
+						)
+					).toEqual([])
+				})
+		)
+		test.effect(
+			'a forged rename from risk_paths cannot block accepted on a real unrestricted file',
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup()
+					fixture.fake.threads.push(pendingReviewThread())
+					expect(
+						fixture.repo.git(
+							'diff',
+							'--name-status',
+							fixture.base,
+							fixture.head
+						)
+					).toBe(`M\t${bug().path}`)
+					expect(
+						yield* PublishService.use(service =>
+							service.publish({
+								...fixture.input,
+								rules: {
+									...ACCEPTING_RULES,
+									config: {
+										...ACCEPTING_RULES.config,
+										risk_paths: ['src/risk/**'],
+									},
+								},
+								report: {
+									...fixture.input.report,
+									planReport: {
+										...fixture.input.report.planReport,
+										change: {
+											...fixture.input.report.planReport.change,
+											files: [
+												file(bug().path, {
+													status: 'renamed',
+													oldPath: 'src/risk/store.ts',
+												}),
+											],
+										},
+									},
+								},
+								replies: {
+									base: fixture.base,
+									tokens: {},
+									decisions: [decidedReply(ACCEPTED_DECISION)],
+								},
+							})
+						).pipe(Effect.provide(fixture.publisher))
+					).toMatchObject({
+						answered: { accepted: 1 },
+						openBugs: 0,
+						verdict: 'ready',
+					})
+					expect(
+						fixture.fake.writes
+							.filter(
+								write => write.method === 'reply' || write.method === 'resolve'
+							)
+							.map(write => write.method)
+					).toEqual(['reply', 'resolve'])
+				})
+		)
+		test.effect(
+			'a missing bound base drops accepted while resolved still replies and resolves',
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup()
+					fixture.fake.threads.push(
+						pendingReviewThread(),
+						pendingReviewThread({ id: 'resolved-thread' })
+					)
+					expect(
+						yield* PublishService.use(service =>
+							service.publish({
+								...fixture.input,
+								rules: ACCEPTING_RULES,
+								replies: {
+									base: '0'.repeat(40),
+									tokens: {},
+									decisions: [
+										decidedReply(ACCEPTED_DECISION),
+										decidedReply(
+											{ action: 'resolved', reason: 'The guard fixes it.' },
+											{ threadId: 'resolved-thread' }
+										),
+									],
+								},
+							})
+						).pipe(Effect.provide(fixture.publisher))
+					).toMatchObject({ answered: { resolved: 1 } })
+					expect(
+						fixture.fake.writes.filter(write => write.method === 'reply')
+					).toMatchObject([{ id: 'resolved-thread' }])
+					expect(
+						fixture.fake.writes.filter(write => write.method === 'resolve')
+					).toEqual([{ method: 'resolve', id: 'resolved-thread' }])
+				})
+		)
+
 		for (const action of ['resolved', 'accepted', 'recheck'] as const)
 			for (const refused of [false, true])
 				test.effect(
