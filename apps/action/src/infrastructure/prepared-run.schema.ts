@@ -1,4 +1,4 @@
-import { commitShaSchema, countSchema } from '@mng-review/domain'
+import { commitShaSchema, countSchema, DEPTHS } from '@mng-review/domain'
 import { botThreadSchema } from '@mng-review/github'
 import { Schema } from 'effect'
 
@@ -12,6 +12,7 @@ const pullRequestInfoSchema = Schema.Struct({
 	draft: Schema.Boolean,
 	fork: Schema.Boolean,
 	trigger: Schema.Literals(['auto', 'manual']),
+	depth: Schema.optionalKey(Schema.Literals(DEPTHS)),
 })
 
 /** The pull request the run reviews: the event's action, its number, both commits and its metadata. */

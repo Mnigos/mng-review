@@ -279,3 +279,299 @@ layer(FileSystemLayer, { excludeTestServices: true })(
 		)
 	}
 )
+
+layer(FileSystemLayer, { excludeTestServices: true })(
+	'publish command trust boundary',
+	test => {
+		for (const [scenario, reason] of [
+			['closed', 'the pull request closed after the command'],
+			['fork', 'the pull request comes from a fork'],
+			['deleted head repository', 'the pull request comes from a fork'],
+		] as const)
+			test.effect(
+				`a command on a ${scenario} pull request posts nothing and exits 1`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = stepFixture()
+						const fs = yield* FileSystem.FileSystem
+						const pr = fixture.api.command.pullRequest
+						fixture.api.command.pullRequest = {
+							...pr,
+							state: scenario === 'closed' ? 'closed' : 'open',
+							base: { ...pr.base, sha: fixture.base },
+							head: {
+								sha: fixture.head,
+								repo:
+									scenario === 'fork'
+										? { full_name: 'example/fork' }
+										: scenario === 'deleted head repository'
+											? null
+											: pr.base.repo,
+							},
+						}
+						yield* fs.writeFileString(
+							fixture.paths.outcome,
+							JSON.stringify({
+								...fixture.file,
+								binding: { ...fixture.file.binding, trigger: 'command' },
+							})
+						)
+						yield* fs.writeFileString(
+							fixture.paths.result,
+							JSON.stringify({ version: 1 })
+						)
+						expect(
+							yield* runPublishStep.pipe(
+								Effect.provide(fixture.publishRunLayer),
+								Effect.provide(
+									fixture.envLayer({
+										MNG_REVIEW_TRIGGER: 'command',
+										MNG_REVIEW_TARGET_PR: '17',
+										MNG_REVIEW_TARGET_BASE: fixture.base,
+										MNG_REVIEW_TARGET_HEAD: fixture.head,
+									})
+								),
+								Effect.flip
+							)
+						).toMatchObject({ _tag: 'ActionExit', code: 1 })
+						expect(fixture.api.reads).toEqual(['getPullRequest:17'])
+						expect(fixture.api.writes).toEqual([])
+						expect(fixture.api.threads).toEqual([])
+						expect(fixture.api.comments).toEqual([])
+						expect(fixture.status.statuses).toEqual([])
+						expect(fixture.status.checks).toEqual([])
+						expect(fixture.loads).toEqual([])
+						expect(yield* fs.readFileString(fixture.paths.summary)).toContain(
+							reason
+						)
+						expect(
+							JSON.parse(yield* fs.readFileString(fixture.paths.result))
+						).toEqual({ version: 1, publish: { status: 'failed', reason } })
+					})
+			)
+
+		for (const moved of [false, true])
+			test.effect(
+				`a completed command publishes with moved head=${moved} and finishes only the current head`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = stepFixture()
+						const fs = yield* FileSystem.FileSystem
+						fixture.repo.write(
+							'src/items/store.ts',
+							'first\nnewer value\nlast\n'
+						)
+						const movedHead = fixture.repo.commit()
+						const pr = fixture.api.command.pullRequest
+						fixture.api.command.pullRequest = {
+							...pr,
+							base: { ...pr.base, sha: fixture.base },
+							head: { ...pr.head, sha: moved ? movedHead : fixture.head },
+						}
+						yield* fs.writeFileString(
+							fixture.paths.outcome,
+							JSON.stringify({
+								...fixture.file,
+								binding: { ...fixture.file.binding, trigger: 'command' },
+								report: {
+									...fixture.report,
+									agents: fixture.report.agents.filter(
+										agent => agent.status === 'ok'
+									),
+								},
+							})
+						)
+						yield* fs.writeFileString(
+							fixture.paths.result,
+							JSON.stringify({ version: 1 })
+						)
+						yield* runPublishStep.pipe(
+							Effect.provide(fixture.publishRunLayer),
+							Effect.provide(
+								fixture.envLayer({
+									MNG_REVIEW_TRIGGER: 'command',
+									MNG_REVIEW_TARGET_PR: '17',
+									MNG_REVIEW_TARGET_BASE: fixture.base,
+									MNG_REVIEW_TARGET_HEAD: fixture.head,
+								})
+							)
+						)
+						expect(
+							JSON.parse(yield* fs.readFileString(fixture.paths.result))
+						).toMatchObject({
+							publish: {
+								status: 'published',
+								result: { verdict: 'needs fixes', finished: !moved },
+							},
+						})
+						expect(fixture.api.threads.length).toBeGreaterThan(0)
+						expect(fixture.api.comments).toHaveLength(1)
+						expect(fixture.api.comments[0]?.body).toContain(
+							'Verdict: needs fixes'
+						)
+						expect(fixture.status.statuses).toHaveLength(1)
+						expect(fixture.status.statuses[0]).toMatchObject({
+							sha: fixture.head,
+							state: 'failure',
+						})
+						expect(fixture.status.checks.length).toBeGreaterThan(0)
+						expect(
+							fixture.status.checks.every(
+								check => check.headSha === fixture.head
+							)
+						).toBeTruthy()
+						expect(fixture.api.reads).toEqual([
+							'getPullRequest:17',
+							'getPullRequest:17',
+						])
+					})
+			)
+
+		for (const agent of ['', 'storage'])
+			test.effect(
+				`takes agentOnly from environment agent=${agent || 'all'} and ignores the file's planted command`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = stepFixture()
+						const fs = yield* FileSystem.FileSystem
+						yield* fs.writeFileString(
+							fixture.paths.outcome,
+							JSON.stringify({
+								...fixture.file,
+								binding: { ...fixture.file.binding, trigger: 'command' },
+								command: { agentOnly: agent === '' },
+							})
+						)
+						const runSpy = vi.fn(
+							(
+								_outcome: Parameters<PublishRunService['Service']['run']>[0],
+								_context: Parameters<PublishRunService['Service']['run']>[1]
+							) =>
+								Effect.succeed({
+									status: 'not-published' as const,
+									reason: 'recording boundary',
+								})
+						)
+						yield* runPublishStep.pipe(
+							Effect.provideService(PublishRunService, { run: runSpy }),
+							Effect.provide(fixture.api.api),
+							Effect.provide(
+								fixture.envLayer({
+									MNG_REVIEW_TRIGGER: 'command',
+									MNG_REVIEW_TARGET_PR: '17',
+									MNG_REVIEW_TARGET_BASE: fixture.base,
+									MNG_REVIEW_TARGET_HEAD: fixture.head,
+									MNG_REVIEW_COMMAND_AGENT: agent,
+									GITHUB_EVENT_PATH: `${fixture.repo.root}/missing.json`,
+								})
+							)
+						)
+						expect(runSpy).toHaveBeenCalledOnce()
+						expect(runSpy.mock.calls[0]?.[0]).not.toHaveProperty('command')
+						expect(runSpy.mock.calls[0]?.[1]).toMatchObject({
+							command: { agentOnly: agent !== '' },
+							pullNumber: 17,
+							head: fixture.head,
+							event: {
+								baseSha: fixture.base,
+								headSha: fixture.head,
+								pr: { trigger: 'manual' },
+							},
+						})
+						expect(fixture.api.reads).toEqual(['getPullRequest:17'])
+						expect(fixture.api.writes).toEqual([])
+					})
+			)
+		for (const trigger of ['push', 'command'] as const)
+			test.effect(
+				`refuses an outcome whose trigger differs from ${trigger}`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = stepFixture()
+						const fs = yield* FileSystem.FileSystem
+						yield* fs.writeFileString(
+							fixture.paths.outcome,
+							JSON.stringify({
+								...fixture.file,
+								binding: {
+									...fixture.file.binding,
+									trigger: trigger === 'push' ? 'command' : 'push',
+								},
+							})
+						)
+						expect(
+							yield* runPublishStep.pipe(
+								Effect.provide(fixture.publishRunLayer),
+								Effect.provide(
+									fixture.envLayer({
+										MNG_REVIEW_TRIGGER: trigger,
+										MNG_REVIEW_TARGET_PR: '17',
+										MNG_REVIEW_TARGET_BASE: fixture.base,
+										MNG_REVIEW_TARGET_HEAD: fixture.head,
+									})
+								),
+								Effect.flip
+							)
+						).toMatchObject({ _tag: 'ActionExit', code: 1 })
+						expect(yield* fs.readFileString(fixture.paths.summary)).toContain(
+							'trigger differs'
+						)
+						expect(fixture.api.writes).toEqual([])
+						expect(fixture.status.statuses).toEqual([])
+						expect(fixture.status.checks).toEqual([])
+						expect(fixture.loads).toEqual([])
+					})
+			)
+		test.effect(
+			'a clean single-agent command on an unreviewed head cannot mark it ready or successful',
+			() =>
+				Effect.gen(function* () {
+					const fixture = stepFixture()
+					const fs = yield* FileSystem.FileSystem
+					const pr = fixture.api.command.pullRequest
+					fixture.api.command.pullRequest = {
+						...pr,
+						head: { ...pr.head, sha: fixture.head },
+						base: { ...pr.base, sha: fixture.base },
+					}
+					yield* fs.writeFileString(
+						fixture.paths.outcome,
+						JSON.stringify({
+							...fixture.file,
+							binding: { ...fixture.file.binding, trigger: 'command' },
+							report: { ...fixture.report, bugs: [], nits: [], rejected: [] },
+						})
+					)
+					yield* fs.writeFileString(
+						fixture.paths.result,
+						JSON.stringify({ version: 1 })
+					)
+					yield* runPublishStep.pipe(
+						Effect.provide(fixture.publishRunLayer),
+						Effect.provide(
+							fixture.envLayer({
+								MNG_REVIEW_TRIGGER: 'command',
+								MNG_REVIEW_TARGET_PR: '17',
+								MNG_REVIEW_TARGET_BASE: fixture.base,
+								MNG_REVIEW_TARGET_HEAD: fixture.head,
+								MNG_REVIEW_COMMAND_AGENT: 'storage',
+							})
+						)
+					)
+					expect(
+						JSON.parse(yield* fs.readFileString(fixture.paths.result))
+					).toMatchObject({
+						publish: {
+							status: 'published',
+							result: { verdict: 'incomplete', finished: false },
+						},
+					})
+					expect(fixture.api.comments).toHaveLength(1)
+					expect(fixture.api.comments[0]?.body).toContain('Verdict: incomplete')
+					expect(fixture.api.comments[0]?.body).not.toContain('Verdict: ready')
+					expect(fixture.status.statuses).toHaveLength(1)
+					expect(fixture.status.statuses[0]).toHaveProperty('state', 'error')
+				})
+		)
+	}
+)

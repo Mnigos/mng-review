@@ -47,6 +47,8 @@ export const RUN_MODES = [
 	'review',
 	'publish',
 	'sweep',
+	'authorize',
+	'reserve',
 ] as const
 export type RunMode = (typeof RUN_MODES)[number]
 
@@ -55,7 +57,9 @@ export type RunMode = (typeof RUN_MODES)[number]
  * job of publish mode runs `prepare` (the checks and GitHub reads over the read token, no model)
  * and `review` (the model calls, no GitHub); the publish job runs `publish`, which posts the
  * outcome file and calls no model. `sweep` reviews nothing and refreshes the `MNG Review` status
- * of open pull requests. Any other value fails, before the review spends anything.
+ * of open pull requests. A mention command runs `authorize` (checks the comment over the read
+ * token, no secret) and `reserve` (counts the manual run before the review job starts). Any other
+ * value fails, before the review spends anything.
  */
 export const modeConfig = Config.Literals(RUN_MODES, MODE_VARIABLE).pipe(
 	Config.withDefault('shadow' as RunMode)

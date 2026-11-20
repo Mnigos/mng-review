@@ -1,0 +1,19 @@
+# Sets up Bun and installs MNG Review from its own checkout, for the jobs that run the entry
+# directly: the sweep, and the authorize and reserve jobs of review-command.yml. The engine is
+# checked out at .mng-review-engine at the workflow's own commit before this runs.
+name: MNG Review engine setup
+description: Sets up Bun and installs MNG Review from its checkout, without running any script.
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Bun
+      uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      with:
+        bun-version-file: ${{ github.action_path }}/../../../package.json
+        no-cache: true
+
+    - name: Install MNG Review
+      shell: bash
+      working-directory: ${{ github.action_path }}/../../..
+      run: bun install --frozen-lockfile --production --ignore-scripts

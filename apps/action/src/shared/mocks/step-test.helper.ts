@@ -135,7 +135,8 @@ export function stepFixture(
 				StatusReportServiceLive.pipe(Layer.provide(status.layer)),
 				rulesLayer
 			)
-		)
+		),
+		Layer.merge(api.api)
 	)
 	return {
 		repo,

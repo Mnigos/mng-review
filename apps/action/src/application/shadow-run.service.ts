@@ -8,6 +8,7 @@ import { PrepareRunService } from './prepare-run.service'
 import type {
 	PreparedRun,
 	ReadyRun,
+	ReviewOptions,
 	ShadowOutcome,
 	ShadowRunInput,
 } from './shadow-run.types'
@@ -20,7 +21,10 @@ import type {
 export class ShadowRunService extends Context.Service<
 	ShadowRunService,
 	{
-		readonly review: (prepared: PreparedRun) => Effect.Effect<ShadowOutcome>
+		readonly review: (
+			prepared: PreparedRun,
+			options?: ReviewOptions
+		) => Effect.Effect<ShadowOutcome>
 		readonly run: (input: ShadowRunInput) => Effect.Effect<ShadowOutcome>
 	}
 >()('mng-review/ShadowRunService') {}
@@ -34,7 +38,8 @@ export const ShadowRunServiceLive = Layer.effect(
 		const preparer = yield* PrepareRunService
 
 		const reviewReady = Effect.fn('ShadowRunService.reviewReady')(function* (
-			ready: ReadyRun
+			ready: ReadyRun,
+			options: ReviewOptions
 		) {
 			const { event, prior } = ready
 			const rules = ready.rules ?? (yield* rulesService.load(event.baseSha))
@@ -46,6 +51,7 @@ export const ShadowRunServiceLive = Layer.effect(
 				baseRef: event.baseSha,
 				headRef: event.headSha,
 				pr: event.pr,
+				...(options.onlyAgent ? { onlyAgent: options.onlyAgent } : {}),
 				...(prior?.head && event.pr.trigger === 'auto'
 					? { since: prior.head }
 					: {}),
@@ -54,11 +60,12 @@ export const ShadowRunServiceLive = Layer.effect(
 		})
 
 		const review = Effect.fn('ShadowRunService.review')(function* (
-			prepared: PreparedRun
+			prepared: PreparedRun,
+			options: ReviewOptions = {}
 		) {
 			if (prepared.status !== 'ready') return prepared
 			const { event } = prepared
-			return yield* reviewReady(prepared).pipe(
+			return yield* reviewReady(prepared, options).pipe(
 				Effect.catchTags({
 					ConfigError: error =>
 						Effect.succeed({

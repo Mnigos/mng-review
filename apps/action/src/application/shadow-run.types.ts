@@ -24,6 +24,11 @@ export interface ShadowRunInput {
 	readonly eventName: string
 	readonly readEvent: Effect.Effect<string, ConfigError>
 	/**
+	 * A command run only: the pull request as read again from the API, used instead of the event
+	 * payload, which is the comment's.
+	 */
+	readonly event?: PullRequestEvent
+	/**
 	 * The prepare step only: the earlier runs on the pull request, read before any model call, for
 	 * `limits.max_runs_per_pr` and incremental input. The rules at the base commit name the bot
 	 * identities whose summary counts. Unset or `undefined`: no earlier run is known.
@@ -37,6 +42,12 @@ export interface ShadowRunInput {
 		event: PullRequestEvent,
 		rules: Rules
 	) => Effect.Effect<readonly BotThread[]>
+}
+
+/** What the review step is told besides the prepared run. */
+export interface ReviewOptions {
+	/** A declared agent a command named: only it runs. */
+	readonly onlyAgent?: string
 }
 
 /** The checks before the probe passed; the review step reviews this event. */

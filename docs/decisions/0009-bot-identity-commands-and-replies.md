@@ -1,11 +1,11 @@
-# ADR 0009: The bot may post as a GitHub App, and switching keeps one set of threads
+# ADR 0009: The bot may post as a GitHub App, and a mention of it starts a review
 
 **Status:** Proposed
 **Date:** 2026-11-20
 
 ## Context
 
-Publish mode (ADR 0007) posts with the job token, as `github-actions[bot]`. That name is shared with every other workflow in the repository, events made with the job token start no workflows, and a handle a person can mention needs an account of its own. A GitHub App gives the bot its own name, but its key can write wherever the app is installed, and a repository that switches already has threads and a summary written by `github-actions`. The commands and replies of the next layers build on the identity this record sets.
+Publish mode (ADR 0007) posts with the job token, as `github-actions[bot]`. That name is shared with every other workflow in the repository, events made with the job token start no workflows, and a handle a person can mention needs an account of its own. A GitHub App gives the bot its own name, but its key can write wherever the app is installed, and a repository that switches already has threads and a summary written by `github-actions`. Commands let a person start a review from a pull request comment. They act on text other people write and can spend the endpoint's quota, `issue_comment` workflows run from the default branch, and comments the app writes start workflows too. Replies are recorded here later.
 
 ## Decision
 
@@ -21,6 +21,17 @@ Publish mode (ADR 0007) posts with the job token, as `github-actions[bot]`. That
 - The job token of the publish job keeps write in app mode, because job permissions are static text and token mode needs them. The job that holds it also holds the app key, which can do more, so the token adds no reach.
 - The user login that matches the app's slug is reserved, for example with an empty organization of that name, so a mention of the handle can never reach someone else's account; a mention of an organization notifies nobody. The `mng-review` login is reserved this way.
 
+### Commands
+
+- A command is a line of a new pull request comment that holds only `@<handle> review`, `@<handle> review deep`, `@<handle> review quick` or `@<handle> run <agent>`, after up to three leading spaces, with words separated by spaces or tabs. The handle is compared without case; `@<handle>[bot]`, `@<handle>:` and a longer login are not the handle. The verbs are lower case. `<agent>` matches `[A-Za-z0-9][\w.-]{0,63}`, so `run review` names an agent called `review`, and bare `review` is always a full review. A mention with no verb, an unknown verb or extra words is no command. The first command line wins.
+- Lines that never count: text in an HTML comment (an unclosed one runs to the end), lines in a fenced code block, lines indented by four spaces or a tab, a quoted line and every non-blank line after it up to the next blank line. GitHub's quote reply leaves that blank line, so a command typed under a quote still counts, and a mention that runs on lazily from a quote does not. The parser follows GitHub's Markdown for these rules but is not a full renderer, so a rare construct can render differently from how the parser reads it; the authorization check, not the parser, keeps anyone else from spending the endpoint's quota.
+- The handle is a workflow input, never text from a comment or a pull request. In app mode it is `app-slug`, and the reserve job checks the minted token's slug against it before any request. Without the app it is the `handle` input of `review-command.yml`. There is no default: `@mng-review` without the app would mention whatever user account holds that login. Both inputs set is refused; neither set starts no job. The entry checks the handle against the slug pattern before it compares anything and builds no regular expression from it. The login that matches the handle is reserved, as for the app.
+- `review-command.yml` runs four jobs. `authorize` holds no secret and a read-only token, and reads the rules from the default branch: the event is `issue_comment` with the action `created`, on a pull request, by a `User` that is not an owned bot's REST login and not posted through an app; the comment holds a command for the handle, reads the same when fetched again, and comes from an admin or a login in `commands.allow` that still has `maintain` or `write`, or a custom role whose base permission is write or admin (a custom role never counts as admin); a named agent is declared; the pull request is open, from this repository, with two full commits; and the owned summaries' `manualRuns` is below `commands.max_runs`. Any GitHub error denies, and a denial passes the job. `reserve` holds the app key and an app token with pull requests write only, since it reads no GraphQL field that names a commit: it reads the pull request again, applies the base commit's gates and the named agent, and counts the manual run in the summary's marker before the endpoint is used, creating a status summary with `finished: false` when none exists. `review` holds the endpoint, the tailnet and a read-only token. `publish` holds the app key, as in `review-publish.yml`. The token that reserved is revoked when its job ends, before the review starts.
+- The later jobs take the pull request and both commits from `authorize`'s outputs, never from the event or the outcome file, and the outcome's binding names the trigger (`push` or `command`). A pull request that closed, moved or became a fork skips the run in `reserve` and in the prepare step. `publish` reads the pull request again and posts nothing when it closed or became a fork during the review; a head that moves while the command reviews makes the run partial (ADR 0008). Whether the run named one agent comes from the publish job's own context.
+- `reserve` and `publish` run in the group `mng-review-publish-<pull request>` with `cancel-in-progress: false`, the group of `review-publish.yml`'s publish job, so every summary writer on one pull request runs one at a time. Only `reserve`, `review` and `publish` check `github.run_attempt == '1'`: a re-run would carry the first attempt's authorization to whoever starts it, so a failed command is started again with a new comment.
+- A mention in a review thread is never a command: `pull_request_review_comment`, `pull_request_review` and pull request edits start no command workflow, and in a thread the bot owns it is a reply. A conversation comment is never a reply.
+- Who can spend what: only an admin or an allowed writer reaches the endpoint, at most `commands.max_runs` times per pull request. Anyone else's mention, a quoted mention and a mention that fails the grammar cost one job of seconds with no secret. An edit, the pull request body and review comments start nothing. The bot's own comments start nothing: they are a `Bot`'s, and every fixed text that names the handle puts it in a code span, so they hold no live mention.
+
 ## Consequences
 
 - Comments, statuses and check runs the app makes start the repository's other workflows, which writes with the job token never did.
@@ -30,9 +41,14 @@ Publish mode (ADR 0007) posts with the job token, as `github-actions[bot]`. That
 - After `identity.previous: []` on a pull request opened before the switch, the bot posts the old threads' findings again, and an old summary it could not hide stays visible.
 - Accepted race: two runs writing one summary while one of their creates gets no answer can count one run twice. That only makes `max_runs_per_pr` stricter.
 - A reconciliation that fails after a create fails the run instead of leaving two summaries of the current identity; the next run starts from one.
+- GitHub keeps one waiting job per concurrency group, and `reserve` and both publish jobs share `mng-review-publish-<pull request>`, so a newer waiting job cancels an older waiting one. A command's `publish` can be cancelled after its run was counted and the model was paid for, and a command's `reserve` can cancel a waiting push publish, which leaves that head without a status. To recover, re-run the push run's workflow, or post a new command comment.
+- A comment posted through an OAuth app with a user token has no `performed_via_github_app` and counts as the user's; no API field tells it apart.
+- Two authorized commands, or a command and a push, may review at once; the overlap rules of ADR 0008 cover it.
+- Rejected for commands: the slash form; a default handle without the app; a handle read from the comment; `author_association` as a filter (a private organization member can show as a contributor).
 - Rejected: the identity inside the marker (GitHub attests the author, the marker is text); numeric bot ids in the config (slugs are what GraphQL and REST return and what a person can read); a second, read-only family of workflow files for app mode; editing the old summary in place (it breaks the rule that the bot edits only what its current identity wrote, and the summary would keep the old name).
 
 ## Related
 
-- `docs/spec.md`: `review.yml`; CI in publish mode
+- `docs/spec.md`: `review.yml`; Running it; CI in publish mode
+- `UBIQUITOUS_LANGUAGE.md`: Handle, Mention command, Manual run
 - ADRs 0007 and 0008

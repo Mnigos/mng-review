@@ -1,6 +1,7 @@
 import { commitShaSchema } from '@mng-review/domain'
 import type { Rules } from '@mng-review/engine'
 import { Context, Effect, Layer, Schema } from 'effect'
+import type { CollaboratorRole } from '../../../platform/github-api.schema'
 import { GitHubApiService } from '../../../platform/github-api.service'
 import { OwnedIdentities } from '../../../platform/owned-identities.context'
 import { SummaryCommentService } from '../../publish/application/summary-comment.service'
@@ -15,10 +16,24 @@ import type {
 import { parseMentionCommand } from '../domain/mention-command.parser'
 
 const isCommitSha = Schema.is(commitShaSchema)
-/** Roles that may always start a review with a command. */
-const ADMIN_ROLES = ['admin'] as const
+/** GitHub's built-in repository roles; any other `role_name` is a custom role. */
+const BUILT_IN_ROLES = ['admin', 'maintain', 'write', 'triage', 'read'] as const
 /** Roles a login listed in `commands.allow` must still have; a renamed or demoted login drops out. */
 const ALLOWED_ROLES = ['admin', 'maintain', 'write'] as const
+/** Base permissions a custom role of a listed login must map to: it inherits write or more. */
+const ALLOWED_PERMISSIONS = ['admin', 'write'] as const
+
+/**
+ * True when a login listed in `commands.allow` still has write access: a built-in role of write or
+ * more, or a custom role whose base permission is write or admin.
+ */
+function hasWriteAccess(access: CollaboratorRole): boolean {
+	if (BUILT_IN_ROLES.some(role => role === access.role_name))
+		return ALLOWED_ROLES.some(role => role === access.role_name)
+	return ALLOWED_PERMISSIONS.some(
+		permission => permission === access.permission
+	)
+}
 
 /** What the authorize step decides on: the comment, the handle inputs and the default branch's rules. */
 export interface AuthorizeInput {
@@ -71,19 +86,19 @@ export const CommandAuthorizeServiceLive = Layer.effect(
 		const api = yield* GitHubApiService
 		const summaries = yield* SummaryCommentService
 
-		/** True when the commenter may start a review. */
+		/**
+		 * True when the commenter may start a review: the built-in `admin` role, never a custom one, or
+		 * a login in `commands.allow` that still has write access.
+		 */
 		const isAllowed = Effect.fn('CommandAuthorizeService.isAllowed')(function* (
 			login: string,
 			allow: readonly string[]
 		) {
-			const role = yield* api.getCollaboratorRole(login)
+			const access = yield* api.getCollaboratorRole(login)
 			const listed = allow.some(
 				entry => entry.toLowerCase() === login.toLowerCase()
 			)
-			return (
-				ADMIN_ROLES.some(entry => entry === role) ||
-				(listed && ALLOWED_ROLES.some(entry => entry === role))
-			)
+			return access.role_name === 'admin' || (listed && hasWriteAccess(access))
 		})
 
 		const decide = Effect.fn('CommandAuthorizeService.decide')(function* (
