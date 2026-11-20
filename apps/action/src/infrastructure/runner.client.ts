@@ -49,6 +49,7 @@ export const RUN_MODES = [
 	'sweep',
 	'authorize',
 	'reserve',
+	'find',
 ] as const
 export type RunMode = (typeof RUN_MODES)[number]
 
@@ -58,8 +59,9 @@ export type RunMode = (typeof RUN_MODES)[number]
  * and `review` (the model calls, no GitHub); the publish job runs `publish`, which posts the
  * outcome file and calls no model. `sweep` reviews nothing and refreshes the `MNG Review` status
  * of open pull requests. A mention command runs `authorize` (checks the comment over the read
- * token, no secret) and `reserve` (counts the manual run before the review job starts). Any other
- * value fails, before the review spends anything.
+ * token, no secret) and `reserve` (counts the manual run before the review job starts). The reply
+ * schedule runs `find` (lists the pull requests with a reply waiting over the read token, no
+ * model). Any other value fails, before the review spends anything.
  */
 export const modeConfig = Config.Literals(RUN_MODES, MODE_VARIABLE).pipe(
 	Config.withDefault('shadow' as RunMode)
@@ -235,6 +237,15 @@ export const writePrepared = Effect.fn('runner.writePrepared')(function* (
 		return yield* fs.writeFileString(path, JSON.stringify(prepared))
 	const { rules: _rules, ...file } = prepared
 	return yield* fs.writeFileString(path, JSON.stringify(file))
+})
+
+/** Whether the downloaded outcome file exists; an unset path or a failed check counts as missing. */
+export const hasOutcomeFile = Effect.fn('runner.hasOutcomeFile')(function* (
+	path: string | undefined
+) {
+	if (!path) return false
+	const fs = yield* FileSystem.FileSystem
+	return yield* fs.exists(path).pipe(Effect.orElseSucceed(() => false))
 })
 
 /** The downloaded outcome file as text; a missing path or file fails, so nothing is posted. */

@@ -3,12 +3,13 @@ import { ConfigError, type KeptFinding } from '@mng-review/domain'
 import { RulesService, type Rules } from '@mng-review/engine'
 import {
 	GITHUB_ACTIONS_IDENTITY,
-	GitHubConfig,
-	PublishService,
-	PublishIncompleteError,
 	GitHubApiError,
-	StatusReportService,
+	GitHubConfig,
 	MARKER_VERSION,
+	PublishIncompleteError,
+	PublishService,
+	ReplyPublishService,
+	StatusReportService,
 	SummaryCommentService,
 	type SummaryMarker,
 } from '@mng-review/github'
@@ -128,6 +129,10 @@ function setup(
 				Layer.succeed(PublishService, {
 					readThreads: () => Effect.succeed([]),
 					publish: publishSpy,
+				}),
+				Layer.succeed(ReplyPublishService, {
+					publish: () =>
+						Effect.die('a push or command run never answers alone'),
 				}),
 				Layer.succeed(SummaryCommentService, {
 					read: () => Effect.succeed(undefined),

@@ -312,7 +312,52 @@ Reply in one of the bot's bug or unverified threads to tell it what happened to 
 - `intentional because` and the reason, with a `path:line` that shows it. A reason that holds against the code, backed by a line that exists outside what the pull request added, is accepted: the bot stops counting the thread and offers one line for `.mng/MEMORY.md`, which counts only once a person merges it. A reason that does not hold is disputed once. A second disagreement, a `critical` finding, a file under `risk_paths` or a severity above `disputes.accept_intentional_up_to` goes to the owner.
 - Anything else gets one line saying what the bot understands.
 
-Only the latest comment of a thread counts, and only when a person with write access to the repository wrote it. The bot answers each reply once, at most eight threads per run, and never in a thread that waits for the owner. Answers come with the next push or command run.
+Only the latest comment of a thread counts, and only when a person with write access to the repository wrote it. The bot answers each reply once, at most eight threads per run, and never in a thread that waits for the owner. Answers come with the next push or command run, or sooner when you run the reply schedule. Give it and the status sweep one file:
+
+```yaml
+# .github/workflows/mng-review-schedule.yml
+name: MNG Review schedule
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mng-review-schedule
+  cancel-in-progress: false
+
+jobs:
+  replies:
+    uses: Mnigos/mng-review/.github/workflows/review-converse.yml@<commit-sha>
+    permissions:
+      contents: read
+      pull-requests: write
+      statuses: write
+    with:
+      app-slug: mng-review
+    secrets:
+      llm-url: ${{ secrets.MNG_REVIEW_LLM_URL }}
+      llm-key: ${{ secrets.MNG_REVIEW_LLM_KEY }}
+      app-client-id: ${{ secrets.MNG_REVIEW_APP_CLIENT_ID }}
+      app-private-key: ${{ secrets.MNG_REVIEW_APP_PRIVATE_KEY }}
+  sweep:
+    uses: Mnigos/mng-review/.github/workflows/status-sweep.yml@<commit-sha>
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: write
+    with:
+      app-slug: mng-review
+    secrets:
+      app-client-id: ${{ secrets.MNG_REVIEW_APP_CLIENT_ID }}
+      app-private-key: ${{ secrets.MNG_REVIEW_APP_PRIVATE_KEY }}
+```
+
+A schedule runs from the default branch, so a pull request cannot change it. Each tick lists the open pull requests of this repository with a reply waiting (never drafts or forks), at most `max-pull-requests` (default 5), and answers them one at a time; it reviews no code and posts no new finding, and it does not count toward the run limits. When nothing waits, a tick is one short job that holds no secret. The find job lists the open pull requests once and reads the review threads of each open, same-repository pull request that is not a draft; only where a thread's latest comment is a person's reply does it also read the pull request's comments, the full comments of the bot's longer threads with a reply, and each replying login's access. On a quiet pull request a tick costs one paged thread read of the read token's rate limit. It fails when the list fails or no pull request could be read, so a broken schedule shows red. Without the app, leave out `app-slug` and the app secrets.
 
 A thread that goes to the owner gets one last answer, and the pull request gets the `needs-owner` label, the verdict `needs owner` and a `failure` status until an admin, or a login in `commands.allow` with write access, resolves the thread on GitHub. A writer resolving it or removing the label does not clear it. The next run after the owner resolves it removes the label; the status sweep turns the status green sooner.
 

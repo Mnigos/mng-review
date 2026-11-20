@@ -1,14 +1,16 @@
 import { join } from 'node:path'
 import { RulesService } from '@mng-review/engine'
 import {
-	GitHubWriteConfigLive,
 	GitHubReadConfigLive,
-	toBotIdentity,
+	GitHubWriteConfigLive,
 	PublishServiceLive,
+	ReplyFindServiceLive,
+	ReplyPublishServiceLive,
 	StatusReportServiceLive,
 	SummaryCommentServiceLive,
 	ThreadReplyServiceLive,
 	ThreadResolutionServiceLive,
+	toBotIdentity,
 } from '@mng-review/github'
 import { ConfigProvider, Effect, Layer } from 'effect'
 // oxlint-disable-next-line no-restricted-imports -- The test brief requires these existing unexported GitHub fixtures.
@@ -110,9 +112,11 @@ export function stepFixture(
 		toBotIdentity(appMode ? 'mng-review' : 'github-actions')
 	)
 	const status = githubStatusFake()
-	const publisherLayer = Layer.merge(
+	const publisherLayer = Layer.mergeAll(
 		PublishServiceLive,
-		ThreadReplyServiceLive
+		ThreadReplyServiceLive,
+		ReplyPublishServiceLive.pipe(Layer.provide(status.layer)),
+		ReplyFindServiceLive.pipe(Layer.provide(status.layer))
 	).pipe(
 		Layer.provideMerge(SummaryCommentServiceLive),
 		Layer.provideMerge(

@@ -17,6 +17,7 @@ import {
 import type { PublishReport } from '../application/publish-run.service'
 import type {
 	PullRequestEvent,
+	RepliedRun,
 	ReviewedRun,
 	ShadowOutcome,
 } from '../application/shadow-run.types'
@@ -26,6 +27,7 @@ export const SUMMARY_TITLE = '## MNG Review (shadow mode)'
 export const PUBLISH_SUMMARY_TITLE = '## MNG Review (publish mode)'
 export const PUBLISH_JOB_SUMMARY_TITLE = '## MNG Review (publish job)'
 export const SWEEP_SUMMARY_TITLE = '## MNG Review (status sweep)'
+export const FIND_SUMMARY_TITLE = '## MNG Review (reply schedule)'
 const SHORT_SHA_LENGTH = 8
 const MILLIS_PER_SECOND = 1000
 const PERCENT = 100
@@ -65,6 +67,11 @@ export function toVerdictLine(report: ReviewReport): string {
 	return report.incomplete ? `${verdict}; the run is incomplete` : verdict
 }
 
+/** A reply-only run in words: how many replies it decided; nothing was reviewed. */
+function toRepliedText(outcome: RepliedRun): string {
+	return `decided on ${outcome.replies.decided.length} reply(s); nothing was reviewed`
+}
+
 /** The outcome in words, before it is made safe for the log. */
 function toLogLine(outcome: ShadowOutcome): string {
 	if (outcome.status === 'skipped')
@@ -75,6 +82,8 @@ function toLogLine(outcome: ShadowOutcome): string {
 		return `mng-review: invalid configuration: ${outcome.source}: ${outcome.reason}`
 	if (outcome.status === 'failed')
 		return `mng-review: failed: ${outcome.reason}`
+	if (outcome.status === 'replied')
+		return `mng-review: ${toRepliedText(outcome)}`
 	return `mng-review: ${toVerdictLine(outcome.report)}`
 }
 
@@ -241,6 +250,12 @@ function toOutcomeLines(outcome: ShadowOutcome, posted: boolean): string[] {
 		]
 	if (outcome.status === 'failed')
 		return [`**Failed:** ${escapeMarkdown(outcome.reason)}`]
+	if (outcome.status === 'replied')
+		return [
+			`${escapeMarkdown(toRepliedText(outcome))}.`,
+			'',
+			toEventLine(outcome.event),
+		]
 	return toReviewedLines(outcome, posted)
 }
 
@@ -260,6 +275,10 @@ function toPublishText(report: PublishReport): string {
 		return report.posted
 			? 'posted the offline status as the summary comment'
 			: 'kept the existing summary comment; the reviewer was offline'
+	if (report.status === 'replied') {
+		const { result } = report
+		return `answered replies on run ${result.run}: ${toAnswerText(result.answered)}; verdict ${result.verdict}, ${result.openBugs} open bug thread(s); ${result.waiting} thread(s) wait for the owner, label ${result.label}; status ${result.status ? 'set' : 'not set'}`
+	}
 	const { result, checks } = report
 	return `posted run ${result.run}: verdict ${result.verdict}, ${result.openBugs} open bug thread(s); new threads: ${result.onLine} on lines, ${result.onFile} on files, ${result.inSummary} in the summary comment, ${result.unposted} not posted; ${result.repeated} already had a thread, ${result.dismissed} found again under resolved threads; ${result.resolved} of ${result.rechecked} rechecked thread(s) resolved; ${checks.checks} check run(s), status ${checks.status ? 'set' : 'not set'}; earlier summaries: ${result.cleanup}; replies answered: ${toAnswerText(result.answered)}; ${result.waiting} thread(s) wait for the owner, label ${result.label}`
 }
@@ -325,4 +344,9 @@ export function formatSweepLine(result: SweepResult): string {
 /** The job summary of a status sweep. */
 export function formatSweepSummary(line: string): string {
 	return [SWEEP_SUMMARY_TITLE, '', escapeMarkdown(line), ''].join('\n')
+}
+
+/** The job summary of the reply schedule's find step. */
+export function formatFindSummary(line: string): string {
+	return [FIND_SUMMARY_TITLE, '', escapeMarkdown(line), ''].join('\n')
 }

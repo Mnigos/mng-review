@@ -187,6 +187,15 @@ export function getVerdict(
 	finished: boolean = isFinished(report),
 	waiting = 0
 ): Verdict {
+	return getStandingVerdict(openBugs, finished, waiting)
+}
+
+/** The verdict from the counts alone, for a run that reviewed nothing, such as a reply-only run. */
+export function getStandingVerdict(
+	openBugs: number,
+	finished: boolean,
+	waiting: number
+): Verdict {
 	if (waiting > 0) return 'needs owner'
 	if (openBugs > 0) return 'needs fixes'
 	return finished ? 'ready' : 'incomplete'

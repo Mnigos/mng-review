@@ -14,7 +14,10 @@ import {
 	gitLayer,
 } from '../../../shared/mocks/git-test.helper'
 import { githubApiFake } from '../../../shared/mocks/github-api-fake.helper'
-import { githubStatusFake } from '../../../shared/mocks/github-status-fake.helper'
+import {
+	githubStatusFake,
+	openPullRequest,
+} from '../../../shared/mocks/github-status-fake.helper'
 import {
 	ACCEPTING_RULES,
 	APP_IDENTITY,
@@ -635,10 +638,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 						const fake = githubStatusFake({
 							listOpenPullRequests: () =>
 								Effect.succeed([
-									{
-										number: fixture.input.pullNumber,
-										head: { sha: fixture.head },
-									},
+									openPullRequest(fixture.input.pullNumber, fixture.head),
 								]),
 							getStatus: () =>
 								Effect.succeed({
@@ -1014,7 +1014,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 					).toBe(false)
 					const status = githubStatusFake({
 						listOpenPullRequests: () =>
-							Effect.succeed([{ number: 17, head: { sha: fixture.head } }]),
+							Effect.succeed([openPullRequest(17, fixture.head)]),
 						getStatus: () =>
 							Effect.succeed({
 								id: 1,
@@ -2013,10 +2013,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 						const statuses = githubStatusFake({
 							listOpenPullRequests: () =>
 								Effect.succeed([
-									{
-										number: fixture.input.pullNumber,
-										head: { sha: fixture.head },
-									},
+									openPullRequest(fixture.input.pullNumber, fixture.head),
 								]),
 							getStatus: () =>
 								Effect.succeed({
@@ -3636,7 +3633,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 					})
 					const statuses = githubStatusFake({
 						listOpenPullRequests: () =>
-							Effect.succeed([{ number: 17, head: { sha: fixture.head } }]),
+							Effect.succeed([openPullRequest(17, fixture.head)]),
 						getStatus: () =>
 							Effect.succeed({
 								id: 1,

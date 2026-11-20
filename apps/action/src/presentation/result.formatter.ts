@@ -51,6 +51,14 @@ function toOutcomeJson(outcome: ShadowOutcome) {
 			tokens: outcome.report.tokens,
 			review: toReviewJson(outcome.report),
 		}
+	if (outcome.status === 'replied')
+		return {
+			reason: null,
+			source: null,
+			verdict: null,
+			tokens: outcome.replies.tokens,
+			review: null,
+		}
 	return {
 		reason: outcome.reason,
 		source: outcome.status === 'invalid-config' ? outcome.source : null,

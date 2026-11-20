@@ -11,7 +11,10 @@ import {
 	getGitHubRequestBody,
 	GITHUB_SETTINGS,
 } from '../../../shared/mocks/github-http.helper'
-import { githubStatusFake } from '../../../shared/mocks/github-status-fake.helper'
+import {
+	githubStatusFake,
+	openPullRequest,
+} from '../../../shared/mocks/github-status-fake.helper'
 import {
 	APP_IDENTITY,
 	APP_MODE_OWNED,
@@ -46,7 +49,7 @@ layer(TOKEN_MODE_OWNED)('StatusSweepService', test => {
 			Effect.gen(function* () {
 				const fake = githubStatusFake({
 					listOpenPullRequests: () =>
-						Effect.succeed([{ number: 1, head: { sha: 'unknown' } }]),
+						Effect.succeed([openPullRequest(1, 'unknown')]),
 				})
 				const api = githubApiFake()
 				const listReviewThreadsSpy = vi.fn(() =>
@@ -137,7 +140,7 @@ layer(TOKEN_MODE_OWNED)('StatusSweepService', test => {
 				)
 				const fake = githubStatusFake({
 					listOpenPullRequests: () =>
-						Effect.succeed([{ number: 1, head: { sha: 'head' } }]),
+						Effect.succeed([openPullRequest(1, 'head')]),
 					getStatus: () =>
 						Effect.succeed({
 							id: 1,
@@ -182,8 +185,8 @@ layer(TOKEN_MODE_OWNED)('StatusSweepService', test => {
 					const fake = githubStatusFake({
 						listOpenPullRequests: () =>
 							Effect.succeed([
-								{ number: 1, head: { sha: 'first' } },
-								{ number: 2, head: { sha: 'second' } },
+								openPullRequest(1, 'first'),
+								openPullRequest(2, 'second'),
 							]),
 						getStatus: sha =>
 							failureAt === 'read' && sha === 'first'
@@ -245,7 +248,7 @@ layer(TOKEN_MODE_OWNED)('StatusSweepService latest status', test => {
 						)
 					const fake = githubStatusFake({
 						listOpenPullRequests: () =>
-							Effect.succeed([{ number: 17, head: { sha: 'head' } }]),
+							Effect.succeed([openPullRequest(17, 'head')]),
 						getStatus: getStatusSpy,
 					})
 					const api = githubApiFake()
@@ -283,7 +286,7 @@ layer(TOKEN_MODE_OWNED)('StatusSweepService latest status', test => {
 			Effect.gen(function* () {
 				const fake = githubStatusFake({
 					listOpenPullRequests: () =>
-						Effect.succeed([{ number: 17, head: { sha: 'head' } }]),
+						Effect.succeed([openPullRequest(17, 'head')]),
 					getStatus: () =>
 						Effect.succeed({
 							id: 1,
@@ -351,7 +354,7 @@ layer(TOKEN_MODE_OWNED)('StatusSweepService summary marker', test => {
 				if (scenario.openBugs > 0) api.threads.push(reviewThread())
 				const fake = githubStatusFake({
 					listOpenPullRequests: () =>
-						Effect.succeed([{ number: 17, head: { sha: 'head' } }]),
+						Effect.succeed([openPullRequest(17, 'head')]),
 					getStatus: () =>
 						Effect.succeed({
 							id: 1,
@@ -420,7 +423,7 @@ layer(TOKEN_MODE_OWNED)('StatusSweepService summary marker', test => {
 							)
 						const fake = githubStatusFake({
 							listOpenPullRequests: () =>
-								Effect.succeed([{ number: 17, head: { sha: 'head' } }]),
+								Effect.succeed([openPullRequest(17, 'head')]),
 							getStatus: getStatusSpy,
 						})
 						const sweeper = yield* StatusSweepService.pipe(
@@ -498,7 +501,7 @@ layer(TOKEN_MODE_OWNED)('StatusSweepService summary marker', test => {
 				})
 				const fake = githubStatusFake({
 					listOpenPullRequests: () =>
-						Effect.succeed([{ number: 17, head: { sha: 'head' } }]),
+						Effect.succeed([openPullRequest(17, 'head')]),
 					getStatus: () =>
 						Effect.succeed({
 							id: 1,
@@ -539,7 +542,7 @@ layer(APP_MODE_OWNED)('StatusSweepService app mode', test => {
 						Effect.succeed(
 							Response.json(
 								request.url.endsWith('/pulls')
-									? [{ number: 17, head: { sha: 'head' } }]
+									? [openPullRequest(17, 'head')]
 									: request.method === 'POST'
 										? { id: 2 }
 										: [previous]
@@ -658,7 +661,7 @@ layer(APP_MODE_OWNED)('StatusSweepService after an identity switch', test => {
 					}
 					const statuses = githubStatusFake({
 						listOpenPullRequests: () =>
-							Effect.succeed([{ number: 17, head: { sha: 'new-head' } }]),
+							Effect.succeed([openPullRequest(17, 'new-head')]),
 						getStatus: () => Effect.succeed(previous),
 					})
 					expect(
@@ -744,7 +747,7 @@ layer(APP_MODE_OWNED)('StatusSweepService after an identity switch', test => {
 					)
 				const statuses = githubStatusFake({
 					listOpenPullRequests: () =>
-						Effect.succeed([{ number: 17, head: { sha: 'head' } }]),
+						Effect.succeed([openPullRequest(17, 'head')]),
 					getStatus: () =>
 						Effect.succeed({
 							id: 1,
@@ -809,7 +812,7 @@ layer(APP_MODE_OWNED)(
 							)
 							const statuses = githubStatusFake({
 								listOpenPullRequests: () =>
-									Effect.succeed([{ number: 17, head: { sha: 'head' } }]),
+									Effect.succeed([openPullRequest(17, 'head')]),
 								getStatus: getStatusSpy,
 							})
 							expect(
@@ -855,7 +858,7 @@ layer(TOKEN_MODE_OWNED)('StatusSweepService review head', test => {
 					})
 					const fake = githubStatusFake({
 						listOpenPullRequests: () =>
-							Effect.succeed([{ number: 17, head: { sha: 'head' } }]),
+							Effect.succeed([openPullRequest(17, 'head')]),
 						getStatus: () =>
 							Effect.succeed({
 								id: 1,
@@ -906,7 +909,7 @@ layer(TOKEN_MODE_OWNED)('StatusSweepService review head', test => {
 					)
 					const fake = githubStatusFake({
 						listOpenPullRequests: () =>
-							Effect.succeed([{ number: 17, head: { sha: 'head' } }]),
+							Effect.succeed([openPullRequest(17, 'head')]),
 						getStatus: getStatusSpy,
 					})
 					expect(
@@ -972,7 +975,7 @@ layer(TOKEN_MODE_OWNED)('StatusSweepService unthreaded bugs', test => {
 					}
 					const fake = githubStatusFake({
 						listOpenPullRequests: () =>
-							Effect.succeed([{ number: 17, head: { sha: 'head' } }]),
+							Effect.succeed([openPullRequest(17, 'head')]),
 						getStatus: () => Effect.succeed(previous),
 					})
 					expect(
@@ -1027,7 +1030,7 @@ layer(TOKEN_MODE_OWNED)('StatusSweepService unthreaded bugs', test => {
 						}
 						const fake = githubStatusFake({
 							listOpenPullRequests: () =>
-								Effect.succeed([{ number: 17, head: { sha: 'head' } }]),
+								Effect.succeed([openPullRequest(17, 'head')]),
 							getStatus: () => Effect.succeed(previous),
 						})
 						expect(
@@ -1079,7 +1082,7 @@ layer(TOKEN_MODE_OWNED)('StatusSweepService unthreaded bugs', test => {
 				})
 				const fake = githubStatusFake({
 					listOpenPullRequests: () =>
-						Effect.succeed([{ number: 17, head: { sha: 'head' } }]),
+						Effect.succeed([openPullRequest(17, 'head')]),
 					getStatus: () =>
 						Effect.succeed({
 							id: 1,
@@ -1138,9 +1141,7 @@ layer(TOKEN_MODE_OWNED)('StatusSweepService owner escalation', test => {
 					const before = structuredClone(api.comments)
 					const fake = githubStatusFake({
 						listOpenPullRequests: () =>
-							Effect.succeed([
-								{ number: 17, head: { sha: SUMMARY_MARKER.head } },
-							]),
+							Effect.succeed([openPullRequest(17, SUMMARY_MARKER.head)]),
 						getStatus: () =>
 							Effect.succeed({
 								id: 1,
@@ -1242,7 +1243,7 @@ layer(APP_MODE_OWNED)('StatusSweepService recovered owner state', test => {
 									statusHistory.push(input)
 								}),
 							listOpenPullRequests: () =>
-								Effect.succeed([{ number: 17, head: { sha: 'head' } }]),
+								Effect.succeed([openPullRequest(17, 'head')]),
 							getStatus: () =>
 								Effect.succeed({ ...previous, ...statusHistory.at(-1) }),
 						})
@@ -1320,7 +1321,7 @@ layer(APP_MODE_OWNED)('StatusSweepService recovered owner state', test => {
 				)
 				const statuses = githubStatusFake({
 					listOpenPullRequests: () =>
-						Effect.succeed([{ number: 17, head: { sha: 'head' } }]),
+						Effect.succeed([openPullRequest(17, 'head')]),
 					getStatus: getStatusSpy,
 				})
 				expect(
@@ -1374,7 +1375,7 @@ layer(TOKEN_MODE_OWNED)('StatusSweepService edited waiting threads', test => {
 							const before = structuredClone(api.comments)
 							const statuses = githubStatusFake({
 								listOpenPullRequests: () =>
-									Effect.succeed([{ number: 17, head: { sha: 'head' } }]),
+									Effect.succeed([openPullRequest(17, 'head')]),
 								getStatus: () =>
 									Effect.succeed({
 										id: 1,
@@ -1442,7 +1443,7 @@ layer(TOKEN_MODE_OWNED)('StatusSweepService edited waiting threads', test => {
 				)
 				const statuses = githubStatusFake({
 					listOpenPullRequests: () =>
-						Effect.succeed([{ number: 17, head: { sha: 'head' } }]),
+						Effect.succeed([openPullRequest(17, 'head')]),
 					getStatus: () =>
 						Effect.succeed({
 							id: 1,

@@ -6,6 +6,7 @@ import {
 	getGitHubRequestBody,
 	GITHUB_SETTINGS,
 } from '../shared/mocks/github-http.helper'
+import { openPullRequest } from '../shared/mocks/github-status-fake.helper'
 import {
 	APP_IDENTITY,
 	APP_MODE_OWNED,
@@ -138,11 +139,10 @@ layer(TOKEN_MODE_OWNED)('GitHubStatusService', test => {
 	)
 	test.effect('reads full pages of open pulls and stops on a short page', () =>
 		Effect.gen(function* () {
-			const first = Array.from({ length: PAGE_SIZE }, (_, index) => ({
-				number: index + 1,
-				head: { sha: `head-${index}` },
-			}))
-			const last = { number: PAGE_SIZE + 1, head: { sha: 'last-head' } }
+			const first = Array.from({ length: PAGE_SIZE }, (_, index) =>
+				openPullRequest(index + 1, `head-${index}`)
+			)
+			const last = openPullRequest(PAGE_SIZE + 1, 'last-head')
 			const fake = makeGitHubHttp((_request, attempt) =>
 				Effect.succeed(Response.json(attempt === 1 ? first : [last]))
 			)

@@ -1,7 +1,7 @@
 # The publish job's steps once the base commit, the head objects and MNG Review are checked out:
 # install, download this run's outcome and result, publish, upload the result with what was posted.
-# Only the publish jobs of review-publish.yml and review-command.yml use it, from the engine
-# checkout at the workflow's own commit. Nothing here calls the model or holds an endpoint secret.
+# Only the publish jobs of review-publish.yml, review-command.yml and review-converse.yml use it,
+# from the engine checkout at the workflow's own commit. Nothing here calls the model or holds an endpoint secret.
 name: MNG Review publish steps
 description: Posts the outcome the review job of this run uploaded, and calls no model.
 
@@ -29,20 +29,21 @@ inputs:
     default: ''
   trigger:
     description: >-
-      push (a pull request event) or command (the target inputs, from the authorize job, name the
-      pull request and its commits).
+      push (a pull request event), command (the target inputs, from the authorize job, name the
+      pull request and its commits) or converse (the same, from the reply schedule's find job; a
+      missing outcome means nothing to answer and passes).
     required: false
     default: push
   target-pr:
-    description: Command mode only, the pull request number from the authorize job.
+    description: Command and converse mode, the pull request number from the authorize or find job.
     required: false
     default: ''
   target-base:
-    description: Command mode only, the base commit the authorize job checked.
+    description: Command and converse mode, the base commit the authorize or find job checked.
     required: false
     default: ''
   target-head:
-    description: Command mode only, the head commit the authorize job checked.
+    description: Command and converse mode, the head commit the authorize or find job checked.
     required: false
     default: ''
   command-depth:
@@ -53,6 +54,14 @@ inputs:
     description: Command mode only, the declared agent the command named, or empty.
     required: false
     default: ''
+  outcome-name:
+    description: Name of the outcome artifact the review job uploaded.
+    required: false
+    default: mng-review-outcome
+  result-name:
+    description: Name of the result artifact the review job uploaded.
+    required: false
+    default: mng-review-result
 
 runs:
   using: composite
@@ -68,18 +77,20 @@ runs:
       working-directory: ${{ github.action_path }}/../../..
       run: bun install --frozen-lockfile --production --ignore-scripts
 
-    # No run-id and no github-token: only this run's artifacts can be read.
+    # No run-id and no github-token: only this run's artifacts can be read. The reply schedule's
+    # review leg uploads none when it has nothing to answer; the entry then passes.
     - name: Download the outcome
+      continue-on-error: ${{ inputs.trigger == 'converse' }}
       uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
       with:
-        name: mng-review-outcome
+        name: ${{ inputs.outcome-name }}
         path: ${{ runner.temp }}/mng-review-outcome
 
     - name: Download the result
       continue-on-error: true
       uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
       with:
-        name: mng-review-result
+        name: ${{ inputs.result-name }}
         path: ${{ runner.temp }}/mng-review-result
 
     # The outcome file is checked against this job's own run, attempt, engine commit and event
@@ -110,7 +121,7 @@ runs:
       if: ${{ !cancelled() }}
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
-        name: mng-review-result
+        name: ${{ inputs.result-name }}
         path: ${{ runner.temp }}/mng-review-result/result.json
         retention-days: 14
         if-no-files-found: warn

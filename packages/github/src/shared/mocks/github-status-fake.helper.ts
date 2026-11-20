@@ -1,9 +1,24 @@
 import { Effect, Layer } from 'effect'
+import type { OpenPullRequest } from '../../platform/github-api.schema'
 import {
 	GitHubStatusService,
 	type CheckRunInput,
 	type CommitStatusInput,
 } from '../../platform/github-status.service'
+
+/** An open pull request of this repository, as the pull request list answers it. */
+export function openPullRequest(
+	number: number,
+	head: string,
+	overrides: Partial<OpenPullRequest> = {}
+): OpenPullRequest {
+	return {
+		number,
+		base: { sha: 'b'.repeat(40), repo: { full_name: 'owner/repo' } },
+		head: { sha: head, repo: { full_name: 'owner/repo' } },
+		...overrides,
+	}
+}
 
 /** In-memory status boundary records requests and allows per-operation failures without HTTP. */
 export function githubStatusFake(

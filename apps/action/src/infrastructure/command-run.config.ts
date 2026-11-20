@@ -1,24 +1,46 @@
-import { commitShaSchema } from '@mng-review/domain'
+import { commitShaSchema, positiveIntSchema } from '@mng-review/domain'
 import { APP_SLUG_VARIABLE, type CommandHandles } from '@mng-review/github'
 import { Config, Option } from 'effect'
 
 export const TRIGGER_VARIABLE = 'MNG_REVIEW_TRIGGER'
 export const HANDLE_VARIABLE = 'MNG_REVIEW_HANDLE'
-export const RUN_TRIGGERS = ['push', 'command'] as const
+export const RUN_TRIGGERS = ['push', 'command', 'converse'] as const
 export type RunTrigger = (typeof RUN_TRIGGERS)[number]
 /** The depths a command may ask for; empty asks for none. */
 const COMMAND_DEPTHS = ['deep', 'quick', ''] as const
 
 /**
- * `MNG_REVIEW_TRIGGER`: what started the run, `push` (the default, a pull request event) or
- * `command` (an authorized mention command). Any other value is a configuration error.
+ * `MNG_REVIEW_TRIGGER`: what started the run, `push` (the default, a pull request event),
+ * `command` (an authorized mention command) or `converse` (the reply schedule, which answers
+ * replies and reviews nothing). Any other value is a configuration error.
  */
 export const triggerConfig = Config.Literals(
 	RUN_TRIGGERS,
 	TRIGGER_VARIABLE
 ).pipe(Config.withDefault('push' as RunTrigger))
 
-/** The run an authorized command asked for, passed on from the authorize job's outputs. */
+/** Pull requests one tick of the reply schedule answers when the caller sets none. */
+const DEFAULT_MAX_PULL_REQUESTS = 5
+
+/** `MNG_REVIEW_MAX_PULL_REQUESTS`: how many pull requests the find step keeps; a whole number above 0. */
+export const maxPullRequestsConfig = Config.schema(
+	positiveIntSchema,
+	'MNG_REVIEW_MAX_PULL_REQUESTS'
+).pipe(Config.withDefault(DEFAULT_MAX_PULL_REQUESTS))
+
+/**
+ * `GITHUB_RUN_NUMBER`, 0 outside a workflow: a reply schedule's tick, which shifts the batch of
+ * pull requests and replies when more wait than one run answers, since a reply-only run never
+ * advances the summary's run count.
+ */
+export const runNumberConfig = Config.Int('GITHUB_RUN_NUMBER').pipe(
+	Config.withDefault(0)
+)
+
+/**
+ * The run an authorized command asked for, passed on from the authorize job's outputs; for the
+ * reply schedule, the pull request and commits the find step listed.
+ */
 export interface CommandTarget {
 	readonly pullNumber: number
 	/** The commits the authorize job checked; the later jobs check out and fetch these. */
