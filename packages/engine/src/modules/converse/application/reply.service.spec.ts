@@ -45,6 +45,7 @@ import {
 } from '../../validation/application/recheck.service'
 import { makeValidatorLayer } from '../../validation/infrastructure/validation.layers'
 import { MAX_REPLY_CHARS } from '../domain/reply.constants'
+import { ReplyEvidenceServiceLive } from './reply-evidence.service'
 import {
 	ReplyService,
 	ReplyServiceLive,
@@ -133,9 +134,12 @@ function setup(script: ScriptedLlmAnswer, options: SetupOptions = {}) {
 			})
 		),
 		Layer.provide(
-			options.realRecheck
-				? RecheckServiceLive
-				: Layer.succeed(RecheckService, { recheck: recheckSpy })
+			Layer.mergeAll(
+				ReplyEvidenceServiceLive,
+				options.realRecheck
+					? RecheckServiceLive
+					: Layer.succeed(RecheckService, { recheck: recheckSpy })
+			)
 		),
 		Layer.provideMerge(
 			Layer.mergeAll(

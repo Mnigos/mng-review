@@ -10,5 +10,8 @@ export const SYMLINK_MODE = '120000'
 export const BINARY_DIFF = /^(?:Binary files |GIT binary patch)/mu
 /** The failure of an attempt that finds every validator model dropped. */
 export const NO_MODEL_LEFT = 'no validator model left'
+/** The failure of a re-check that returned no answer for a thread whose commit is an ancestor. */
+export const RECHECK_FAILED =
+	'the re-check could not check the finding at the head'
 /** The classifiers' line in the run's tokens by source. */
 export const REPLY_SOURCE = 'reply'
