@@ -32,6 +32,7 @@ const SPEC_DEFAULTS = {
 		always_review: ['review'],
 		depth: { quick: 'mng-review-quick', deep: 'mng-review-deep' },
 	},
+	commands: { allow: [], max_runs: 3 },
 	disputes: { accept_intentional_up_to: 'medium', max_rounds: 1 },
 	verdict: { blocking_severity: 'medium', mode: 'preview', never_approve: [] },
 	models: {
