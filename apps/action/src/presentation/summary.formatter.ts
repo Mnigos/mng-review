@@ -23,6 +23,7 @@ import { toFindingsLines } from './findings-summary.formatter'
 
 export const SUMMARY_TITLE = '## MNG Review (shadow mode)'
 export const PUBLISH_SUMMARY_TITLE = '## MNG Review (publish mode)'
+export const PUBLISH_JOB_SUMMARY_TITLE = '## MNG Review (publish job)'
 export const SWEEP_SUMMARY_TITLE = '## MNG Review (status sweep)'
 const SHORT_SHA_LENGTH = 8
 const MILLIS_PER_SECOND = 1000
@@ -32,8 +33,8 @@ const PERCENT = 100
 export interface SummaryContext {
 	/** The commit of the engine that ran, from the reusable workflow. */
 	readonly engineCommit: string | undefined
-	/** Set in publish mode: what was posted on the pull request. */
-	readonly publish?: PublishReport
+	/** `review`: the review job of publish mode; the publish job posts a reviewed or offline outcome. */
+	readonly step?: 'review'
 }
 
 /** Milliseconds as seconds with one decimal. */
@@ -255,6 +256,26 @@ function toPublishText(report: PublishReport): string {
 	return `posted run ${result.run}: verdict ${result.verdict}, ${result.openBugs} open bug thread(s); new threads: ${result.onLine} on lines, ${result.onFile} on files, ${result.inSummary} in the summary comment, ${result.unposted} not posted; ${result.repeated} already had a thread, ${result.dismissed} found again under resolved threads; ${result.resolved} of ${result.rechecked} rechecked thread(s) resolved; ${checks.checks} check run(s), status ${checks.status ? 'set' : 'not set'}`
 }
 
+/** The engine's commit in a sentence. */
+function toEngineText(engineCommit: string | undefined): string {
+	return engineCommit
+		? `Engine ${toShortSha(engineCommit)}.`
+		: 'Engine commit unknown.'
+}
+
+/** The job summary of the publish job: what it posted, or why it posted nothing. */
+export function formatPublishSummary(
+	report: PublishReport,
+	engineCommit: string | undefined
+): string {
+	return [
+		PUBLISH_JOB_SUMMARY_TITLE,
+		'',
+		`Publish mode: ${escapeMarkdown(toPublishText(report))}. ${toEngineText(engineCommit)}`,
+		'',
+	].join('\n')
+}
+
 /** The publish line of the job log; a GitHub message in it can never act as a workflow command. */
 export function formatPublishLogLine(report: PublishReport): string {
 	return toLogText(`mng-review: ${toPublishText(report)}`)
@@ -268,16 +289,14 @@ export function formatSummary(
 	outcome: ShadowOutcome,
 	context: SummaryContext
 ): string {
-	const engine = context.engineCommit
-		? `Engine ${toShortSha(context.engineCommit)}.`
-		: 'Engine commit unknown.'
-	if (context.publish)
+	const engine = toEngineText(context.engineCommit)
+	if (context.step === 'review')
 		return [
 			PUBLISH_SUMMARY_TITLE,
 			'',
 			...toOutcomeLines(outcome, true),
 			'',
-			`Publish mode: ${escapeMarkdown(toPublishText(context.publish))}. ${engine}`,
+			`Publish mode: the publish job posts a reviewed or offline outcome on the pull request. ${engine}`,
 			'',
 		].join('\n')
 	return [

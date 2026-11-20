@@ -1,0 +1,67 @@
+# The publish job's steps once the base commit, the head objects and MNG Review are checked out:
+# install, download this run's outcome and result, publish, upload the result with what was posted.
+# Only the publish job of review-publish.yml uses it, from the engine checkout at the workflow's
+# own commit. Nothing here calls the model or holds an endpoint secret.
+name: MNG Review publish steps
+description: Posts the outcome the review job of this run uploaded, and calls no model.
+
+inputs:
+  engine-commit:
+    description: The commit of MNG Review that runs.
+    required: true
+  token:
+    description: The job token with pull requests, checks and statuses write.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Bun
+      uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      with:
+        bun-version-file: ${{ github.action_path }}/../../../package.json
+        no-cache: true
+
+    - name: Install MNG Review
+      shell: bash
+      working-directory: ${{ github.action_path }}/../../..
+      run: bun install --frozen-lockfile --production --ignore-scripts
+
+    # No run-id and no github-token: only this run's artifacts can be read.
+    - name: Download the outcome
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        name: mng-review-outcome
+        path: ${{ runner.temp }}/mng-review-outcome
+
+    - name: Download the result
+      continue-on-error: true
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        name: mng-review-result
+        path: ${{ runner.temp }}/mng-review-result
+
+    # The outcome file is checked against this job's own run, attempt, engine commit and event
+    # before anything is posted; the rules come from the base commit again.
+    - name: Publish
+      shell: bash
+      working-directory: ${{ github.action_path }}/../../..
+      env:
+        MNG_REVIEW_MODE: publish
+        MNG_REVIEW_ENGINE_COMMIT: ${{ inputs.engine-commit }}
+        MNG_REVIEW_REPO_DIR: ${{ github.workspace }}/repo
+        MNG_REVIEW_OUTCOME_PATH: ${{ runner.temp }}/mng-review-outcome/outcome.json
+        MNG_REVIEW_RESULT_PATH: ${{ runner.temp }}/mng-review-result/result.json
+        GITHUB_TOKEN: ${{ inputs.token }}
+      run: bun --no-env-file apps/action/src/main.ts
+
+    # The result again, with `publish` saying what was posted.
+    - name: Upload the result
+      if: ${{ !cancelled() }}
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: mng-review-result
+        path: ${{ runner.temp }}/mng-review-result/result.json
+        retention-days: 14
+        if-no-files-found: warn
+        overwrite: true

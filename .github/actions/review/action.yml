@@ -1,5 +1,6 @@
 # The steps both entry workflows share once the base commit, the head objects and MNG Review are
-# checked out: install, join the tailnet, review, upload the result. Only review.yml and
+# checked out: install, prepare (publish mode only), join the tailnet, review, upload the result
+# and, in publish mode, the outcome for the publish job. Only review.yml and the review job of
 # review-publish.yml use it, from the engine checkout at the workflow's own commit.
 name: MNG Review steps
 description: Installs MNG Review from this checkout, reviews the caller's change and uploads the result.
@@ -12,7 +13,9 @@ inputs:
     description: The commit of MNG Review that runs.
     required: true
   token:
-    description: The job token, only in publish mode; empty in shadow mode.
+    description: >-
+      The job token, read only, in publish mode; empty in shadow mode. Only the prepare step gets
+      it; the review step, which calls the model, never does.
     required: false
     default: ''
   llm-url:
@@ -38,6 +41,11 @@ inputs:
     required: false
     default: ''
 
+outputs:
+  publish:
+    description: true when the publish job has an outcome to post; publish mode only.
+    value: ${{ steps.review.outputs.publish }}
+
 runs:
   using: composite
   steps:
@@ -52,8 +60,26 @@ runs:
       working-directory: ${{ github.action_path }}/../../..
       run: bun install --frozen-lockfile --production --ignore-scripts
 
+    # Publish mode: the checks before the probe and the GitHub reads, with the read token and no
+    # endpoint variable; it writes the prepared file and `ready`.
+    - name: Prepare
+      id: prepare
+      if: inputs.mode != 'shadow'
+      shell: bash
+      working-directory: ${{ github.action_path }}/../../..
+      env:
+        MNG_REVIEW_MODE: prepare
+        MNG_REVIEW_ENGINE_COMMIT: ${{ inputs.engine-commit }}
+        MNG_REVIEW_REPO_DIR: ${{ github.workspace }}/repo
+        MNG_REVIEW_PREPARED_PATH: ${{ runner.temp }}/mng-review/prepared.json
+        GITHUB_TOKEN: ${{ inputs.token }}
+      run: |
+        mkdir -p "$RUNNER_TEMP/mng-review"
+        bun --no-env-file apps/action/src/main.ts
+
+    # A run the checks skipped never joins the tailnet.
     - name: Join the tailnet
-      if: inputs.tailscale == 'true'
+      if: inputs.tailscale == 'true' && (inputs.mode == 'shadow' || steps.prepare.outputs.ready == 'true')
       uses: tailscale/github-action@064b10558093f38325e838ddea35486bdc6b1d5c # v4.4.0
       with:
         oauth-client-id: ${{ inputs.tailscale-oauth-client-id }}
@@ -66,13 +92,15 @@ runs:
 
     # The action always passes --accept-routes, and the CLI refuses the flag twice, so routes go off here.
     - name: Turn off subnet routes
-      if: inputs.tailscale == 'true'
+      if: inputs.tailscale == 'true' && (inputs.mode == 'shadow' || steps.prepare.outputs.ready == 'true')
       shell: bash
       run: sudo tailscale set --accept-routes=false
 
     # Bun starts in the engine's directory and loads no .env file, so no bunfig.toml, .env or
-    # tsconfig.json of the reviewed repository is read; git runs in MNG_REVIEW_REPO_DIR.
+    # tsconfig.json of the reviewed repository is read; git runs in MNG_REVIEW_REPO_DIR. The step
+    # that calls the model never holds a GitHub token.
     - name: Review
+      id: review
       shell: bash
       working-directory: ${{ github.action_path }}/../../..
       env:
@@ -81,10 +109,13 @@ runs:
         MNG_REVIEW_ENGINE_COMMIT: ${{ inputs.engine-commit }}
         MNG_REVIEW_REPO_DIR: ${{ github.workspace }}/repo
         MNG_REVIEW_RESULT_PATH: ${{ runner.temp }}/mng-review-result/result.json
-        MNG_REVIEW_MODE: ${{ inputs.mode }}
-        GITHUB_TOKEN: ${{ inputs.token }}
+        MNG_REVIEW_PREPARED_PATH: ${{ runner.temp }}/mng-review/prepared.json
+        MNG_REVIEW_OUTCOME_PATH: ${{ runner.temp }}/mng-review-outcome/outcome.json
+        MNG_REVIEW_MODE: ${{ inputs.mode == 'shadow' && 'shadow' || 'review' }}
+        GITHUB_TOKEN: ''
+        GH_TOKEN: ''
       run: |
-        mkdir -p "$RUNNER_TEMP/mng-review-result"
+        mkdir -p "$RUNNER_TEMP/mng-review-result" "$RUNNER_TEMP/mng-review-outcome"
         bun --no-env-file apps/action/src/main.ts
 
     # The review result as JSON, for analysis through the API; the job summary is not exposed there.
@@ -97,4 +128,15 @@ runs:
         path: ${{ runner.temp }}/mng-review-result/result.json
         retention-days: 14
         if-no-files-found: warn
+        overwrite: true
+
+    # Publish mode: the outcome the publish job posts, for this run only and for a day.
+    - name: Upload the outcome
+      if: steps.review.outputs.publish == 'true'
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: mng-review-outcome
+        path: ${{ runner.temp }}/mng-review-outcome/outcome.json
+        retention-days: 1
+        if-no-files-found: error
         overwrite: true

@@ -21,6 +21,7 @@ import {
 	formatPublishLogLine,
 	formatSweepLine,
 	formatSweepSummary,
+	formatPublishSummary,
 	formatSummary,
 	SUMMARY_TITLE,
 	toVerdictLine,
@@ -528,15 +529,7 @@ test.each(['published', 'failed', 'status-only', 'not-published'] as const)(
 				: status === 'status-only'
 					? { status, reason: MALICIOUS, posted: false }
 					: { status, reason: MALICIOUS }
-		const text = formatSummary(
-			{
-				status: 'reviewed',
-				rules: RULES,
-				event: EVENT,
-				report: reviewReport(),
-			},
-			{ ...CONTEXT, publish }
-		)
+		const text = formatPublishSummary(publish, CONTEXT.engineCommit)
 		expect(text).toContain('Publish mode:')
 		expect(text).not.toContain('Shadow mode:')
 		if (status === 'published') {

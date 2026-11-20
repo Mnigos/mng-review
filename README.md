@@ -165,6 +165,8 @@ jobs:
       llm-key: ${{ secrets.MNG_REVIEW_LLM_KEY }}
 ```
 
+Each run shows two jobs. `MNG Review (review)` holds the endpoint secrets and a read-only token and makes every model call; `MNG Review (publish)` holds the write token and posts what the review job left in the `mng-review-outcome` artifact, which is kept for a day. The caller's YAML above stays the same. To run a review again, re-run all jobs: re-running the publish job alone posts nothing and says so.
+
 `review.yml` never gets write access, whatever the caller grants. On every run the bot checks its open threads again whose file changed and replies in the ones the validator no longer finds, which closes them for the bot (GitHub lets the job token resolve a thread only with `contents: write`, which the workflow does not ask for, so you resolve it on GitHub), writes a check run per agent, and sets the commit status `MNG Review`: `failure` while bug threads of the bot are open, `success` when none are, `error` when the run did not finish. Require that status in branch protection to gate merges on it. After `limits.max_runs_per_pr` runs, pushes are no longer reviewed. Declared agents with `input: incremental` review only what changed since the last finished run; the main reviewer always sees the whole change. ADRs 0007 and 0008 record the rules.
 
 To count threads resolved by hand without waiting for the next push, run the status sweep on a schedule. It runs no model and needs no secret:
