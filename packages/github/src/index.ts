@@ -1,4 +1,8 @@
 /** The GitHub package: the API on effect/http and publishing a review on its pull request. */
+export * from './modules/command/application/command-authorize.service'
+export * from './modules/command/domain/command-handle.helper'
+export type * from './modules/command/domain/command.types'
+export * from './modules/command/domain/mention-command.parser'
 export * from './modules/publish/application/publish.service'
 export type * from './modules/publish/application/publish.service.types'
 export * from './modules/publish/application/summary-comment.service'
