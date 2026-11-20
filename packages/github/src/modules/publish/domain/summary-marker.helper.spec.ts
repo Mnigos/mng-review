@@ -1,7 +1,11 @@
 import { SUMMARY_MARKER } from '../../../shared/mocks/publish-test.helper'
 import type { SummaryMarker } from './publish-marker.schema'
 import { MARKER_VERSION } from './publish.constants'
-import { getCarriedBugs, toNextSummaryMarker } from './summary-marker.helper'
+import {
+	getCarriedBugs,
+	type MarkerUpdate,
+	toNextSummaryMarker,
+} from './summary-marker.helper'
 
 describe('toNextSummaryMarker', () => {
 	test('a finished run replaces the reviewed head and unthreaded bug count', () => {
@@ -318,6 +322,83 @@ describe('getCarriedBugs', () => {
 				finished: true,
 				unthreadedBugs: 0,
 			})
+		).toBe(0)
+	})
+})
+
+describe('summary marker accumulation on the reviewed head', () => {
+	for (const partial of [false, true])
+		for (const previousFinished of [false, true])
+			for (const previousBugs of [undefined, 2])
+				for (const sameHead of [false, true])
+					for (const ownBugs of [0, 1])
+						test(`partial=${partial}, previous finished=${previousFinished}, prior bugs=${previousBugs}, same head=${sameHead}, own bugs=${ownBugs}`, () => {
+							const previous = {
+								...PREVIOUS,
+								finished: previousFinished,
+								...(previousBugs === undefined
+									? {}
+									: { unthreadedBugs: previousBugs }),
+							}
+							const snapshot = structuredClone(previous)
+							const update = {
+								head: sameHead ? previous.head : 'other-head',
+								partial,
+								finished: partial,
+								unthreadedBugs: ownBugs,
+							} as const satisfies MarkerUpdate
+							const total = (previousBugs ?? 0) + (sameHead ? ownBugs : 0)
+							const marker = toNextSummaryMarker(previous, update)
+							expect(marker).toEqual({
+								...PREVIOUS,
+								runs: PREVIOUS.runs + 1,
+								finished: partial ? previousFinished : false,
+								...(total > 0 ? { unthreadedBugs: total } : {}),
+							})
+							expect(getCarriedBugs(marker, update)).toBe(
+								sameHead ? (previousBugs ?? 0) : 0
+							)
+							expect(previous).toEqual(snapshot)
+						})
+	test('an unfinished agent-only run adds its bug and preserves the finished full review', () => {
+		const update = {
+			head: PREVIOUS.head,
+			partial: true,
+			finished: false,
+			unthreadedBugs: 1,
+		} as const satisfies MarkerUpdate
+		const marker = toNextSummaryMarker(
+			{ ...PREVIOUS, unthreadedBugs: 2 },
+			update
+		)
+		expect(marker).toEqual({ ...PREVIOUS, runs: 9, unthreadedBugs: 3 })
+		expect(getCarriedBugs(marker, update)).toBe(2)
+	})
+	test('a finished full review on the same head replaces the count with only its own bugs', () => {
+		const update = {
+			head: PREVIOUS.head,
+			partial: false,
+			finished: true,
+			unthreadedBugs: 1,
+		} as const satisfies MarkerUpdate
+		const marker = toNextSummaryMarker(
+			{ ...PREVIOUS, unthreadedBugs: 2 },
+			update
+		)
+		expect(marker).toEqual({ ...PREVIOUS, runs: 9, unthreadedBugs: 1 })
+		expect(getCarriedBugs(marker, update)).toBe(0)
+	})
+	test('carried bugs never become negative when the recorded count is smaller than this run', () => {
+		expect(
+			getCarriedBugs(
+				{ head: PREVIOUS.head, unthreadedBugs: 1 },
+				{
+					head: PREVIOUS.head,
+					partial: false,
+					finished: false,
+					unthreadedBugs: 2,
+				}
+			)
 		).toBe(0)
 	})
 })

@@ -27,10 +27,17 @@ import {
 	TOKEN_MODE_OWNED,
 } from '../../../shared/mocks/publish-test.helper'
 import {
+	StatusReportService,
+	StatusReportServiceLive,
+} from '../../status/application/status-report.service'
+import {
 	StatusSweepService,
 	StatusSweepServiceLive,
 } from '../../status/application/status-sweep.service'
-import { toCommitStatus } from '../../status/domain/status.helper'
+import {
+	toCommitStatus,
+	UNFINISHED_NOTE,
+} from '../../status/domain/status.helper'
 import {
 	parseSummaryMarker,
 	parseFindingMarker,
@@ -1892,6 +1899,296 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 	'PublishService unthreaded bugs',
 	test => {
+		for (const place of ['summary', 'unposted'] as const)
+			test.effect(
+				`a single-agent ${place} bug after a clean full review stays failure through the sweep`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = setup()
+						const publisher = yield* PublishService.pipe(
+							Effect.provide(fixture.publisher)
+						)
+						const clean = {
+							...fixture.input,
+							report: { ...fixture.input.report, bugs: [] },
+						}
+						expect(yield* publisher.publish(clean)).toMatchObject({
+							verdict: 'ready',
+							openBugs: 0,
+							finished: true,
+						})
+						expect(
+							parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
+						).toEqual({
+							v: SUMMARY_MARKER.v,
+							runs: 1,
+							head: fixture.head,
+							finished: true,
+						})
+						if (place === 'unposted')
+							fixture.fake.failures.review.push(error(503))
+						const published = yield* publisher.publish({
+							...fixture.input,
+							command: { agentOnly: true },
+							report: {
+								...fixture.input.report,
+								bugs: [
+									bug({
+										path: place === 'summary' ? 'outside-diff.ts' : bug().path,
+									}),
+								],
+							},
+						})
+						expect(published).toMatchObject({
+							verdict: 'needs fixes',
+							openBugs: 1,
+							finished: true,
+							inSummary: place === 'summary' ? 1 : 0,
+							unposted: place === 'unposted' ? 1 : 0,
+						})
+						expect(
+							parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
+						).toEqual({
+							v: SUMMARY_MARKER.v,
+							runs: 2,
+							head: fixture.head,
+							finished: true,
+							unthreadedBugs: 1,
+						})
+						expect(fixture.fake.threads).toEqual([])
+						const status = toCommitStatus(
+							published.verdict,
+							published.openBugs,
+							published.finished
+						)
+						expect(status.state).toBe('failure')
+						const statuses = githubStatusFake({
+							listOpenPullRequests: () =>
+								Effect.succeed([
+									{
+										number: fixture.input.pullNumber,
+										head: { sha: fixture.head },
+									},
+								]),
+							getStatus: () =>
+								Effect.succeed({
+									id: 1,
+									...status,
+									context: 'MNG Review',
+									creator: null,
+								}),
+						})
+						expect(
+							yield* StatusSweepService.use(service => service.sweep()).pipe(
+								Effect.provide(
+									StatusSweepServiceLive.pipe(
+										Layer.provide(Layer.merge(statuses.layer, fixture.fake.api))
+									)
+								)
+							)
+						).toEqual({ checked: 1, updated: 0, failed: 0 })
+						expect(statuses.statuses).toEqual([])
+						expect(statuses.statuses.at(-1)?.state ?? status.state).toBe(
+							'failure'
+						)
+						expect(yield* publisher.publish(clean)).toMatchObject({
+							verdict: 'ready',
+							openBugs: 0,
+							finished: true,
+						})
+						expect(
+							parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
+						).toEqual({
+							v: SUMMARY_MARKER.v,
+							runs: 3,
+							head: fixture.head,
+							finished: true,
+						})
+					})
+			)
+		for (const stopped of ['endpoint', 'budget', 'failed'] as const)
+			for (const place of ['none', 'summary', 'unposted'] as const)
+				test.effect(
+					`an unfinished ${stopped} full review carries two bugs and adds its own ${place} bug once`,
+					() =>
+						Effect.gen(function* () {
+							const fixture = setup()
+							const publisher = yield* PublishService.pipe(
+								Effect.provide(fixture.publisher)
+							)
+							expect(
+								yield* publisher.publish({
+									...fixture.input,
+									report: {
+										...fixture.input.report,
+										bugs: [
+											bug({ path: 'outside-a.ts', fingerprint: 'prior-a' }),
+											bug({ path: 'outside-b.ts', fingerprint: 'prior-b' }),
+										],
+									},
+								})
+							).toMatchObject({
+								verdict: 'needs fixes',
+								openBugs: 2,
+								finished: true,
+								inSummary: 2,
+							})
+							expect(
+								parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
+							).toEqual({
+								v: SUMMARY_MARKER.v,
+								runs: 1,
+								head: fixture.head,
+								finished: true,
+								unthreadedBugs: 2,
+							})
+							if (place === 'unposted')
+								fixture.fake.failures.review.push(error(503))
+							const reviewed = {
+								...fixture.input.report,
+								bugs:
+									place === 'none'
+										? []
+										: [
+												bug({
+													path:
+														place === 'summary' ? 'outside-new.ts' : bug().path,
+													fingerprint: 'new-bug',
+												}),
+											],
+								...(stopped === 'endpoint' ? { endpointError: 'offline' } : {}),
+								...(stopped === 'budget'
+									? {
+											incomplete: {
+												reason: 'budget spent',
+												unfinished: ['reviewer'],
+											},
+										}
+									: {}),
+								agents: [agentReport(stopped === 'failed' ? 'failed' : 'ok')],
+							}
+							const published = yield* publisher.publish({
+								...fixture.input,
+								report: reviewed,
+							})
+							const openBugs = place === 'none' ? 2 : 3
+							expect(published).toMatchObject({
+								verdict: 'needs fixes',
+								openBugs,
+								finished: false,
+								inSummary: place === 'summary' ? 1 : 0,
+								unposted: place === 'unposted' ? 1 : 0,
+							})
+							expect(
+								parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
+							).toEqual({
+								v: SUMMARY_MARKER.v,
+								runs: 2,
+								head: fixture.head,
+								finished: false,
+								unthreadedBugs: openBugs,
+							})
+							expect(fixture.fake.comments[0]?.body).toContain(
+								'2 bug(s) without a thread from earlier runs on this head still count until a full review checks them again.'
+							)
+							expect(fixture.fake.threads).toEqual([])
+							const status = toCommitStatus(
+								published.verdict,
+								published.openBugs,
+								published.finished
+							)
+							expect(status).toEqual({
+								state: 'failure',
+								description: `${openBugs} open bug thread(s); needs fixes; ${UNFINISHED_NOTE}`,
+							})
+							const statuses = githubStatusFake()
+							expect(
+								yield* StatusReportService.use(service =>
+									service.report({
+										head: fixture.head,
+										report: reviewed,
+										verdict: published.verdict,
+										openBugs: published.openBugs,
+										finished: published.finished,
+									})
+								).pipe(
+									Effect.provide(
+										StatusReportServiceLive.pipe(Layer.provide(statuses.layer))
+									)
+								)
+							).toEqual({ checks: 1, status: true })
+							expect(statuses.statuses).toEqual([
+								{ sha: fixture.head, ...status },
+							])
+							expect(
+								yield* publisher.publish({
+									...fixture.input,
+									report: { ...fixture.input.report, bugs: [] },
+								})
+							).toMatchObject({
+								verdict: 'ready',
+								openBugs: 0,
+								finished: true,
+							})
+							expect(
+								parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
+							).toEqual({
+								v: SUMMARY_MARKER.v,
+								runs: 3,
+								head: fixture.head,
+								finished: true,
+							})
+							expect(fixture.fake.comments[0]?.body).not.toContain(
+								'from earlier runs on this head still count'
+							)
+						})
+				)
+		for (const sameHead of [false, true])
+			test.effect(
+				`a moved full run with an unthreaded bug adds it only on the marker head, same=${sameHead}`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = setup()
+						const prior = {
+							...SUMMARY_MARKER,
+							head: sameHead ? fixture.head : 'other-head',
+							finished: true,
+							unthreadedBugs: 2,
+						}
+						fixture.fake.comments.push({
+							...summary(),
+							body: toMarkerComment('summary', prior),
+						})
+						fixture.fake.command.pullRequest = {
+							...fixture.fake.command.pullRequest,
+							head: {
+								...fixture.fake.command.pullRequest.head,
+								sha: 'moved-head',
+							},
+						}
+						expect(
+							yield* PublishService.use(service =>
+								service.publish({
+									...fixture.input,
+									command: { agentOnly: false },
+									report: {
+										...fixture.input.report,
+										bugs: [bug({ path: 'outside-new.ts' })],
+									},
+								})
+							).pipe(Effect.provide(fixture.publisher))
+						).toMatchObject({
+							verdict: 'needs fixes',
+							openBugs: sameHead ? 3 : 1,
+							finished: sameHead,
+						})
+						expect(
+							parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
+						).toEqual({ ...prior, runs: 2, unthreadedBugs: sameHead ? 3 : 2 })
+						expect(fixture.fake.threads).toEqual([])
+					})
+			)
+
 		for (const place of ['summary', 'unposted'] as const)
 			test.effect(
 				`a ${place} bug survives a clean single-agent command until a clean full review`,

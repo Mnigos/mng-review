@@ -920,6 +920,75 @@ layer(TOKEN_MODE_OWNED)('StatusSweepService review head', test => {
 })
 
 layer(TOKEN_MODE_OWNED)('StatusSweepService unthreaded bugs', test => {
+	for (const scenario of [
+		{
+			name: 'single-agent bug after a clean full review',
+			finished: true,
+			unthreadedBugs: 1,
+		},
+		{
+			name: 'unfinished full review carrying two bugs',
+			finished: false,
+			unthreadedBugs: 2,
+		},
+		{
+			name: 'unfinished full review adding a third bug',
+			finished: false,
+			unthreadedBugs: 3,
+		},
+	] as const)
+		test.effect(
+			`sweep keeps failure for ${scenario.name} without any open thread`,
+			() =>
+				Effect.gen(function* () {
+					const api = githubApiFake()
+					const marker = {
+						v: SUMMARY_MARKER.v,
+						runs: 2,
+						head: 'head',
+						finished: scenario.finished,
+						unthreadedBugs: scenario.unthreadedBugs,
+					}
+					api.comments.push({
+						id: 'summary-node',
+						databaseId: 101,
+						isMinimized: false,
+						body: toMarkerComment('summary', marker),
+						author: { __typename: 'Bot', login: GITHUB_ACTIONS_IDENTITY.login },
+						editor: null,
+					})
+					const previous = {
+						id: 1,
+						state: 'failure',
+						description: `${scenario.unthreadedBugs} open bug thread(s); needs fixes${scenario.finished ? '' : `; ${UNFINISHED_NOTE}`}`,
+						context: 'MNG Review',
+						creator: null,
+					}
+					const fake = githubStatusFake({
+						listOpenPullRequests: () =>
+							Effect.succeed([{ number: 17, head: { sha: 'head' } }]),
+						getStatus: () => Effect.succeed(previous),
+					})
+					expect(
+						yield* StatusSweepService.use(service => service.sweep()).pipe(
+							Effect.provide(
+								StatusSweepServiceLive.pipe(
+									Layer.provide(Layer.merge(fake.layer, api.api))
+								)
+							)
+						)
+					).toEqual({ checked: 1, updated: 0, failed: 0 })
+					expect(api.threads).toEqual([])
+					expect(api.threadReads).toEqual([17])
+					expect(fake.statuses).toEqual([])
+					expect(fake.statuses.at(-1)?.state ?? previous.state).toBe('failure')
+					expect(api.writes).toEqual([])
+					expect(parseSummaryMarker(api.comments[0]?.body ?? '')).toEqual(
+						marker
+					)
+				})
+		)
+
 	for (const markerHead of ['head', 'other-head', undefined])
 		for (const threadBugs of [0, 1])
 			test.effect(
