@@ -6,6 +6,7 @@ import { GitHubApiError } from '../../../platform/github.errors'
 import { githubApiFake } from '../../../shared/mocks/github-api-fake.helper'
 import { HOSTILE_TEXT } from '../../../shared/mocks/hostile-text.helper'
 import {
+	ACCEPTING_RULES,
 	LINKS,
 	TOKEN_MODE_OWNED,
 	threadReply,
@@ -15,6 +16,7 @@ import {
 	pendingBotThread,
 	pendingReply,
 	pendingReviewThread,
+	replyRules,
 } from '../../../shared/mocks/thread-reply-test.helper'
 import { parseMentionCommand } from '../../command/domain/mention-command.parser'
 import { toBodyDigest, toBotThread } from '../domain/bot-thread.helper'
@@ -254,6 +256,7 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService apply', test => {
 					expect(
 						yield* ThreadReplyService.use(service =>
 							service.apply({
+								...replyRules(),
 								links: LINKS,
 								decisions: [
 									decidedReply({ action: 'resolved', reason: 'guarded' }),
@@ -287,6 +290,7 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService apply', test => {
 				fake.command.role = 'read'
 				expect(
 					yield* service.apply({
+						...replyRules(),
 						links: LINKS,
 						decisions: [decidedReply()],
 						threads: [pendingBotThread()],
@@ -309,6 +313,7 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService apply', test => {
 				fake.failures.getCollaboratorRole.push(apiError())
 				const answered = yield* ThreadReplyService.use(service =>
 					service.apply({
+						...replyRules(),
 						links: LINKS,
 						decisions: [
 							decidedReply(),
@@ -343,6 +348,7 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService apply', test => {
 				expect(
 					yield* ThreadReplyService.use(service =>
 						service.apply({
+							...replyRules(),
 							links: LINKS,
 							decisions: [
 								decidedReply(),
@@ -375,6 +381,7 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService apply', test => {
 				expect(
 					yield* ThreadReplyService.use(service =>
 						service.apply({
+							...replyRules(),
 							links: LINKS,
 							decisions: [decidedReply()],
 							threads: [
@@ -401,6 +408,8 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService apply', test => {
 					const { fake } = setup()
 					const answered = yield* ThreadReplyService.use(service =>
 						service.apply({
+							...replyRules(),
+							config: ACCEPTING_RULES.config,
 							links: LINKS,
 							decisions: [decidedReply(decision)],
 							threads: [pendingBotThread()],
@@ -467,6 +476,7 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService apply', test => {
 				expect(
 					yield* ThreadReplyService.use(service =>
 						service.apply({
+							...replyRules(),
 							links: LINKS,
 							decisions: [decision],
 							threads,
@@ -493,6 +503,7 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService apply', test => {
 					expect(
 						yield* ThreadReplyService.use(service =>
 							service.apply({
+								...replyRules(),
 								links: LINKS,
 								decisions: [decidedReply()],
 								threads: [thread],
@@ -512,6 +523,7 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService apply', test => {
 			expect(
 				yield* ThreadReplyService.use(service =>
 					service.apply({
+						...replyRules(),
 						links: LINKS,
 						decisions: [decidedReply(), decidedReply()],
 						threads: [pendingBotThread()],
@@ -537,6 +549,8 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService apply', test => {
 				} as const
 				yield* ThreadReplyService.use(service =>
 					service.apply({
+						...replyRules(),
+						config: ACCEPTING_RULES.config,
 						links: LINKS,
 						decisions: [decidedReply(decision)],
 						threads: [pendingBotThread()],
@@ -567,6 +581,7 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService apply', test => {
 			expect(
 				yield* ThreadReplyService.use(service =>
 					service.apply({
+						...replyRules(),
 						links: LINKS,
 						decisions: [
 							decidedReply({ action: 'resolved', reason: 'guarded' }),
@@ -587,6 +602,7 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService apply', test => {
 			expect(
 				yield* ThreadReplyService.use(service =>
 					service.apply({
+						...replyRules(),
 						links: LINKS,
 						decisions: [
 							decidedReply({ action: 'resolved', reason: 'guarded' }),
@@ -623,6 +639,7 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService apply', test => {
 					)
 				)
 				const input = {
+					...replyRules(),
 					links: LINKS,
 					decisions: [
 						decidedReply({ action: 'resolved', reason: 'The guard fixes it.' }),

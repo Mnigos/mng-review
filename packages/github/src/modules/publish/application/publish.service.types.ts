@@ -39,6 +39,11 @@ export interface PublishInput extends PublishTarget {
 /** What the review decided on authors' replies in the bot's threads. */
 export interface PublishReplies {
 	readonly decisions: readonly DecidedThreadReply[]
+	/**
+	 * The bound base commit; publishing reads the reviewed change's files from git between it and
+	 * the head for the limits, never from the report.
+	 */
+	readonly base: string
 	/** The job's tokens after the decisions; the summary shows them. */
 	readonly tokens: TokensByModel
 }

@@ -49,6 +49,8 @@ import { ThreadResolutionService } from './thread-resolution.service'
 
 /** Answers that close a thread for the bot's counts. */
 const CLOSING_ACTIONS: ReadonlySet<string> = new Set(['resolved', 'accepted'])
+/** Answers that stand only within the limit, which needs the change read from git. */
+const LIMITED_ACTIONS: ReadonlySet<string> = new Set(['accepted'])
 
 /** A run as the marker judges it, and whether its pull request moved to another head meanwhile. */
 interface CheckedRun extends MarkedRun {
@@ -228,10 +230,17 @@ export const PublishServiceLive = Layer.effect(
 						threads: found,
 					})
 				: []
+			const { replies } = input
 			const answered = yield* conversation.apply({
 				links,
-				decisions: input.replies?.decisions ?? [],
+				decisions: replies?.decisions ?? [],
 				threads: found,
+				config: input.rules.config,
+				change: replies?.decisions.some(entry =>
+					LIMITED_ACTIONS.has(entry.decision.action)
+				)
+					? yield* places.readChange(replies.base, input.head)
+					: undefined,
 			})
 			const resolvedIds = new Set([
 				...resolved.map(entry => entry.thread.id),

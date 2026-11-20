@@ -133,6 +133,7 @@ export const PublishRunServiceLive = Layer.effect(
 							? {
 									replies: {
 										decisions: replies.decided,
+										base: outcome.binding.baseSha,
 										tokens: replies.tokens,
 									},
 								}
