@@ -4,7 +4,7 @@ import { Context, Effect, Layer, Schema } from 'effect'
 import { GitHubApiService } from '../../../platform/github-api.service'
 import { OwnedIdentities } from '../../../platform/owned-identities.context'
 import { SummaryCommentService } from '../../publish/application/summary-comment.service'
-import { hasWriteAccess } from '../domain/command-access.helper'
+import { isOwnerAccess } from '../domain/command-access.helper'
 import { getCommandHandle } from '../domain/command-handle.helper'
 import type {
 	AuthorizedCommand,
@@ -76,11 +76,7 @@ export const CommandAuthorizeServiceLive = Layer.effect(
 			login: string,
 			allow: readonly string[]
 		) {
-			const access = yield* api.getCollaboratorRole(login)
-			const listed = allow.some(
-				entry => entry.toLowerCase() === login.toLowerCase()
-			)
-			return access.role_name === 'admin' || (listed && hasWriteAccess(access))
+			return isOwnerAccess(login, yield* api.getCollaboratorRole(login), allow)
 		})
 
 		const decide = Effect.fn('CommandAuthorizeService.decide')(function* (

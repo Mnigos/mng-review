@@ -47,7 +47,9 @@ function toAnswerLines(
 			`Not accepted: ${toReasonText(decision.reason)} A second disagreement goes to the owner.`,
 		]
 	if (decision.action === 'needs-owner')
-		return [`This goes to the owner: ${toReasonText(decision.reason)}`]
+		return [
+			`This goes to the owner: ${toReasonText(decision.reason)} The bot no longer answers in this thread. An admin, or a login in ${toCodeSpan('commands.allow')}, resolves it to clear the pull request.`,
+		]
 	return [
 		`Seen. Reply ${toCodeSpan('fixed')} after a commit that fixes it, or ${toCodeSpan('intentional because')} with the reason and a ${toCodeSpan('path:line')} that shows it.`,
 	]

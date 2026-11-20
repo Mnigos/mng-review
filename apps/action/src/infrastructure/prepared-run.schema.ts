@@ -31,6 +31,7 @@ const readySchema = Schema.Struct({
 		Schema.Struct({
 			runs: countSchema,
 			head: Schema.optionalKey(Schema.String),
+			waiting: Schema.optionalKey(Schema.Array(Schema.String)),
 		})
 	),
 	threads: Schema.Array(botThreadSchema),

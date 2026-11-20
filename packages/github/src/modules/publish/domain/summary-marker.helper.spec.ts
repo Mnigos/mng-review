@@ -402,3 +402,42 @@ describe('summary marker accumulation on the reviewed head', () => {
 		).toBe(0)
 	})
 })
+
+describe('toNextSummaryMarker waiting threads', () => {
+	test('adds new ids once, removes cleared ids and keeps the rest across heads', () => {
+		expect(
+			toNextSummaryMarker(
+				{ ...SUMMARY_MARKER, needsOwner: ['cleared', 'kept'] },
+				{
+					head: 'new-head',
+					finished: true,
+					partial: false,
+					unthreadedBugs: 0,
+					waiting: { added: ['added', 'added'], cleared: new Set(['cleared']) },
+				}
+			).needsOwner
+		).toEqual(['kept', 'added'])
+	})
+	test('omits the list when the last id is cleared', () => {
+		expect(
+			toNextSummaryMarker(
+				{ ...SUMMARY_MARKER, needsOwner: ['cleared'] },
+				{
+					head: 'new-head',
+					finished: true,
+					partial: false,
+					unthreadedBugs: 0,
+					waiting: { added: [], cleared: new Set(['cleared']) },
+				}
+			)
+		).not.toHaveProperty('needsOwner')
+	})
+	test('keeps the waiting list when no update was supplied', () => {
+		expect(
+			toNextSummaryMarker(
+				{ ...SUMMARY_MARKER, needsOwner: ['kept'] },
+				{ head: 'new-head', finished: false, partial: true, unthreadedBugs: 0 }
+			).needsOwner
+		).toEqual(['kept'])
+	})
+})

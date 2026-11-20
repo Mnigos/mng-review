@@ -25,9 +25,9 @@ const sweepWithRules = Effect.gen(function* () {
 		service.load(SWEEP_RULES_REF)
 	)
 	const { identity } = yield* GitHubConfig
-	return yield* StatusSweepService.use(service => service.sweep()).pipe(
-		provideOwnedIdentities(identity, rules.config.identity.previous)
-	)
+	return yield* StatusSweepService.use(service =>
+		service.sweep(rules.config.commands.allow)
+	).pipe(provideOwnedIdentities(identity, rules.config.identity.previous))
 })
 
 /** Writes the sweep's line to the log and the job summary. */

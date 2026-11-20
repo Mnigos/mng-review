@@ -526,6 +526,8 @@ test.each(['published', 'failed', 'status-only', 'not-published'] as const)(
 							run: 6,
 							finished: true,
 							answered: {},
+							waiting: 0,
+							label: 'none',
 							cleanup: 'none',
 						},
 					} as const)
@@ -598,11 +600,46 @@ test.each(['none', 'minimized', 'deleted', 'kept'] as const)(
 					rechecked: 0,
 					resolved: 0,
 					answered: {},
+					waiting: 0,
+					label: 'none',
 					run: 1,
 					finished: true,
 					cleanup,
 				},
 			})
 		).toContain(`earlier summaries: ${cleanup}`)
+	}
+)
+
+test.each(['added', 'removed', 'failed', 'none'] as const)(
+	'job summary reports the waiting count and label outcome %s',
+	label => {
+		const publish = {
+			status: 'published',
+			checks: { checks: 0, status: true },
+			result: {
+				verdict: 'needs owner',
+				openBugs: 0,
+				onLine: 0,
+				onFile: 0,
+				inSummary: 0,
+				unposted: 0,
+				repeated: 0,
+				dismissed: 0,
+				rechecked: 0,
+				resolved: 0,
+				answered: {},
+				waiting: label === 'removed' ? 0 : 2,
+				label,
+				run: 1,
+				finished: true,
+				cleanup: 'none',
+			},
+		} as const
+		const line = `${publish.result.waiting} thread(s) wait for the owner, label ${label}`
+		expect(formatPublishSummary(publish, CONTEXT.engineCommit)).toContain(
+			escapeMarkdown(line)
+		)
+		expect(formatPublishLogLine(publish)).toContain(line)
 	}
 )

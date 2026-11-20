@@ -1,14 +1,25 @@
 import type { ReplyApplyInput } from '../../modules/publish/application/thread-reply.service'
 import { toBodyDigest } from '../../modules/publish/domain/bot-thread.helper'
+import { MARKER_VERSION } from '../../modules/publish/domain/publish.constants'
 import type { BotThread } from '../../modules/publish/domain/publish.types'
 import type {
 	DecidedThreadReply,
 	PendingReply,
 	ThreadReplyDecision,
 } from '../../modules/publish/domain/thread-reply.schema'
-import type { ReviewThread } from '../../platform/github-api.schema'
+import { toMarkerComment } from '../../modules/publish/presentation/thread-comment.formatter'
+import { RECENT_COMMENTS } from '../../platform/github-api.constants'
+import type {
+	ReviewThread,
+	ThreadComment,
+} from '../../platform/github-api.schema'
 import { config } from './domain-test.helper'
-import { botThread, reviewThread } from './publish-test.helper'
+import {
+	botThread,
+	reviewThread,
+	threadReply,
+	LINKS,
+} from './publish-test.helper'
 
 /** The shared reply's text, as the thread read and the prepared reply carry it. */
 const REPLY_BODY = 'fixed after the guard'
@@ -85,7 +96,72 @@ export function decidedReply(
 	return { threadId, fingerprint, commentId, digest, decision, ...overrides }
 }
 
-/** The default rules and an empty change, for `apply`'s limit check. */
+/** The default rules and an empty change, for `apply`'s limit and owner checks. */
 export function replyRules(): Pick<ReplyApplyInput, 'config' | 'change'> {
 	return { config: config(), change: { files: [] } }
+}
+
+/** An owned answer used to exercise ownership and round counting. */
+export function markedThreadReply(
+	action: 'needs-owner' | 'disputed' = 'needs-owner',
+	overrides: Partial<ThreadComment> = {}
+): ThreadComment {
+	return threadReply({
+		body: toMarkerComment('reply', {
+			v: MARKER_VERSION,
+			action,
+			commit: LINKS.head,
+			reply: 42,
+		}),
+		...overrides,
+	})
+}
+
+/** An owner answer followed by human comments, with GitHub's bounded latest connection. */
+export function ownerReviewThread(
+	following = 1,
+	overrides: Partial<ReviewThread> = {}
+): ReviewThread {
+	const root = reviewThread()
+	const comments = [
+		markedThreadReply(),
+		...Array.from({ length: following }, (_, index) =>
+			threadReply({
+				databaseId: 100 + index,
+				body: 'More context',
+				author: { __typename: 'User', login: 'contributor' },
+			})
+		),
+	]
+	return {
+		...root,
+		comments: { ...root.comments, totalCount: 1 + comments.length },
+		latest: { nodes: comments.slice(-RECENT_COMMENTS) },
+		...overrides,
+	}
+}
+
+/** The shared finding's thread under another id, with `totalCount` comments and none of them read. */
+export function rawThread(id: string, totalCount: number): ReviewThread {
+	const root = reviewThread()
+	return { ...root, id, comments: { ...root.comments, totalCount } }
+}
+
+/** A waiting thread whose bot-authored root a writer edited, without editing the answer. */
+export function editedOwnerReviewThread(
+	following = 1,
+	overrides: Partial<ReviewThread> = {}
+): ReviewThread {
+	const thread = ownerReviewThread(following)
+	return {
+		...thread,
+		comments: {
+			...thread.comments,
+			nodes: thread.comments.nodes.map(comment => ({
+				...comment,
+				editor: { __typename: 'User', login: 'contributor' },
+			})),
+		},
+		...overrides,
+	}
 }

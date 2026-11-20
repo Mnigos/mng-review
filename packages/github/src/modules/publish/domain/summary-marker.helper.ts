@@ -13,6 +13,14 @@ export interface MarkerUpdate {
 	readonly partial: boolean
 	/** This run's bugs that got no thread. */
 	readonly unthreadedBugs: number
+	/** Threads this run sent to the owner, and waiting ones an owner cleared. */
+	readonly waiting?: WaitingUpdate
+}
+
+/** How a run changes the threads that wait for the owner. */
+export interface WaitingUpdate {
+	readonly added: readonly string[]
+	readonly cleared: ReadonlySet<string>
 }
 
 /** A run as the marker judges it: its head, and whether it stands for a full review. */
@@ -31,8 +39,9 @@ function isReplacing(
  * finish) keeps the previous head; a partial run keeps the previous finished flag as well, so it
  * never stands for a full review. Such a run adds its own unthreaded bugs to those already on the
  * same head, so they keep blocking until the next full review replaces the count; a bug it found
- * again is counted twice until then. Every other field of the previous marker, such as the manual
- * runs, is carried as it was.
+ * again is counted twice until then. The threads waiting for the owner lose those an owner cleared
+ * and gain this run's, whatever the head. Every other field of the previous marker, such as the
+ * manual runs, is carried as it was.
  */
 export function toNextSummaryMarker(
 	previous: SummaryMarker | undefined,
@@ -41,8 +50,15 @@ export function toNextSummaryMarker(
 	const {
 		head: previousHead,
 		unthreadedBugs: previousBugs,
+		needsOwner: previousWaiting,
 		...carried
 	} = previous ?? { v: MARKER_VERSION, runs: 0 }
+	const needsOwner = [
+		...new Set([
+			...(previousWaiting ?? []).filter(id => !update.waiting?.cleared.has(id)),
+			...(update.waiting?.added ?? []),
+		]),
+	]
 	const reviewed = isReplacing(update)
 	const finished = update.partial
 		? (carried.finished ?? false)
@@ -59,6 +75,7 @@ export function toNextSummaryMarker(
 		finished,
 		...(head === undefined ? {} : { head }),
 		...(unthreadedBugs > 0 ? { unthreadedBugs } : {}),
+		...(needsOwner.length > 0 ? { needsOwner } : {}),
 	}
 }
 

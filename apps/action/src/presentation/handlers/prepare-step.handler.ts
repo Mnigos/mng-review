@@ -75,6 +75,7 @@ export const runPrepareStep = Effect.gen(function* () {
 					? {
 							runs: marker.runs,
 							...(marker.head === undefined ? {} : { head: marker.head }),
+							...(marker.needsOwner ? { waiting: marker.needsOwner } : {}),
 						}
 					: undefined
 			),
@@ -96,6 +97,7 @@ export const runPrepareStep = Effect.gen(function* () {
 				pullNumber: event.number,
 				threads,
 				rotation: prior?.runs ?? 0,
+				waiting: prior?.waiting ?? [],
 			})
 			.pipe(provideOwnedIdentities(identity, rules.config.identity.previous))
 	const command = yield* readCommandRun

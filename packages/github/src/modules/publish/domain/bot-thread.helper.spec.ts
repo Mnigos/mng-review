@@ -1,7 +1,9 @@
 import { GITHUB_ACTIONS_IDENTITY } from '../../../platform/bot-identity.helper'
+import { RECENT_COMMENTS } from '../../../platform/github-api.constants'
 import type { ThreadComment } from '../../../platform/github-api.schema'
 import { GitHubApiError } from '../../../platform/github.errors'
 import {
+	bug,
 	APP_MODE_IDENTITIES,
 	APP_IDENTITY,
 	report,
@@ -11,8 +13,17 @@ import {
 	botClosedReviewThread,
 	RULES,
 } from '../../../shared/mocks/publish-test.helper'
+import {
+	editedOwnerReviewThread,
+	rawThread,
+	markedThreadReply,
+	ownerReviewThread,
+} from '../../../shared/mocks/thread-reply-test.helper'
 import { toMarkerComment } from '../presentation/thread-comment.formatter'
 import {
+	getOwnerAnswered,
+	getUnreadOwnerThreads,
+	hasOwnerAnswer,
 	getVerdict,
 	isFullReview,
 	isBotComment,
@@ -566,4 +577,196 @@ describe('full review completion', () => {
 			).toBe(verdict)
 		}
 	)
+})
+
+interface OwnerAnswerCase {
+	readonly label: string
+	readonly overrides: Partial<ThreadComment>
+	readonly expected: boolean
+}
+
+describe('owner answers in recent comments', () => {
+	test('an earlier owned answer sets sentToOwner while the last comment supplies reply fields', () => {
+		const raw = ownerReviewThread()
+		const latest = raw.latest?.nodes.at(-1)
+		expect(toBotThread(raw, OWNED)).toMatchObject({
+			sentToOwner: true,
+			latestCommentId: latest?.databaseId,
+			latestAuthor: { type: 'User', login: 'contributor' },
+			latestDigest: toBodyDigest(latest?.body ?? ''),
+			resolved: false,
+		})
+	})
+	test.each([
+		{ label: 'owned unedited bot', overrides: {}, expected: true },
+		{
+			label: 'self edited bot',
+			overrides: {
+				editor: { __typename: 'Bot', login: GITHUB_ACTIONS_IDENTITY.login },
+			},
+			expected: true,
+		},
+		{
+			label: 'previous owned identity',
+			overrides: { author: { __typename: 'Bot', login: APP_IDENTITY.login } },
+			expected: true,
+		},
+		{
+			label: 'user pasted marker',
+			overrides: {
+				author: { __typename: 'User', login: GITHUB_ACTIONS_IDENTITY.login },
+			},
+			expected: false,
+		},
+		{
+			label: 'foreign bot',
+			overrides: { author: { __typename: 'Bot', login: 'other-bot' } },
+			expected: false,
+		},
+		{
+			label: 'human editor',
+			overrides: { editor: { __typename: 'User', login: 'contributor' } },
+			expected: false,
+		},
+		{
+			label: 'another owned bot editor',
+			overrides: { editor: { __typename: 'Bot', login: APP_IDENTITY.login } },
+			expected: false,
+		},
+	] satisfies readonly OwnerAnswerCase[])(
+		'$label determines whether an owner answer counts',
+		({ overrides, expected }) => {
+			const comments = [
+				markedThreadReply('needs-owner', overrides),
+				threadReply({ body: 'Later context' }),
+			]
+			expect(hasOwnerAnswer(comments, APP_MODE_IDENTITIES)).toBe(expected)
+			expect(
+				toBotThread(
+					ownerReviewThread(1, { latest: { nodes: comments } }),
+					APP_MODE_IDENTITIES
+				)?.sentToOwner
+			).toBe(expected)
+		}
+	)
+	test('other reply actions and empty comments do not send a thread to the owner', () => {
+		expect(
+			hasOwnerAnswer([markedThreadReply('disputed'), threadReply()], OWNED)
+		).toBe(false)
+		expect(hasOwnerAnswer([], OWNED)).toBe(false)
+	})
+})
+
+describe('raw owner thread discovery', () => {
+	test.each([false, true])(
+		'getOwnerAnswered finds answers after an edited root, resolved=%s',
+		isResolved => {
+			const edited = editedOwnerReviewThread(1, { id: 'edited', isResolved })
+			const human = ownerReviewThread(1, {
+				id: 'human-root',
+				comments: {
+					...edited.comments,
+					nodes: edited.comments.nodes.map(comment => ({
+						...comment,
+						author: { __typename: 'User', login: 'contributor' },
+					})),
+				},
+			})
+			expect(toBotThread(edited, OWNED)).toBeUndefined()
+			expect(toBotThread(human, OWNED)).toBeUndefined()
+			expect(getOwnerAnswered([edited, human], OWNED)).toEqual([
+				'edited',
+				'human-root',
+			])
+		}
+	)
+	test('getOwnerAnswered rejects forged and edited answers and tolerates absent latest comments', () => {
+		const threads = [
+			ownerReviewThread(1, {
+				id: 'forged',
+				latest: {
+					nodes: [
+						markedThreadReply('needs-owner', {
+							author: {
+								__typename: 'User',
+								login: GITHUB_ACTIONS_IDENTITY.login,
+							},
+						}),
+					],
+				},
+			}),
+			ownerReviewThread(1, {
+				id: 'edited',
+				latest: {
+					nodes: [
+						markedThreadReply('needs-owner', {
+							editor: { __typename: 'User', login: 'contributor' },
+						}),
+					],
+				},
+			}),
+			ownerReviewThread(1, {
+				id: 'disputed',
+				latest: { nodes: [markedThreadReply('disputed')] },
+			}),
+			ownerReviewThread(1, { id: 'absent', latest: undefined }),
+			ownerReviewThread(1, { id: 'empty', latest: { nodes: [] } }),
+		]
+		expect(getOwnerAnswered(threads, OWNED)).toEqual([])
+	})
+	test('getUnreadOwnerThreads selects long edited bot roots but never human or foreign roots', () => {
+		const edited = editedOwnerReviewThread(RECENT_COMMENTS, {
+			id: 'edited',
+			isResolved: true,
+		})
+		const human = {
+			...edited,
+			id: 'human',
+			comments: {
+				...edited.comments,
+				nodes: edited.comments.nodes.map(comment => ({
+					...comment,
+					author: { __typename: 'User', login: GITHUB_ACTIONS_IDENTITY.login },
+				})),
+			},
+		}
+		const foreign = {
+			...edited,
+			id: 'foreign',
+			comments: {
+				...edited.comments,
+				nodes: edited.comments.nodes.map(comment => ({
+					...comment,
+					author: { __typename: 'Bot', login: 'other-bot' },
+				})),
+			},
+		}
+		expect(getUnreadOwnerThreads([edited, human, foreign], OWNED)).toEqual([
+			edited,
+		])
+	})
+	test('getUnreadOwnerThreads skips boundary threads, known answers, owned nits and empty roots', () => {
+		const nit = reviewThread({ finding: bug(), kind: 'nit' })
+		expect(
+			getUnreadOwnerThreads(
+				[
+					rawThread('boundary', RECENT_COMMENTS),
+					ownerReviewThread(1, {
+						comments: {
+							...reviewThread().comments,
+							totalCount: RECENT_COMMENTS + 1,
+						},
+					}),
+					{
+						...nit,
+						comments: { ...nit.comments, totalCount: RECENT_COMMENTS + 1 },
+					},
+					reviewThread(undefined, {
+						comments: { totalCount: RECENT_COMMENTS + 1, nodes: [] },
+					}),
+				],
+				OWNED
+			)
+		).toEqual([])
+	})
 })

@@ -3,12 +3,18 @@ import { GitHubApiService } from '../../../platform/github-api.service'
 import { GitHubStatusService } from '../../../platform/github-status.service'
 import type { GitHubApiError } from '../../../platform/github.errors'
 import { OwnedIdentities } from '../../../platform/owned-identities.context'
+import {
+	ThreadReplyService,
+	ThreadReplyServiceLive,
+} from '../../publish/application/thread-reply.service'
 import { toBotThread } from '../../publish/domain/bot-thread.helper'
 import {
 	getDuplicateSummaries,
+	getListedWaiting,
 	getSummary,
 	toSummaryComments,
 } from '../../publish/domain/summary-comment.helper'
+import { toResolvers } from '../../publish/domain/thread-conversation.helper'
 import { toSweptStatus } from '../domain/status.helper'
 
 /** What a sweep did. */
@@ -27,15 +33,16 @@ export interface SweepResult {
  * before it writes and leaves a newer one alone; a publish run that lands between that read and
  * the write can still be overwritten until the next sweep or push. While the current identity
  * has more than one visible summary, the status is left as it is until a write removes the extra.
+ * A thread the summary marker says waits for the owner keeps the status `failure` until an admin or
+ * an allowed login resolves it; the sweep never edits the summary.
  */
 export class StatusSweepService extends Context.Service<
 	StatusSweepService,
 	{
-		readonly sweep: () => Effect.Effect<
-			SweepResult,
-			GitHubApiError,
-			OwnedIdentities
-		>
+		/** `allow` is `commands.allow` of the default branch, for who clears a waiting thread. */
+		readonly sweep: (
+			allow?: readonly string[]
+		) => Effect.Effect<SweepResult, GitHubApiError, OwnedIdentities>
 	}
 >()('mng-review/StatusSweepService') {}
 
@@ -44,26 +51,26 @@ export const StatusSweepServiceLive = Layer.effect(
 	Effect.gen(function* () {
 		const api = yield* GitHubApiService
 		const github = yield* GitHubStatusService
+		const conversation = yield* ThreadReplyService
 
 		/** One pull request: `unknown` when it has no status of the bot, else whether it changed. */
 		const sweepOne = Effect.fn('StatusSweepService.sweepOne')(function* (
 			pullNumber: number,
-			head: string
+			head: string,
+			allow: readonly string[]
 		) {
 			const previous = yield* github.getStatus(head)
 			if (!previous) return 'unknown' as const
 			const { current, identities } = yield* OwnedIdentities
-			const threads = (yield* api.listReviewThreads(pullNumber)).flatMap(
+			const raw = yield* api.listReviewThreads(pullNumber)
+			const threads = raw.flatMap(
 				thread => toBotThread(thread, identities) ?? []
 			)
 			const openBugs = threads.filter(
 				thread => !thread.resolved && thread.marker.kind === 'bug'
 			).length
-			const summaries = toSummaryComments(
-				yield* api.listComments(pullNumber),
-				identities,
-				current
-			)
+			const comments = yield* api.listComments(pullNumber)
+			const summaries = toSummaryComments(comments, identities, current)
 			// With two summaries of the current identity, the oldest may be a stale finished one.
 			if (getDuplicateSummaries(summaries).length > 0) return 'kept' as const
 			const summary = getSummary(summaries)
@@ -75,7 +82,25 @@ export const StatusSweepServiceLive = Layer.effect(
 			// identity's marker stopped at the switch, so off its head the status already set decides.
 			const finished =
 				summary?.mine || onHead ? marker?.finished && onHead : undefined
-			const next = toSweptStatus(previous, openBugs + unthreaded, finished)
+			// Hidden summaries still list, and threads the bot sent to the owner still wait, edited or resolved.
+			const waiting = [
+				...new Set([
+					...getListedWaiting(comments, identities),
+					...(yield* conversation.getSentToOwner(raw)),
+				]),
+			]
+			const cleared = yield* conversation.getCleared({
+				waiting,
+				resolvers: toResolvers(raw),
+				allow,
+			})
+			const owner = waiting.filter(id => !cleared.has(id)).length
+			const next = toSweptStatus(
+				previous,
+				openBugs + unthreaded,
+				finished,
+				owner
+			)
 			if (!next) return 'kept' as const
 			// A publish run may have set a newer status while the threads were read.
 			const latest = yield* github.getStatus(head)
@@ -84,12 +109,14 @@ export const StatusSweepServiceLive = Layer.effect(
 			return 'updated' as const
 		})
 
-		const sweep = Effect.fn('StatusSweepService.sweep')(function* () {
+		const sweep = Effect.fn('StatusSweepService.sweep')(function* (
+			allow: readonly string[] = []
+		) {
 			const pulls = yield* github.listOpenPullRequests()
 			const outcomes = yield* Effect.forEach(
 				pulls,
 				pull =>
-					sweepOne(pull.number, pull.head.sha).pipe(
+					sweepOne(pull.number, pull.head.sha, allow).pipe(
 						Effect.orElseSucceed(() => 'failed' as const)
 					),
 				{ concurrency: 1 }
@@ -103,4 +130,4 @@ export const StatusSweepServiceLive = Layer.effect(
 
 		return { sweep }
 	})
-)
+).pipe(Layer.provide(ThreadReplyServiceLive))
