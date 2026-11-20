@@ -8,6 +8,8 @@ export class GitHubApiError extends Schema.TaggedError<GitHubApiError>()(
 		operation: Schema.String,
 		status: Schema.optionalKey(Schema.Number),
 		reason: Schema.String,
+		/** GitHub answered with GraphQL errors: the request reached it and was refused. */
+		graphqlErrors: Schema.optionalKey(Schema.Boolean),
 	}
 ) {
 	override get message(): string {

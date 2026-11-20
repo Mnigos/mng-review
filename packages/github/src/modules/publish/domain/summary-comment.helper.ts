@@ -63,6 +63,16 @@ export function getOwnSummary(
 	return summaries.find(summary => summary.mine)
 }
 
+/**
+ * The current identity's summaries after its oldest: duplicates two runs created at once. A write
+ * deletes them, keeping the oldest.
+ */
+export function getDuplicateSummaries(
+	summaries: readonly SummaryComment[]
+): readonly SummaryComment[] {
+	return summaries.filter(summary => summary.mine).slice(1)
+}
+
 /** Summaries of other owned identities that are still visible; a write hides them. */
 export function getStaleSummaries(
 	summaries: readonly SummaryComment[]

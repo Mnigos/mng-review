@@ -299,7 +299,7 @@ layer(APP_MODE_OWNED)('SummaryCommentService identity switches', test => {
 				})
 		)
 	test.effect(
-		'offline with only a previous identity summary makes no write',
+		'offline with only a previous identity summary moves it to the current identity unfinished',
 		() =>
 			Effect.gen(function* () {
 				const { fake, service } = setup()
@@ -313,8 +313,23 @@ layer(APP_MODE_OWNED)('SummaryCommentService identity switches', test => {
 							status: 'offline',
 						})
 					).pipe(Effect.provide(service))
-				).toBe(false)
-				expect(fake.writes).toEqual([])
+				).toBe(true)
+				expect(fake.writes.map(write => write.method)).toEqual([
+					'create',
+					'minimize',
+				])
+				expect(
+					fake.comments
+						.filter(comment => !comment.isMinimized)
+						.map(comment => parseSummaryMarker(comment.body))
+				).toEqual([
+					{
+						...SUMMARY_MARKER,
+						runs: 3,
+						head: 'finished-head',
+						finished: false,
+					},
+				])
 			})
 	)
 	test.effect(

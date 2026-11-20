@@ -4,6 +4,7 @@ export const API_VERSION = '2022-11-28'
 export const PAGE_SIZE = 100
 /** At most this many pages are read; a pull request with more fails the read instead of being cut. */
 export const MAX_PAGES = 20
+export const CLIENT_ERROR_STATUS = 400
 export const SERVER_ERROR_STATUS = 500
 /** One request, its body included, may take this long; a hung request would hold the job. */
 export const REQUEST_TIMEOUT = Duration.seconds(30)
