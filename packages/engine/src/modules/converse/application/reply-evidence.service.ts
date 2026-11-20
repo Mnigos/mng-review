@@ -52,30 +52,25 @@ export const ReplyEvidenceServiceLive = Layer.effect(
 	Effect.gen(function* () {
 		const git = yield* GitService
 
-		/** The head's tree entry for a path, for its mode. */
-		const readHeadEntry = Effect.fn('ReplyEvidenceService.readHeadEntry')(
-			function* (change: RepoScope['change'], path: string) {
-				const args = [
-					'ls-tree',
-					'-z',
-					'--full-tree',
-					change.head.commit,
-					'--',
-					path,
-				]
-				const result = yield* git.exec(args)
-				if (result.exitCode !== 0)
-					return yield* new GitError({
-						args,
-						exitCode: result.exitCode,
-						stderr: result.stderr,
-					})
-				return parseLsTree(result.stdout).find(entry => entry.name === path)
-			}
-		)
+		/** A commit's tree entry for a path, for its mode. */
+		const readEntry = Effect.fn('ReplyEvidenceService.readEntry')(function* (
+			commit: string,
+			path: string
+		) {
+			const args = ['ls-tree', '-z', '--full-tree', commit, '--', path]
+			const result = yield* git.exec(args)
+			if (result.exitCode !== 0)
+				return yield* new GitError({
+					args,
+					exitCode: result.exitCode,
+					stderr: result.stderr,
+				})
+			return parseLsTree(result.stdout).find(entry => entry.name === path)
+		})
 
 		/**
-		 * True when the entry passes. A symlink at the head, a file whose text holds a NUL, and a diff
+		 * True when the entry passes. A symlink at the commit the lines are read from (the head, or the
+		 * merge base when the file is gone at the head), a file whose text holds a NUL, and a diff
 		 * git prints as binary (a binary file or one marked `-diff`, which shows no added lines)
 		 * never pass.
 		 */
@@ -94,14 +89,15 @@ export const ReplyEvidenceServiceLive = Layer.effect(
 				'--',
 				...getEvidencePaths(change, ref.path),
 			]
-			const [entry, head, base, diff] = yield* Effect.all(
+			const [headEntry, baseEntry, head, base, diff] = yield* Effect.all(
 				[
-					readHeadEntry(change, ref.path),
+					readEntry(change.head.commit, ref.path),
+					readEntry(change.mergeBase, ref.path),
 					git.readFileAt(change.head.commit, ref.path),
 					git.readFileAt(change.mergeBase, ref.path),
 					git.exec(args),
 				],
-				{ concurrency: 4 }
+				{ concurrency: 5 }
 			)
 			if (diff.exitCode !== 0)
 				return yield* new GitError({
@@ -109,6 +105,7 @@ export const ReplyEvidenceServiceLive = Layer.effect(
 					exitCode: diff.exitCode,
 					stderr: diff.stderr,
 				})
+			const entry = head === undefined ? baseEntry : headEntry
 			if (entry?.mode === SYMLINK_MODE || BINARY_DIFF.test(diff.stdout))
 				return false
 			if ((head ?? base)?.includes('\0')) return false
