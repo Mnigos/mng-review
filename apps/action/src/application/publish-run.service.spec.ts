@@ -104,6 +104,7 @@ function setup(
 	)
 	const reportSpy = vi.fn(() => Effect.succeed({ checks: 1, status: true }))
 	const reportOfflineSpy = vi.fn(() => Effect.succeed(true))
+	const reportUnfinishedSpy = vi.fn(() => Effect.succeed(true))
 	const loadSpy = vi.fn(() =>
 		rulesError ? Effect.fail(rulesError) : Effect.succeed(rules)
 	)
@@ -114,6 +115,7 @@ function setup(
 				Layer.succeed(StatusReportService, {
 					report: reportSpy,
 					reportOffline: reportOfflineSpy,
+					reportUnfinished: reportUnfinishedSpy,
 				}),
 				Layer.succeed(PublishService, {
 					readThreads: () => Effect.succeed([]),
@@ -145,6 +147,7 @@ function setup(
 		publishStatusSpy,
 		reportSpy,
 		reportOfflineSpy,
+		reportUnfinishedSpy,
 	}
 }
 

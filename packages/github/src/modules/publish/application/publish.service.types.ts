@@ -47,6 +47,10 @@ export interface PublishResult {
 	readonly rechecked: number
 	readonly resolved: number
 	readonly run: number
-	/** What became of summaries of other owned identities: hidden, deleted, or kept when GitHub refused both. */
+	/**
+	 * What the cleanup left: another owned identity's summary hidden or deleted; `kept` when one
+	 * could not be hidden or deleted, or a duplicate of the current identity could not be deleted. A
+	 * deleted duplicate counts as `none`.
+	 */
 	readonly cleanup: SummaryCleanup
 }

@@ -447,7 +447,7 @@ layer(APP_MODE_OWNED)('SummaryCommentService identity switches', test => {
 	)
 	for (const storedFailure of [false, true])
 		test.effect(
-			`a ${storedFailure ? 'stored unanswered' : 'successful'} create is deleted and the write fails when updating the older summary fails`,
+			`a ${storedFailure ? 'stored unanswered create is kept' : 'successful create is deleted'} and the write fails when updating the older summary fails`,
 			() =>
 				Effect.gen(function* () {
 					const { fake, service } = setup(APP_IDENTITY, {
@@ -474,14 +474,15 @@ layer(APP_MODE_OWNED)('SummaryCommentService identity switches', test => {
 					expect(yield* Effect.flip(summaries.write(17, render))).toBe(
 						updateError
 					)
-					expect(fake.comments.map(comment => comment.databaseId)).toEqual([
-						previous.databaseId,
-						older.databaseId,
-					])
+					expect(fake.comments.map(comment => comment.databaseId)).toEqual(
+						storedFailure
+							? [previous.databaseId, older.databaseId, 1]
+							: [previous.databaseId, older.databaseId]
+					)
 					expect(fake.writes).toEqual([
 						expect.objectContaining({ method: 'create' }),
 						expect.objectContaining({ method: 'update', id: older.databaseId }),
-						{ method: 'delete', id: 1 },
+						...(storedFailure ? [] : [{ method: 'delete', id: 1 }]),
 					])
 					expect(yield* summaries.write(17, render)).toMatchObject({
 						marker: { runs: 8, head: 'older-head' },
@@ -695,56 +696,52 @@ layer(Layer.empty)('SummaryCommentService return to token mode', test => {
 })
 
 layer(APP_MODE_OWNED)('SummaryCommentService reconciliation failures', test => {
-	for (const storedFailure of [false, true])
-		test.effect(
-			`a ${storedFailure ? 'stored unanswered' : 'successful'} create preserves the update error when deleting its comment also fails`,
-			() =>
-				Effect.gen(function* () {
-					const { fake, service } = setup(APP_IDENTITY, {
-						storeFailedCreates: storedFailure,
-					})
-					const previous = priorSummary()
-					const older = appSummary({
-						...SUMMARY_MARKER,
-						runs: 7,
-						finished: true,
-					})
-					const updateError = new GitHubApiError({
-						operation: 'update',
-						reason: 'older summary unavailable',
-						status: 503,
-					})
-					const deleteError = new GitHubApiError({
-						operation: 'delete',
-						reason: 'delete denied',
-						status: 403,
-					})
-					fake.comments.push(previous, older)
-					fake.commentSnapshots.push([previous])
-					if (storedFailure) fake.failures.create.push(writeError())
-					fake.failures.update.push(updateError)
-					fake.failures.delete.push(deleteError)
-					expect(
-						yield* SummaryCommentService.use(api => api.write(17, render)).pipe(
-							Effect.provide(service),
-							Effect.flip
-						)
-					).toBe(updateError)
-					expect(fake.writes).toEqual([
-						expect.objectContaining({ method: 'create' }),
-						expect.objectContaining({ method: 'update', id: older.databaseId }),
-						{ method: 'delete', id: 1 },
-					])
-					expect(fake.comments.slice(0, 2)).toEqual([previous, older])
-					expect(fake.comments.map(comment => comment.databaseId)).toEqual([
-						101, 100, 1,
-					])
-					expect(fake.failures.delete).toEqual([])
+	test.effect(
+		'a successful create preserves the update error when deleting its comment also fails',
+		() =>
+			Effect.gen(function* () {
+				const { fake, service } = setup()
+				const previous = priorSummary()
+				const older = appSummary({
+					...SUMMARY_MARKER,
+					runs: 7,
+					finished: true,
 				})
-		)
+				const updateError = new GitHubApiError({
+					operation: 'update',
+					reason: 'older summary unavailable',
+					status: 503,
+				})
+				const deleteError = new GitHubApiError({
+					operation: 'delete',
+					reason: 'delete denied',
+					status: 403,
+				})
+				fake.comments.push(previous, older)
+				fake.commentSnapshots.push([previous])
+				fake.failures.update.push(updateError)
+				fake.failures.delete.push(deleteError)
+				expect(
+					yield* SummaryCommentService.use(api => api.write(17, render)).pipe(
+						Effect.provide(service),
+						Effect.flip
+					)
+				).toBe(updateError)
+				expect(fake.writes).toEqual([
+					expect.objectContaining({ method: 'create' }),
+					expect.objectContaining({ method: 'update', id: older.databaseId }),
+					{ method: 'delete', id: 1 },
+				])
+				expect(fake.comments.slice(0, 2)).toEqual([previous, older])
+				expect(fake.comments.map(comment => comment.databaseId)).toEqual([
+					101, 100, 1,
+				])
+				expect(fake.failures.delete).toEqual([])
+			})
+	)
 	for (const storedFailure of [false, true])
 		test.effect(
-			`offline reconciliation deletes its ${storedFailure ? 'stored unanswered' : 'successful'} create and fails when the older finished summary update answers 503`,
+			`offline reconciliation ${storedFailure ? 'keeps its stored unanswered' : 'deletes its successful'} create and fails when the older finished summary update answers 503`,
 			() =>
 				Effect.gen(function* () {
 					const { fake, service } = setup(APP_IDENTITY, {
@@ -779,14 +776,19 @@ layer(APP_MODE_OWNED)('SummaryCommentService reconciliation failures', test => {
 					expect(fake.writes).toEqual([
 						expect.objectContaining({ method: 'create' }),
 						expect.objectContaining({ method: 'update', id: older.databaseId }),
-						{ method: 'delete', id: 1 },
+						...(storedFailure ? [] : [{ method: 'delete', id: 1 }]),
 					])
 					expect(
 						parseSummaryMarker(
 							fake.writes[0]?.method === 'create' ? fake.writes[0].body : ''
 						)
 					).toMatchObject({ finished: false })
-					expect(fake.comments).toEqual([previous, older])
+					expect(fake.comments.slice(0, 2)).toEqual([previous, older])
+					expect(fake.comments.map(comment => comment.databaseId)).toEqual(
+						storedFailure
+							? [previous.databaseId, older.databaseId, 1]
+							: [previous.databaseId, older.databaseId]
+					)
 				})
 		)
 })
@@ -831,7 +833,7 @@ layer(APP_MODE_OWNED)(
 					})
 			)
 			test.effect(
-				`two concurrent identical creates, one unanswered ${status}, claim the newest new matching summary`,
+				`two concurrent identical creates, one unanswered ${status}, never delete the newest new matching summary when updating the older fails`,
 				() =>
 					Effect.gen(function* () {
 						const { fake, service } = setup()
@@ -873,9 +875,8 @@ layer(APP_MODE_OWNED)(
 						expect(fake.writes).toEqual([
 							{ method: 'create', pullNumber: 17, body: same.body },
 							{ method: 'update', id: older.databaseId, body: same.body },
-							{ method: 'delete', id: newer.databaseId },
 						])
-						expect(fake.comments).toEqual([older, foreign, different])
+						expect(fake.comments).toEqual([older, newer, foreign, different])
 						expect(fake.commentReads).toEqual([17, 17])
 					})
 			)

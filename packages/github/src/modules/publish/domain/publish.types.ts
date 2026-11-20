@@ -94,5 +94,9 @@ export interface SummaryComment {
 	readonly mine: boolean
 }
 
-/** What happened to summaries of other owned identities after a write. */
+/**
+ * What the cleanup after a write left: another owned identity's summary hidden (`minimized`) or
+ * deleted; `kept` when one could not be hidden or deleted, or a duplicate summary of the current
+ * identity could not be deleted. A deleted duplicate counts as `none`.
+ */
 export type SummaryCleanup = 'none' | 'minimized' | 'deleted' | 'kept'
