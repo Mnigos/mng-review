@@ -1,6 +1,6 @@
 import { layer } from '@effect/vitest'
-import { ConfigError } from '@mng-review/domain'
-import { RulesService } from '@mng-review/engine'
+import { ConfigError, type KeptFinding } from '@mng-review/domain'
+import { RulesService, type Rules } from '@mng-review/engine'
 import {
 	PublishService,
 	GitHubApiError,
@@ -12,7 +12,10 @@ import type {
 	OutcomeBinding,
 	OutcomeFile,
 } from '../infrastructure/outcome-file.schema'
-import { outcomeFile as boundOutcomeFile } from '../shared/mocks/outcome-file.helper'
+import {
+	boundReviewReport,
+	outcomeFile as boundOutcomeFile,
+} from '../shared/mocks/outcome-file.helper'
 import { reviewReport, RULES } from '../shared/mocks/review-report.helper'
 import { PublishRunService, PublishRunServiceLive } from './publish-run.service'
 import type { PullRequestEvent } from './shadow-run.types'
@@ -59,7 +62,7 @@ const PUBLISHED = {
 } as const
 
 /** Publisher test layer records which outcome path is taken and can fail either write. */
-function setup(fail = false, rulesError?: ConfigError) {
+function setup(fail = false, rulesError?: ConfigError, rules: Rules = RULES) {
 	const publishSpy = vi.fn(() =>
 		fail
 			? Effect.fail(
@@ -81,7 +84,7 @@ function setup(fail = false, rulesError?: ConfigError) {
 	const reportSpy = vi.fn(() => Effect.succeed({ checks: 1, status: true }))
 	const reportOfflineSpy = vi.fn(() => Effect.succeed(true))
 	const loadSpy = vi.fn(() =>
-		rulesError ? Effect.fail(rulesError) : Effect.succeed(RULES)
+		rulesError ? Effect.fail(rulesError) : Effect.succeed(rules)
 	)
 	const service = PublishRunServiceLive.pipe(
 		Layer.provide(
@@ -118,6 +121,13 @@ layer(Layer.empty)('PublishRunService', test => {
 				Effect.provide(fixture.service)
 			)
 			const report = reviewReport()
+			const placed = {
+				...report,
+				nits: report.nits.map(nit => ({
+					...nit,
+					placement: 'inline' as const,
+				})),
+			}
 			expect(
 				yield* service.run(outcomeFile({ status: 'reviewed', report }), CONTEXT)
 			).toEqual({
@@ -127,7 +137,7 @@ layer(Layer.empty)('PublishRunService', test => {
 			})
 			expect(fixture.publishSpy).toHaveBeenCalledExactlyOnceWith({
 				pullNumber: EVENT.number,
-				report,
+				report: placed,
 				rules: RULES,
 				head: EVENT.headSha,
 				engineCommit: CONTEXT.engineCommit,
@@ -136,7 +146,7 @@ layer(Layer.empty)('PublishRunService', test => {
 			expect(fixture.publishStatusSpy).not.toHaveBeenCalled()
 			expect(fixture.reportSpy).toHaveBeenCalledExactlyOnceWith({
 				head: EVENT.headSha,
-				report,
+				report: placed,
 				verdict: PUBLISHED.verdict,
 				openBugs: PUBLISHED.openBugs,
 			})
@@ -255,7 +265,13 @@ layer(Layer.empty)('PublishRunService', test => {
 						expect(fixture.publishSpy).toHaveBeenCalledOnce()
 						expect(fixture.reportSpy).toHaveBeenCalledExactlyOnceWith({
 							head: EVENT.headSha,
-							report: reviewed,
+							report: {
+								...reviewed,
+								nits: reviewed.nits.map(nit => ({
+									...nit,
+									placement: 'inline',
+								})),
+							},
 							verdict: PUBLISHED.verdict,
 							openBugs: PUBLISHED.openBugs,
 						})
@@ -264,7 +280,133 @@ layer(Layer.empty)('PublishRunService', test => {
 		)
 })
 
+interface BugPlacementCase {
+	readonly name: string
+	readonly finding: Partial<KeptFinding>
+	readonly placement: KeptFinding['placement']
+	readonly blocking: boolean
+}
+
 layer(Layer.empty)('PublishRunService decoded outcomes', test => {
+	test.effect(
+		'a file cannot place nits inline when the loaded max_nits is zero',
+		() =>
+			Effect.gen(function* () {
+				const rules = {
+					...RULES,
+					config: {
+						...RULES.config,
+						comments: { ...RULES.config.comments, max_nits: 0 },
+					},
+				}
+				const fixture = setup(false, undefined, rules)
+				const report = boundReviewReport()
+				const nits = report.nits.map(nit => ({
+					...nit,
+					placement: 'inline' as const,
+				}))
+				const decoded = yield* parseOutcomeFile(
+					JSON.stringify({
+						...boundOutcomeFile(),
+						report: { ...report, bugs: [], nits, blocking: true },
+					})
+				)
+				yield* PublishRunService.use(service =>
+					service.run(decoded, CONTEXT)
+				).pipe(Effect.provide(fixture.service))
+				const placed = {
+					...report,
+					bugs: [],
+					nits: nits.map(nit => ({ ...nit, placement: 'summary' as const })),
+					blocking: false,
+				}
+				expect(fixture.publishSpy).toHaveBeenCalledExactlyOnceWith({
+					...CONTEXT,
+					report: placed,
+					rules,
+				})
+				expect(fixture.reportSpy).toHaveBeenCalledExactlyOnceWith({
+					head: CONTEXT.head,
+					report: placed,
+					verdict: PUBLISHED.verdict,
+					openBugs: PUBLISHED.openBugs,
+				})
+			})
+	)
+	for (const { name, finding, placement, blocking } of [
+		{
+			name: 'a low bug marked inline under a critical floor stays in the summary and does not block',
+			finding: { severity: 'low', placement: 'inline' },
+			placement: 'summary',
+			blocking: false,
+		},
+		{
+			name: 'an unverified bug marked inline stays out of blocking threads even at the floor',
+			finding: {
+				severity: 'critical',
+				placement: 'inline',
+				validation: {
+					status: 'unverified',
+					severity: 'critical',
+					premise: 'The caller retries.',
+					reason: 'The retry repeats the write.',
+					evidence: [],
+					model: 'model-a',
+				},
+			},
+			placement: 'summary',
+			blocking: false,
+		},
+		{
+			name: 'a bug hidden in the summary at the floor becomes inline and blocks despite the file flag',
+			finding: { severity: 'critical', placement: 'summary' },
+			placement: 'inline',
+			blocking: true,
+		},
+	] as const satisfies readonly BugPlacementCase[])
+		test.effect(name, () =>
+			Effect.gen(function* () {
+				const rules = {
+					...RULES,
+					config: {
+						...RULES.config,
+						comments: {
+							...RULES.config.comments,
+							min_severity: 'critical' as const,
+						},
+					},
+				}
+				const fixture = setup(false, undefined, rules)
+				const report = boundReviewReport()
+				const bugs = report.bugs.map(bug => ({ ...bug, ...finding }))
+				const decoded = yield* parseOutcomeFile(
+					JSON.stringify({
+						...boundOutcomeFile(),
+						report: { ...report, bugs, nits: [], blocking: !blocking },
+					})
+				)
+				yield* PublishRunService.use(service =>
+					service.run(decoded, CONTEXT)
+				).pipe(Effect.provide(fixture.service))
+				const placed = {
+					...report,
+					bugs: bugs.map(bug => ({ ...bug, placement })),
+					nits: [],
+					blocking,
+				}
+				expect(fixture.publishSpy).toHaveBeenCalledExactlyOnceWith({
+					...CONTEXT,
+					report: placed,
+					rules,
+				})
+				expect(fixture.reportSpy).toHaveBeenCalledExactlyOnceWith({
+					head: CONTEXT.head,
+					report: placed,
+					verdict: PUBLISHED.verdict,
+					openBugs: PUBLISHED.openBugs,
+				})
+			})
+		)
 	test.effect(
 		'publishes the decoded report with proposals and freshly loaded rules without a model layer',
 		() =>
@@ -317,7 +459,13 @@ layer(Layer.empty)('PublishRunService decoded outcomes', test => {
 				)
 				expect(fixture.publishSpy).toHaveBeenCalledExactlyOnceWith({
 					...context,
-					report: decoded.report,
+					report: {
+						...boundReviewReport(),
+						nits: boundReviewReport().nits.map(nit => ({
+							...nit,
+							placement: 'inline',
+						})),
+					},
 					rules: RULES,
 					recheck: {
 						checked: recheck.checked,
