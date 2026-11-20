@@ -24,6 +24,7 @@ Publish mode (ADR 0007) posts with the job token, as `github-actions[bot]`. That
 ## Consequences
 
 - Comments, statuses and check runs the app makes start the repository's other workflows, which writes with the job token never did.
+- Every job that writes the summary runs in the concurrency group `mng-review-publish-<pull request>` with `cancel-in-progress: false`, so two writers never both read the same marker and record one run instead of two; later workflows that write the summary use the same group.
 - A required `MNG Review` check bound to GitHub Actions blocks every pull request once the app sets the status. The check's source must be set to any source before the switch and to the app after it.
 - While `github-actions` is in `identity.previous`, another workflow that posts as `github-actions[bot]` can still plant a marker, as ADR 0007 records.
 - After `identity.previous: []` on a pull request opened before the switch, the bot posts the old threads' findings again, and an old summary it could not hide stays visible.
