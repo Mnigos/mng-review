@@ -1,6 +1,7 @@
 import {
 	type ConfigError,
 	type PullRequestInfo,
+	toAgentOnlyPlan,
 	toIncrementalPlan,
 } from '@mng-review/domain'
 import { Clock, Context, Effect, Layer } from 'effect'
@@ -36,6 +37,8 @@ export interface ReviewRunRequest {
 	 * `input: incremental` review only the files changed since; otherwise it is ignored.
 	 */
 	readonly since?: string
+	/** A declared agent a command named: only it runs, on every reviewable file if its rules skip it. */
+	readonly onlyAgent?: string
 }
 
 /**
@@ -84,7 +87,15 @@ export const reviewChange = Effect.fn('ReviewRunService.reviewChange')(
 				pr,
 			})
 		).pipe(Effect.provide(PlanServiceLive.pipe(Layer.provide(routerLayer))))
-		const planReport = yield* toIncrementalReport(planned, request.since)
+		const incremental = yield* toIncrementalReport(planned, request.since)
+		const agent = rules.agents.find(entry => entry.name === request.onlyAgent)
+		const planReport =
+			agent && !incremental.plan.skippedRun
+				? {
+						...incremental,
+						plan: toAgentOnlyPlan(incremental.plan, agent, rules.config),
+					}
+				: incremental
 		const { plan } = planReport
 		if (plan.skippedRun || plan.runs.length === 0)
 			return toEmptyReviewReport(

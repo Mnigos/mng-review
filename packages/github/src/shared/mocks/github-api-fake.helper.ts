@@ -4,6 +4,8 @@ import {
 	GITHUB_ACTIONS_IDENTITY,
 } from '../../platform/bot-identity.helper'
 import type {
+	IssueComment,
+	PullRequest,
 	PullRequestComment,
 	ReviewThread,
 } from '../../platform/github-api.schema'
@@ -36,6 +38,30 @@ export type ApiWrite =
 	| { readonly method: 'reply'; readonly id: string; readonly body: string }
 	| { readonly method: 'resolve'; readonly id: string }
 
+/** An open same-repository pull request with full commits, as a command run reads it again. */
+export const COMMAND_PULL_REQUEST = {
+	number: 17,
+	state: 'open',
+	title: 'Review the change',
+	body: 'Change details',
+	draft: false,
+	user: { login: 'author-a' },
+	labels: [{ name: 'storage' }],
+	base: {
+		sha: 'a'.repeat(40),
+		ref: 'main',
+		repo: { full_name: 'example/project' },
+	},
+	head: { sha: 'b'.repeat(40), repo: { full_name: 'example/project' } },
+} as const satisfies PullRequest
+
+/** The command comment the fake answers with by default. */
+export const COMMAND_COMMENT = {
+	id: 23,
+	body: '@mng-review review',
+	user: { login: 'author-a', type: 'User' },
+} as const satisfies IssueComment
+
 /** Failure injection for a create GitHub stored before its response was lost. */
 export interface GitHubApiFakeOptions {
 	readonly storeFailedCreates?: boolean
@@ -51,6 +77,16 @@ export function githubApiFake(
 	const writes: ApiWrite[] = []
 	const commentReads: number[] = []
 	const commentSnapshots: PullRequestComment[][] = []
+	const reads: string[] = []
+	const command: {
+		pullRequest: PullRequest
+		comment: IssueComment
+		role: string
+	} = {
+		pullRequest: structuredClone(COMMAND_PULL_REQUEST),
+		comment: structuredClone(COMMAND_COMMENT),
+		role: 'admin',
+	}
 	const failures = {
 		review: [] as GitHubApiError[],
 		comment: [] as GitHubApiError[],
@@ -62,6 +98,9 @@ export function githubApiFake(
 		resolve: [] as GitHubApiError[],
 		listThreads: [] as GitHubApiError[],
 		listComments: [] as GitHubApiError[],
+		getPullRequest: [] as GitHubApiError[],
+		getIssueComment: [] as GitHubApiError[],
+		getCollaboratorRole: [] as GitHubApiError[],
 	}
 	const author = { __typename: 'Bot', login: identity.login }
 	const addThread = (input: ReviewCommentInput) => {
@@ -142,6 +181,27 @@ export function githubApiFake(
 				if (error) return yield* error
 				return commentSnapshots.shift() ?? [...comments]
 			}),
+		getPullRequest: pullNumber =>
+			Effect.gen(function* () {
+				reads.push(`getPullRequest:${pullNumber}`)
+				const error = failures.getPullRequest.shift()
+				if (error) return yield* error
+				return command.pullRequest
+			}),
+		getIssueComment: id =>
+			Effect.gen(function* () {
+				reads.push(`getIssueComment:${id}`)
+				const error = failures.getIssueComment.shift()
+				if (error) return yield* error
+				return command.comment
+			}),
+		getCollaboratorRole: login =>
+			Effect.gen(function* () {
+				reads.push(`getCollaboratorRole:${login}`)
+				const error = failures.getCollaboratorRole.shift()
+				if (error) return yield* error
+				return command.role
+			}),
 		createReview: (pullNumber, input) =>
 			Effect.gen(function* () {
 				writes.push({ method: 'review', pullNumber, input })
@@ -215,5 +275,7 @@ export function githubApiFake(
 		threadReads,
 		commentReads,
 		commentSnapshots,
+		reads,
+		command,
 	}
 }

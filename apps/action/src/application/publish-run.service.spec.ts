@@ -71,6 +71,7 @@ const PUBLISHED = {
 	rechecked: 0,
 	resolved: 0,
 	run: 1,
+	finished: true,
 	cleanup: 'none',
 } as const
 
@@ -129,6 +130,8 @@ function setup(
 					write: () => Effect.die('the run never writes the summary itself'),
 					readPrior: readPriorSpy,
 					publishStatus: publishStatusSpy,
+					reserveManualRun: () =>
+						Effect.die('the run never reserves a manual run'),
 				}),
 				Layer.succeed(GitHubConfig, {
 					serverUrl: 'https://github.com',

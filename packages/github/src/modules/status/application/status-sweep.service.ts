@@ -69,10 +69,12 @@ export const StatusSweepServiceLive = Layer.effect(
 			const summary = getSummary(summaries)
 			const marker = summary?.marker
 			const onHead = marker?.head === head
-			// Bugs the last finished run on this head left without a thread still block it.
+			// Bugs the last full review on this head left without a thread still block it.
 			const unthreaded = onHead ? (marker?.unthreadedBugs ?? 0) : 0
-			// A previous identity's marker stopped at the switch; it speaks only for its own head.
-			const finished = summary?.mine || onHead ? marker?.finished : undefined
+			// A marker's finished flag is its head's: a partial run on another head keeps it. A previous
+			// identity's marker stopped at the switch, so off its head the status already set decides.
+			const finished =
+				summary?.mine || onHead ? marker?.finished && onHead : undefined
 			const next = toSweptStatus(previous, openBugs + unthreaded, finished)
 			if (!next) return 'kept' as const
 			// A publish run may have set a newer status while the threads were read.

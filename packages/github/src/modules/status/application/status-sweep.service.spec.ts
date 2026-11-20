@@ -370,7 +370,7 @@ layer(TOKEN_MODE_OWNED)('StatusSweepService summary marker', test => {
 						...toCommitStatus(
 							scenario.expected > 0 ? 'needs fixes' : 'ready',
 							scenario.expected,
-							true
+							scenario.head === 'head'
 						),
 					},
 				])

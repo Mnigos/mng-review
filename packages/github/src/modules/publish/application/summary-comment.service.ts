@@ -5,8 +5,11 @@ import { GitHubConfig } from '../../../platform/github.config'
 import type { GitHubApiError } from '../../../platform/github.errors'
 import { OwnedIdentities } from '../../../platform/owned-identities.context'
 import type { SummaryMarker } from '../domain/publish-marker.schema'
-import { MARKER_VERSION } from '../domain/publish.constants'
-import type { SummaryCleanup, SummaryComment } from '../domain/publish.types'
+import type {
+	RenderedSummary,
+	SummaryCleanup,
+	SummaryComment,
+} from '../domain/publish.types'
 import {
 	getDuplicateSummaries,
 	getOwnSummary,
@@ -16,19 +19,13 @@ import {
 	toSummaryComments,
 } from '../domain/summary-comment.helper'
 import {
-	formatStatusComment,
-	toUnfinishedSummary,
-} from '../presentation/summary-comment.formatter'
+	toOfflineSummary,
+	toReservedSummary,
+} from '../presentation/summary-status.formatter'
 import { toBlobLinks } from '../presentation/thread-comment.formatter'
-import type { StatusInput } from './publish.service.types'
+import type { PublishTarget, StatusInput } from './publish.service.types'
 
 const NOT_FOUND_STATUS = 404
-
-/** A summary built from the summary read just before it is written: its text and marker. */
-export interface RenderedSummary {
-	readonly body: string
-	readonly marker: SummaryMarker
-}
 
 /**
  * What a write left: the summary written, what became of other summaries, and whether the
@@ -37,6 +34,14 @@ export interface RenderedSummary {
 export interface WrittenSummary extends RenderedSummary {
 	readonly cleanup: SummaryCleanup
 	readonly created: boolean
+}
+
+/** A manual run to count before the endpoint is used. */
+export interface ManualRunInput extends PublishTarget {
+	/** `commands.max_runs` at the reviewed base. */
+	readonly maxRuns: number
+	/** The handle commands mention; a summary the reservation creates names it in a code span. */
+	readonly handle: string
 }
 
 /** Builds the summary over the one read just before the write; `undefined` when there is none. */
@@ -103,6 +108,10 @@ export class SummaryCommentService extends Context.Service<
 			GitHubApiError,
 			OwnedIdentities
 		>
+		/** Counts a manual run in the summary before it starts; `false` at the cap, with nothing written. */
+		readonly reserveManualRun: (
+			input: ManualRunInput
+		) => Effect.Effect<boolean, GitHubApiError, OwnedIdentities>
 	}
 >()('mng-review/SummaryCommentService') {}
 
@@ -312,31 +321,11 @@ export const SummaryCommentServiceLive = Layer.effect(
 		 */
 		const publishStatus = Effect.fn('SummaryCommentService.publishStatus')(
 			function* (input: StatusInput) {
-				const summaries = yield* list(input.pullNumber)
-				const renderOffline: SummaryRender = current => {
-					if (current) {
-						const marker = { ...current.marker, finished: false }
-						return {
-							body: toUnfinishedSummary(current.body, current.marker),
-							marker,
-						}
-					}
-					const marker = {
-						v: MARKER_VERSION,
-						runs: 0,
-						finished: false,
-					} satisfies SummaryMarker
-					return {
-						body: formatStatusComment(
-							input.status,
-							marker,
-							toBlobLinks(config, input)
-						),
-						marker,
-					}
-				}
-				return (yield* writeOver(input.pullNumber, renderOffline, summaries))
-					.created
+				const links = toBlobLinks(config, input)
+				const written = yield* write(input.pullNumber, current =>
+					toOfflineSummary(current, input.status, links)
+				)
+				return written.created
 			}
 		)
 
@@ -346,6 +335,27 @@ export const SummaryCommentServiceLive = Layer.effect(
 			return (yield* read(pullNumber))?.marker
 		})
 
-		return { read, write, publishStatus, readPrior }
+		/**
+		 * Counts a manual run in the marker of the summary a run builds on, before the endpoint is
+		 * used, so a run that fails later still counts. A write like any other: the current
+		 * identity's summary keeps its text, another identity's moves to the current identity, and
+		 * with none a status summary is created. `false` at `maxRuns`, with nothing written.
+		 */
+		const reserveManualRun = Effect.fn(
+			'SummaryCommentService.reserveManualRun'
+		)(function* (input: ManualRunInput) {
+			const summaries = yield* list(input.pullNumber)
+			const used = getSummary(summaries)?.marker.manualRuns ?? 0
+			if (used >= input.maxRuns) return false
+			const links = toBlobLinks(config, input)
+			yield* writeOver(
+				input.pullNumber,
+				current => toReservedSummary(current, input.handle, links),
+				summaries
+			)
+			return true
+		})
+
+		return { read, write, publishStatus, readPrior, reserveManualRun }
 	})
 )

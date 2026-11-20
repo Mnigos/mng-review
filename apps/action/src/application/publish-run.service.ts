@@ -134,6 +134,7 @@ export const PublishRunServiceLive = Layer.effect(
 					report: placed,
 					verdict: result.verdict,
 					openBugs: result.openBugs,
+					finished: result.finished,
 				})
 				return { status: 'published', result, checks } satisfies PublishReport
 			}
