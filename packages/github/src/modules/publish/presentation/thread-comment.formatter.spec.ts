@@ -8,6 +8,8 @@ import {
 import {
 	formatThreadComment,
 	formatResolvedReply,
+	MAX_COMMENT_CHARS,
+	toFindingDetailLines,
 	toFindingMarker,
 	toMarkerComment,
 } from './thread-comment.formatter'
@@ -47,13 +49,50 @@ describe('formatThreadComment', () => {
 			LINKS,
 			true
 		)
-		expect(text.length).toBeLessThan(65_536)
+		expect(text.length).toBeLessThan(MAX_COMMENT_CHARS)
 		const marker = parseFindingMarker(text)
 		expect(marker?.title.length).toBeLessThanOrEqual(301)
 		expect(marker?.trigger).toBe(`${huge.slice(0, 3000)}…`)
 		expect(marker?.trigger?.length).toBe(3001)
 		expect(marker?.impact).toBe(`${huge.slice(0, 3000)}…`)
 		expect(marker?.impact?.length).toBe(3001)
+	})
+	test('replaces oversized details with a note while preserving the heading and marker', () => {
+		const long = '*'.repeat(3000)
+		const published = {
+			finding: bug({
+				trigger: long,
+				impact: long,
+				suggestion: long,
+				evidence: Array.from({ length: 6 }, (_, index) => `${index}${long}`),
+				agents: Array.from({ length: 50 }, () => '*'.repeat(200)),
+			}),
+			kind: 'bug',
+		} as const
+		const marker = toFindingMarker(published, LINKS)
+		const markerComment = toMarkerComment('finding', marker)
+		const heading = `**High** · ${published.finding.title}`
+		expect(
+			[
+				heading,
+				'',
+				...toFindingDetailLines(published.finding, LINKS, false),
+				'',
+				markerComment,
+			].join('\n').length
+		).toBeGreaterThan(MAX_COMMENT_CHARS)
+		const body = formatThreadComment(published, LINKS, true)
+		expect(body.length).toBeLessThan(MAX_COMMENT_CHARS)
+		expect(body).toBe(
+			[
+				heading,
+				'',
+				'The details are too long for one comment; the job summary has the run.',
+				'',
+				markerComment,
+			].join('\n')
+		)
+		expect(parseFindingMarker(body)).toEqual(marker)
 	})
 	test('escapes unverified premise, evidence, agents and validator model', () => {
 		const text = formatThreadComment(
@@ -146,6 +185,18 @@ describe('formatThreadComment', () => {
 })
 
 describe('formatResolvedReply', () => {
+	test('cuts a 20,000-character reason and preserves the closing marker', () => {
+		const reason = '*'.repeat(20_000)
+		const body = formatResolvedReply(reason, LINKS)
+		expect(body.length).toBeLessThan(10_000)
+		expect(body).toContain(`${escapeMarkdown(reason.slice(0, 3000))}…`)
+		expect(body).toContain('The bot no longer counts this thread as open.')
+		expect(parseReplyMarker(body)).toEqual({
+			v: MARKER_VERSION,
+			action: 'resolved',
+			commit: LINKS.head,
+		})
+	})
 	test('escapes the reason, names the short head and closes the bot count with a reply marker', () => {
 		const links = { ...LINKS, head: 'abcdef1234567890' }
 		const body = formatResolvedReply(HOSTILE_TEXT, links)

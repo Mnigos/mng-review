@@ -1,4 +1,4 @@
-import type { Validation } from '@mng-review/domain'
+import { FINGERPRINT_LENGTH, type Validation } from '@mng-review/domain'
 import { type ReviewReport, toEmptyReviewReport } from '@mng-review/engine'
 import { Schema } from 'effect'
 import { expectTypeOf } from 'vitest'
@@ -7,6 +7,7 @@ import { reviewReport } from '../../../shared/mocks/review-report.helper'
 import {
 	MAX_REPORT_ENTRIES,
 	MAX_REPORT_FILES,
+	MAX_REPORT_NAME,
 	MAX_REPORT_TEXT,
 	reviewReportSchema,
 } from './review-report.schema'
@@ -63,6 +64,74 @@ describe('reviewReportSchema', () => {
 			roundTrip({ ...reviewReport(), bugs: [bug({ path })] })
 		).toThrow()
 	})
+	test.each(['bugs', 'nits', 'rejected'] as const)(
+		'rejects unsafe, long and uppercase fingerprints in %s',
+		field => {
+			const report = reviewReport()
+			for (const fingerprint of [
+				'<'.repeat(FINGERPRINT_LENGTH),
+				'a'.repeat(FINGERPRINT_LENGTH + 1),
+				'A'.repeat(FINGERPRINT_LENGTH),
+			])
+				expect(() =>
+					roundTrip({
+						...report,
+						[field]: report[field].map(finding => ({
+							...finding,
+							fingerprint,
+						})),
+					})
+				).toThrow()
+		}
+	)
+	test.each(['agents', 'models'] as const)(
+		'accepts bounded finding %s and rejects an oversized name or list',
+		field => {
+			const report = reviewReport()
+			const names = Array.from({ length: 50 }, () =>
+				'a'.repeat(MAX_REPORT_NAME)
+			)
+			expect(
+				roundTrip({
+					...report,
+					bugs: [bug({ [field]: names })],
+				}).bugs[0]?.[field]
+			).toEqual(names)
+			for (const list of [
+				['a'.repeat(MAX_REPORT_NAME + 1)],
+				Array.from({ length: 51 }, () => 'model-a'),
+			])
+				expect(() =>
+					roundTrip({
+						...report,
+						bugs: [bug({ [field]: list })],
+					})
+				).toThrow()
+		}
+	)
+	test.each(['/src/store.ts', '../store.ts', 'src/../store.ts'])(
+		'rejects a router signal with path %s',
+		path => {
+			const report = reviewReport()
+			expect(() =>
+				roundTrip({
+					...report,
+					planReport: {
+						...report.planReport,
+						plan: {
+							...report.planReport.plan,
+							router: {
+								...report.planReport.plan.router,
+								signals: [
+									{ category: 'stored_data', path, reason: 'Writes data.' },
+								],
+							},
+						},
+					},
+				})
+			).toThrow()
+		}
+	)
 	test.each([
 		'base',
 		'a'.repeat(39),
