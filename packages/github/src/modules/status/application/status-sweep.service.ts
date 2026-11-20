@@ -63,15 +63,14 @@ export const StatusSweepServiceLive = Layer.effect(
 					identities,
 					current
 				)
-			)?.marker
-			// Bugs the last finished run on this head left without a thread still block it.
-			const unthreaded =
-				summary?.head === head ? (summary.unthreadedBugs ?? 0) : 0
-			const next = toSweptStatus(
-				previous,
-				openBugs + unthreaded,
-				summary?.finished
 			)
+			const marker = summary?.marker
+			const onHead = marker?.head === head
+			// Bugs the last finished run on this head left without a thread still block it.
+			const unthreaded = onHead ? (marker?.unthreadedBugs ?? 0) : 0
+			// A previous identity's marker stopped at the switch; it speaks only for its own head.
+			const finished = summary?.mine || onHead ? marker?.finished : undefined
+			const next = toSweptStatus(previous, openBugs + unthreaded, finished)
 			if (!next) return 'kept' as const
 			// A publish run may have set a newer status while the threads were read.
 			const latest = yield* github.getStatus(head)

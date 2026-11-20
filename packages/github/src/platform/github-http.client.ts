@@ -133,7 +133,11 @@ export const makeGitHubHttp = Effect.gen(function* () {
 				return errors === undefined
 					? Effect.succeed(answer)
 					: Effect.fail(
-							new GitHubApiError({ operation, reason: toSafeReason(errors) })
+							new GitHubApiError({
+								operation,
+								reason: toSafeReason(errors),
+								graphqlErrors: true,
+							})
 						)
 			})
 		)

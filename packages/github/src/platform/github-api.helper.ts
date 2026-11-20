@@ -1,5 +1,6 @@
 import { Effect, Predicate } from 'effect'
 import {
+	CLIENT_ERROR_STATUS,
 	MAX_PAGES,
 	PAGE_SIZE,
 	READ_RETRIES,
@@ -12,6 +13,16 @@ import { GitHubApiError } from './github.errors'
 /** True for a failure worth reading again: no answer, or a 5xx. */
 export function isTransient(error: GitHubApiError): boolean {
 	return error.status === undefined || error.status >= SERVER_ERROR_STATUS
+}
+
+/** True when GitHub answered and declined the request: a 4xx, or GraphQL errors. */
+export function isDeclined(error: GitHubApiError): boolean {
+	if (error.graphqlErrors === true) return true
+	return (
+		error.status !== undefined &&
+		error.status >= CLIENT_ERROR_STATUS &&
+		error.status < SERVER_ERROR_STATUS
+	)
 }
 
 /** A read with retries on transient failures. */
