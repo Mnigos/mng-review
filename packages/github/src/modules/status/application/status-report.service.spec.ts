@@ -8,6 +8,7 @@ import {
 	report,
 	agentReport,
 } from '../../../shared/mocks/publish-test.helper'
+import { isFinished } from '../../publish/domain/bot-thread.helper'
 import { UNFINISHED_NOTE } from '../domain/status.helper'
 import {
 	StatusReportService,
@@ -48,6 +49,7 @@ layer(Layer.empty)('StatusReportService', test => {
 								report: reviewed,
 								verdict: 'ready',
 								openBugs: 0,
+								finished: isFinished(reviewed),
 							})
 						).pipe(
 							Effect.provide(
@@ -116,6 +118,7 @@ layer(Layer.empty)('StatusReportService', test => {
 							report: reviewed,
 							verdict: 'needs fixes',
 							openBugs: 3,
+							finished: isFinished(reviewed),
 						})
 					).pipe(
 						Effect.provide(
@@ -167,6 +170,7 @@ layer(Layer.empty)('StatusReportService', test => {
 						report: reviewed,
 						verdict: 'incomplete',
 						openBugs: 0,
+						finished: isFinished(reviewed),
 					})
 				).pipe(
 					Effect.provide(
@@ -214,6 +218,7 @@ layer(Layer.empty)('StatusReportService unfinished and offline', test => {
 								report: reviewed,
 								verdict: openBugs ? 'needs fixes' : 'ready',
 								openBugs,
+								finished: isFinished(reviewed),
 							})
 						).pipe(
 							Effect.provide(
@@ -337,6 +342,7 @@ layer(Layer.empty)('StatusReportService unfinished and offline', test => {
 						report: reviewed,
 						verdict: 'ready',
 						openBugs: 0,
+						finished: isFinished(reviewed),
 					})
 				).pipe(
 					Effect.provide(

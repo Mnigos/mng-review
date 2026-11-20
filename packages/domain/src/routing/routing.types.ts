@@ -19,6 +19,11 @@ export interface PullRequestInfo {
 	readonly draft: boolean
 	readonly fork: boolean
 	readonly trigger: RunTrigger
+	/**
+	 * A depth a person asked for with a command; it wins over labels, `review.yml` and the risk, and
+	 * as a request rather than a label it never meets `when.labels` or `skip.labels`.
+	 */
+	readonly depth?: Depth
 }
 
 export type Risk = (typeof RISK_LEVELS)[number]

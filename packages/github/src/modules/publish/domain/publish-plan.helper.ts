@@ -186,22 +186,51 @@ export function planPublish(
 /** Places whose thread is on GitHub. */
 const THREAD_PLACES = ['line', 'file'] as const satisfies readonly ThreadPlace[]
 
-/** The run's new bugs that got no thread: in the summary, or unposted. */
-export function countUnthreadedBugs(plan: PublishPlan): number {
+/** Fingerprints of the bot's open bug threads. */
+function getHeldFingerprints(
+	threads: readonly BotThread[]
+): ReadonlySet<string> {
+	return new Set(
+		threads
+			.filter(thread => !thread.resolved && thread.marker.kind === 'bug')
+			.map(thread => thread.marker.fingerprint)
+	)
+}
+
+/**
+ * The run's new bugs that got no thread: in the summary, or unposted, and held by no open bug
+ * thread of the bot by fingerprint, since a write with no answer may still have stored its thread.
+ */
+export function countUnthreadedBugs(
+	plan: PublishPlan,
+	threads: readonly BotThread[]
+): number {
+	const held = getHeldFingerprints(threads)
 	return plan.threads.filter(
 		thread =>
 			thread.kind === 'bug' &&
-			!THREAD_PLACES.some(place => place === thread.place)
+			!THREAD_PLACES.some(place => place === thread.place) &&
+			!held.has(thread.finding.fingerprint)
 	).length
 }
 
-/** Open bug threads after the run: the bot's unresolved ones and the new bugs, wherever they went. */
+/**
+ * Open bug threads after the run: the bot's unresolved ones, plus each new bug of this run that no
+ * open thread holds by fingerprint, wherever it went. Read after posting, `threads` holds what this
+ * run and any run alongside it posted; read before, every new bug is counted from the plan.
+ */
 export function countOpenBugs(
 	plan: PublishPlan,
 	threads: readonly BotThread[]
 ): number {
+	const held = getHeldFingerprints(threads)
 	const open = threads.filter(
 		thread => !thread.resolved && thread.marker.kind === 'bug'
 	).length
-	return open + plan.threads.filter(thread => thread.kind === 'bug').length
+	return (
+		open +
+		plan.threads.filter(
+			thread => thread.kind === 'bug' && !held.has(thread.finding.fingerprint)
+		).length
+	)
 }

@@ -7,13 +7,18 @@ import {
 	RESOLVE_THREAD_MUTATION,
 	REVIEW_THREADS_QUERY,
 } from './github-api.constants'
-import { collect } from './github-api.helper'
+import { collect, read } from './github-api.helper'
 import {
+	collaboratorRoleSchema,
 	createdSchema,
+	type IssueComment,
+	issueCommentSchema,
 	mutationAnswerSchema,
+	type PullRequest,
 	type PullRequestComment,
 	pullRequestCommentsAnswerSchema,
 	type ReviewThread,
+	pullRequestSchema,
 	reviewThreadsAnswerSchema,
 } from './github-api.schema'
 import { makeGitHubHttp } from './github-http.client'
@@ -82,6 +87,17 @@ export class GitHubApiService extends Context.Service<
 		readonly resolveThread: (
 			threadId: string
 		) => Effect.Effect<void, GitHubApiError>
+		readonly getPullRequest: (
+			pullNumber: number
+		) => Effect.Effect<PullRequest, GitHubApiError>
+		/** A conversation comment as it is now; a deleted one fails with 404. */
+		readonly getIssueComment: (
+			commentId: number
+		) => Effect.Effect<IssueComment, GitHubApiError>
+		/** The login's role on the repository; a login that is no collaborator fails with 404. */
+		readonly getCollaboratorRole: (
+			login: string
+		) => Effect.Effect<string, GitHubApiError>
 	}
 >()('mng-review/GitHubApiService') {}
 
@@ -252,7 +268,49 @@ export const GitHubApiServiceLive = Layer.effect(
 			}
 		)
 
+		const getPullRequest = Effect.fn('GitHubApiService.getPullRequest')(
+			function* (pullNumber: number) {
+				return yield* read(
+					sendJson(
+						'getPullRequest',
+						HttpClientRequest.get(`${repo}/pulls/${pullNumber}`),
+						pullRequestSchema
+					)
+				)
+			}
+		)
+
+		const getIssueComment = Effect.fn('GitHubApiService.getIssueComment')(
+			function* (commentId: number) {
+				return yield* read(
+					sendJson(
+						'getIssueComment',
+						HttpClientRequest.get(`${repo}/issues/comments/${commentId}`),
+						issueCommentSchema
+					)
+				)
+			}
+		)
+
+		const getCollaboratorRole = Effect.fn(
+			'GitHubApiService.getCollaboratorRole'
+		)(function* (login: string) {
+			const answer = yield* read(
+				sendJson(
+					'getCollaboratorRole',
+					HttpClientRequest.get(
+						`${repo}/collaborators/${encodeURIComponent(login)}/permission`
+					),
+					collaboratorRoleSchema
+				)
+			)
+			return answer.role_name
+		})
+
 		return {
+			getPullRequest,
+			getIssueComment,
+			getCollaboratorRole,
 			replyToThread,
 			resolveThread,
 			listReviewThreads,

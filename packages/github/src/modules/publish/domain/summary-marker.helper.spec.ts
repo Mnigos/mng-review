@@ -7,7 +7,7 @@ describe('toNextSummaryMarker', () => {
 		expect(
 			toNextSummaryMarker(
 				{ ...SUMMARY_MARKER, runs: 4, finished: false, unthreadedBugs: 3 },
-				{ head: 'next', finished: true, unthreadedBugs: 2 }
+				{ head: 'next', finished: true, partial: false, unthreadedBugs: 2 }
 			)
 		).toEqual({
 			v: MARKER_VERSION,
@@ -24,7 +24,7 @@ describe('toNextSummaryMarker', () => {
 			expect(
 				toNextSummaryMarker(
 					{ ...SUMMARY_MARKER, runs: 4, finished: true, unthreadedBugs: 3 },
-					{ head: 'next', finished: false, unthreadedBugs }
+					{ head: 'next', finished: false, partial: false, unthreadedBugs }
 				)
 			).toEqual({
 				...SUMMARY_MARKER,
@@ -40,6 +40,7 @@ describe('toNextSummaryMarker', () => {
 			toNextSummaryMarker(undefined, {
 				head: 'first',
 				finished: true,
+				partial: false,
 				unthreadedBugs: 2,
 			})
 		).toEqual({
@@ -56,6 +57,7 @@ describe('toNextSummaryMarker', () => {
 			toNextSummaryMarker(undefined, {
 				head: 'partial',
 				finished: false,
+				partial: false,
 				unthreadedBugs: 2,
 			})
 		).toEqual({ v: MARKER_VERSION, runs: 1, finished: false })
@@ -67,7 +69,7 @@ describe('toNextSummaryMarker', () => {
 			expect(
 				toNextSummaryMarker(
 					{ ...SUMMARY_MARKER, unthreadedBugs },
-					{ head: 'clean', finished: true, unthreadedBugs: 0 }
+					{ head: 'clean', finished: true, partial: false, unthreadedBugs: 0 }
 				)
 			).toEqual({
 				v: MARKER_VERSION,
@@ -83,6 +85,7 @@ describe('toNextSummaryMarker', () => {
 			toNextSummaryMarker(SUMMARY_MARKER, {
 				head: 'partial',
 				finished: false,
+				partial: false,
 				unthreadedBugs: 2,
 			})
 		).toEqual({

@@ -8,10 +8,12 @@ import { toCodeSpan } from '../../../utils/markdown.util'
 import {
 	getVerdict,
 	isFinished,
+	isFullReview,
 	isRefused,
 	toBotThread,
 } from '../domain/bot-thread.helper'
 import { createCommentableLinesFold } from '../domain/diff-hunk.parser'
+import type { SummaryMarker } from '../domain/publish-marker.schema'
 import {
 	countOpenBugs,
 	countUnthreadedBugs,
@@ -29,8 +31,15 @@ import type {
 	CommentableLines,
 	PlannedThread,
 } from '../domain/publish.types'
-import { toNextSummaryMarker } from '../domain/summary-marker.helper'
-import { formatSummaryComment } from '../presentation/summary-comment.formatter'
+import {
+	getCarriedBugs,
+	type MarkedRun,
+	toNextSummaryMarker,
+} from '../domain/summary-marker.helper'
+import {
+	formatSummaryComment,
+	toSummaryWithMarker,
+} from '../presentation/summary-comment.formatter'
 import {
 	formatThreadComment,
 	toBlobLinks,
@@ -43,6 +52,11 @@ import { ThreadResolutionService } from './thread-resolution.service'
 const GIT_CONCURRENCY = 4
 /** Marks each commit line of `git log -L`, so commits are counted without parsing patches. */
 const COMMIT_MARK = 'mng-review-commit:'
+
+/** A run as the marker judges it, and whether its pull request moved to another head meanwhile. */
+interface CheckedRun extends MarkedRun {
+	readonly moved: boolean
+}
 
 /**
  * Posts a run's findings on its pull request as the token's bot: one inline thread per new
@@ -254,6 +268,32 @@ export const PublishServiceLive = Layer.effect(
 			return [...lineResults, ...restResults]
 		})
 
+		/**
+		 * Whether the run stands for a full review of its head. A command overlaps push runs, so its
+		 * pull request is read again: one whose head moved meanwhile, or cannot be read, is partial,
+		 * as is one that named a single agent. A push run is the head's own run.
+		 */
+		const checkRun = Effect.fn('PublishService.checkRun')(function* (
+			input: PublishInput
+		) {
+			if (!input.command)
+				return {
+					head: input.head,
+					partial: false,
+					moved: false,
+				} satisfies CheckedRun
+			const head = yield* api.getPullRequest(input.pullNumber).pipe(
+				Effect.map(pr => pr.head.sha),
+				Effect.orElseSucceed(() => undefined)
+			)
+			const moved = head !== input.head
+			return {
+				head: input.head,
+				partial: input.command.agentOnly || moved,
+				moved,
+			} satisfies CheckedRun
+		})
+
 		const publish = Effect.fn('PublishService.publish')(function* (
 			input: PublishInput
 		) {
@@ -282,20 +322,43 @@ export const PublishServiceLive = Layer.effect(
 			)
 			const posted = yield* postThreads(input, planned.threads)
 			const plan = { ...planned, threads: posted }
-			const openBugs = countOpenBugs(plan, threads)
-			const verdict = getVerdict(report, openBugs)
+			// Read again: a run alongside this one may have posted or closed bug threads meanwhile.
+			// The threads are posted, so a failed read keeps the first one.
+			const latest = yield* readThreads(pullNumber).pipe(
+				Effect.map(list =>
+					list.map(thread =>
+						resolvedIds.has(thread.id) ? { ...thread, resolved: true } : thread
+					)
+				),
+				Effect.orElseSucceed(() => threads)
+			)
+			const threadBugs = countOpenBugs(plan, latest)
+			const run = yield* checkRun(input)
+			const standing = (marker: SummaryMarker) => {
+				const finished = isFullReview(report, marker, run)
+				const openBugs = threadBugs + getCarriedBugs(marker, run)
+				return {
+					finished,
+					openBugs,
+					verdict: getVerdict(report, openBugs, finished),
+				}
+			}
 			const written = yield* summaries
 				.write(pullNumber, current => {
 					const marker = toNextSummaryMarker(current?.marker, {
-						head: input.head,
+						head: run.head,
+						partial: run.partial,
 						finished: isFinished(report),
-						unthreadedBugs: countUnthreadedBugs(plan),
+						unthreadedBugs: countUnthreadedBugs(plan, latest),
 					})
+					// The summary describes the head; a run whose head moved only counts itself.
+					if (current && run.moved)
+						return { body: toSummaryWithMarker(current.body, marker), marker }
 					const body = formatSummaryComment({
 						report,
 						plan,
-						verdict,
-						openBugs,
+						...standing(marker),
+						carriedBugs: getCarriedBugs(marker, run),
 						marker,
 						maxRuns: input.rules.config.limits.max_runs_per_pr,
 						links,
@@ -305,6 +368,7 @@ export const PublishServiceLive = Layer.effect(
 					return { body, marker }
 				})
 				.pipe(Effect.mapError(error => new PublishIncompleteError({ error })))
+			const { finished, openBugs, verdict } = standing(written.marker)
 			const count = (place: PlannedThread['place']) =>
 				posted.filter(thread => thread.place === place).length
 			return {
@@ -319,6 +383,7 @@ export const PublishServiceLive = Layer.effect(
 				rechecked: input.recheck?.checked ?? 0,
 				resolved: resolved.length,
 				run: written.marker.runs,
+				finished,
 				cleanup: written.cleanup,
 			} satisfies PublishResult
 		})

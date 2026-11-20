@@ -1,7 +1,6 @@
 import type { ReviewReport } from '@mng-review/engine'
 import { Context, Effect, Layer } from 'effect'
 import { GitHubStatusService } from '../../../platform/github-status.service'
-import { isFinished } from '../../publish/domain/bot-thread.helper'
 import { getAgentReport } from '../../publish/presentation/summary-agents.formatter'
 import type { Verdict } from '../../publish/presentation/summary-comment.formatter'
 import { toCommitStatus, UNFINISHED_NOTE } from '../domain/status.helper'
@@ -17,6 +16,8 @@ export interface StatusReportInput {
 	readonly report: ReviewReport
 	readonly verdict: Verdict
 	readonly openBugs: number
+	/** A full review finished on this head; a partial run alone never makes it so. */
+	readonly finished: boolean
 }
 
 /** What was written: check runs and whether the status was set. */
@@ -92,11 +93,7 @@ export const StatusReportServiceLive = Layer.effect(
 			const status = yield* github
 				.setStatus({
 					sha: input.head,
-					...toCommitStatus(
-						input.verdict,
-						input.openBugs,
-						isFinished(input.report)
-					),
+					...toCommitStatus(input.verdict, input.openBugs, input.finished),
 				})
 				.pipe(
 					Effect.as(true),

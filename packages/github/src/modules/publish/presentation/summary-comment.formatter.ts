@@ -49,6 +49,8 @@ export interface SummaryInput {
 	readonly plan: PublishPlan
 	readonly verdict: Verdict
 	readonly openBugs: number
+	/** Of `openBugs`, the bugs without a thread the last full review left on this head. */
+	readonly carriedBugs?: number
 	readonly marker: SummaryMarker
 	readonly maxRuns: number
 	readonly links: BlobLinks
@@ -311,6 +313,12 @@ function toSummaryBody(input: SummaryInput, depth: SummaryDepth): string {
 		SUMMARY_HEADING,
 		'',
 		toVerdictLine(input),
+		...(input.carriedBugs
+			? [
+					'',
+					`${input.carriedBugs} bug(s) without a thread from the last full review still count until a full review checks them again.`,
+				]
+			: []),
 		...body,
 		'',
 		toFooter(input.links),
@@ -353,17 +361,22 @@ export function formatStatusComment(
 	].join('\n')
 }
 
-/**
- * An existing summary with only its marker changed to say the last run did not finish, its run
- * count and last finished head kept; the text a reader sees stays as it was.
- */
+/** An existing summary with only its final marker replaced; the text a reader sees stays as it was. */
+export function toSummaryWithMarker(
+	body: string,
+	marker: SummaryMarker
+): string {
+	const replacement = toMarkerComment('summary', marker)
+	const match = SUMMARY_MARKER_AT_END.exec(body)
+	return match
+		? `${body.slice(0, match.index)}${replacement}`
+		: `${body}\n\n${replacement}`
+}
+
+/** An existing summary whose marker says the last run did not finish, its run count and head kept. */
 export function toUnfinishedSummary(
 	body: string,
 	marker: SummaryMarker
 ): string {
-	const unfinished = toMarkerComment('summary', { ...marker, finished: false })
-	const match = SUMMARY_MARKER_AT_END.exec(body)
-	return match
-		? `${body.slice(0, match.index)}${unfinished}`
-		: `${body}\n\n${unfinished}`
+	return toSummaryWithMarker(body, { ...marker, finished: false })
 }

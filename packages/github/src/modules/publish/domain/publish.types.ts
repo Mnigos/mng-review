@@ -100,3 +100,9 @@ export interface SummaryComment {
  * identity could not be deleted. A deleted duplicate counts as `none`.
  */
 export type SummaryCleanup = 'none' | 'minimized' | 'deleted' | 'kept'
+
+/** A summary built from the summary read just before it is written: its text and marker. */
+export interface RenderedSummary {
+	readonly body: string
+	readonly marker: SummaryMarker
+}

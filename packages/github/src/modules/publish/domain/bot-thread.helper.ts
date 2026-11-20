@@ -12,7 +12,9 @@ import type {
 import type { GitHubApiError } from '../../../platform/github.errors'
 import type { Verdict } from '../presentation/summary-comment.formatter'
 import { parseFindingMarker, parseReplyMarker } from './publish-marker.parser'
+import type { SummaryMarker } from './publish-marker.schema'
 import type { BotThread } from './publish.types'
+import type { MarkedRun } from './summary-marker.helper'
 
 /** The status GitHub answers when it refuses a comment's place, such as a line outside the diff. */
 const UNPROCESSABLE_STATUS = 422
@@ -74,9 +76,13 @@ export function isRefused(error: GitHubApiError): boolean {
  * `incomplete` when nothing blocks but the run did not finish: an endpoint failure, the token
  * budget, or a finder that failed or stopped, so a run that reviewed nothing never reads as ready.
  */
-export function getVerdict(report: ReviewReport, openBugs: number): Verdict {
+export function getVerdict(
+	report: ReviewReport,
+	openBugs: number,
+	finished: boolean = isFinished(report)
+): Verdict {
 	if (openBugs > 0) return 'needs fixes'
-	return isFinished(report) ? 'ready' : 'incomplete'
+	return finished ? 'ready' : 'incomplete'
 }
 
 /** True when every finder answered: no endpoint failure, no budget stop, no agent that failed or stopped. */
@@ -86,4 +92,18 @@ export function isFinished(report: ReviewReport): boolean {
 		!report.incomplete &&
 		report.agents.every(agent => agent.status === 'ok')
 	)
+}
+
+/**
+ * True when a full review finished on the run's head: this run when it stands for one, or for a
+ * partial run the last full review when it was on the same head. `marker` is the summary marker
+ * the run builds on or wrote; a partial run keeps its head and finished flag as they were.
+ */
+export function isFullReview(
+	report: ReviewReport,
+	marker: Pick<SummaryMarker, 'finished' | 'head'> | undefined,
+	run: MarkedRun
+): boolean {
+	if (!run.partial) return isFinished(report)
+	return marker?.finished === true && marker.head === run.head
 }
