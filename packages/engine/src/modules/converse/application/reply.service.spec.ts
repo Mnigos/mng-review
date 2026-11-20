@@ -1,3 +1,5 @@
+import { symlinkSync } from 'node:fs'
+import { join } from 'node:path'
 import { layer } from '@effect/vitest'
 import type { ReplyAnswer, ReplyItem, Validation } from '@mng-review/domain'
 import { Effect, Layer } from 'effect'
@@ -27,6 +29,7 @@ import {
 	answer,
 	FINISH,
 	verdict,
+	toolCall,
 } from '../../../shared/mocks/review-test.helper'
 import { fenceData } from '../../../utils/fence.util'
 import { ReportReplyTool } from '../../review/application/report-reply.tool'
@@ -40,6 +43,7 @@ import {
 	type RecheckRequest,
 } from '../../validation/application/recheck.service'
 import { makeValidatorLayer } from '../../validation/infrastructure/validation.layers'
+import { MAX_REPLY_CHARS } from '../domain/reply.constants'
 import {
 	ReplyService,
 	ReplyServiceLive,
@@ -62,6 +66,8 @@ interface SetupOptions {
 	readonly cfg?: Parameters<typeof config>[0]
 	readonly validation?: Validation
 	readonly realRecheck?: boolean
+	readonly baseFiles?: Readonly<Record<string, string | Uint8Array>>
+	readonly atHead?: (repo: ReturnType<typeof createRepo>) => void
 }
 
 /** Real local git history with unchanged, added and base-only evidence lines. */
@@ -71,8 +77,11 @@ function setup(script: ScriptedLlmAnswer, options: SetupOptions = {}) {
 		'src/store.ts',
 		'inherited policy\nold behavior\nbase-only policy\n'
 	)
+	for (const [path, content] of Object.entries(options.baseFiles ?? {}))
+		repo.write(path, content)
 	const base = repo.commit()
 	repo.write('src/store.ts', 'inherited policy\nnew behavior\n')
+	options.atHead?.(repo)
 	const head = repo.commit()
 	const cfg = config({
 		...options.cfg,
@@ -646,3 +655,359 @@ layer(Layer.empty, { excludeTestServices: true })('ReplyService', test => {
 			})
 	)
 })
+
+/** An intentional claim with one independently checked citation. */
+function intentional(evidence: readonly string[]): Partial<ReplyAnswer> {
+	return {
+		claim: 'intentional',
+		holds: true,
+		reason: 'The inherited policy defines these units.',
+		evidence,
+	}
+}
+
+/** Read through the actual repository tools before reporting the scripted claim. */
+function afterRead(
+	name: string,
+	params: unknown,
+	evidence: readonly string[]
+): ScriptedLlmAnswer {
+	return (call, index) =>
+		index === 0
+			? Effect.succeed([toolCall(name, params), FINISH])
+			: classification(intentional(evidence))(call, index)
+}
+
+layer(Layer.empty, { excludeTestServices: true })(
+	'reply evidence regressions',
+	test => {
+		for (const name of ['none', 'read_file', 'grep', 'blame'] as const)
+			test.effect(
+				`unchanged evidence outside the first window requires a read via ${name}`,
+				() =>
+					Effect.gen(function* () {
+						const evidence = ['package.json:1 inherited policy']
+						const params =
+							name === 'grep'
+								? { pattern: 'inherited', glob: 'package.json' }
+								: { path: 'package.json', range: '1-1' }
+						const scriptSpy = vi.fn(
+							name === 'none'
+								? classification(intentional(evidence))
+								: afterRead(name, params, evidence)
+						)
+						const fixture = setup(scriptSpy, {
+							baseFiles: {
+								'package.json': 'inherited policy\nsecond policy\n',
+							},
+						})
+						const report = yield* ReplyService.use(service =>
+							service.decide(fixture.request)
+						).pipe(Effect.provide(fixture.services))
+						expect(report.results[0]?.error).toBeUndefined()
+						expect(report.results[0]?.decision).toMatchObject(
+							name === 'none'
+								? { action: 'disputed' }
+								: { action: 'accepted', evidence }
+						)
+						expect(scriptSpy).toHaveBeenCalledTimes(name === 'none' ? 1 : 2)
+						if (name !== 'none')
+							expect(
+								JSON.stringify(scriptSpy.mock.calls[1]?.[0].options.prompt)
+							).toContain('inherited policy')
+					})
+			)
+		test.effect(
+			'the first message window supplies read evidence and only passing entries are retained',
+			() =>
+				Effect.gen(function* () {
+					const evidence = ['src/store.ts:1 inherited policy']
+					const fixture = setup(
+						classification(
+							intentional([...evidence, 'package.json:1 unread policy'])
+						),
+						{ baseFiles: { 'package.json': 'unread policy\n' } }
+					)
+					const report = yield* ReplyService.use(service =>
+						service.decide(fixture.request)
+					).pipe(Effect.provide(fixture.services))
+					expect(report.results[0]?.decision).toMatchObject({
+						action: 'accepted',
+						evidence,
+					})
+				})
+		)
+		test.effect(
+			'a range only partly read is disputed even when every line exists unchanged',
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup(
+						afterRead('read_file', { path: 'package.json', range: '1-1' }, [
+							'package.json:1-2 policy',
+						]),
+						{
+							baseFiles: {
+								'package.json': 'inherited policy\nsecond policy\n',
+							},
+						}
+					)
+					const report = yield* ReplyService.use(service =>
+						service.decide(fixture.request)
+					).pipe(Effect.provide(fixture.services))
+					expect(report.results[0]?.decision.action).toBe('disputed')
+					expect(report.results[0]?.error).toBeUndefined()
+				})
+		)
+		test.effect(
+			'a finding at the old path of a rename into risk_paths needs the owner',
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup(
+						classification(intentional(['src/risk/store.ts:1 policy'])),
+						{
+							cfg: { risk_paths: ['src/risk/**'] },
+						}
+					)
+					fixture.repo.write('src/risk/.keep', '')
+					fixture.repo.git('mv', 'src/store.ts', 'src/risk/store.ts')
+					const headRef = fixture.repo.commit()
+					expect(
+						fixture.repo.git(
+							'diff',
+							'--name-status',
+							'-M',
+							fixture.head,
+							headRef
+						)
+					).toContain('R100\tsrc/store.ts\tsrc/risk/store.ts')
+					const report = yield* ReplyService.use(service =>
+						service.decide({
+							...fixture.request,
+							mergeBase: fixture.head,
+							headRef,
+						})
+					).pipe(Effect.provide(fixture.services))
+					expect(report.results[0]?.decision).toMatchObject({
+						action: 'needs-owner',
+						reason: expect.stringContaining('risk_paths') as unknown,
+					})
+					expect(report.results[0]?.error).toBeUndefined()
+				})
+		)
+		test.effect(
+			'a new binary file cannot be evidence even after blame shows its cited line',
+			() =>
+				Effect.gen(function* () {
+					const scriptSpy = vi.fn(
+						afterRead('blame', { path: 'asset.bin', range: '1-1' }, [
+							'asset.bin:1 policy',
+						])
+					)
+					const fixture = setup(scriptSpy, {
+						atHead: repo =>
+							repo.write(
+								'asset.bin',
+								new Uint8Array([112, 111, 108, 105, 99, 121, 0, 10])
+							),
+					})
+					const report = yield* ReplyService.use(service =>
+						service.decide(fixture.request)
+					).pipe(Effect.provide(fixture.services))
+					expect(report.results[0]?.decision.action).toBe('disputed')
+					expect(report.results[0]?.error).toBeUndefined()
+					expect(scriptSpy).toHaveBeenCalledTimes(2)
+					expect(
+						JSON.stringify(scriptSpy.mock.calls[1]?.[0].options.prompt)
+					).toContain('policy')
+				})
+		)
+		for (const kind of ['NUL', '-diff'] as const)
+			test.effect(
+				`a ${kind} file cannot supply unchanged evidence after its line is read`,
+				() =>
+					Effect.gen(function* () {
+						const path = 'policy.txt'
+						const scriptSpy = vi.fn(
+							afterRead(
+								kind === 'NUL' ? 'blame' : 'read_file',
+								{ path, range: '1-1' },
+								[`${path}:1 policy`]
+							)
+						)
+						const fixture = setup(scriptSpy, {
+							baseFiles: {
+								[path]: 'inherited policy\nold behavior\n',
+								...(kind === '-diff'
+									? { '.gitattributes': `${path} -diff\n` }
+									: {}),
+							},
+							atHead: repo =>
+								repo.write(
+									path,
+									`inherited policy\nnew behavior${kind === 'NUL' ? '\0' : ''}\n`
+								),
+						})
+						const report = yield* ReplyService.use(service =>
+							service.decide(fixture.request)
+						).pipe(Effect.provide(fixture.services))
+						expect(scriptSpy).toHaveBeenCalledTimes(2)
+						expect(
+							JSON.stringify(scriptSpy.mock.calls[1]?.[0].options.prompt)
+						).toContain('inherited policy')
+						expect(report.results[0]?.error).toBeUndefined()
+						expect(report.results[0]?.decision.action).toBe('disputed')
+					})
+			)
+		test.effect(
+			'a symlink at head never supplies evidence even when read_file shows its line',
+			() =>
+				Effect.gen(function* () {
+					const scriptSpy = vi.fn(
+						afterRead('read_file', { path: 'policy-link', range: '1-1' }, [
+							'policy-link:1 target',
+						])
+					)
+					const fixture = setup(scriptSpy)
+					symlinkSync('src/store.ts', join(fixture.repo.root, 'policy-link'))
+					const headRef = fixture.repo.commit()
+					const report = yield* ReplyService.use(service =>
+						service.decide({ ...fixture.request, mergeBase: headRef, headRef })
+					).pipe(Effect.provide(fixture.services))
+					expect(fixture.repo.git('ls-tree', headRef, 'policy-link')).toMatch(
+						/^120000 /u
+					)
+					expect(scriptSpy).toHaveBeenCalledTimes(2)
+					expect(
+						JSON.stringify(scriptSpy.mock.calls[1]?.[0].options.prompt)
+					).toContain('1| src/store.ts')
+					expect(report.results[0]?.error).toBeUndefined()
+					expect(report.results[0]?.decision.action).toBe('disputed')
+				})
+		)
+		for (const ref of ['head', 'base'] as const)
+			test.effect(
+				`a deleted file uses base numbering and requires a ${ref} read`,
+				() =>
+					Effect.gen(function* () {
+						const evidence = ['removed.ts:2-3 inherited policy']
+						const fixture = setup(
+							afterRead(
+								'read_file',
+								{ path: 'removed.ts', range: '2-3', ref },
+								evidence
+							),
+							{
+								baseFiles: {
+									'removed.ts': 'first\nsecond policy\nthird policy\n',
+								},
+								atHead: repo => {
+									repo.git('rm', 'removed.ts')
+								},
+							}
+						)
+						const report = yield* ReplyService.use(service =>
+							service.decide(fixture.request)
+						).pipe(Effect.provide(fixture.services))
+						expect(report.results[0]?.decision).toMatchObject(
+							ref === 'base'
+								? { action: 'accepted', evidence }
+								: { action: 'disputed' }
+						)
+						expect(report.results[0]?.error).toBeUndefined()
+					})
+			)
+		test.effect(
+			'a range crossing the head end fails even after all base lines were read',
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup(
+						afterRead(
+							'read_file',
+							{ path: 'short.ts', range: '1-3', ref: 'base' },
+							['short.ts:1-3 policy']
+						),
+						{
+							baseFiles: { 'short.ts': 'one\ntwo\nthree\n' },
+							atHead: repo => repo.write('short.ts', 'one\ntwo\n'),
+						}
+					)
+					const report = yield* ReplyService.use(service =>
+						service.decide(fixture.request)
+					).pipe(Effect.provide(fixture.services))
+					expect(report.results[0]?.decision.action).toBe('disputed')
+				})
+		)
+		test.effect('cuts a huge reply before the classifier first sees it', () =>
+			Effect.gen(function* () {
+				const scriptSpy = vi.fn(classification())
+				const fixture = setup(scriptSpy)
+				const prefix = 'REPLY_START '
+				const tail = 'UNIQUE_REPLY_TAIL'
+				const reply = `${prefix}${'x'.repeat(MAX_REPLY_CHARS * 3)}${tail}`
+				yield* ReplyService.use(service =>
+					service.decide({
+						...fixture.request,
+						items: [{ ...fixture.item, reply }],
+					})
+				).pipe(Effect.provide(fixture.services))
+				const first = userText(scriptSpy.mock.calls[0]?.[0])
+				expect(first).toContain(prefix)
+				expect(first).toMatch(/\[truncated: \d+ more characters\]/u)
+				expect(first).not.toContain(tail)
+				expect(first).not.toContain('x'.repeat(MAX_REPLY_CHARS))
+			})
+		)
+		for (const source of ['model', 'recheck'] as const)
+			test.effect(
+				`a ${source} defect stays local while replies before and after it finish`,
+				() =>
+					Effect.gen(function* () {
+						const scriptSpy = vi.fn((call: ScriptedLlmCall, index: number) =>
+							userText(call).includes('DEFECT_REPLY') && source === 'model'
+								? Effect.die(new Error('fixture defect'))
+								: classification({ claim: 'fixed' })(call, index)
+						)
+						const fixture = setup(scriptSpy, {
+							validation: checked('rejected'),
+						})
+						if (source === 'recheck')
+							fixture.recheckSpy
+								.mockImplementationOnce(() =>
+									Effect.succeed({
+										results: [
+											{
+												finding: fixture.item.finding,
+												base: fixture.base,
+												validation: checked('rejected'),
+											},
+										],
+										tokens: {},
+									})
+								)
+								.mockImplementationOnce(() =>
+									Effect.die(new Error('fixture defect'))
+								)
+						const items = ['first', 'DEFECT_REPLY', 'last'].map(reply => ({
+							...fixture.item,
+							reply,
+						}))
+						const report = yield* ReplyService.use(service =>
+							service.decide({ ...fixture.request, items })
+						).pipe(Effect.provide(fixture.services))
+						expect(report.results.map(entry => entry.reply)).toEqual(
+							items.map(entry => entry.reply)
+						)
+						expect(report.results.map(entry => entry.decision.action)).toEqual([
+							'resolved',
+							'seen',
+							'resolved',
+						])
+						expect(report.results.map(entry => entry.error)).toEqual([
+							undefined,
+							expect.stringContaining('fixture defect'),
+							undefined,
+						])
+					})
+			)
+	}
+)

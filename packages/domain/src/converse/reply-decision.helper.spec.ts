@@ -8,7 +8,10 @@ import {
 	toReplyDecision,
 	type ReplyDecisionInput,
 } from './reply-decision.helper'
-import { MEMORY_REASON_MAX_CHARS } from './reply.constants'
+import {
+	MEMORY_REASON_MAX_CHARS,
+	REPLY_REASON_MAX_CHARS,
+} from './reply.constants'
 import type { ReplyClaim, ReplyItem } from './reply.types'
 
 /** A decision input whose independent premises can be overridden. */
@@ -313,5 +316,73 @@ describe('toMemoryCandidate', () => {
 		expect(memory).toContain('x'.repeat(MEMORY_REASON_MAX_CHARS - 1))
 		expect(memory).not.toContain(reason)
 		expect(memory).not.toMatch(/[\r\n]/u)
+	})
+})
+
+describe('reply decision output bounds', () => {
+	test.each([
+		'accepted',
+		'resolved',
+		'still-found',
+		'disputed',
+		'needs-owner',
+	] as const)('cuts every %s reason to one bounded line', action => {
+		const reason = `  ${'x'.repeat(REPLY_REASON_MAX_CHARS + 50)}\n tail  `
+		const claim =
+			action === 'resolved' || action === 'still-found'
+				? ({ claim: 'fixed', evidence: [] } as const)
+				: {
+						...input().claim,
+						reason,
+						failedPremise: reason,
+						holds: action !== 'disputed',
+					}
+		const decision = toReplyDecision(
+			input({
+				claim,
+				...(action === 'resolved' || action === 'still-found'
+					? {
+							recheck: {
+								...validation(action === 'resolved' ? 'rejected' : 'confirmed'),
+								reason,
+							},
+						}
+					: {}),
+				...(action === 'needs-owner'
+					? {
+							item: { ...item(0), finding: finding({ path: reason }) },
+							limit: 'risk_paths',
+						}
+					: {}),
+			})
+		)
+		expect(decision.action).toBe(action)
+		if (decision.action === 'seen') return
+		expect(decision.reason).toHaveLength(REPLY_REASON_MAX_CHARS)
+		expect(decision.reason.endsWith('…')).toBe(true)
+		expect(decision.reason).not.toMatch(/[\r\n]/u)
+	})
+	test('a finding at the old path matches the new risk path', () => {
+		const marker = finding({ path: 'src/store.ts', severity: 'low' })
+		expect(
+			getIntentionalLimit(marker, config({ risk_paths: ['src/risk/**'] }), {
+				files: [
+					file('src/risk/store.ts', {
+						status: 'renamed',
+						oldPath: marker.path,
+					}),
+				],
+			})
+		).toBe('risk_paths')
+	})
+	test('memory removes markup, code delimiters and mentions from reason and path', () => {
+		const memory = toMemoryCandidate(
+			{ path: 'src/<policy>@file`name`.ts' },
+			'<!-- policy --> uses `integer cents` per @reviewer'
+		)
+		expect(memory).toBe(
+			'src/policyfilename.ts: !-- policy -- uses integer cents per reviewer'
+		)
+		expect(memory).not.toMatch(/[<>`@]/u)
 	})
 })

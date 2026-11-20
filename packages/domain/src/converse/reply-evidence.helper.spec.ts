@@ -82,3 +82,15 @@ describe('isEvidenceInCode', () => {
 		).toBe(false)
 	})
 })
+
+test('a range crossing the head end cannot borrow numbering from a longer base', () => {
+	expect(isEvidenceInCode(REF, { headLines: 2, baseLines: 5, added: [] })).toBe(
+		false
+	)
+	expect(isEvidenceInCode(REF, { headLines: 3, baseLines: 5, added: [] })).toBe(
+		true
+	)
+	expect(
+		isEvidenceInCode(REF, { headLines: undefined, baseLines: 3, added: [] })
+	).toBe(true)
+})
