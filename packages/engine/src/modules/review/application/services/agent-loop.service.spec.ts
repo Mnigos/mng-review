@@ -71,7 +71,13 @@ function loopLayer(
 		Layer.provideMerge(makeScriptedLlmLayer(script)),
 		Layer.provideMerge(TokenLedgerLive),
 		Layer.provide(Layer.succeed(ReviewLimits, { ...LIMITS, ...limits })),
-		Layer.provide(Layer.succeed(RepoToolsService, { call }))
+		Layer.provide(
+			Layer.succeed(RepoToolsService, {
+				call,
+				run: (scope, name, params) =>
+					call(scope, name, params).pipe(Effect.map(output => ({ output }))),
+			})
+		)
 	)
 }
 const REQUEST = {

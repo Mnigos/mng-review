@@ -974,7 +974,13 @@ layer(Layer.empty)('validator first-message context', test => {
 						Effect.provide(
 							ValidatorServiceLive.pipe(
 								Layer.provide(
-									Layer.succeed(RepoToolsService, { call: callSpy })
+									Layer.succeed(RepoToolsService, {
+										call: callSpy,
+										run: (scope, name, params) =>
+											callSpy(scope, name, params).pipe(
+												Effect.map(output => ({ output }))
+											),
+									})
 								),
 								Layer.provideMerge(
 									reviewDependencies(() =>

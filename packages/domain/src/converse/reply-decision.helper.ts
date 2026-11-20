@@ -80,8 +80,8 @@ export function toReplyClaim(answer: ReplyAnswer): ReplyClaim {
 
 /**
  * One line for `.mng/MEMORY.md`: the finding's path and the model's reason, the reason cut to
- * `MEMORY_REASON_MAX_CHARS`. It never holds the reply's text, and holds no `<`, `>`, backtick or
- * `@`, so wherever it is rendered it opens no markup, code span or mention.
+ * `MEMORY_REASON_MAX_CHARS`. It never holds the reply's text, and both parts are `toPlainText`, so
+ * wherever it is rendered it opens no link, image, markup, code span or mention.
  */
 export function toMemoryCandidate(
 	finding: Pick<Finding, 'path'>,

@@ -1,7 +1,5 @@
 /** Evidence entries the engine checks per reply; the rest are ignored. */
 export const MAX_EVIDENCE_CHECKED = 10
-/** Characters of the finding's file the classifier gets in its first message. */
-export const MAX_FILE_CHARS = 20_000
 /** Lines before and after the finding's line the classifier gets in its first message. */
 export const FILE_WINDOW_LINES = 80
 /** Characters of the author's reply the classifier gets, so a huge reply cannot spend the budget. */

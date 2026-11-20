@@ -20,6 +20,11 @@ function toTruncationMarker(rest: number): string {
 	return `\n[truncated: ${rest} more characters]`
 }
 
+/** The longest cut marker `truncateText` can add, so a text that ends before `maxChars` minus it is never cut. */
+export const MAX_TRUNCATION_MARKER_CHARS = toTruncationMarker(
+	Number.MAX_SAFE_INTEGER
+).length
+
 /** Cuts text to at most `maxChars` characters, the cut marker included. */
 export function truncateText(text: string, maxChars: number): string {
 	if (text.length <= maxChars) return text

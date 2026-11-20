@@ -683,7 +683,7 @@ layer(Layer.empty, { excludeTestServices: true })(
 	test => {
 		for (const name of ['none', 'read_file', 'grep', 'blame'] as const)
 			test.effect(
-				`unchanged evidence outside the first window requires a read via ${name}`,
+				`unchanged evidence outside the first window counts only after read_file (via ${name})`,
 				() =>
 					Effect.gen(function* () {
 						const evidence = ['package.json:1 inherited policy']
@@ -706,9 +706,9 @@ layer(Layer.empty, { excludeTestServices: true })(
 						).pipe(Effect.provide(fixture.services))
 						expect(report.results[0]?.error).toBeUndefined()
 						expect(report.results[0]?.decision).toMatchObject(
-							name === 'none'
-								? { action: 'disputed' }
-								: { action: 'accepted', evidence }
+							name === 'read_file'
+								? { action: 'accepted', evidence }
+								: { action: 'disputed' }
 						)
 						expect(scriptSpy).toHaveBeenCalledTimes(name === 'none' ? 1 : 2)
 						if (name !== 'none')
