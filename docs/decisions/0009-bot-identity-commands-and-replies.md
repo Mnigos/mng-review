@@ -1,11 +1,11 @@
-# ADR 0009: The bot may post as a GitHub App, and a mention of it starts a review
+# ADR 0009: The bot may post as a GitHub App, a mention of it starts a review, and it answers replies in its threads
 
 **Status:** Proposed
 **Date:** 2026-11-20
 
 ## Context
 
-Publish mode (ADR 0007) posts with the job token, as `github-actions[bot]`. That name is shared with every other workflow in the repository, events made with the job token start no workflows, and a handle a person can mention needs an account of its own. A GitHub App gives the bot its own name, but its key can write wherever the app is installed, and a repository that switches already has threads and a summary written by `github-actions`. Commands let a person start a review from a pull request comment. They act on text other people write and can spend the endpoint's quota, `issue_comment` workflows run from the default branch, and comments the app writes start workflows too. Replies are recorded here later.
+Publish mode (ADR 0007) posts with the job token, as `github-actions[bot]`. That name is shared with every other workflow in the repository, events made with the job token start no workflows, and a handle a person can mention needs an account of its own. A GitHub App gives the bot its own name, but its key can write wherever the app is installed, and a repository that switches already has threads and a summary written by `github-actions`. Commands let a person start a review from a pull request comment. They act on text other people write and can spend the endpoint's quota, `issue_comment` workflows run from the default branch, and comments the app writes start workflows too. An author's reply in one of the bot's threads ("fixed", "intentional because …") is text other people write as well, and a wrong answer to it closes a thread or blocks a pull request.
 
 ## Decision
 
@@ -32,6 +32,15 @@ Publish mode (ADR 0007) posts with the job token, as `github-actions[bot]`. That
 - A mention in a review thread is never a command: `pull_request_review_comment`, `pull_request_review` and pull request edits start no command workflow, and in a thread the bot owns it is a reply. A conversation comment is never a reply.
 - Who can spend what: only an admin or an allowed writer reaches the endpoint, at most `commands.max_runs` times per pull request. Anyone else's mention, a quoted mention and a mention that fails the grammar cost one job of seconds with no secret. An edit, the pull request body and review comments start nothing. The bot's own comments start nothing: they are a `Bot`'s, and every fixed text that names the handle puts it in a code span, so they hold no live mention.
 
+### Replies
+
+- Replies are never handled from `pull_request_review_comment`, whose workflow file comes from the pull request's merge ref. They are answered in every push and command run (and, later, on a schedule from the default branch), so no workflow a pull request can change sits next to the secrets.
+- The prepare step, which holds the read token and no endpoint, finds the replies before any model call: the latest comment of an open `bug` or `unverified` thread of an owned identity, written by a `User`, not ending with a marker of the bot's form. The author must have write access (`admin`, `maintain`, `write`, or a custom role whose base permission is write or admin); a GitHub error means the reply does not count. At most eight threads per run, a different batch each run when there are more, rotated like the re-check. Each reply is cut to 4,000 characters, and the bot's earlier `disputed` answers in the thread are counted from owned, unedited comments only, so a pasted marker counts for nothing.
+- The classification and the re-check run in the review job, on its token ledger, after the re-check of unanswered threads; a thread with a reply was never a re-check candidate. The outcome file carries each decision bound to its thread id, the thread's fingerprint and the `databaseId` of the comment it answers, never the reply's text. A reply left `seen` by a failure of the model, git or the budget is not in the file, so the next run tries it again. A run that reviews nothing decides nothing.
+- The publish job reads the threads again and applies a decision only when that thread is still the bot's, open, has the same fingerprint, and its latest comment is still the one the decision names, by a `User`. Otherwise someone answered meanwhile, the decision is dropped and the next run reads the thread again. Two overlapping runs answer a reply once: the second finds the bot's answer as the latest comment.
+- Each answer ends with a reply marker (`action`, the head, and `reply`: the comment it answers). `resolved` ("no longer found") and `accepted` close the thread for the bot's counts and ask GitHub to resolve it. `accepted` names the checked evidence and the memory candidate in code spans, trusted only once a person merges it into `.mng/MEMORY.md`. `still-found` and `seen` are not rounds: a `fixed` reply the validator does not confirm is a fact about the code, not a disagreement, and an unclear reply asks for `fixed` or `intentional because` with a `path:line`. `disputed` names the failed premise. Every model text is escaped.
+- `needs-owner` answers that the thread goes to the owner, with the reason.
+
 ## Consequences
 
 - Comments, statuses and check runs the app makes start the repository's other workflows, which writes with the job token never did.
@@ -44,6 +53,7 @@ Publish mode (ADR 0007) posts with the job token, as `github-actions[bot]`. That
 - GitHub keeps one waiting job per concurrency group, and `reserve` and both publish jobs share `mng-review-publish-<pull request>`, so a newer waiting job cancels an older waiting one. A command's `publish` can be cancelled after its run was counted and the model was paid for, and a command's `reserve` can cancel a waiting push publish, which leaves that head without a status. To recover, re-run the push run's workflow, or post a new command comment.
 - A comment posted through an OAuth app with a user token has no `performed_via_github_app` and counts as the user's; no API field tells it apart.
 - Two authorized commands, or a command and a push, may review at once; the overlap rules of ADR 0008 cover it.
+- A reply waits for the next push or command run until the scheduled run is set up.
 - Rejected for commands: the slash form; a default handle without the app; a handle read from the comment; `author_association` as a filter (a private organization member can show as a contributor).
 - Rejected: the identity inside the marker (GitHub attests the author, the marker is text); numeric bot ids in the config (slugs are what GraphQL and REST return and what a person can read); a second, read-only family of workflow files for app mode; editing the old summary in place (it breaks the rule that the bot edits only what its current identity wrote, and the summary would keep the old name).
 

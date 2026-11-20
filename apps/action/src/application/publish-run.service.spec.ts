@@ -73,6 +73,7 @@ const PUBLISHED = {
 	resolved: 0,
 	run: 1,
 	finished: true,
+	answered: {},
 	cleanup: 'none',
 } as const
 

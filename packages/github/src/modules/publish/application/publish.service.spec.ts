@@ -1340,7 +1340,12 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 						yield* PublishService.use(publisher =>
 							publisher.readThreads(17)
 						).pipe(Effect.provide(fixture.publisher))
-					).toEqual([botThread()])
+					).toEqual([
+						botThread({
+							latestCommentId: 1,
+							latestAuthor: { type: 'Bot', login: 'github-actions' },
+						}),
+					])
 					expect(fixture.fake.threadReads).toEqual([17])
 					expect(fixture.fake.writes).toEqual([])
 				})

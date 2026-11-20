@@ -73,3 +73,35 @@ export function toAgentRows(report: ReviewReport): string[] {
 		),
 	]
 }
+
+/** Skipped agents, units that did not finish, dropped models and an endpoint failure. */
+export function toRunNotes(report: ReviewReport, limit: number): string[] {
+	const { skips } = report.planReport.plan
+	const unfinished = [
+		...report.agents
+			.filter(agent => agent.status === 'failed')
+			.map(agent => `${agent.name} failed`),
+		...(report.incomplete?.unfinished ?? []),
+		...report.droppedModels.map(drop => `model ${drop.model} dropped`),
+	]
+	const skipped = skips
+		.slice(0, limit)
+		.map(
+			skip => `${escapeMarkdown(skip.name)} (${escapeMarkdown(skip.reason)})`
+		)
+	return [
+		...(skipped.length === 0 ? [] : ['', `Skipped: ${skipped.join(', ')}`]),
+		...(unfinished.length === 0
+			? []
+			: [
+					'',
+					`Did not finish: ${unfinished.slice(0, limit).map(escapeMarkdown).join(', ')}`,
+				]),
+		...(report.endpointError
+			? [
+					'',
+					`The model endpoint failed: ${escapeMarkdown(report.endpointError)}`,
+				]
+			: []),
+	]
+}

@@ -1,6 +1,6 @@
 import type { ConfigError, PullRequestInfo } from '@mng-review/domain'
 import type { ReviewReport, Rules } from '@mng-review/engine'
-import type { BotThread } from '@mng-review/github'
+import type { BotThread, PendingReply } from '@mng-review/github'
 import type { Effect } from 'effect'
 
 /** The pull request a workflow run reviews: its number, the two commits and what the engine sees. */
@@ -42,6 +42,13 @@ export interface ShadowRunInput {
 		event: PullRequestEvent,
 		rules: Rules
 	) => Effect.Effect<readonly BotThread[]>
+	/** The prepare step only: the authors' replies in those threads worth a decision. Unset: none. */
+	readonly readReplies?: (
+		event: PullRequestEvent,
+		rules: Rules,
+		threads: readonly BotThread[],
+		prior: PriorRun | undefined
+	) => Effect.Effect<readonly PendingReply[]>
 }
 
 /** What the review step is told besides the prepared run. */
@@ -57,6 +64,8 @@ export interface ReadyRun {
 	readonly prior?: PriorRun
 	/** The bot's threads, read with the read token, which the re-check proposes from. */
 	readonly threads: readonly BotThread[]
+	/** Authors' replies in those threads, read before any model call; none when unset. */
+	readonly replies?: readonly PendingReply[]
 	/**
 	 * The rules the checks loaded, kept only in the process that loaded them; the prepared file
 	 * never holds them, so a review step in another process loads them again.

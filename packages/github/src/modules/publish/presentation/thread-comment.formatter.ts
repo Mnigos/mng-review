@@ -17,7 +17,7 @@ const MAX_TITLE_CHARS = 300
  * Characters of a trigger, impact, premise, fix or evidence line kept, so a comment stays far below
  * GitHub's 65,536 characters even after escaping and with the marker.
  */
-const MAX_TEXT_CHARS = 3000
+export const MAX_TEXT_CHARS = 3000
 
 /** Where evidence links point: the repository on its server at the reviewed head, and the engine that posts. */
 export interface BlobLinks {
@@ -49,7 +49,7 @@ export function toBlobLinks(
 }
 
 /** Text cut to `max` characters, with an ellipsis when cut. */
-function toShort(text: string, max: number): string {
+export function toShort(text: string, max: number): string {
 	return text.length > max ? `${text.slice(0, max)}…` : text
 }
 
@@ -233,8 +233,15 @@ export function toKindLabel(kind: ThreadKind, severity: Severity): string {
 	return toSeverityLabel(severity)
 }
 
-/** The bot's reply when its finding no longer holds: the head, why, and that it stops counting the thread. */
-export function formatResolvedReply(reason: string, links: BlobLinks): string {
+/**
+ * The bot's reply when its finding no longer holds: the head, why, and that it stops counting the
+ * thread. `reply` is the author's comment it answers, unset for a re-check.
+ */
+export function formatResolvedReply(
+	reason: string,
+	links: BlobLinks,
+	reply?: number
+): string {
 	const head = toCodeSpan(links.head.slice(0, SHORT_SHA_LENGTH))
 	return [
 		`No longer found at ${head}: ${escapeMarkdown(toShort(reason, MAX_TEXT_CHARS))} The bot no longer counts this thread as open.`,
@@ -243,6 +250,7 @@ export function formatResolvedReply(reason: string, links: BlobLinks): string {
 			v: MARKER_VERSION,
 			action: 'resolved',
 			commit: links.head,
+			...(reply === undefined ? {} : { reply }),
 		}),
 	].join('\n')
 }

@@ -83,7 +83,7 @@ export const PublishRunServiceLive = Layer.effect(
 			outcome: OutcomeFile,
 			context: PublishContext
 		) {
-			const { report, recheck } = outcome
+			const { report, recheck, replies } = outcome
 			if (outcome.status !== 'reviewed' && outcome.status !== 'offline')
 				return {
 					status: 'not-published',
@@ -126,6 +126,14 @@ export const PublishRunServiceLive = Layer.effect(
 										checked: recheck.checked,
 										proposals: recheck.rejected,
 										tokens: recheck.tokens,
+									},
+								}
+							: {}),
+						...(replies
+							? {
+									replies: {
+										decisions: replies.decided,
+										tokens: replies.tokens,
 									},
 								}
 							: {}),

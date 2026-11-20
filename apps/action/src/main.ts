@@ -18,10 +18,12 @@ import {
 	GitHubStatusServiceLive,
 	GitHubWriteConfigLive,
 	PublishServiceLive,
+	ReplyDecisionServiceLive,
 	StatusReportServiceLive,
 	StatusSweepServiceLive,
 	SummaryCommentServiceLive,
 	ThreadRecheckServiceLive,
+	ThreadReplyServiceLive,
 	ThreadResolutionServiceLive,
 } from '@mng-review/github'
 import { Clock, Console, Effect, Layer } from 'effect'
@@ -92,9 +94,13 @@ const toGitHubLive = (config: Layer.Layer<GitHubConfig, ConfigError>) =>
 		Layer.provideMerge(config)
 	)
 
-/** Publishing, the sticky summary, thread resolution and the status over one token. */
+/** Publishing, the sticky summary, thread resolution, replies and the status over one token. */
 const toPublisherLive = (config: Layer.Layer<GitHubConfig, ConfigError>) =>
-	Layer.mergeAll(PublishServiceLive, StatusReportServiceLive).pipe(
+	Layer.mergeAll(
+		PublishServiceLive,
+		StatusReportServiceLive,
+		ThreadReplyServiceLive
+	).pipe(
 		Layer.provideMerge(SummaryCommentServiceLive),
 		Layer.provide(ThreadResolutionServiceLive),
 		Layer.provideMerge(toGitHubLive(config))
@@ -110,11 +116,11 @@ const ReviewSessionLive = ShadowRunServiceLive.pipe(
 	Layer.provideMerge(TokenLedgerLive)
 )
 
-/** The review step also proposes the re-check over the model, reading no GitHub. */
-const ReviewLive = ThreadRecheckServiceLive.pipe(
-	Layer.provide(RecheckServiceLive),
-	Layer.provideMerge(ReviewSessionLive)
-)
+/** The review step also proposes the re-check and decides on replies over the model; no GitHub. */
+const ReviewLive = Layer.mergeAll(
+	ThreadRecheckServiceLive.pipe(Layer.provide(RecheckServiceLive)),
+	ReplyDecisionServiceLive
+).pipe(Layer.provideMerge(ReviewSessionLive))
 
 /** The prepare step: the checks and the GitHub reads over the read token; no endpoint, no model. */
 const PrepareLive = PrepareRunServiceLive.pipe(

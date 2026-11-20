@@ -1,4 +1,4 @@
-import { countSchema, severitySchema } from '@mng-review/domain'
+import { countSchema, REPLY_ACTIONS, severitySchema } from '@mng-review/domain'
 import { Schema } from 'effect'
 import { MARKER_VERSION } from './publish.constants'
 
@@ -48,12 +48,14 @@ export const summaryMarkerSchema = Schema.Struct({
 })
 export type SummaryMarker = typeof summaryMarkerSchema.Type
 
-export const REPLY_ACTIONS = ['resolved'] as const
-
-/** The hidden marker of the bot's reply in one of its threads: what it did and at which head. */
+/**
+ * The hidden marker of the bot's reply in one of its threads: what it did, at which head, and the
+ * `databaseId` of the author's comment it answers, unset for a re-check's reply.
+ */
 export const replyMarkerSchema = Schema.Struct({
 	v: Schema.Literal(MARKER_VERSION),
 	action: Schema.Literals(REPLY_ACTIONS),
 	commit: Schema.String,
+	reply: Schema.optionalKey(Schema.Int),
 })
 export type ReplyMarker = typeof replyMarkerSchema.Type

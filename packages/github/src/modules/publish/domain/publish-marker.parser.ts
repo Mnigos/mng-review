@@ -33,6 +33,11 @@ function getLastMarkerJson(body: string, name: MarkerName): string | undefined {
 	return match?.[1] === name ? match[2] : undefined
 }
 
+/** True when the body ends with a marker of the bot's form, whether or not it decodes. */
+export function hasBotMarker(body: string): boolean {
+	return MARKER_PATTERN.test(body)
+}
+
 /** The finding marker of a comment body, or `undefined` when it has none or it does not decode. */
 export function parseFindingMarker(body: string): FindingMarker | undefined {
 	const json = getLastMarkerJson(body, 'finding')

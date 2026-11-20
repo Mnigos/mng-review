@@ -1,5 +1,10 @@
 import type { ReviewReport, Rules, TokensByModel } from '@mng-review/engine'
-import type { RecheckProposal, SummaryCleanup } from '../domain/publish.types'
+import type {
+	AnswerCounts,
+	RecheckProposal,
+	SummaryCleanup,
+} from '../domain/publish.types'
+import type { DecidedThreadReply } from '../domain/thread-reply.schema'
 import type { Verdict } from '../presentation/summary-comment.formatter'
 
 /** The pull request and commits a publish call is about. */
@@ -27,6 +32,15 @@ export interface PublishInput extends PublishTarget {
 	readonly rules: Rules
 	/** Set when the re-check ran: threads it checked, the ones it proposes to resolve, the tokens. */
 	readonly recheck?: PublishRecheck
+	/** Set when the review decided on authors' replies; each is applied after a fresh read. */
+	readonly replies?: PublishReplies
+}
+
+/** What the review decided on authors' replies in the bot's threads. */
+export interface PublishReplies {
+	readonly decisions: readonly DecidedThreadReply[]
+	/** The job's tokens after the decisions; the summary shows them. */
+	readonly tokens: TokensByModel
 }
 
 /** What the re-check of the bot's threads left for publishing to apply. */
@@ -57,6 +71,8 @@ export interface PublishResult {
 	/** Threads of the bot this run checked again, and the ones it resolved. */
 	readonly rechecked: number
 	readonly resolved: number
+	/** Authors' replies this run answered, by action. */
+	readonly answered: AnswerCounts
 	readonly run: number
 	/** A full review finished on this head: this run, or for a partial run the last full one. */
 	readonly finished: boolean
