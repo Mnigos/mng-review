@@ -2,34 +2,15 @@ import { gateRun } from '@mng-review/domain'
 import { RulesService } from '@mng-review/engine'
 import { Context, Effect, Layer } from 'effect'
 import { parsePullRequestEvent } from '../infrastructure/pull-request-event.parser'
+import { FORK_REASON, getRunLimitReason } from './run-gate.helper'
 import type {
 	PreparedRun,
-	PriorRun,
 	PullRequestEvent,
 	ShadowRunInput,
 } from './shadow-run.types'
 
-/** Actions that start a run whatever the run count: a draft that became ready. */
-const EXEMPT_ACTIONS = ['ready_for_review'] as const
-
-/**
- * Why the run stops at `limits.max_runs_per_pr`, or `undefined` when it goes on: a manual trigger
- * and a pull request that just became ready for review are exempt.
- */
-export function getRunLimitReason(
-	prior: PriorRun | undefined,
-	limit: number,
-	event: Pick<PullRequestEvent, 'action' | 'pr'>
-): string | undefined {
-	if (!prior || prior.runs < limit || event.pr.trigger === 'manual')
-		return undefined
-	if (EXEMPT_ACTIONS.some(action => action === event.action)) return undefined
-	return `run limit reached: ${prior.runs} of ${limit} runs on this pull request; a manual command still runs`
-}
-
 /** Events whose payload carries a pull request. */
 const PULL_REQUEST_EVENTS = ['pull_request', 'pull_request_target'] as const
-export const FORK_REASON = 'fork pull request; the workflow never reviews forks'
 
 /**
  * The checks before the endpoint is probed: the event, forks before anything else, the rules from

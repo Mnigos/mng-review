@@ -56,6 +56,7 @@ const readTrustedOutcome = Effect.fn('publishStep.readTrustedOutcome')(
 				engineCommit: env.engineCommit,
 				pullNumber: trusted.pullNumber,
 				head: trusted.headSha,
+				event,
 			},
 		}
 	}
