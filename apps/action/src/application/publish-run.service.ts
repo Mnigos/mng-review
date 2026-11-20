@@ -4,6 +4,7 @@ import {
 	PublishService,
 	type StatusReportResult,
 	StatusReportService,
+	toTrustedPlacement,
 } from '@mng-review/github'
 import { Context, Effect, Layer } from 'effect'
 import type { OutcomeFile } from '../infrastructure/outcome-file.schema'
@@ -74,9 +75,10 @@ export const PublishRunServiceLive = Layer.effect(
 						reason: report.planReport.plan.skippedRun,
 					} satisfies PublishReport
 				const rules = yield* rulesService.load(outcome.binding.baseSha)
+				const placed = toTrustedPlacement(report, rules)
 				const result = yield* publisher.publish({
 					pullNumber: context.pullNumber,
-					report,
+					report: placed,
 					rules,
 					head: context.head,
 					engineCommit: context.engineCommit,
@@ -92,7 +94,7 @@ export const PublishRunServiceLive = Layer.effect(
 				})
 				const checks = yield* statuses.report({
 					head: context.head,
-					report,
+					report: placed,
 					verdict: result.verdict,
 					openBugs: result.openBugs,
 				})
