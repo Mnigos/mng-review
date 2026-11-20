@@ -44,6 +44,7 @@ export function githubApiFake() {
 		reply: [] as GitHubApiError[],
 		resolve: [] as GitHubApiError[],
 		listThreads: [] as GitHubApiError[],
+		listComments: [] as GitHubApiError[],
 	}
 	const author = { __typename: 'Bot', login: BOT_LOGIN }
 	const addThread = (input: ReviewCommentInput) => {
@@ -117,7 +118,12 @@ export function githubApiFake() {
 				return undefined
 			}),
 		listReviewThreads,
-		listComments: () => Effect.sync(() => [...comments]),
+		listComments: () =>
+			Effect.gen(function* () {
+				const error = failures.listComments.shift()
+				if (error) return yield* error
+				return [...comments]
+			}),
 		createReview: (pullNumber, input) =>
 			Effect.gen(function* () {
 				writes.push({ method: 'review', pullNumber, input })

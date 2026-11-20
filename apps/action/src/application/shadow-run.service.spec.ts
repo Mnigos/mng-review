@@ -31,10 +31,11 @@ import { reviewReport } from '../shared/mocks/review-report.helper'
 import {
 	FORK_REASON,
 	getRunLimitReason,
+	PrepareRunService,
 	PrepareRunServiceLive,
 } from './prepare-run.service'
 import { ShadowRunService, ShadowRunServiceLive } from './shadow-run.service'
-import type { ShadowRunInput } from './shadow-run.types'
+import type { PreparedRun, ShadowRunInput } from './shadow-run.types'
 
 interface HarnessOptions {
 	readonly config?: ReviewConfig
@@ -74,7 +75,16 @@ function harness(options: HarnessOptions = {}) {
 		ShadowRunService.use(service => service.run(input)).pipe(
 			Effect.provide(serviceLayer)
 		)
-	return { run, loadSpy, runSpy, probeSpy, rules, report }
+	const prepare = (input: ShadowRunInput = defaultInput) =>
+		PrepareRunService.use(service => service.prepare(input)).pipe(
+			Effect.provide(PrepareRunServiceLive),
+			Effect.provide(Layer.succeed(RulesService, { load: loadSpy }))
+		)
+	const review = (prepared: PreparedRun) =>
+		ShadowRunService.use(service => service.review(prepared)).pipe(
+			Effect.provide(serviceLayer)
+		)
+	return { run, prepare, review, loadSpy, runSpy, probeSpy, rules, report }
 }
 
 afterEach(() => {
@@ -548,4 +558,119 @@ describe('getRunLimitReason', () => {
 			})
 		).toBeUndefined()
 	})
+})
+
+layer(Layer.empty)('split prepare and review', test => {
+	for (const stage of ['fork', 'gate', 'limit'] as const)
+		test.effect(
+			`prepare stops at ${stage} without endpoint or review calls`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = harness({
+						config: {
+							...DEFAULT_PRESET,
+							skip: {
+								...DEFAULT_PRESET.skip,
+								labels: stage === 'gate' ? ['storage'] : [],
+							},
+						},
+					})
+					const payload = eventPayload()
+					const readThreadsSpy = vi.fn(() => Effect.succeed([]))
+					const readPriorSpy = vi.fn(() =>
+						Effect.succeed({
+							runs: fixture.rules.config.limits.max_runs_per_pr,
+						})
+					)
+					expect(
+						yield* fixture.prepare({
+							eventName: 'pull_request_target',
+							readEvent: Effect.succeed(
+								JSON.stringify({
+									...payload,
+									pull_request: {
+										...payload.pull_request,
+										head: {
+											...payload.pull_request.head,
+											repo: {
+												full_name:
+													stage === 'fork'
+														? 'example/fork'
+														: payload.repository.full_name,
+											},
+										},
+									},
+								})
+							),
+							readPrior: readPriorSpy,
+							readThreads: readThreadsSpy,
+						})
+					).toMatchObject({ status: 'skipped' })
+					expect(fixture.probeSpy).not.toHaveBeenCalled()
+					expect(fixture.runSpy).not.toHaveBeenCalled()
+					expect(readThreadsSpy).not.toHaveBeenCalled()
+					if (stage !== 'limit') expect(readPriorSpy).not.toHaveBeenCalled()
+					if (stage === 'fork') expect(fixture.loadSpy).not.toHaveBeenCalled()
+				})
+		)
+	for (const status of ['skipped', 'invalid-config', 'failed'] as const)
+		test.effect(
+			`review returns a prepared ${status} unchanged without probing`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = harness()
+					const event = yield* eventParser.parsePullRequestEvent(
+						JSON.stringify(eventPayload())
+					)
+					const prepared: PreparedRun =
+						status === 'invalid-config'
+							? {
+									status,
+									reason: 'prepared reason',
+									event,
+									source: '.mng/review.yml',
+								}
+							: { status, reason: 'prepared reason', event }
+					expect(yield* fixture.review(prepared)).toBe(prepared)
+					expect(fixture.loadSpy).not.toHaveBeenCalled()
+					expect(fixture.probeSpy).not.toHaveBeenCalled()
+					expect(fixture.runSpy).not.toHaveBeenCalled()
+				})
+		)
+	for (const trigger of ['auto', 'manual'] as const)
+		test.effect(
+			`review uses prior head only for ${trigger} automatic input`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = harness()
+					const event = yield* eventParser.parsePullRequestEvent(
+						JSON.stringify(eventPayload())
+					)
+					expect(
+						yield* fixture.review({
+							status: 'ready',
+							event: { ...event, pr: { ...event.pr, trigger } },
+							threads: [],
+							prior: { runs: 1, head: 'earlier-head' },
+						})
+					).toMatchObject({ status: 'reviewed' })
+					expect(fixture.loadSpy).toHaveBeenCalledExactlyOnceWith(BASE_SHA)
+					const request = fixture.runSpy.mock.calls[0]?.[0]
+					if (trigger === 'auto')
+						expect(request).toHaveProperty('since', 'earlier-head')
+					else expect(request).not.toHaveProperty('since')
+				})
+		)
+	test.effect('prepare followed by review reuses in-memory rules', () =>
+		Effect.gen(function* () {
+			const fixture = harness()
+			const prepared = yield* fixture.prepare()
+			expect(prepared.status).toBe('ready')
+			expect(fixture.probeSpy).not.toHaveBeenCalled()
+			expect(yield* fixture.review(prepared)).toMatchObject({
+				status: 'reviewed',
+			})
+			expect(fixture.loadSpy).toHaveBeenCalledExactlyOnceWith(BASE_SHA)
+		})
+	)
 })
