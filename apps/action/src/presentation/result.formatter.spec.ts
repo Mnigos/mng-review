@@ -413,43 +413,18 @@ describe('formatResult', () => {
 		})
 })
 
-test.each(['published', 'failed', 'status-only', 'not-published'] as const)(
-	'result includes %s publish report and publish mode',
-	status => {
-		const publish =
-			status === 'published'
-				? ({
-						status,
-						checks: { checks: 1, status: true },
-						result: {
-							verdict: 'ready',
-							openBugs: 0,
-							onLine: 0,
-							onFile: 0,
-							inSummary: 0,
-							unposted: 0,
-							repeated: 1,
-							dismissed: 3,
-							rechecked: 0,
-							resolved: 0,
-							run: 2,
-						},
-					} as const)
-				: status === 'status-only'
-					? { status, reason: 'publishing detail', posted: false }
-					: { status, reason: 'publishing detail' }
-		expect(
-			decodeJson(
-				formatResult(
-					{
-						status: 'reviewed',
-						rules: RULES,
-						event: EVENT,
-						report: reviewReport(),
-					},
-					{ ...CONTEXT, publish }
-				)
+test('the review job writes publish mode with no publish report yet', () => {
+	expect(
+		decodeJson(
+			formatResult(
+				{
+					status: 'reviewed',
+					rules: RULES,
+					event: EVENT,
+					report: reviewReport(),
+				},
+				{ ...CONTEXT, mode: 'publish' }
 			)
-		).toMatchObject({ mode: 'publish', publish })
-	}
-)
+		)
+	).toMatchObject({ mode: 'publish', publish: null })
+})

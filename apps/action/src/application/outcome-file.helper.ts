@@ -214,3 +214,22 @@ export function getBindingMismatch(
 ): keyof OutcomeBinding | undefined {
 	return BINDING_FIELDS.find(field => binding[field] !== trusted[field])
 }
+
+/**
+ * True when the publish job has something to post: a reviewed run whose plan did not skip it, or
+ * an offline endpoint. Every other outcome posts nothing, so the publish job does not start.
+ */
+export function isPublishable(outcome: ShadowOutcome): boolean {
+	if (outcome.status === 'offline') return true
+	return (
+		outcome.status === 'reviewed' && !outcome.report.planReport.plan.skippedRun
+	)
+}
+
+/** Why a binding field that differs stops publishing; a re-run of the publish job alone changes the attempt. */
+export function toMismatchReason(field: keyof OutcomeBinding): string {
+	const reason = `the outcome file belongs to another run: ${field} differs`
+	return field === 'runAttempt'
+		? `${reason}; re-run all jobs, not the publish job alone`
+		: reason
+}

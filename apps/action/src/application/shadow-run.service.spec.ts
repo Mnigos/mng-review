@@ -31,9 +31,9 @@ import { reviewReport } from '../shared/mocks/review-report.helper'
 import {
 	FORK_REASON,
 	getRunLimitReason,
-	ShadowRunService,
-	ShadowRunServiceLive,
-} from './shadow-run.service'
+	PrepareRunServiceLive,
+} from './prepare-run.service'
+import { ShadowRunService, ShadowRunServiceLive } from './shadow-run.service'
 import type { ShadowRunInput } from './shadow-run.types'
 
 interface HarnessOptions {
@@ -57,6 +57,7 @@ function harness(options: HarnessOptions = {}) {
 		Effect.succeed(options.probe ?? ({ status: 'online' } as const))
 	)
 	const serviceLayer = ShadowRunServiceLive.pipe(
+		Layer.provide(PrepareRunServiceLive),
 		Layer.provide(
 			Layer.mergeAll(
 				Layer.succeed(RulesService, { load: loadSpy }),
@@ -368,6 +369,7 @@ layer(FileSystemLayer, { excludeTestServices: true })(
 						})
 					)
 					const serviceLayer = ShadowRunServiceLive.pipe(
+						Layer.provide(PrepareRunServiceLive),
 						Layer.provide(
 							Layer.mergeAll(
 								rulesLayer,

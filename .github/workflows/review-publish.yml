@@ -1,7 +1,9 @@
 # Reusable review workflow, publish mode: like review.yml, and it also comments on the pull request
 # as github-actions[bot]: threads for findings, a sticky summary, a check run per agent and the
 # MNG Review commit status, never an approval. The caller grants pull-requests, checks and statuses
-# write; the two files share their steps in .github/actions/review.
+# write. Two jobs: `review` holds the endpoint secrets and a read-only token and makes every model
+# call; `publish` holds the write token, downloads the outcome and posts it without a model call.
+# The review job shares its steps with review.yml in .github/actions/review.
 # The caller owns the trigger and the concurrency; see "GitHub Actions" in README.md.
 # Nothing from the caller's repository is installed, built or run: its base commit is checked out
 # only so git can read the change, and the rules come from that base commit.
@@ -48,19 +50,20 @@ permissions:
 
 jobs:
   review:
-    name: MNG Review (publish)
+    name: MNG Review (review)
     # Only a pull request from this repository gets the job, its secrets and the tailnet; the entry
     # skips forks and other events too.
     if: >-
       (github.event_name == 'pull_request' || github.event_name == 'pull_request_target') &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ${{ inputs.runner }}
+    # Read only: this job holds the endpoint and never writes to GitHub.
     permissions:
       contents: read
-      pull-requests: write
-      checks: write
-      statuses: write
+      pull-requests: read
     timeout-minutes: ${{ inputs.timeout-minutes }}
+    outputs:
+      publish: ${{ steps.review.outputs.publish }}
     env:
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -103,8 +106,10 @@ jobs:
           path: .mng-review-engine
           persist-credentials: false
 
-      # Keep the steps above in step with review.yml; the rest is shared.
+      # Keep the steps above in step with review.yml; the rest is shared. The read token reaches
+      # the prepare step alone, never the step that calls the model.
       - name: Review
+        id: review
         uses: ./.mng-review-engine/.github/actions/review
         with:
           mode: publish
@@ -116,3 +121,65 @@ jobs:
           tailscale-tags: ${{ inputs.tailscale-tags }}
           tailscale-oauth-client-id: ${{ secrets.tailscale-oauth-client-id }}
           tailscale-oauth-secret: ${{ secrets.tailscale-oauth-secret }}
+
+  publish:
+    name: MNG Review (publish)
+    # Only a reviewed or offline outcome is posted; a failed or skipped review job skips this one.
+    needs: review
+    if: needs.review.outputs.publish == 'true'
+    runs-on: ${{ inputs.runner }}
+    # No endpoint or tailnet secret is named here, and the job never joins the tailnet.
+    permissions:
+      contents: read
+      pull-requests: write
+      checks: write
+      statuses: write
+    timeout-minutes: 10
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      # Without these (GitHub Enterprise Server), checkout would fall back to the caller's repository.
+      - name: Check the workflow's own commit
+        if: job.workflow_repository == '' || job.workflow_sha == ''
+        run: |
+          echo "::error::job.workflow_repository and job.workflow_sha are not available on this GitHub; MNG Review cannot check out its own code."
+          exit 1
+
+      # The base commit only, never the head; credentials are not left in .git/config.
+      - name: Check out the base commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: repo
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Objects only: the head commit is never checked out, and git reads it with `git show`.
+      - name: Fetch the head commit
+        working-directory: repo
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          auth="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
+          echo "::add-mask::$auth"
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0="http.${GITHUB_SERVER_URL}/.extraheader" \
+          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth" \
+            git fetch --no-tags --quiet origin "$HEAD_SHA"
+          git cat-file -e "$HEAD_SHA^{commit}"
+
+      - name: Check out MNG Review
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .mng-review-engine
+          persist-credentials: false
+
+      # Keep the steps above in step with the review job.
+      - name: Publish
+        uses: ./.mng-review-engine/.github/actions/publish
+        with:
+          engine-commit: ${{ job.workflow_sha }}
+          token: ${{ github.token }}

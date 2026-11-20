@@ -1,5 +1,6 @@
 import type { ConfigError, PullRequestInfo } from '@mng-review/domain'
 import type { ReviewReport, Rules } from '@mng-review/engine'
+import type { BotThread } from '@mng-review/github'
 import type { Effect } from 'effect'
 
 /** The pull request a workflow run reviews: its number, the two commits and what the engine sees. */
@@ -23,13 +24,34 @@ export interface ShadowRunInput {
 	readonly eventName: string
 	readonly readEvent: Effect.Effect<string, ConfigError>
 	/**
-	 * Publish mode only: the earlier runs on the pull request, read before any model call, for
+	 * The prepare step only: the earlier runs on the pull request, read before any model call, for
 	 * `limits.max_runs_per_pr` and incremental input. Unset or `undefined`: no earlier run is known.
 	 */
 	readonly readPrior?: (
 		event: PullRequestEvent
 	) => Effect.Effect<PriorRun | undefined>
+	/** The prepare step only: the bot's threads, read once the run goes on. Unset: none. */
+	readonly readThreads?: (
+		event: PullRequestEvent
+	) => Effect.Effect<readonly BotThread[]>
 }
+
+/** The checks before the probe passed; the review step reviews this event. */
+export interface ReadyRun {
+	readonly status: 'ready'
+	readonly event: PullRequestEvent
+	readonly prior?: PriorRun
+	/** The bot's threads, read with the read token, which the re-check proposes from. */
+	readonly threads: readonly BotThread[]
+	/**
+	 * The rules the checks loaded, kept only in the process that loaded them; the prepared file
+	 * never holds them, so a review step in another process loads them again.
+	 */
+	readonly rules?: Rules
+}
+
+/** What the checks before the probe decided: go on, or the outcome the run ends with. */
+export type PreparedRun = ReadyRun | SkippedRun | InvalidConfigRun | FailedRun
 
 /** Nothing was reviewed: not a pull request, a fork, or a `skip` rule at the base commit. */
 export interface SkippedRun {
