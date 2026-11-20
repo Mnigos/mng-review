@@ -1,5 +1,10 @@
 import { layer } from '@effect/vitest'
 import { REDACTED } from '@mng-review/engine'
+import {
+	MAX_REPORT_ENTRIES,
+	MAX_REPORT_NAME,
+	MAX_REPORT_TEXT,
+} from '@mng-review/github'
 import { Effect, Layer, Schema } from 'effect'
 import { parseOutcomeFile } from '../infrastructure/outcome-file.parser'
 import {
@@ -92,8 +97,15 @@ describe('outcome file helpers', () => {
 			version: OUTCOME_VERSION,
 			binding: outcomeFile().binding,
 			status: 'reviewed',
-			report,
+			report: {
+				...report,
+				planReport: {
+					...report.planReport,
+					plan: { ...report.planReport.plan, files: [] },
+				},
+			},
 		})
+		expect(report.planReport.plan.files).not.toHaveLength(0)
 	})
 	test('turns recheck threads into proposals with only id, fingerprint and reason', () => {
 		const recheck = recheckProposals()
@@ -269,6 +281,245 @@ layer(Layer.empty)('toOutcomeText', test => {
 				])
 					expect(text).not.toContain(value)
 			})
+	)
+	test.effect(
+		'redacts model text and names without changing protocol values or paths',
+		() =>
+			Effect.gen(function* () {
+				const report = boundReviewReport()
+				const file = {
+					...outcomeFile(),
+					binding: { ...outcomeFile().binding, repository: 'example/review' },
+					report: {
+						...report,
+						bugs: report.bugs.map(finding => ({
+							...finding,
+							path: 'src/review.ts',
+							title: 'review this',
+							models: ['review-model'],
+						})),
+						agents: report.agents.map(agent => ({
+							...agent,
+							model: 'review-model',
+						})),
+						tokens: Object.fromEntries(
+							Object.values(report.tokens).map(tokens => [
+								'review-model',
+								tokens,
+							])
+						),
+						tokenSources: Object.fromEntries(
+							Object.values(report.tokens).map(tokens => [
+								'review-model',
+								{
+									...tokens,
+									conversations: 1,
+									firstMessageTokens: 6,
+									historyTokens: 0,
+								},
+							])
+						),
+					},
+				}
+				const decoded = yield* parseOutcomeFile(toOutcomeText(file, ['review']))
+				expect(decoded.status).toBe('reviewed')
+				expect(decoded.binding).toEqual(file.binding)
+				expect(
+					getBindingMismatch(decoded.binding, file.binding)
+				).toBeUndefined()
+				expect(decoded.report?.bugs).toEqual(
+					file.report.bugs.map(finding => ({
+						...finding,
+						title: `${REDACTED} this`,
+						models: [`${REDACTED}-model`],
+					}))
+				)
+				expect(decoded.report?.agents).toEqual(
+					file.report.agents.map(agent => ({
+						...agent,
+						title: agent.title.replaceAll('review', REDACTED),
+						model: `${REDACTED}-model`,
+					}))
+				)
+				expect(decoded.report?.tokens).toEqual(
+					Object.fromEntries(
+						Object.values(file.report.tokens).map(tokens => [
+							`${REDACTED}-model`,
+							tokens,
+						])
+					)
+				)
+				expect(decoded.report?.tokenSources).toEqual(
+					Object.fromEntries(
+						Object.values(file.report.tokenSources).map(tokens => [
+							`${REDACTED}-model`,
+							tokens,
+						])
+					)
+				)
+				expect(decoded.report?.planReport).toEqual({
+					...report.planReport,
+					plan: {
+						...report.planReport.plan,
+						runs: report.planReport.plan.runs.map(run => ({
+							...run,
+							title: run.title.replaceAll('review', REDACTED),
+						})),
+					},
+				})
+			})
+	)
+	test.effect(
+		'bounds long model output and recheck reasons while preserving other findings',
+		() =>
+			Effect.gen(function* () {
+				const report = boundReviewReport()
+				const suggestion = 's'.repeat(25_000)
+				const reason = 'r'.repeat(25_000)
+				const model = 'm'.repeat(300)
+				const evidence = Array.from({ length: 600 }, (_, index) =>
+					index === 0 ? 'e'.repeat(25_000) : `src/evidence-${index}.ts:1`
+				)
+				const file = {
+					...outcomeFile(),
+					report: {
+						...report,
+						bugs: report.bugs.map((finding, index) =>
+							index === 0
+								? {
+										...finding,
+										suggestion,
+										evidence,
+										models: [model],
+									}
+								: finding
+						),
+						agents: report.agents.map((agent, index) =>
+							index === 0 ? { ...agent, model } : agent
+						),
+					},
+					recheck: {
+						checked: 1,
+						rejected: [
+							{ threadId: 'thread', fingerprint: 'fingerprint', reason },
+						],
+						tokens: report.tokens,
+					},
+				}
+				const decoded = yield* parseOutcomeFile(toOutcomeText(file, []))
+				expect(decoded.report?.bugs[0]?.suggestion).toBe(
+					suggestion.slice(0, MAX_REPORT_TEXT)
+				)
+				expect(decoded.report?.bugs[0]?.evidence).toEqual(
+					evidence
+						.slice(0, MAX_REPORT_ENTRIES)
+						.map(entry => entry.slice(0, MAX_REPORT_TEXT))
+				)
+				expect(decoded.report?.bugs[0]?.models).toEqual([
+					model.slice(0, MAX_REPORT_NAME),
+				])
+				expect(decoded.report?.agents[0]?.model).toBe(
+					model.slice(0, MAX_REPORT_NAME)
+				)
+				expect(decoded.recheck?.rejected).toEqual([
+					{
+						threadId: 'thread',
+						fingerprint: 'fingerprint',
+						reason: reason.slice(0, MAX_REPORT_TEXT),
+					},
+				])
+				expect(decoded.report?.bugs.slice(1)).toEqual(report.bugs.slice(1))
+				expect(decoded.report?.nits).toEqual(report.nits)
+				expect(decoded.report?.rejected).toEqual(report.rejected)
+			})
+	)
+	test.effect(
+		'preserves a deleted changed-file name and old name containing backslashes',
+		() =>
+			Effect.gen(function* () {
+				const report = boundReviewReport()
+				const files = report.planReport.change.files.map(file => ({
+					...file,
+					path: 'src/removed\\file.ts',
+					oldPath: 'src/old\\file.ts',
+					status: 'deleted' as const,
+				}))
+				const decoded = yield* parseOutcomeFile(
+					toOutcomeText(
+						{
+							...outcomeFile(),
+							report: {
+								...report,
+								planReport: {
+									...report.planReport,
+									change: { ...report.planReport.change, files },
+								},
+							},
+						},
+						[]
+					)
+				)
+				expect(decoded.report?.planReport.change.files).toEqual(files)
+				expect(decoded.report?.bugs).toEqual(report.bugs)
+			})
+	)
+	test.effect('still rejects a finding path containing a backslash', () =>
+		Effect.gen(function* () {
+			const report = boundReviewReport()
+			const error = yield* parseOutcomeFile(
+				toOutcomeText(
+					{
+						...outcomeFile(),
+						report: {
+							...report,
+							bugs: report.bugs.map(finding => ({
+								...finding,
+								path: 'src/review\\file.ts',
+							})),
+						},
+					},
+					[]
+				)
+			).pipe(Effect.flip)
+			expect(error._tag).toBe('OutcomeFileError')
+			expect(error.message).toContain('must be a repository-relative path')
+		})
+	)
+	test.effect('round trips a report with 5,001 changed files', () =>
+		Effect.gen(function* () {
+			const report = boundReviewReport()
+			const files = Array.from({ length: 5001 }, (_, index) => ({
+				path: `src/file-${index}.ts`,
+				status: 'modified' as const,
+				additions: 1,
+				deletions: 1,
+				binary: false,
+				sizeBytes: 10,
+			}))
+			const file = toOutcomeFile(
+				{
+					status: 'reviewed',
+					event: EVENT,
+					rules: RULES,
+					report: {
+						...report,
+						planReport: {
+							...report.planReport,
+							change: { ...report.planReport.change, files },
+							plan: { ...report.planReport.plan, files },
+						},
+					},
+				},
+				undefined,
+				BINDING_ENV
+			)
+			expect(file).toBeDefined()
+			if (file === undefined) return
+			const decoded = yield* parseOutcomeFile(toOutcomeText(file, []))
+			expect(decoded.report?.planReport.change.files).toEqual(files)
+			expect(decoded.report?.planReport.plan.files).toEqual([])
+			expect(decoded.report?.bugs).toEqual(report.bugs)
+		})
 	)
 	test.effect('serializes without masks unchanged', () =>
 		Effect.gen(function* () {
