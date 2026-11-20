@@ -6,8 +6,11 @@ const AGENT_NAME = /^[A-Za-z0-9][\w.-]{0,63}$/u
 const FENCE = /^(`{3,}|~{3,})/u
 /** A line that closes one: up to three spaces, fence characters and only whitespace after them. */
 const CLOSING_FENCE = /^ {0,3}(`{3,}|~{3,})[ \t]*$/u
-/** An HTML comment on one line; the group is empty when it is left open at the end of the line. */
-const HTML_COMMENT = /<!--.*?(-->|$)/gu
+/**
+ * An HTML comment on one line; the group is empty when it is left open at the end of the line.
+ * `s` lets it run over a bare CR, U+2028 or U+2029 inside the line.
+ */
+const HTML_COMMENT = /<!--.*?(-->|$)/gsu
 const COMMENT_CLOSE = '-->'
 /** Indentation that makes an indented code block: a tab or four spaces. */
 const CODE_INDENT = /^(?: {4}| {0,3}\t)/u
@@ -123,6 +126,8 @@ export function parseMentionCommand(
 				state.current = { ...state.current, fence: opened }
 				continue
 			}
+			// Indented code shows `<!--` as text, so it never opens a comment that could hide a fence.
+			if (CODE_INDENT.test(raw)) continue
 		}
 		const visible = toVisibleLine(raw, inComment)
 		state.current = { ...state.current, inComment: visible.inComment }
