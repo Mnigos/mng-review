@@ -35,13 +35,14 @@ export class ThreadPlaceService extends Context.Service<
 			threads: readonly BotThread[]
 		) => Effect.Effect<ReadonlySet<string>>
 		/**
-		 * The changed files and renames between the merge base of `base` and `head`, as git reads
-		 * them; `undefined` when git fails. Never from the outcome file, which the review job shapes.
+		 * The change between the merge base of `base` and `head` (its commits, files and renames) as
+		 * git reads it; `undefined` when git fails. Never from the outcome file, which the review job
+		 * shapes.
 		 */
 		readonly readChange: (
 			base: string,
 			head: string
-		) => Effect.Effect<Pick<Change, 'files'> | undefined>
+		) => Effect.Effect<Change | undefined>
 	}
 >()('mng-review/ThreadPlaceService') {}
 
@@ -141,11 +142,7 @@ export const ThreadPlaceServiceLive = Layer.effect(
 		) {
 			return yield* git
 				.readChange(base, head)
-				.pipe(
-					Effect.orElseSucceed(
-						(): Pick<Change, 'files'> | undefined => undefined
-					)
-				)
+				.pipe(Effect.orElseSucceed((): Change | undefined => undefined))
 		})
 
 		return { readCommentableLines, getChangedPlaces, readChange }

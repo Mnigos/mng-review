@@ -2,6 +2,7 @@ import { layer } from '@effect/vitest'
 import { GitService } from '@mng-review/engine'
 import { Effect, Layer, Redacted } from 'effect'
 import { GITHUB_ACTIONS_IDENTITY } from '../../../platform/bot-identity.helper'
+import type { ReviewThread } from '../../../platform/github-api.schema'
 import { GitHubConfig } from '../../../platform/github.config'
 import { GitHubApiError } from '../../../platform/github.errors'
 import { provideOwnedIdentities } from '../../../platform/owned-identities.context'
@@ -55,6 +56,7 @@ import {
 	THREAD_PLACE_LINES,
 } from '../domain/publish.constants'
 import { PublishIncompleteError } from '../domain/publish.errors'
+import type { ThreadReplyDecision } from '../domain/thread-reply.schema'
 import { toMarkerComment } from '../presentation/thread-comment.formatter'
 import { PublishService, PublishServiceLive } from './publish.service'
 import {
@@ -65,6 +67,12 @@ import {
 	ThreadResolutionService,
 	ThreadResolutionServiceLive,
 } from './thread-resolution.service'
+
+/** `ACCEPTED_DECISION` citing a line the pull request did not change, so publishing's check passes. */
+const ACCEPTED_ON_KEPT_LINE = {
+	...ACCEPTED_DECISION,
+	evidence: ['src/store.ts:12'],
+} as const satisfies ThreadReplyDecision
 
 /** Real git history with a finding on a changed head line and a recording API. */
 function setup(
@@ -1434,6 +1442,20 @@ layer(APP_MODE_OWNED, { excludeTestServices: true })(
 )
 
 /** Runs the supplied resolution fake between the first thread read and the summary write. */
+/** The thread with every comment on `commit`, so publishing's git checks read it there. */
+function atCommit(thread: ReviewThread, commit: string): ReviewThread {
+	return {
+		...thread,
+		comments: {
+			...thread.comments,
+			nodes: thread.comments.nodes.map(comment => ({
+				...comment,
+				originalCommit: { oid: commit },
+			})),
+		},
+	}
+}
+
 function setupOverlap(apply: ThreadResolutionService['Service']['apply']) {
 	const fixture = setup(apply)
 	return {
@@ -2789,7 +2811,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 								replies: {
 									base: fixture.base,
 									tokens: {},
-									decisions: [decidedReply(ACCEPTED_DECISION)],
+									decisions: [decidedReply(ACCEPTED_ON_KEPT_LINE)],
 								},
 							})
 						).pipe(Effect.provide(fixture.publisher))
@@ -2814,7 +2836,10 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 					const fixture = setup()
 					fixture.fake.threads.push(
 						pendingReviewThread(),
-						pendingReviewThread({ id: 'resolved-thread' })
+						atCommit(
+							pendingReviewThread({ id: 'resolved-thread' }),
+							fixture.base
+						)
 					)
 					expect(
 						yield* PublishService.use(service =>
@@ -2898,7 +2923,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 																	action,
 																	reason: 'The guard is intentional.',
 																	memory: 'Keep the guard.',
-																	evidence: ['src/store.ts:10'],
+																	evidence: ['src/store.ts:12'],
 																}
 															: { action, reason: 'The guard fixes it.' }
 													),
@@ -2989,17 +3014,12 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 				() =>
 					Effect.gen(function* () {
 						const fixture = setup()
-						const thread = pendingReviewThread()
-						fixture.fake.threads.push({
-							...thread,
-							comments: {
-								...thread.comments,
-								nodes: thread.comments.nodes.map(comment => ({
-									...comment,
-									originalCommit: { oid: fixture.head },
-								})),
-							},
-						})
+						fixture.fake.threads.push(
+							atCommit(
+								pendingReviewThread(),
+								action === 'resolved' ? fixture.base : fixture.head
+							)
+						)
 						fixture.fake.failures.resolve.push(error(403))
 						const decision =
 							action === 'accepted'
@@ -3007,7 +3027,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 										action,
 										reason: 'The guard is intentional.',
 										memory: 'Keep the guard.',
-										evidence: ['src/store.ts:10'],
+										evidence: ['src/store.ts:12'],
 									}
 								: { action, reason: 'The guard fixes it.' }
 						const published = yield* PublishService.use(service =>

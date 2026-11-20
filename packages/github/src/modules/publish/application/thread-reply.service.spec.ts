@@ -430,6 +430,7 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService apply', test => {
 		() =>
 			Effect.gen(function* () {
 				const { fake } = setup()
+				fake.threads.push(pendingReviewThread({ id: 'second' }))
 				fake.failures.getCollaboratorRole.push(apiError())
 				const answered = yield* ThreadReplyService.use(service =>
 					service.apply({
@@ -451,7 +452,9 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService apply', test => {
 					Effect.provide(ThreadReplyServiceLive.pipe(Layer.provide(fake.api)))
 				)
 				expect(answered.map(entry => entry.thread.id)).toEqual(['second'])
-				expect(fake.reads).toEqual([
+				expect(
+					fake.reads.filter(read => read.startsWith('getCollaboratorRole:'))
+				).toEqual([
 					'getCollaboratorRole:contributor',
 					'getCollaboratorRole:writer',
 				])
@@ -465,6 +468,7 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService apply', test => {
 		() =>
 			Effect.gen(function* () {
 				const { fake } = setup()
+				fake.threads.push(pendingReviewThread({ id: 'second' }))
 				expect(
 					yield* ThreadReplyService.use(service =>
 						service.apply({
@@ -486,7 +490,9 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService apply', test => {
 						Effect.provide(ThreadReplyServiceLive.pipe(Layer.provide(fake.api)))
 					)
 				).toHaveLength(2)
-				expect(fake.reads).toEqual(['getCollaboratorRole:contributor'])
+				expect(
+					fake.reads.filter(read => read.startsWith('getCollaboratorRole:'))
+				).toEqual(['getCollaboratorRole:contributor'])
 				expect(fake.writes.map(write => write.method)).toEqual([
 					'reply',
 					'reply',

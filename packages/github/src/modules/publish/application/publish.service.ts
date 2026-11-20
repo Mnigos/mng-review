@@ -36,6 +36,7 @@ import {
 	toBlobLinks,
 } from '../presentation/thread-comment.formatter'
 import type { PublishInput, PublishResult } from './publish.service.types'
+import { ReplyCheckService, ReplyCheckServiceLive } from './reply-check.service'
 import { SummaryCommentService } from './summary-comment.service'
 import {
 	ThreadPlaceService,
@@ -47,9 +48,9 @@ import {
 } from './thread-reply.service'
 import { ThreadResolutionService } from './thread-resolution.service'
 
-/** Answers that close a thread for the bot's counts. */
+/** Answers that close a thread for the bot's counts; publishing checks them against git first. */
 const CLOSING_ACTIONS: ReadonlySet<string> = new Set(['resolved', 'accepted'])
-/** Answers that stand only within the limit, which needs the change read from git. */
+/** Answers checked against the change read from git: the owner's limit and the evidence. */
 const LIMITED_ACTIONS: ReadonlySet<string> = new Set(['accepted'])
 
 /** A run as the marker judges it, and whether its pull request moved to another head meanwhile. */
@@ -64,8 +65,8 @@ interface CheckedRun extends MarkedRun {
  * owned identity, or only resolved ones whose code did not change, is not posted again. A comment
  * the bot wrote but someone else edited no longer counts as the bot's. A summary write that fails
  * after threads were posted fails with `PublishIncompleteError`. Before planning it applies the
- * re-check's proposals and the review's reply decisions (`ThreadReplyService`), so a thread they
- * close counts as resolved.
+ * re-check's proposals and the review's reply decisions that pass its own git check
+ * (`ReplyCheckService`, then `ThreadReplyService`), so a thread they close counts as resolved.
  */
 export class PublishService extends Context.Service<
 	PublishService,
@@ -93,6 +94,7 @@ export const PublishServiceLive = Layer.effect(
 		const summaries = yield* SummaryCommentService
 		const places = yield* ThreadPlaceService
 		const conversation = yield* ThreadReplyService
+		const replyChecks = yield* ReplyCheckService
 
 		const readThreads = Effect.fn('PublishService.readThreads')(function* (
 			pullNumber: number
@@ -231,16 +233,25 @@ export const PublishServiceLive = Layer.effect(
 					})
 				: []
 			const { replies } = input
+			const change = replies?.decisions.some(entry =>
+				LIMITED_ACTIONS.has(entry.decision.action)
+			)
+				? yield* places.readChange(replies.base, input.head)
+				: undefined
+			const decisions = replies
+				? yield* replyChecks.check({
+						decisions: replies.decisions,
+						threads: found,
+						head: input.head,
+						change,
+					})
+				: []
 			const answered = yield* conversation.apply({
 				links,
-				decisions: replies?.decisions ?? [],
+				decisions,
 				threads: found,
 				config: input.rules.config,
-				change: replies?.decisions.some(entry =>
-					LIMITED_ACTIONS.has(entry.decision.action)
-				)
-					? yield* places.readChange(replies.base, input.head)
-					: undefined,
+				change,
 			})
 			const resolvedIds = new Set([
 				...resolved.map(entry => entry.thread.id),
@@ -336,5 +347,11 @@ export const PublishServiceLive = Layer.effect(
 		return { publish, readThreads }
 	})
 ).pipe(
-	Layer.provide(Layer.mergeAll(ThreadPlaceServiceLive, ThreadReplyServiceLive))
+	Layer.provide(
+		Layer.mergeAll(
+			ThreadPlaceServiceLive,
+			ThreadReplyServiceLive,
+			ReplyCheckServiceLive
+		)
+	)
 )
