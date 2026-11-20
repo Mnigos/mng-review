@@ -1,6 +1,6 @@
 import type { Finding } from '@mng-review/domain'
 import type { ThreadKind } from './publish-marker.schema'
-import { isSameProblem } from './publish-plan.helper'
+import { getMatchingThreads } from './publish-plan.helper'
 import { MAX_RECHECKS } from './publish.constants'
 import type {
 	BotThread,
@@ -34,7 +34,8 @@ export function getRecheckCandidates(
 			thread.replies === 0 &&
 			thread.commit !== undefined &&
 			thread.commit !== head &&
-			!published.some(entry => isSameProblem(entry.finding, thread))
+			// Found again only by a finding whose kind covers the thread's, as publishing decides it.
+			!published.some(entry => getMatchingThreads(entry, [thread]).length > 0)
 	)
 }
 
