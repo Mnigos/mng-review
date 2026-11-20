@@ -5,10 +5,12 @@ import {
 	MAX_OUTCOME_BYTES,
 	type OutcomeBinding,
 } from '../../infrastructure/outcome-file.schema'
+import { parsePullRequestEvent } from '../../infrastructure/pull-request-event.parser'
 import {
 	cleanupRepos,
 	FileSystemLayer,
 } from '../../shared/mocks/git-test.helper'
+import { eventPayload } from '../../shared/mocks/pull-request-event.helper'
 import { stepFixture } from '../../shared/mocks/step-test.helper'
 import { runPublishStep } from './publish-step.handler'
 
@@ -88,16 +90,72 @@ layer(FileSystemLayer, { excludeTestServices: true })(
 						expect(summary).toContain(`${scenario} differs`)
 				})
 			)
+
+		for (const status of ['reviewed', 'offline'] as const)
+			test.effect(
+				`a correctly bound ${status} outcome for a draft event posts nothing`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = stepFixture()
+						const fs = yield* FileSystem.FileSystem
+						const payload = eventPayload()
+						yield* fs.writeFileString(
+							fixture.environment.GITHUB_EVENT_PATH,
+							JSON.stringify({
+								...payload,
+								pull_request: {
+									...payload.pull_request,
+									draft: true,
+									base: { ...payload.pull_request.base, sha: fixture.base },
+									head: { ...payload.pull_request.head, sha: fixture.head },
+								},
+							})
+						)
+						yield* fs.writeFileString(
+							fixture.paths.outcome,
+							JSON.stringify({
+								...fixture.file,
+								status,
+								...(status === 'offline' ? { reason: 'no endpoint' } : {}),
+							})
+						)
+						yield* fs.writeFileString(
+							fixture.paths.result,
+							JSON.stringify({ version: 1 })
+						)
+						yield* runPublishStep.pipe(
+							Effect.provide(fixture.publishRunLayer),
+							Effect.provide(fixture.envLayer())
+						)
+						expect(fixture.api.writes).toEqual([])
+						expect(fixture.status.checks).toEqual([])
+						expect(fixture.status.statuses).toEqual([])
+						expect(fixture.loads).toEqual([fixture.base])
+						expect(
+							JSON.parse(yield* fs.readFileString(fixture.paths.result))
+						).toEqual({
+							version: 1,
+							publish: {
+								status: 'not-published',
+								reason: 'draft pull request (skip.drafts)',
+							},
+						})
+					})
+			)
 		for (const resultExists of [true, false])
 			test.effect(
 				`a matching outcome preserves layer-one publishing with result present=${resultExists}`,
 				() =>
 					Effect.gen(function* () {
 						const direct = stepFixture()
+						const fs = yield* FileSystem.FileSystem
 						const context = {
 							engineCommit: direct.file.binding.engineCommit ?? undefined,
 							pullNumber: direct.file.binding.pullNumber,
 							head: direct.head,
+							event: yield* parsePullRequestEvent(
+								yield* fs.readFileString(direct.environment.GITHUB_EVENT_PATH)
+							),
 						}
 						const expected = yield* PublishRunService.use(service =>
 							service.run(direct.file, context)
@@ -112,7 +170,6 @@ layer(FileSystemLayer, { excludeTestServices: true })(
 						direct.status.checks.splice(0)
 						direct.status.statuses.splice(0)
 						const fixture = direct
-						const fs = yield* FileSystem.FileSystem
 						const { file } = fixture
 						yield* fs.writeFileString(
 							fixture.paths.outcome,
