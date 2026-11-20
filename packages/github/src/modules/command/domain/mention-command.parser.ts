@@ -6,8 +6,9 @@ const AGENT_NAME = /^[A-Za-z0-9][\w.-]{0,63}$/u
 const FENCE = /^(`{3,}|~{3,})/u
 /** A line that closes one: up to three spaces, fence characters and only whitespace after them. */
 const CLOSING_FENCE = /^ {0,3}(`{3,}|~{3,})[ \t]*$/u
-/** An HTML comment, or one left open, which runs to the end of the comment body. */
-const HTML_COMMENT = /<!--[\s\S]*?(?:-->|$)/gu
+/** An HTML comment on one line; the group is empty when it is left open at the end of the line. */
+const HTML_COMMENT = /<!--.*?(-->|$)/gu
+const COMMENT_CLOSE = '-->'
 /** Indentation that makes an indented code block: a tab or four spaces. */
 const CODE_INDENT = /^(?: {4}| {0,3}\t)/u
 const LEADING_SPACES = /^ {0,3}/u
@@ -23,10 +24,34 @@ export interface ReviewCommand {
 	readonly agent?: string
 }
 
-/** Where the scan is: inside a fence (its opening run) or inside a quoted paragraph. */
+/**
+ * Where the scan is: inside a fence (its opening run), inside a quoted paragraph, inside an HTML
+ * comment. A quote outlives the fences inside it and ends only at a blank line outside code.
+ */
 interface ScanState {
 	readonly fence: string | undefined
 	readonly quoted: boolean
+	readonly inComment: boolean
+}
+
+/** The text of one line outside HTML comments, and whether a comment is still open at its end. */
+interface VisibleLine {
+	readonly text: string
+	readonly inComment: boolean
+}
+
+/** The part of a line no HTML comment hides; a comment left open runs on to the next lines. */
+function toVisibleLine(line: string, inComment: boolean): VisibleLine {
+	if (inComment) {
+		const close = line.indexOf(COMMENT_CLOSE)
+		if (close === -1) return { text: '', inComment: true }
+		return toVisibleLine(line.slice(close + COMMENT_CLOSE.length), false)
+	}
+	const last = [...line.matchAll(HTML_COMMENT)].at(-1)
+	return {
+		text: line.replace(HTML_COMMENT, ''),
+		inComment: last !== undefined && last[1] === '',
+	}
 }
 
 /** True when the line closes the block the fence opened: the same character, at least as long. */
@@ -77,32 +102,37 @@ export function parseMentionCommand(
 ): ReviewCommand | undefined {
 	if (!BOT_SLUG_PATTERN.test(handle)) return undefined
 	const mention = `@${handle.toLowerCase()}`
-	const lines = body.replace(HTML_COMMENT, '').split(/\r?\n/u)
+	const lines = body.split(/\r?\n/u)
 	const state: { current: ScanState } = {
-		current: { fence: undefined, quoted: false },
+		current: { fence: undefined, quoted: false, inComment: false },
 	}
 	for (const raw of lines) {
-		const { fence, quoted } = state.current
+		const { fence, quoted, inComment } = state.current
 		if (fence !== undefined) {
 			if (isClosingFence(raw, fence))
-				state.current = { fence: undefined, quoted: false }
+				state.current = { ...state.current, fence: undefined }
 			continue
 		}
-		if (raw.trim() === '') {
-			state.current = { fence: undefined, quoted: false }
-			continue
+		if (!inComment) {
+			if (raw.trim() === '') {
+				state.current = { ...state.current, quoted: false }
+				continue
+			}
+			const [, opened] = FENCE.exec(raw.replace(LEADING_SPACES, '')) ?? []
+			if (opened !== undefined) {
+				state.current = { ...state.current, fence: opened }
+				continue
+			}
 		}
-		const line = raw.replace(LEADING_SPACES, '')
-		const [, opened] = FENCE.exec(line) ?? []
-		if (opened !== undefined) {
-			state.current = { fence: opened, quoted: false }
-			continue
-		}
+		const visible = toVisibleLine(raw, inComment)
+		state.current = { ...state.current, inComment: visible.inComment }
+		if (visible.text.trim() === '') continue
+		const line = visible.text.replace(LEADING_SPACES, '')
 		if (line.startsWith(QUOTE_START)) {
-			state.current = { fence: undefined, quoted: true }
+			state.current = { ...state.current, quoted: true }
 			continue
 		}
-		if (quoted || CODE_INDENT.test(raw)) continue
+		if (quoted || CODE_INDENT.test(visible.text)) continue
 		const command = toLineCommand(line, mention)
 		if (command) return command
 	}
