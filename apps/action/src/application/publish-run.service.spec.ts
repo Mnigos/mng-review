@@ -5,6 +5,7 @@ import {
 	GITHUB_ACTIONS_IDENTITY,
 	GitHubConfig,
 	PublishService,
+	PublishIncompleteError,
 	GitHubApiError,
 	StatusReportService,
 	MARKER_VERSION,
@@ -84,7 +85,7 @@ function setup(
 	const readPriorSpy = vi.fn(() =>
 		readPriorError ? Effect.fail(readPriorError) : Effect.succeed(prior)
 	)
-	const publishSpy = vi.fn(() =>
+	const publishSpy = vi.fn<PublishService['Service']['publish']>(() =>
 		fail
 			? Effect.fail(
 					new GitHubApiError({
@@ -104,7 +105,9 @@ function setup(
 	)
 	const reportSpy = vi.fn(() => Effect.succeed({ checks: 1, status: true }))
 	const reportOfflineSpy = vi.fn(() => Effect.succeed(true))
-	const reportUnfinishedSpy = vi.fn(() => Effect.succeed(true))
+	const reportUnfinishedSpy = vi.fn<
+		StatusReportService['Service']['reportUnfinished']
+	>(() => Effect.succeed(true))
 	const loadSpy = vi.fn(() =>
 		rulesError ? Effect.fail(rulesError) : Effect.succeed(rules)
 	)
@@ -221,6 +224,63 @@ layer(Layer.empty)('PublishRunService', test => {
 					engineCommit: CONTEXT.engineCommit,
 					status: 'Reviewer offline: no endpoint. Nothing was reviewed.',
 				})
+			})
+	)
+	for (const written of [true, false])
+		test.effect(
+			`an incomplete publish preserves its original failure when the unfinished status returns ${written}`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup()
+					const error = new GitHubApiError({
+						operation: 'updateIssueComment',
+						reason: 'summary update refused',
+						status: 503,
+					})
+					fixture.publishSpy.mockReturnValue(
+						Effect.fail(new PublishIncompleteError({ error }))
+					)
+					fixture.reportUnfinishedSpy.mockReturnValue(Effect.succeed(written))
+					expect(
+						yield* PublishRunService.use(service =>
+							service.run(
+								outcomeFile({ status: 'reviewed', report: reviewReport() }),
+								CONTEXT
+							)
+						).pipe(Effect.provide(fixture.service))
+					).toEqual({ status: 'failed', reason: error.message })
+					expect(fixture.publishSpy).toHaveBeenCalledTimes(1)
+					expect(fixture.reportUnfinishedSpy).toHaveBeenCalledExactlyOnceWith(
+						CONTEXT.head
+					)
+					expect(fixture.reportSpy).not.toHaveBeenCalled()
+					expect(fixture.reportOfflineSpy).not.toHaveBeenCalled()
+					expect(fixture.publishStatusSpy).not.toHaveBeenCalled()
+				})
+		)
+	test.effect(
+		'a plain publish API error does not report an unfinished status',
+		() =>
+			Effect.gen(function* () {
+				const fixture = setup()
+				const error = new GitHubApiError({
+					operation: 'listReviewThreads',
+					reason: 'thread read refused',
+					status: 503,
+				})
+				fixture.publishSpy.mockReturnValue(Effect.fail(error))
+				expect(
+					yield* PublishRunService.use(service =>
+						service.run(
+							outcomeFile({ status: 'reviewed', report: reviewReport() }),
+							CONTEXT
+						)
+					).pipe(Effect.provide(fixture.service))
+				).toEqual({ status: 'failed', reason: error.message })
+				expect(fixture.publishSpy).toHaveBeenCalledTimes(1)
+				expect(fixture.reportUnfinishedSpy).not.toHaveBeenCalled()
+				expect(fixture.reportSpy).not.toHaveBeenCalled()
+				expect(fixture.reportOfflineSpy).not.toHaveBeenCalled()
 			})
 	)
 	for (const status of ['reviewed', 'offline'] as const)

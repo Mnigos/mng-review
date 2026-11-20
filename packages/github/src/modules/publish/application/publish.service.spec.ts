@@ -36,6 +36,7 @@ import {
 	parseFindingMarker,
 } from '../domain/publish-marker.parser'
 import { SHORT_SHA_LENGTH } from '../domain/publish.constants'
+import { PublishIncompleteError } from '../domain/publish.errors'
 import { toMarkerComment } from '../presentation/thread-comment.formatter'
 import { PublishService, PublishServiceLive } from './publish.service'
 import {
@@ -179,6 +180,50 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 					expect(
 						parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
 					).toMatchObject({ runs: 2, head: fixture.head, finished: true })
+				})
+		)
+		test.effect(
+			'a summary failure after posting threads preserves the API error in PublishIncompleteError',
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup()
+					const existing = summary()
+					const failure = error(403)
+					fixture.fake.comments.push(existing)
+					fixture.fake.failures.update.push(failure)
+					const failed = yield* PublishService.use(service =>
+						service.publish(fixture.input)
+					).pipe(Effect.provide(fixture.publisher), Effect.flip)
+					expect(failed).toBeInstanceOf(PublishIncompleteError)
+					expect(failed).toEqual(new PublishIncompleteError({ error: failure }))
+					expect(failed.message).toBe(failure.message)
+					expect(fixture.fake.writes.map(write => write.method)).toEqual([
+						'review',
+						'update',
+					])
+					expect(fixture.fake.threads).toHaveLength(1)
+					expect(fixture.fake.comments).toEqual([existing])
+				})
+		)
+		test.effect(
+			'a thread read failure before any write keeps the API error',
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup()
+					const failure = new GitHubApiError({
+						operation: 'listReviewThreads',
+						reason: 'threads unavailable',
+						status: 503,
+					})
+					fixture.fake.failures.listThreads.push(failure)
+					expect(
+						yield* PublishService.use(service =>
+							service.publish(fixture.input)
+						).pipe(Effect.provide(fixture.publisher), Effect.flip)
+					).toBe(failure)
+					expect(fixture.fake.threadReads).toEqual([fixture.input.pullNumber])
+					expect(fixture.fake.writes).toEqual([])
+					expect(fixture.fake.threads).toEqual([])
 				})
 		)
 		for (const login of ['contributor', GITHUB_ACTIONS_IDENTITY.login])
