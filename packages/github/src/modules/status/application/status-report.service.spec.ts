@@ -9,7 +9,7 @@ import {
 	agentReport,
 } from '../../../shared/mocks/publish-test.helper'
 import { isFinished } from '../../publish/domain/bot-thread.helper'
-import { UNFINISHED_NOTE } from '../domain/status.helper'
+import { toCommitStatus, UNFINISHED_NOTE } from '../domain/status.helper'
 import {
 	StatusReportService,
 	StatusReportServiceLive,
@@ -359,4 +359,44 @@ layer(Layer.empty)('StatusReportService unfinished and offline', test => {
 				])
 			})
 		)
+})
+
+layer(Layer.empty)('StatusReportService full review completion', test => {
+	for (const finished of [false, true])
+		for (const openBugs of [0, 2])
+			test.effect(
+				`the status uses explicit finished=${finished} and ${openBugs} bugs independently of this report`,
+				() =>
+					Effect.gen(function* () {
+						const fake = githubStatusFake()
+						const reviewed = {
+							...report(),
+							bugs: [],
+							...(finished ? { endpointError: 'offline' } : {}),
+						}
+						yield* StatusReportService.use(service =>
+							service.report({
+								head: 'head',
+								report: reviewed,
+								verdict: openBugs ? 'needs fixes' : 'ready',
+								openBugs,
+								finished,
+							})
+						).pipe(
+							Effect.provide(
+								StatusReportServiceLive.pipe(Layer.provide(fake.layer))
+							)
+						)
+						expect(fake.statuses).toEqual([
+							{
+								sha: 'head',
+								...toCommitStatus(
+									openBugs ? 'needs fixes' : 'ready',
+									openBugs,
+									finished
+								),
+							},
+						])
+					})
+			)
 })

@@ -827,3 +827,205 @@ layer(APP_MODE_OWNED)(
 				)
 	}
 )
+
+layer(TOKEN_MODE_OWNED)('StatusSweepService review head', test => {
+	for (const head of ['older-head', undefined])
+		test.effect(
+			`a finished summary on ${head} does not complete the current head`,
+			() =>
+				Effect.gen(function* () {
+					const api = githubApiFake()
+					api.comments.push({
+						id: 'summary-node',
+						isMinimized: false,
+						databaseId: 101,
+						body: toMarkerComment('summary', {
+							...SUMMARY_MARKER,
+							head,
+							finished: true,
+						}),
+						author: { __typename: 'Bot', login: GITHUB_ACTIONS_IDENTITY.login },
+						editor: null,
+					})
+					const fake = githubStatusFake({
+						listOpenPullRequests: () =>
+							Effect.succeed([{ number: 17, head: { sha: 'head' } }]),
+						getStatus: () =>
+							Effect.succeed({
+								id: 1,
+								...toCommitStatus('ready', 0, true),
+								context: 'MNG Review',
+								creator: null,
+							}),
+					})
+					expect(
+						yield* StatusSweepService.use(service => service.sweep()).pipe(
+							Effect.provide(
+								StatusSweepServiceLive.pipe(
+									Layer.provide(Layer.merge(fake.layer, api.api))
+								)
+							)
+						)
+					).toEqual({ checked: 1, updated: 1, failed: 0 })
+					expect(fake.statuses).toEqual([
+						{ sha: 'head', ...toCommitStatus('incomplete', 0, false) },
+					])
+					expect(api.writes).toEqual([])
+				})
+		)
+	for (const finished of [false, true])
+		test.effect(
+			`a legacy marker preserves an existing ${finished ? 'finished' : 'unfinished'} status`,
+			() =>
+				Effect.gen(function* () {
+					const api = githubApiFake()
+					api.comments.push({
+						id: 'summary-node',
+						isMinimized: false,
+						databaseId: 101,
+						body: toMarkerComment('summary', {
+							...SUMMARY_MARKER,
+							head: 'older-head',
+						}),
+						author: { __typename: 'Bot', login: GITHUB_ACTIONS_IDENTITY.login },
+						editor: null,
+					})
+					const getStatusSpy = vi.fn(() =>
+						Effect.succeed({
+							id: 1,
+							...toCommitStatus('ready', 0, finished),
+							context: 'MNG Review',
+							creator: null,
+						})
+					)
+					const fake = githubStatusFake({
+						listOpenPullRequests: () =>
+							Effect.succeed([{ number: 17, head: { sha: 'head' } }]),
+						getStatus: getStatusSpy,
+					})
+					expect(
+						yield* StatusSweepService.use(service => service.sweep()).pipe(
+							Effect.provide(
+								StatusSweepServiceLive.pipe(
+									Layer.provide(Layer.merge(fake.layer, api.api))
+								)
+							)
+						)
+					).toEqual({ checked: 1, updated: 0, failed: 0 })
+					expect(getStatusSpy).toHaveBeenCalledExactlyOnceWith('head')
+					expect(fake.statuses).toEqual([])
+					expect(api.writes).toEqual([])
+				})
+		)
+})
+
+layer(TOKEN_MODE_OWNED)('StatusSweepService unthreaded bugs', test => {
+	for (const markerHead of ['head', 'other-head', undefined])
+		for (const threadBugs of [0, 1])
+			test.effect(
+				`sweep counts unthreaded bugs on ${markerHead} alongside ${threadBugs} open threads`,
+				() =>
+					Effect.gen(function* () {
+						const api = githubApiFake()
+						api.comments.push({
+							id: 'summary-node',
+							isMinimized: false,
+							databaseId: 101,
+							body: toMarkerComment('summary', {
+								...SUMMARY_MARKER,
+								head: markerHead,
+								finished: true,
+								unthreadedBugs: 2,
+							}),
+							author: {
+								__typename: 'Bot',
+								login: GITHUB_ACTIONS_IDENTITY.login,
+							},
+							editor: null,
+						})
+						if (threadBugs) api.threads.push(reviewThread())
+						const previous = {
+							id: 1,
+							...toCommitStatus('needs fixes', 2 + threadBugs, true),
+							context: 'MNG Review',
+							creator: null,
+						}
+						const fake = githubStatusFake({
+							listOpenPullRequests: () =>
+								Effect.succeed([{ number: 17, head: { sha: 'head' } }]),
+							getStatus: () => Effect.succeed(previous),
+						})
+						expect(
+							yield* StatusSweepService.use(service => service.sweep()).pipe(
+								Effect.provide(
+									StatusSweepServiceLive.pipe(
+										Layer.provide(Layer.merge(fake.layer, api.api))
+									)
+								)
+							)
+						).toEqual({
+							checked: 1,
+							updated: markerHead === 'head' ? 0 : 1,
+							failed: 0,
+						})
+						expect(fake.statuses).toEqual(
+							markerHead === 'head'
+								? []
+								: [
+										{
+											sha: 'head',
+											...toCommitStatus(
+												threadBugs ? 'needs fixes' : 'incomplete',
+												threadBugs,
+												false
+											),
+										},
+									]
+						)
+						expect(api.writes).toEqual([])
+					})
+			)
+	test.effect(
+		'sweep restores failure when the status lost a same-head unthreaded bug',
+		() =>
+			Effect.gen(function* () {
+				const api = githubApiFake()
+				api.comments.push({
+					id: 'summary-node',
+					isMinimized: false,
+					databaseId: 101,
+					body: toMarkerComment('summary', {
+						...SUMMARY_MARKER,
+						finished: true,
+						unthreadedBugs: 1,
+					}),
+					author: { __typename: 'Bot', login: GITHUB_ACTIONS_IDENTITY.login },
+					editor: null,
+				})
+				const fake = githubStatusFake({
+					listOpenPullRequests: () =>
+						Effect.succeed([{ number: 17, head: { sha: 'head' } }]),
+					getStatus: () =>
+						Effect.succeed({
+							id: 1,
+							...toCommitStatus('ready', 0, true),
+							context: 'MNG Review',
+							creator: null,
+						}),
+				})
+				expect(
+					yield* StatusSweepService.use(service => service.sweep()).pipe(
+						Effect.provide(
+							StatusSweepServiceLive.pipe(
+								Layer.provide(Layer.merge(fake.layer, api.api))
+							)
+						)
+					)
+				).toEqual({ checked: 1, updated: 1, failed: 0 })
+				expect(fake.statuses).toEqual([
+					{ sha: 'head', ...toCommitStatus('needs fixes', 1, true) },
+				])
+				expect(api.writes).toEqual([])
+			})
+	)
+})

@@ -2,6 +2,10 @@ import { layer } from '@effect/vitest'
 import { Deferred, Duration, Effect, Fiber, Layer } from 'effect'
 import { TestClock } from 'effect/testing'
 import {
+	COMMAND_PULL_REQUEST,
+	COMMAND_COMMENT,
+} from '../shared/mocks/github-api-fake.helper'
+import {
 	failGitHubTransport,
 	getGitHubRequestBody,
 	GITHUB_CREDENTIAL,
@@ -657,4 +661,119 @@ layer(Layer.empty)('GitHubApiService thread mutations', test => {
 				})
 		)
 	}
+})
+
+/** The three REST reads added below the manual-run trigger. */
+const MANUAL_READS = [
+	{
+		operation: 'getPullRequest',
+		invoke: (service: GitHubApiService['Service']) =>
+			service.getPullRequest(17),
+		path: '/pulls/17',
+		answer: COMMAND_PULL_REQUEST,
+		expected: COMMAND_PULL_REQUEST,
+		invalid: {
+			...COMMAND_PULL_REQUEST,
+			head: { ...COMMAND_PULL_REQUEST.head, sha: 42 },
+		},
+	},
+	{
+		operation: 'getIssueComment',
+		invoke: (service: GitHubApiService['Service']) =>
+			service.getIssueComment(23),
+		path: '/issues/comments/23',
+		answer: COMMAND_COMMENT,
+		expected: COMMAND_COMMENT,
+		invalid: { ...COMMAND_COMMENT, user: { login: 42, type: 'User' } },
+	},
+	{
+		operation: 'getCollaboratorRole',
+		invoke: (service: GitHubApiService['Service']) =>
+			service.getCollaboratorRole('review helper/@name?#'),
+		path: '/collaborators/review%20helper%2F%40name%3F%23/permission',
+		answer: { role_name: 'write' },
+		expected: 'write',
+		invalid: { role_name: 42 },
+	},
+] as const
+
+type ManualRead = Effect.Effect<unknown, GitHubApiError>
+
+layer(Layer.empty)('GitHubApiService manual REST reads', test => {
+	for (const read of MANUAL_READS) {
+		test.effect(
+			`${read.operation} uses its REST path and decodes the response`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = makeGitHubHttp(() =>
+						Effect.succeed(Response.json(read.answer))
+					)
+					expect(
+						yield* GitHubApiService.use((service): ManualRead =>
+							read.invoke(service)
+						).pipe(Effect.provide(fixture.layer))
+					).toEqual(read.expected)
+					expect(fixture.requests).toHaveLength(1)
+					expect(fixture.requests[0]).toMatchObject({
+						method: 'GET',
+						url: `${GITHUB_SETTINGS.apiUrl}/repos/${GITHUB_SETTINGS.owner}/${GITHUB_SETTINGS.name}${read.path}`,
+					})
+					expectHeaders(fixture)
+				})
+		)
+		for (const transient of ['transport', 'server'] as const)
+			test.effect(`${read.operation} retries one ${transient} failure`, () =>
+				Effect.gen(function* () {
+					const fixture = makeGitHubHttp((request, attempt) => {
+						if (attempt > 1) return Effect.succeed(Response.json(read.answer))
+						return transient === 'transport'
+							? failGitHubTransport(request)
+							: Effect.succeed(
+									Response.json({ message: 'Unavailable' }, { status: 503 })
+								)
+					})
+					const pending = yield* GitHubApiService.use((service): ManualRead =>
+						read.invoke(service)
+					).pipe(Effect.provide(fixture.layer), Effect.forkChild)
+					yield* TestClock.adjust('10 seconds')
+					expect(yield* Fiber.join(pending)).toEqual(read.expected)
+					expect(fixture.requests).toHaveLength(2)
+					expect(
+						fixture.requests.every(request => request.url.endsWith(read.path))
+					).toBe(true)
+				})
+			)
+		for (const answer of [null, {}, read.invalid])
+			test.effect(
+				`${read.operation} rejects invalid schema ${JSON.stringify(answer)}`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = makeGitHubHttp(() =>
+							Effect.succeed(Response.json(answer))
+						)
+						const pending = yield* GitHubApiService.use((service): ManualRead =>
+							read.invoke(service)
+						).pipe(Effect.provide(fixture.layer), Effect.flip, Effect.forkChild)
+						yield* TestClock.adjust('10 seconds')
+						const failure = yield* Fiber.join(pending)
+						expectApiFailure(failure, read.operation)
+						expect(failure.reason).toBe('unexpected answer')
+						expect(fixture.requests).toHaveLength(READ_RETRIES + 1)
+					})
+			)
+	}
+	for (const read of MANUAL_READS.slice(0, 2))
+		test.effect(`${read.operation} accepts nullable metadata`, () =>
+			Effect.gen(function* () {
+				const answer = { ...read.answer, body: null, user: null }
+				const fixture = makeGitHubHttp(() =>
+					Effect.succeed(Response.json(answer))
+				)
+				expect(
+					yield* GitHubApiService.use((service): ManualRead =>
+						read.invoke(service)
+					).pipe(Effect.provide(fixture.layer))
+				).toEqual(answer)
+			})
+		)
 })

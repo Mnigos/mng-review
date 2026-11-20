@@ -5,7 +5,7 @@ import {
 	bug,
 	RULES,
 } from '../../../shared/mocks/publish-test.helper'
-import type { ThreadKind } from './publish-marker.schema'
+import { THREAD_KINDS, type ThreadKind } from './publish-marker.schema'
 import {
 	countOpenBugs,
 	countUnthreadedBugs,
@@ -559,4 +559,177 @@ describe('countUnthreadedBugs', () => {
 			)
 		).toBe(3)
 	})
+})
+
+describe('countOpenBugs', () => {
+	for (const kind of THREAD_KINDS)
+		for (const place of [
+			'line',
+			'file',
+			'summary',
+			'pull_request',
+			'unposted',
+		] as const satisfies readonly ThreadPlace[])
+			for (const listed of [false, true])
+				test(`${kind} at ${place}, fresh thread listed=${listed}`, () => {
+					const thread = botThread()
+					expect(
+						countOpenBugs(
+							{
+								threads: [{ finding: bug(), kind, place }],
+								repeated: [],
+								dismissed: [],
+								summaryNits: [],
+							},
+							listed ? [{ ...thread, marker: { ...thread.marker, kind } }] : []
+						)
+					).toBe(kind === 'bug' ? 1 : 0)
+				})
+	for (const kind of THREAD_KINDS)
+		test(`a ${kind} thread holds a planned bug only by an open bug fingerprint`, () => {
+			const thread = botThread()
+			expect(
+				countOpenBugs(
+					{
+						threads: [{ finding: bug(), kind: 'bug', place: 'line' }],
+						repeated: [],
+						dismissed: [],
+						summaryNits: [],
+					},
+					[{ ...thread, marker: { ...thread.marker, kind } }]
+				)
+			).toBe(1)
+		})
+	test('counts a planned bug whose fingerprint only belongs to a resolved thread', () => {
+		expect(
+			countOpenBugs(
+				{
+					threads: [{ finding: bug(), kind: 'bug', place: 'line' }],
+					repeated: [],
+					dismissed: [],
+					summaryNits: [],
+				},
+				[botThread({ resolved: true })]
+			)
+		).toBe(1)
+	})
+	test('counts an open bug and a planned bug with different fingerprints', () => {
+		expect(
+			countOpenBugs(
+				{
+					threads: [
+						{
+							finding: bug({ fingerprint: 'new-bug' }),
+							kind: 'bug',
+							place: 'line',
+						},
+					],
+					repeated: [],
+					dismissed: [],
+					summaryNits: [],
+				},
+				[botThread()]
+			)
+		).toBe(2)
+	})
+	test.each([false, true])(
+		'counts two open threads with one fingerprint separately, planned bug=%s',
+		planned => {
+			expect(
+				countOpenBugs(
+					{
+						threads: planned
+							? [{ finding: bug(), kind: 'bug', place: 'line' }]
+							: [],
+						repeated: [],
+						dismissed: [],
+						summaryNits: [],
+					},
+					[botThread({ id: 'first' }), botThread({ id: 'second' })]
+				)
+			).toBe(2)
+		}
+	)
+	for (const kind of THREAD_KINDS)
+		for (const resolved of [false, true])
+			test(`fresh ${kind} thread with resolved=${resolved}`, () => {
+				const thread = botThread({ resolved })
+				expect(
+					countOpenBugs(
+						{ threads: [], repeated: [], dismissed: [], summaryNits: [] },
+						[{ ...thread, marker: { ...thread.marker, kind } }]
+					)
+				).toBe(kind === 'bug' && !resolved ? 1 : 0)
+			})
+})
+
+describe('countUnthreadedBugs', () => {
+	for (const place of [
+		'line',
+		'file',
+		'summary',
+		'pull_request',
+		'unposted',
+	] as const)
+		for (const covering of [
+			'none',
+			'open-bug',
+			'resolved-bug',
+			'nit',
+			'unverified',
+			'different-fingerprint',
+		] as const)
+			test(`${place} bug held by ${covering}`, () => {
+				const thread = botThread({ resolved: covering === 'resolved-bug' })
+				const threads =
+					covering === 'none'
+						? []
+						: [
+								{
+									...thread,
+									marker: {
+										...thread.marker,
+										kind:
+											covering === 'nit' || covering === 'unverified'
+												? covering
+												: ('bug' as const),
+										fingerprint:
+											covering === 'different-fingerprint'
+												? 'other-bug'
+												: thread.marker.fingerprint,
+									},
+								},
+							]
+				expect(
+					countUnthreadedBugs(
+						{
+							threads: [{ finding: bug(), kind: 'bug', place }],
+							repeated: [],
+							dismissed: [],
+							summaryNits: [],
+						},
+						threads
+					)
+				).toBe(
+					place === 'line' || place === 'file' || covering === 'open-bug'
+						? 0
+						: 1
+				)
+			})
+	test.each(['nit', 'unverified'] as const)(
+		'does not count a planned %s',
+		kind => {
+			expect(
+				countUnthreadedBugs(
+					{
+						threads: [{ finding: bug(), kind, place: 'summary' }],
+						repeated: [],
+						dismissed: [],
+						summaryNits: [],
+					},
+					[]
+				)
+			).toBe(0)
+		}
+	)
 })

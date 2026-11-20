@@ -15,12 +15,14 @@ import {
 } from '../../../../shared/mocks/git-test.helper'
 import { gitFixture } from '../../../../shared/mocks/review-layer.helper'
 import { answer } from '../../../../shared/mocks/review-test.helper'
+import { toEmptyReviewReport } from '../../domain/review-report.helper'
 import {
 	makeReviewLayer,
 	ReviewPipelineLive,
 } from '../../infrastructure/review.layers'
 import { ReviewLimits } from '../review-limits.context'
 import { ReviewRunService, ReviewRunServiceLive } from './review-run.service'
+import { ReviewService, type ReviewRequest } from './review.service'
 
 vi.mock('../../infrastructure/review.layers', async importOriginal => ({
 	...(await importOriginal<
@@ -208,3 +210,122 @@ layer(Layer.empty, { excludeTestServices: true })(
 			)
 	}
 )
+
+layer(Layer.empty)('ReviewRunService command agent selection', test => {
+	for (const selectedByPaths of [false, true])
+		test.effect(
+			`onlyAgent narrows the real plan, selected by paths=${selectedByPaths}`,
+			() =>
+				Effect.gen(function* () {
+					const reviewSpy = vi.fn((request: ReviewRequest) =>
+						Effect.succeed(toEmptyReviewReport(request.planReport, 0))
+					)
+					vi.mocked(makeReviewLayer).mockImplementationOnce(() =>
+						Layer.succeed(ReviewService, { review: reviewSpy })
+					)
+					const services = ReviewRunServiceLive.pipe(
+						Layer.provide(
+							Layer.mergeAll(
+								TokenLedgerLive,
+								Layer.succeed(GitService, gitFixture()),
+								Layer.succeed(
+									HttpClient.HttpClient,
+									HttpClient.make(() => Effect.die('HTTP must not run'))
+								)
+							)
+						)
+					)
+					const report = yield* ReviewRunService.use(service =>
+						service.run({
+							rules: {
+								config: config(),
+								agents: [
+									agent('storage', {
+										when: {
+											paths: [selectedByPaths ? 'src/**' : 'unmatched/**'],
+										},
+									}),
+									agent('security'),
+								],
+								source: 'base-sha',
+							},
+							baseRef: 'base-ref',
+							headRef: 'head-ref',
+							pr: pr({ trigger: 'manual' }),
+							routerDisabledReason: 'fixture',
+							onlyAgent: 'storage',
+						})
+					).pipe(
+						Effect.provide(services),
+						Effect.provide(
+							ConfigProvider.layer(ConfigProvider.fromEnvRecord({}))
+						)
+					)
+					expect(report.planReport.plan.runs).toEqual([
+						expect.objectContaining({
+							name: 'storage',
+							role: 'agent',
+							files: ['src/billing/charge.ts'],
+							...(selectedByPaths ? {} : { reason: 'requested by a command' }),
+						}),
+					])
+					expect(report.planReport.plan.skips).toEqual(
+						expect.arrayContaining([
+							expect.objectContaining({
+								name: 'reviewer',
+								reason: 'a command asked for another agent',
+							}),
+							expect.objectContaining({
+								name: 'security',
+								reason: 'a command asked for another agent',
+							}),
+						])
+					)
+					expect(reviewSpy).toHaveBeenCalledOnce()
+					expect(reviewSpy.mock.calls[0]?.[0].planReport.plan).toEqual(
+						report.planReport.plan
+					)
+				})
+		)
+	for (const gatedBy of ['draft', 'label'] as const)
+		test.effect(`onlyAgent cannot bypass a ${gatedBy} gate`, () =>
+			Effect.gen(function* () {
+				const services = ReviewRunServiceLive.pipe(
+					Layer.provide(
+						Layer.mergeAll(
+							TokenLedgerLive,
+							Layer.succeed(GitService, gitFixture()),
+							Layer.succeed(
+								HttpClient.HttpClient,
+								HttpClient.make(() => Effect.die('HTTP must not run'))
+							)
+						)
+					)
+				)
+				const report = yield* ReviewRunService.use(service =>
+					service.run({
+						rules: {
+							config: config(),
+							agents: [agent('storage')],
+							source: 'base-sha',
+						},
+						baseRef: 'base-ref',
+						headRef: 'head-ref',
+						pr: pr({
+							trigger: 'manual',
+							draft: gatedBy === 'draft',
+							labels: gatedBy === 'label' ? ['skip-review'] : [],
+						}),
+						routerDisabledReason: 'fixture',
+						onlyAgent: 'storage',
+					})
+				).pipe(
+					Effect.provide(services),
+					Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnvRecord({})))
+				)
+				expect(report.planReport.plan.skippedRun).toBeTruthy()
+				expect(report.planReport.plan.runs).toEqual([])
+				expect(makeReviewLayer).not.toHaveBeenCalled()
+			})
+		)
+})

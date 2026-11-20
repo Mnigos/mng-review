@@ -194,6 +194,7 @@ layer(Layer.empty)('PublishRunService', test => {
 				report: placed,
 				verdict: PUBLISHED.verdict,
 				openBugs: PUBLISHED.openBugs,
+				finished: PUBLISHED.finished,
 			})
 			expect(fixture.reportOfflineSpy).not.toHaveBeenCalled()
 		})
@@ -376,6 +377,7 @@ layer(Layer.empty)('PublishRunService', test => {
 							},
 							verdict: PUBLISHED.verdict,
 							openBugs: PUBLISHED.openBugs,
+							finished: PUBLISHED.finished,
 						})
 					}
 				})
@@ -434,6 +436,7 @@ layer(Layer.empty)('PublishRunService decoded outcomes', test => {
 					report: placed,
 					verdict: PUBLISHED.verdict,
 					openBugs: PUBLISHED.openBugs,
+					finished: PUBLISHED.finished,
 				})
 			})
 	)
@@ -510,6 +513,7 @@ layer(Layer.empty)('PublishRunService decoded outcomes', test => {
 					report: placed,
 					verdict: PUBLISHED.verdict,
 					openBugs: PUBLISHED.openBugs,
+					finished: PUBLISHED.finished,
 				})
 			})
 		)

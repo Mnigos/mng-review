@@ -73,6 +73,7 @@ export function githubApiFake(
 	options: GitHubApiFakeOptions = {}
 ) {
 	const threads: ReviewThread[] = []
+	const threadSnapshots: ReviewThread[][] = []
 	const comments: PullRequestComment[] = []
 	const writes: ApiWrite[] = []
 	const commentReads: number[] = []
@@ -132,7 +133,7 @@ export function githubApiFake(
 			threadReads.push(pullNumber)
 			const error = failures.listThreads.shift()
 			if (error) return yield* error
-			return [...threads]
+			return threadSnapshots.shift() ?? [...threads]
 		})
 	const api = Layer.succeed(GitHubApiService, {
 		replyToThread: (id, body) =>
@@ -273,6 +274,7 @@ export function githubApiFake(
 		writes,
 		failures,
 		threadReads,
+		threadSnapshots,
 		commentReads,
 		commentSnapshots,
 		reads,
