@@ -1,14 +1,7 @@
 import {
-	type EvidenceRef,
 	getIntentionalLimit,
-	getLineCount,
 	getValidatorChoices,
-	isEvidenceInCode,
-	parseAddedRanges,
-	parseEvidenceRef,
-	parseLsTree,
 	type PullRequestInfo,
-	type ReplyClaim,
 	type ReplyDecision,
 	type ReplyItem,
 	toReplyDecision,
@@ -16,7 +9,6 @@ import {
 } from '@mng-review/domain'
 import { Context, Effect, Layer, Option, Ref } from 'effect'
 import type { Rules } from '../../../platform/config/rules.service'
-import { SAFE_DIFF } from '../../../platform/git/git.constants'
 import { GitError } from '../../../platform/git/git.errors'
 import { GitService } from '../../../platform/git/git.service'
 import {
@@ -45,14 +37,13 @@ import {
 	toReportedFinding,
 } from '../domain/reply-attempt.helper'
 import {
-	BINARY_DIFF,
-	MAX_EVIDENCE_CHECKED,
 	MAX_REPLY_CHARS,
 	NO_MODEL_LEFT,
+	RECHECK_FAILED,
 	REPLY_SOURCE,
-	SYMLINK_MODE,
 } from '../domain/reply.constants'
-import { getShownKeys, isRangeRead } from './reply-read.helper'
+import { ReplyEvidenceService } from './reply-evidence.service'
+import { getShownKeys } from './reply-read.helper'
 import { REPLY_PROMPT } from './reply.prompt'
 
 /** Attempts per reply before it counts as unclear. */
@@ -86,9 +77,10 @@ export interface ReplyReport {
  * Decides on authors' replies in the bot's threads. Per reply, a fresh agent on a validator model
  * reads the claim (`fixed`, `intentional` or `unclear`) with the reply as fenced data; a `fixed`
  * claim is checked by the validator's re-check over the change since the thread's commit, without
- * the reply; an `intentional` claim's evidence is checked in git. `toReplyDecision` then decides. A
- * failure of the model, git or the token budget leaves the reply `seen`; the service never fails.
- * Runs inside `limits.tokens_per_run` on the job's ledger.
+ * the reply; an `intentional` claim's evidence is checked in git by `ReplyEvidenceService`.
+ * `toReplyDecision` then decides, every reply at the head commit `decide` resolved once. A failure
+ * of the model, git or the token budget leaves the reply `seen`; the service never fails. Runs
+ * inside `limits.tokens_per_run` on the job's ledger.
  */
 export class ReplyService extends Context.Service<
 	ReplyService,
@@ -106,6 +98,7 @@ export const ReplyServiceLive = Layer.effect(
 		const git = yield* GitService
 		const ledger = yield* TokenLedger
 		const rechecker = yield* RecheckService
+		const evidence = yield* ReplyEvidenceService
 
 		/**
 		 * The classifier's first message and the keys of the window lines it holds whole; a line the
@@ -127,7 +120,7 @@ export const ReplyServiceLive = Layer.effect(
 					JSON.stringify(toReportedFinding(finding), null, 2)
 				),
 				fenceData(
-					`${finding.path} at head, lines around the finding (read more with read_file):`,
+					"The finding's file at head, lines around it (read more with read_file):",
 					file.output
 				),
 				fenceData(
@@ -197,56 +190,24 @@ export const ReplyServiceLive = Layer.effect(
 			)
 		})
 
-		/** True when a commit since the thread's commit changed the finding's file. */
+		/**
+		 * True when a commit since the thread's commit changed the finding's file, even when a later
+		 * one restored it, so the net diff alone would show nothing.
+		 */
 		const hasCommitSince = Effect.fn('ReplyService.hasCommitSince')(function* (
 			item: ReplyItem,
-			headRef: string
+			head: string
 		) {
 			const args = [
-				'diff',
-				'--quiet',
-				...SAFE_DIFF,
-				item.base,
-				headRef,
+				'log',
+				'--full-history',
+				'--format=%H',
+				'-n',
+				'1',
+				'--end-of-options',
+				`${item.base}..${head}`,
 				'--',
 				item.finding.path,
-			]
-			const result = yield* git.exec(args)
-			if (result.exitCode > 1)
-				return yield* new GitError({
-					args,
-					exitCode: result.exitCode,
-					stderr: result.stderr,
-				})
-			return result.exitCode === 1
-		})
-
-		/** The validator's answer at the head; `undefined` when the re-check checked nothing. */
-		const recheck = Effect.fn('ReplyService.recheck')(function* (
-			item: ReplyItem,
-			request: ReplyRequest
-		) {
-			const report = yield* rechecker.recheck({
-				rules: request.rules,
-				headRef: request.headRef,
-				pr: request.pr,
-				items: [{ finding: item.finding, base: item.base }],
-			})
-			return report.results[0]?.validation
-		})
-
-		/** The head's tree entry for a path, for its mode. */
-		const readHeadEntry = Effect.fn('ReplyService.readHeadEntry')(function* (
-			change: RepoScope['change'],
-			path: string
-		) {
-			const args = [
-				'ls-tree',
-				'-z',
-				'--full-tree',
-				change.head.commit,
-				'--',
-				path,
 			]
 			const result = yield* git.exec(args)
 			if (result.exitCode !== 0)
@@ -255,67 +216,44 @@ export const ReplyServiceLive = Layer.effect(
 					exitCode: result.exitCode,
 					stderr: result.stderr,
 				})
-			return parseLsTree(result.stdout).find(entry => entry.name === path)
+			return result.stdout.trim() !== ''
 		})
 
 		/**
-		 * True when the classifier was shown every cited line and they are code that exists and that
-		 * the pull request did not add. A symlink at the head, a file whose text holds a NUL, and a
-		 * diff git prints as binary (a binary file or one marked `-diff`, which shows no added lines)
-		 * never pass.
+		 * The validator's answer at the head; `undefined` when the thread's commit is no longer an
+		 * ancestor of the head, which leaves nothing to check. A re-check that returns no answer for
+		 * an ancestor failed, so the reply stays seen.
 		 */
-		const isInCode = Effect.fn('ReplyService.isInCode')(function* (
-			ref: EvidenceRef,
-			scope: RepoScope,
-			reads: ReadonlySet<string>
+		const recheck = Effect.fn('ReplyService.recheck')(function* (
+			item: ReplyItem,
+			head: string,
+			request: ReplyRequest
 		) {
-			const { change } = scope
 			const args = [
-				'diff',
-				'-U0',
-				...SAFE_DIFF,
-				change.mergeBase,
-				change.head.commit,
-				'--',
-				ref.path,
+				'merge-base',
+				'--is-ancestor',
+				'--end-of-options',
+				item.base,
+				head,
 			]
-			const [entry, head, base, diff] = yield* Effect.all(
-				[
-					readHeadEntry(change, ref.path),
-					git.readFileAt(change.head.commit, ref.path),
-					git.readFileAt(change.mergeBase, ref.path),
-					git.exec(args),
-				],
-				{ concurrency: 4 }
-			)
-			if (diff.exitCode !== 0)
+			const ancestry = yield* git.exec(args)
+			if (ancestry.exitCode === 1) return undefined
+			if (ancestry.exitCode !== 0)
 				return yield* new GitError({
 					args,
-					exitCode: diff.exitCode,
-					stderr: diff.stderr,
+					exitCode: ancestry.exitCode,
+					stderr: ancestry.stderr,
 				})
-			if (entry?.mode === SYMLINK_MODE || BINARY_DIFF.test(diff.stdout))
-				return false
-			if ((head ?? base)?.includes('\0')) return false
-			if (!isRangeRead(reads, head === undefined ? 'base' : 'head', ref))
-				return false
-			return isEvidenceInCode(ref, {
-				headLines: head === undefined ? undefined : getLineCount(head),
-				baseLines: base === undefined ? undefined : getLineCount(base),
-				added: parseAddedRanges(diff.stdout),
+			const report = yield* rechecker.recheck({
+				rules: request.rules,
+				headRef: head,
+				pr: request.pr,
+				items: [{ finding: item.finding, base: item.base }],
 			})
+			const validation = report.results[0]?.validation
+			if (!validation) return yield* Effect.fail({ message: RECHECK_FAILED })
+			return validation
 		})
-
-		/** The evidence entries that pass `isInCode`; entries that are not `path:line` never do. */
-		const getCheckedEvidence = (
-			claim: ReplyClaim,
-			scope: RepoScope,
-			reads: ReadonlySet<string>
-		) =>
-			Effect.filter(claim.evidence.slice(0, MAX_EVIDENCE_CHECKED), entry => {
-				const ref = parseEvidenceRef(entry)
-				return ref ? isInCode(ref, scope, reads) : Effect.succeed(false)
-			})
 
 		const decideItem = (
 			item: ReplyItem,
@@ -326,18 +264,18 @@ export const ReplyServiceLive = Layer.effect(
 				const { config } = request.rules
 				const { claim, reads } = yield* classify(item, scope, request)
 				const limit = getIntentionalLimit(item.finding, config, scope.change)
+				const head = scope.change.head.commit
 				const fixed = claim.claim === 'fixed'
-				const commitSince =
-					fixed && (yield* hasCommitSince(item, request.headRef))
+				const commitSince = fixed && (yield* hasCommitSince(item, head))
 				const validation: Validation | undefined = commitSince
-					? yield* recheck(item, request)
+					? yield* recheck(item, head, request)
 					: undefined
 				// An unvalidated re-check is a model or budget failure, not an answer about the code.
 				if (validation?.status === 'unvalidated')
 					return yield* Effect.fail({ message: validation.error })
 				const checkedEvidence =
 					claim.claim === 'intentional' && limit === 'ok' && claim.holds
-						? yield* getCheckedEvidence(claim, scope, reads)
+						? yield* evidence.check(claim, scope, reads)
 						: []
 				const decision = toReplyDecision({
 					item,

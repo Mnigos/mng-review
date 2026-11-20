@@ -6,6 +6,7 @@ import { AgentLoopServiceLive } from '../../review/application/services/agent-lo
 import { ModelHealthServiceLive } from '../../review/application/services/model-health.service'
 import { RepoToolsServiceLive } from '../../review/application/services/repo-tools.service'
 import { RecheckServiceLive } from '../../validation/application/recheck.service'
+import { ReplyEvidenceServiceLive } from '../application/reply-evidence.service'
 import { ReplyServiceLive } from '../application/reply.service'
 
 /**
@@ -19,7 +20,7 @@ export function makeReplyLayer(limits: ReviewLimits['Service']) {
 		Layer.provideMerge(
 			Layer.mergeAll(ModelHealthServiceLive, RepoToolsServiceLive)
 		),
-		Layer.provide(RecheckServiceLive),
+		Layer.provide(Layer.mergeAll(RecheckServiceLive, ReplyEvidenceServiceLive)),
 		Layer.provide(LlmLive),
 		Layer.provide(
 			Layer.mergeAll(

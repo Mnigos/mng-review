@@ -38,14 +38,19 @@ describe('toPlainText render syntax', () => {
 		['gh-12', 'gh 12'],
 		['GHSA-abcd-1234', 'GHSA abcd-1234'],
 		['ghsa-abcd-1234', 'ghsa abcd-1234'],
-		['123abcd', '123a bcd'],
-		['ABCDEF1', 'ABCD EF1'],
+		['123abcd', '123abc d'],
+		['ABCDEF1', 'ABCDEF 1'],
 		[
 			'0123456789abcdef0123456789abcdef01234567',
-			'0123 456789abcdef0123456789abcdef01234567',
+			'012345 6789ab cdef01 234567 89abcd ef0123 4567',
 		],
-		['deadbeef', 'dead beef'],
-		['123abcd deadbeef', '123a bcd dead beef'],
+		['deadbeef', 'deadbe ef'],
+		['123abcd deadbeef', '123abc d deadbe ef'],
+		[
+			'0123456789abcdef0123456789abcdef012345678',
+			'012345 6789ab cdef01 234567 89abcd ef0123 45678',
+		],
+		['deadbeef_note', 'deadbe ef note'],
 		['@user', ' user'],
 		['`code`', ' code '],
 		['<img src=x>', ' img src x '],
@@ -57,20 +62,16 @@ describe('toPlainText render syntax', () => {
 		const plain = toPlainText(text)
 		expect(plain).toBe(expected)
 		expect(plain).not.toMatch(/[[\]!@`<>]|:\/\/|www\./iu)
-		expect(plain).toMatch(/^[\p{L}\p{N} .,;:'"/_()-]*$/u)
+		expect(plain).toMatch(/^[\p{L}\p{N} .,;:'"/()-]*$/u)
 	})
 	test('preserves letters, digits and the supported punctuation', () => {
-		const text = 'Żółć 日本語 0123 .,;:\'"/_-()'
+		const text = 'Żółć 日本語 0123 .,;:\'"/-()'
 		expect(toPlainText(text)).toBe(text)
 	})
-	test.each([
-		'0123456789abcdef0123456789abcdef012345678',
-		'abc123',
-		'abcdefg',
-		'src/auth.ts line 12',
-		'xdeadbeef',
-		'deadbeef_note',
-	])('preserves %j without a whole-word GitHub reference', text => {
-		expect(toPlainText(text)).toBe(text)
-	})
+	test.each(['abc123', 'abcdefg', 'src/auth.ts line 12', 'xdeadbeef'])(
+		'preserves %j without a whole-word GitHub reference',
+		text => {
+			expect(toPlainText(text)).toBe(text)
+		}
+	)
 })
