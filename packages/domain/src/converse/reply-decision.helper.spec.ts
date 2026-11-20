@@ -386,3 +386,33 @@ describe('reply decision output bounds', () => {
 		expect(memory).not.toMatch(/[<>`@]/u)
 	})
 })
+
+describe('memory candidate render syntax', () => {
+	test.each([
+		'[x](https://e.com)',
+		'![a](b.png)',
+		'https://e.com/x',
+		'www.e.com',
+		'WWW.E.COM',
+		'@user',
+		'`code`',
+		'<img src=x>',
+	])(
+		'sanitizes %j in both the path and reason before enforcing the reason cap',
+		text => {
+			const path = `src/${text}/policy.ts`
+			const memory = toMemoryCandidate(
+				{ path },
+				`${text} ${'policy '.repeat(40)}`
+			)
+			expect(memory).not.toMatch(/[[\]!@`<>]|:\/\/|www\./iu)
+			expect(memory).toContain('/policy.ts: ')
+			const reason = memory.slice(
+				memory.indexOf('/policy.ts: ') + '/policy.ts: '.length
+			)
+			expect(reason.length).toBeLessThanOrEqual(MEMORY_REASON_MAX_CHARS)
+			expect(reason.endsWith('…')).toBe(true)
+			expect(memory).not.toMatch(/[\r\n]/u)
+		}
+	)
+})

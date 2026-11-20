@@ -638,3 +638,122 @@ layer(Layer.empty, { excludeTestServices: true })('RepoToolsService', test => {
 			})
 	)
 })
+
+layer(Layer.empty, { excludeTestServices: true })(
+	'RepoToolsService structured reads',
+	test => {
+		for (const ref of ['head', 'base'] as const)
+			for (const range of [undefined, '2-3', '1-500'] as const)
+				test.effect(
+					`reports existing ${ref} lines for range ${range ?? 'whole file'} and preserves call text`,
+					() =>
+						Effect.gen(function* () {
+							const repo = fixture()
+							yield* Effect.gen(function* () {
+								const input = yield* scope
+								const tools = yield* RepoToolsService
+								const params = {
+									path: './src/billing/charge.ts',
+									ref,
+									...(range ? { range } : {}),
+								}
+								const read = yield* tools.run(input, 'read_file', params)
+								expect(read.shown).toEqual({
+									ref,
+									path: 'src/billing/charge.ts',
+									lines: { start: range === '2-3' ? 2 : 1, end: 3 },
+									truncated: false,
+								})
+								expect(yield* tools.call(input, 'read_file', params)).toBe(
+									read.output
+								)
+								expect(read.output).toContain(
+									ref === 'head' ? '3| head three' : '3| base three'
+								)
+							}).pipe(Effect.provide(toolsLayer(repo.root)))
+						})
+				)
+		test.effect('empty files and ranges past EOF have no shown lines', () =>
+			Effect.gen(function* () {
+				const repo = fixture()
+				repo.write('empty.txt', '')
+				repo.commit()
+				yield* Effect.gen(function* () {
+					const input = yield* scope
+					const tools = yield* RepoToolsService
+					for (const params of [
+						{ path: 'empty.txt' },
+						{ path: 'README.md', range: '2-500' },
+					])
+						expect(yield* tools.run(input, 'read_file', params)).toEqual({
+							output: '(no lines in range)',
+						})
+				}).pipe(Effect.provide(toolsLayer(repo.root)))
+			})
+		)
+		test.effect('errors and non-read tools have no shown metadata', () =>
+			Effect.gen(function* () {
+				const repo = fixture()
+				yield* Effect.gen(function* () {
+					const input = yield* scope
+					const tools = yield* RepoToolsService
+					for (const params of [
+						{ path: 'missing.txt' },
+						{ path: '../outside.txt' },
+						{ path: 'data.bin' },
+						{ path: 'README.md', range: 'bad' },
+						{ path: 'large.txt' },
+					]) {
+						const read = yield* tools.run(input, 'read_file', params)
+						expect(read.output).toMatch(/^error: /u)
+						expect(read).not.toHaveProperty('shown')
+						expect(yield* tools.call(input, 'read_file', params)).toBe(
+							read.output
+						)
+					}
+					for (const [name, params] of [
+						['grep', { pattern: 'head' }],
+						['blame', { path: 'README.md', range: '1' }],
+					] as const) {
+						const read = yield* tools.run(input, name, params)
+						expect(read.output).not.toMatch(/^error: /u)
+						expect(read).not.toHaveProperty('shown')
+					}
+				}).pipe(Effect.provide(toolsLayer(repo.root)))
+			})
+		)
+		test.effect(
+			'a truncated ranged read reports only its whole prefix and keeps the call text',
+			() =>
+				Effect.gen(function* () {
+					const repo = fixture()
+					repo.write(
+						'huge.txt',
+						`outside\npolicy\n${'x'.repeat(MAX_TOOL_OUTPUT_CHARS)}\nlast\n`
+					)
+					repo.commit()
+					yield* Effect.gen(function* () {
+						const input = yield* scope
+						const tools = yield* RepoToolsService
+						const params = { path: 'huge.txt', range: '2-500' }
+						const read = yield* tools.run(input, 'read_file', params)
+						expect(read.shown).toEqual({
+							ref: 'head',
+							path: 'huge.txt',
+							lines: { start: 2, end: 2 },
+							truncated: true,
+						})
+						expect(read.output).toContain('2| policy')
+						expect(read.output).toContain('[truncated:')
+						expect(read.output.length).toBeLessThanOrEqual(
+							MAX_TOOL_OUTPUT_CHARS
+						)
+						expect(read.output).not.toContain('4| last')
+						expect(yield* tools.call(input, 'read_file', params)).toBe(
+							read.output
+						)
+					}).pipe(Effect.provide(toolsLayer(repo.root)))
+				})
+		)
+	}
+)

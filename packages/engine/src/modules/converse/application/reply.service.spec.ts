@@ -37,6 +37,7 @@ import { ReviewLimits } from '../../review/application/review-limits.context'
 import { AgentLoopServiceLive } from '../../review/application/services/agent-loop.service'
 import { ModelHealthServiceLive } from '../../review/application/services/model-health.service'
 import { RepoToolsServiceLive } from '../../review/application/services/repo-tools.service'
+import { MAX_TOOL_OUTPUT_CHARS } from '../../review/domain/review.constants'
 import {
 	RecheckService,
 	RecheckServiceLive,
@@ -1007,6 +1008,160 @@ layer(Layer.empty, { excludeTestServices: true })(
 							expect.stringContaining('fixture defect'),
 							undefined,
 						])
+					})
+			)
+	}
+)
+
+layer(Layer.empty, { excludeTestServices: true })(
+	'structured reply reads',
+	test => {
+		test.effect(
+			'a colon-bearing grep path cannot impersonate a read of package.json',
+			() =>
+				Effect.gen(function* () {
+					const scriptSpy = vi.fn(
+						afterRead(
+							'grep',
+							{ pattern: 'policy', glob: 'package.json:1:decoy' },
+							['package.json:1 policy']
+						)
+					)
+					const fixture = setup(scriptSpy, {
+						baseFiles: {
+							'package.json': 'policy\n',
+							'package.json:1:decoy': 'policy\n',
+						},
+					})
+					const report = yield* ReplyService.use(service =>
+						service.decide(fixture.request)
+					).pipe(Effect.provide(fixture.services))
+					expect(report.results[0]?.error).toBeUndefined()
+					expect(report.results[0]?.decision.action).toBe('disputed')
+					expect(scriptSpy).toHaveBeenCalledTimes(2)
+					expect(
+						JSON.stringify(scriptSpy.mock.calls[1]?.[0].options.prompt)
+					).toContain('package.json:1:decoy:1:policy')
+				})
+		)
+		test.effect(
+			'a blame author containing a date and fake line number cannot supply line 99',
+			() =>
+				Effect.gen(function* () {
+					const scriptSpy = vi.fn(
+						afterRead('blame', { path: 'policy.txt', range: '1-1' }, [
+							'policy.txt:99 policy',
+						])
+					)
+					const fixture = setup(scriptSpy, {
+						baseFiles: { 'policy.txt': 'policy\n'.repeat(100) },
+					})
+					fixture.repo.git('checkout', '--orphan', 'authored-policy')
+					fixture.repo.git(
+						'-c',
+						'user.name=Name 2026-01-31 99) extra',
+						'commit',
+						'-m',
+						'fixture'
+					)
+					const authored = fixture.repo.git('rev-parse', 'HEAD')
+					const report = yield* ReplyService.use(service =>
+						service.decide({
+							...fixture.request,
+							headRef: authored,
+							mergeBase: authored,
+							items: [{ ...fixture.item, base: authored }],
+						})
+					).pipe(Effect.provide(fixture.services))
+					expect(report.results[0]?.error).toBeUndefined()
+					expect(report.results[0]?.decision.action).toBe('disputed')
+					expect(
+						JSON.stringify(scriptSpy.mock.calls[1]?.[0].options.prompt)
+					).toContain('Name 2026-01-31 99) extra')
+				})
+		)
+		for (const line of [1, 2])
+			test.effect(
+				`a truncated loop read cannot supply cited line ${line}, even a whole prefix line`,
+				() =>
+					Effect.gen(function* () {
+						const scriptSpy = vi.fn(
+							afterRead('read_file', { path: 'policy.txt', range: '1-3' }, [
+								`policy.txt:${line} policy`,
+							])
+						)
+						const fixture = setup(scriptSpy, {
+							baseFiles: {
+								'policy.txt': `policy\n${'x'.repeat(MAX_TOOL_OUTPUT_CHARS)}\nlast\n`,
+							},
+						})
+						const report = yield* ReplyService.use(service =>
+							service.decide(fixture.request)
+						).pipe(Effect.provide(fixture.services))
+						expect(report.results[0]?.error).toBeUndefined()
+						expect(report.results[0]?.decision.action).toBe('disputed')
+						expect(scriptSpy).toHaveBeenCalledTimes(2)
+						expect(
+							JSON.stringify(scriptSpy.mock.calls[1]?.[0].options.prompt)
+						).toContain('[truncated:')
+					})
+			)
+		for (const line of [1, 3])
+			test.effect(
+				`the first window counts whole lines but excludes its cut line (citation ${line})`,
+				() =>
+					Effect.gen(function* () {
+						const evidence = [`src/store.ts:${line} policy`]
+						const scriptSpy = vi.fn(classification(intentional(evidence)))
+						const fixture = setup(scriptSpy)
+						fixture.repo.write(
+							'src/store.ts',
+							`inherited policy\nnew behavior\n${'x'.repeat(MAX_TOOL_OUTPUT_CHARS)}CUT_LINE_END\n`
+						)
+						const headRef = fixture.repo.commit()
+						const report = yield* ReplyService.use(service =>
+							service.decide({
+								...fixture.request,
+								mergeBase: headRef,
+								headRef,
+							})
+						).pipe(Effect.provide(fixture.services))
+						expect(report.results[0]?.error).toBeUndefined()
+						expect(report.results[0]?.decision).toMatchObject(
+							line === 1
+								? { action: 'accepted', evidence }
+								: { action: 'disputed' }
+						)
+						const first = userText(scriptSpy.mock.calls[0]?.[0])
+						expect(first).toContain('1| inherited policy')
+						expect(first).toContain('3| ')
+						expect(first).toContain('[truncated:')
+						expect(first).not.toContain('CUT_LINE_END')
+					})
+			)
+		for (const line of [3, 4])
+			test.effect(
+				`a read beyond EOF supplies only existing lines (citation ${line})`,
+				() =>
+					Effect.gen(function* () {
+						const evidence = [`policy.txt:${line} policy`]
+						const fixture = setup(
+							afterRead(
+								'read_file',
+								{ path: 'policy.txt', range: '1-500' },
+								evidence
+							),
+							{ baseFiles: { 'policy.txt': 'one\ntwo\npolicy\n' } }
+						)
+						const report = yield* ReplyService.use(service =>
+							service.decide(fixture.request)
+						).pipe(Effect.provide(fixture.services))
+						expect(report.results[0]?.error).toBeUndefined()
+						expect(report.results[0]?.decision).toMatchObject(
+							line === 3
+								? { action: 'accepted', evidence }
+								: { action: 'disputed' }
+						)
 					})
 			)
 	}
