@@ -443,6 +443,7 @@ layer(RunnerLayer)('runner client', test => {
 					engineCommit: undefined,
 					resultPath: undefined,
 					outcomePath: undefined,
+					preparedPath: undefined,
 					repository: undefined,
 					runId: undefined,
 					runAttempt: undefined,
@@ -476,6 +477,8 @@ layer(RunnerLayer)('runner client', test => {
 					summaryPath: '/fixture/summary.md',
 					engineCommit: 'abc123',
 					resultPath: '/fixture/result.json',
+					outcomePath: undefined,
+					preparedPath: undefined,
 					repository: 'example/project',
 					runId: '12345678901234567890',
 					runAttempt: '2',
@@ -485,7 +488,7 @@ layer(RunnerLayer)('runner client', test => {
 })
 
 layer(Layer.empty)('modeConfig', test => {
-	for (const mode of ['shadow', 'publish', 'sweep'])
+	for (const mode of ['shadow', 'prepare', 'review', 'publish', 'sweep'])
 		test.effect(`accepts ${mode}`, () =>
 			Effect.gen(function* () {
 				expect(

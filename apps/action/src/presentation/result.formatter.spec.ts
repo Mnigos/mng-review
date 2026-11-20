@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { REDACTED, toReviewJson } from '@mng-review/engine'
 import { Schema } from 'effect'
 import type {
@@ -427,4 +428,30 @@ test('the review job writes publish mode with no publish report yet', () => {
 			)
 		)
 	).toMatchObject({ mode: 'publish', publish: null })
+})
+
+/** SHA-256 of the original main formatter bytes for the existing reviewed and unreviewed fixtures. */
+const SHADOW_BYTES = [
+	'e62f0d0011126316344bd1073776c2d9dc17e5c8931472ca73d9ba09cdec0510',
+	'91ef7cf0e8e1d86a146bdc5eaf3b70b35675121119766161057c5abee52b8c0b',
+	'ead9cd2c847af6adfce8571df07600004cedfe44625a70e98f5500fc1c06c24b',
+	'3ee1b955f7712c394658184500e25467a12cb36e572519a0e581f64522804129',
+	'1f7e5d01971bb503477725bddce2f467af6bb94ad5e977d43ecb7d927b3b1530',
+	'47acc7faf2ff92b4aedb936adcb31e45bf4928be15f9f89a4e0a16a72c12d9a9',
+	'21ad0798f012a32aeae2703f934b9f889645cc892b3effda34cb179c6e565873',
+] as const
+
+describe('shadow output byte compatibility with main', () => {
+	const outcomes: readonly ShadowOutcome[] = [
+		{ status: 'reviewed', rules: RULES, event: EVENT, report: reviewReport() },
+		...UNREVIEWED,
+	]
+	for (const [index, outcome] of outcomes.entries())
+		test(`preserves ${outcome.status} fixture ${index} exactly`, () => {
+			expect(
+				createHash('sha256')
+					.update(formatResult(outcome, CONTEXT))
+					.digest('hex')
+			).toBe(SHADOW_BYTES[index])
+		})
 })
