@@ -17,7 +17,11 @@ layer(Layer.empty)('GitHub HTTP GraphQL error classification', test => {
 					const fixture = makeGitHubHttp(() =>
 						Effect.succeed(
 							Response.json({
-								errors: [{ message: 'Not minimizable' }],
+								errors: [
+									{ message: 'Not minimizable', type: 'UNPROCESSABLE' },
+									{ message: 'Try later', type: 'RATE_LIMITED' },
+									{ message: 'Unknown error' },
+								],
 								...(partialData ? { data: { minimizeComment: null } } : {}),
 							})
 						)
@@ -27,7 +31,8 @@ layer(Layer.empty)('GitHub HTTP GraphQL error classification', test => {
 					).pipe(Effect.provide(fixture.layer), Effect.flip)
 					expect(failure).toMatchObject({
 						operation: 'minimizeComment',
-						reason: 'Not minimizable',
+						reason: 'Not minimizable; Try later; Unknown error',
+						graphqlTypes: ['UNPROCESSABLE', 'RATE_LIMITED', null],
 						graphqlErrors: true,
 					})
 					expect(failure.status).toBeUndefined()
@@ -102,4 +107,40 @@ layer(Layer.empty)('GitHub HTTP GraphQL error classification', test => {
 				expect(fixture.requests).toHaveLength(1)
 			})
 	)
+})
+
+layer(Layer.empty)('GitHub HTTP rate limit headers', test => {
+	for (const headers of Array.of<Readonly<Record<string, string>>>(
+		{ 'retry-after': '60' },
+		{ 'x-ratelimit-remaining': '0' },
+		{},
+		{ 'x-ratelimit-remaining': '1' }
+	))
+		test.effect(
+			`HTTP 403 with ${JSON.stringify(headers)} preserves rate limit classification`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = makeGitHubHttp(() =>
+						Effect.succeed(
+							Response.json(
+								{ message: 'Request failed' },
+								{ status: 403, headers }
+							)
+						)
+					)
+					const failure = yield* GitHubApiService.use(service =>
+						service.minimizeComment('summary-node')
+					).pipe(Effect.provide(fixture.layer), Effect.flip)
+					expect(failure.status).toBe(403)
+					expect(failure.rateLimited).toBe(
+						'retry-after' in headers ||
+							('x-ratelimit-remaining' in headers &&
+								headers['x-ratelimit-remaining'] === '0')
+							? true
+							: undefined
+					)
+					expect(failure.graphqlErrors).toBeUndefined()
+					expect(fixture.requests).toHaveLength(1)
+				})
+		)
 })

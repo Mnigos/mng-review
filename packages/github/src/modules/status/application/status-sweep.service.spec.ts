@@ -773,3 +773,57 @@ layer(APP_MODE_OWNED)('StatusSweepService after an identity switch', test => {
 			})
 		)
 })
+
+layer(APP_MODE_OWNED)(
+	'StatusSweepService visible current identity duplicates',
+	test => {
+		for (const state of ['error', 'failure', 'success'] as const)
+			for (const hidden of [false, true])
+				test.effect(
+					`${hidden ? 'repairs' : 'keeps'} ${state} while a current identity duplicate is ${hidden ? 'hidden' : 'visible'}`,
+					() =>
+						Effect.gen(function* () {
+							const api = githubApiFake(APP_IDENTITY)
+							const finished = state !== 'success'
+							api.comments.push(
+								appSummary({ ...SUMMARY_MARKER, head: 'head', finished }),
+								appSummary(
+									{ ...SUMMARY_MARKER, head: 'head', finished: !finished },
+									{ id: 'newer-summary', databaseId: 102, isMinimized: hidden }
+								)
+							)
+							const getStatusSpy = vi.fn(() =>
+								Effect.succeed({
+									id: 1,
+									state,
+									description: 'stale',
+									context: 'MNG Review',
+									creator: { login: APP_IDENTITY.restLogin, type: 'Bot' },
+								})
+							)
+							const statuses = githubStatusFake({
+								listOpenPullRequests: () =>
+									Effect.succeed([{ number: 17, head: { sha: 'head' } }]),
+								getStatus: getStatusSpy,
+							})
+							expect(
+								yield* StatusSweepService.use(service => service.sweep()).pipe(
+									Effect.provide(
+										StatusSweepServiceLive.pipe(
+											Layer.provide(Layer.merge(statuses.layer, api.api))
+										)
+									)
+								)
+							).toEqual({ checked: 1, updated: hidden ? 1 : 0, failed: 0 })
+							expect(statuses.statuses).toEqual(
+								hidden
+									? [{ sha: 'head', ...toCommitStatus('ready', 0, finished) }]
+									: []
+							)
+							expect(getStatusSpy).toHaveBeenCalledTimes(hidden ? 2 : 1)
+							expect(api.commentReads).toEqual([17])
+							expect(api.writes).toEqual([])
+						})
+				)
+	}
+)

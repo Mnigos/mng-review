@@ -462,14 +462,17 @@ layer(APP_MODE_OWNED)('SummaryCommentService identity switches', test => {
 					fake.comments.push(previous, older)
 					fake.commentSnapshots.push([previous])
 					if (storedFailure) fake.failures.create.push(writeError())
-					fake.failures.update.push(writeError(503))
+					const updateError = new GitHubApiError({
+						operation: 'update',
+						reason: 'older summary unavailable',
+						status: 503,
+					})
+					fake.failures.update.push(updateError)
 					const summaries = yield* SummaryCommentService.pipe(
 						Effect.provide(service)
 					)
-					expect(yield* Effect.flip(summaries.write(17, render))).toMatchObject(
-						{
-							status: 503,
-						}
+					expect(yield* Effect.flip(summaries.write(17, render))).toBe(
+						updateError
 					)
 					expect(fake.comments.map(comment => comment.databaseId)).toEqual([
 						previous.databaseId,
@@ -689,4 +692,361 @@ layer(Layer.empty)('SummaryCommentService return to token mode', test => {
 				).toEqual([GITHUB_ACTIONS_IDENTITY.login])
 			})
 	)
+})
+
+layer(APP_MODE_OWNED)('SummaryCommentService reconciliation failures', test => {
+	for (const storedFailure of [false, true])
+		test.effect(
+			`a ${storedFailure ? 'stored unanswered' : 'successful'} create preserves the update error when deleting its comment also fails`,
+			() =>
+				Effect.gen(function* () {
+					const { fake, service } = setup(APP_IDENTITY, {
+						storeFailedCreates: storedFailure,
+					})
+					const previous = priorSummary()
+					const older = appSummary({
+						...SUMMARY_MARKER,
+						runs: 7,
+						finished: true,
+					})
+					const updateError = new GitHubApiError({
+						operation: 'update',
+						reason: 'older summary unavailable',
+						status: 503,
+					})
+					const deleteError = new GitHubApiError({
+						operation: 'delete',
+						reason: 'delete denied',
+						status: 403,
+					})
+					fake.comments.push(previous, older)
+					fake.commentSnapshots.push([previous])
+					if (storedFailure) fake.failures.create.push(writeError())
+					fake.failures.update.push(updateError)
+					fake.failures.delete.push(deleteError)
+					expect(
+						yield* SummaryCommentService.use(api => api.write(17, render)).pipe(
+							Effect.provide(service),
+							Effect.flip
+						)
+					).toBe(updateError)
+					expect(fake.writes).toEqual([
+						expect.objectContaining({ method: 'create' }),
+						expect.objectContaining({ method: 'update', id: older.databaseId }),
+						{ method: 'delete', id: 1 },
+					])
+					expect(fake.comments.slice(0, 2)).toEqual([previous, older])
+					expect(fake.comments.map(comment => comment.databaseId)).toEqual([
+						101, 100, 1,
+					])
+					expect(fake.failures.delete).toEqual([])
+				})
+		)
+	for (const storedFailure of [false, true])
+		test.effect(
+			`offline reconciliation deletes its ${storedFailure ? 'stored unanswered' : 'successful'} create and fails when the older finished summary update answers 503`,
+			() =>
+				Effect.gen(function* () {
+					const { fake, service } = setup(APP_IDENTITY, {
+						storeFailedCreates: storedFailure,
+					})
+					const previous = priorSummary()
+					const older = appSummary({
+						...SUMMARY_MARKER,
+						runs: 7,
+						head: 'older-head',
+						finished: true,
+					})
+					const updateError = new GitHubApiError({
+						operation: 'update',
+						reason: 'older summary unavailable',
+						status: 503,
+					})
+					fake.comments.push(previous, older)
+					fake.commentSnapshots.push([previous])
+					if (storedFailure) fake.failures.create.push(writeError())
+					fake.failures.update.push(updateError)
+					expect(
+						yield* SummaryCommentService.use(api =>
+							api.publishStatus({
+								pullNumber: 17,
+								head: 'new-head',
+								engineCommit: undefined,
+								status: 'offline',
+							})
+						).pipe(Effect.provide(service), Effect.flip)
+					).toBe(updateError)
+					expect(fake.writes).toEqual([
+						expect.objectContaining({ method: 'create' }),
+						expect.objectContaining({ method: 'update', id: older.databaseId }),
+						{ method: 'delete', id: 1 },
+					])
+					expect(
+						parseSummaryMarker(
+							fake.writes[0]?.method === 'create' ? fake.writes[0].body : ''
+						)
+					).toMatchObject({ finished: false })
+					expect(fake.comments).toEqual([previous, older])
+				})
+		)
+})
+
+layer(APP_MODE_OWNED)(
+	'SummaryCommentService unanswered create ownership',
+	test => {
+		for (const status of [undefined, 503]) {
+			test.effect(
+				`an unanswered create ${status} never claims an identical summary present before the create`,
+				() =>
+					Effect.gen(function* () {
+						const { fake, service } = setup()
+						const same = render(undefined)
+						const oldest = appSummary(same.marker, { body: same.body })
+						const existing = appSummary(same.marker, {
+							id: 'existing-duplicate',
+							databaseId: 102,
+							body: same.body,
+						})
+						const updateError = new GitHubApiError({
+							operation: 'update',
+							reason: 'existing duplicate unavailable',
+							status: 503,
+						})
+						fake.comments.push(existing)
+						fake.commentSnapshots.push([oldest, existing])
+						fake.failures.update.push(writeError(404), updateError)
+						fake.failures.create.push(writeError(status))
+						expect(
+							yield* SummaryCommentService.use(api =>
+								api.write(17, () => same)
+							).pipe(Effect.provide(service), Effect.flip)
+						).toBe(updateError)
+						expect(fake.writes).toEqual([
+							{ method: 'update', id: oldest.databaseId, body: same.body },
+							{ method: 'create', pullNumber: 17, body: same.body },
+							{ method: 'update', id: existing.databaseId, body: same.body },
+						])
+						expect(fake.comments).toEqual([existing])
+						expect(fake.commentReads).toEqual([17, 17])
+					})
+			)
+			test.effect(
+				`two concurrent identical creates, one unanswered ${status}, claim the newest new matching summary`,
+				() =>
+					Effect.gen(function* () {
+						const { fake, service } = setup()
+						const same = render(undefined)
+						const older = appSummary(same.marker, { body: same.body })
+						const newer = appSummary(same.marker, {
+							id: 'newer-summary',
+							databaseId: 102,
+							body: same.body,
+						})
+						const foreign = appSummary(same.marker, {
+							id: 'foreign-summary',
+							databaseId: 103,
+							body: same.body,
+							author: {
+								__typename: 'Bot',
+								login: GITHUB_ACTIONS_IDENTITY.login,
+							},
+						})
+						const different = appSummary(same.marker, {
+							id: 'different-summary',
+							databaseId: 104,
+							body: `different run${toMarkerComment('summary', same.marker)}`,
+						})
+						const updateError = new GitHubApiError({
+							operation: 'update',
+							reason: 'older summary unavailable',
+							status: 503,
+						})
+						fake.comments.push(older, newer, foreign, different)
+						fake.commentSnapshots.push([])
+						fake.failures.create.push(writeError(status))
+						fake.failures.update.push(updateError)
+						expect(
+							yield* SummaryCommentService.use(api =>
+								api.write(17, () => same)
+							).pipe(Effect.provide(service), Effect.flip)
+						).toBe(updateError)
+						expect(fake.writes).toEqual([
+							{ method: 'create', pullNumber: 17, body: same.body },
+							{ method: 'update', id: older.databaseId, body: same.body },
+							{ method: 'delete', id: newer.databaseId },
+						])
+						expect(fake.comments).toEqual([older, foreign, different])
+						expect(fake.commentReads).toEqual([17, 17])
+					})
+			)
+		}
+	}
+)
+
+layer(APP_MODE_OWNED)('SummaryCommentService cleanup classification', test => {
+	for (const details of [
+		{ graphqlErrors: true, graphqlTypes: ['RATE_LIMITED'] },
+		{ status: 403, rateLimited: true },
+		{ status: 403, reason: 'API rate limit exceeded' },
+		{ status: 403, reason: 'You have exceeded a secondary rate limit' },
+		{
+			graphqlErrors: true,
+			graphqlTypes: ['FORBIDDEN'],
+			reason: 'You have exceeded a secondary rate limit',
+		},
+		{ status: 429 },
+	] as const)
+		test.effect(
+			`hiding with ${JSON.stringify(details)} keeps the previous summary visible without deleting it`,
+			() =>
+				Effect.gen(function* () {
+					const { fake, service } = setup()
+					const previous = priorSummary()
+					fake.comments.push(previous)
+					fake.failures.minimize.push(
+						new GitHubApiError({
+							operation: 'minimize',
+							reason: 'request failed',
+							...details,
+						})
+					)
+					expect(
+						yield* SummaryCommentService.use(api => api.write(17, render)).pipe(
+							Effect.provide(service)
+						)
+					).toMatchObject({ cleanup: 'kept', created: true })
+					expect(fake.comments[0]).toEqual(previous)
+					expect(
+						fake.comments.filter(comment => !comment.isMinimized)
+					).toHaveLength(2)
+					expect(fake.writes.map(write => write.method)).toEqual([
+						'create',
+						'minimize',
+					])
+				})
+		)
+	test.effect(
+		'a secondary rate limit typed FORBIDDEN keeps the previous summary, and the next write hides it',
+		() =>
+			Effect.gen(function* () {
+				const { fake, service } = setup()
+				const previous = priorSummary()
+				fake.comments.push(previous)
+				fake.failures.minimize.push(
+					new GitHubApiError({
+						operation: 'minimize',
+						reason: 'You have exceeded a secondary rate limit',
+						graphqlErrors: true,
+						graphqlTypes: ['FORBIDDEN'],
+					})
+				)
+				const summaries = yield* SummaryCommentService.pipe(
+					Effect.provide(service)
+				)
+				expect(yield* summaries.write(17, render)).toMatchObject({
+					cleanup: 'kept',
+				})
+				expect(fake.comments[0]).toEqual(previous)
+				expect(yield* summaries.write(17, render)).toMatchObject({
+					cleanup: 'minimized',
+				})
+				expect(fake.comments[0]).toEqual({ ...previous, isMinimized: true })
+				expect(fake.writes.map(write => write.method)).toEqual([
+					'create',
+					'minimize',
+					'update',
+					'minimize',
+				])
+			})
+	)
+	for (const previousIdentity of [true, false])
+		test.effect(
+			`a 404 deleting a ${previousIdentity ? 'previous identity summary reports deleted' : 'current identity duplicate reports none'}`,
+			() =>
+				Effect.gen(function* () {
+					const { fake, service } = setup()
+					const oldest = appSummary()
+					const disappeared = previousIdentity
+						? priorSummary()
+						: appSummary(SUMMARY_MARKER, {
+								id: 'deleted-duplicate',
+								databaseId: 102,
+							})
+					fake.comments.push(oldest)
+					fake.commentSnapshots.push([oldest, disappeared])
+					if (previousIdentity) fake.failures.minimize.push(writeError(403))
+					fake.failures.delete.push(
+						new GitHubApiError({
+							operation: 'delete',
+							reason: 'not found',
+							status: 404,
+						})
+					)
+					expect(
+						yield* SummaryCommentService.use(api => api.write(17, render)).pipe(
+							Effect.provide(service)
+						)
+					).toMatchObject({
+						cleanup: previousIdentity ? 'deleted' : 'none',
+						created: false,
+					})
+					expect(fake.writes).toEqual([
+						expect.objectContaining({
+							method: 'update',
+							id: oldest.databaseId,
+						}),
+						...(previousIdentity
+							? [{ method: 'minimize', id: disappeared.id }]
+							: []),
+						{ method: 'delete', id: disappeared.databaseId },
+					])
+					expect(fake.comments.map(comment => comment.databaseId)).toEqual([
+						oldest.databaseId,
+					])
+					expect(fake.failures.delete).toEqual([])
+				})
+		)
+})
+
+layer(APP_MODE_OWNED)('SummaryCommentService offline created result', test => {
+	for (const scenario of ['replacement', 'update', 'settled-create'] as const)
+		test.effect(
+			`publishStatus returns whether the kept summary was created for ${scenario}`,
+			() =>
+				Effect.gen(function* () {
+					const { fake, service } = setup()
+					const oldest = appSummary({ ...SUMMARY_MARKER, finished: true })
+					fake.comments.push(oldest)
+					if (scenario === 'replacement') {
+						fake.commentSnapshots.push([oldest])
+						fake.comments.splice(0)
+						fake.failures.update.push(writeError(404))
+					}
+					if (scenario === 'settled-create') fake.commentSnapshots.push([])
+					expect(
+						yield* SummaryCommentService.use(api =>
+							api.publishStatus({
+								pullNumber: 17,
+								head: 'new-head',
+								engineCommit: undefined,
+								status: 'offline',
+							})
+						).pipe(Effect.provide(service))
+					).toBe(scenario === 'replacement')
+					expect(fake.writes.map(write => write.method)).toEqual(
+						scenario === 'replacement'
+							? ['update', 'create']
+							: scenario === 'update'
+								? ['update']
+								: ['create', 'update', 'delete']
+					)
+					expect(fake.comments).toHaveLength(1)
+					expect(fake.comments[0]?.databaseId).toBe(
+						scenario === 'replacement' ? 2 : oldest.databaseId
+					)
+					expect(
+						parseSummaryMarker(fake.comments[0]?.body ?? '')
+					).toMatchObject({ finished: false })
+				})
+		)
 })
