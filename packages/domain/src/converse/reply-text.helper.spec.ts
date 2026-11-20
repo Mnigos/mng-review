@@ -75,3 +75,49 @@ describe('toPlainText render syntax', () => {
 		}
 	)
 })
+
+describe('plain text hex words and emphasis', () => {
+	test('splits every whole hex word, including the reported mixed-length run', () => {
+		expect(toPlainText('dead3047f4f (ABCDEF1234567), abcdef123456.')).toBe(
+			'dead30 47f4f (ABCDEF 123456 7), abcdef 123456.'
+		)
+	})
+	test.each([7, 11, 12, 13, 40, 41, 64, 127])(
+		'splits a %s-character hex word into pieces of at most six',
+		length => {
+			const word = 'aB09cD'.repeat(Math.ceil(length / 6)).slice(0, length)
+			const plain = toPlainText(word)
+			expect(plain.replaceAll(' ', '')).toBe(word)
+			expect(plain.split(' ').every(piece => piece.length <= 6)).toBe(true)
+			expect(plain).not.toMatch(/\b[0-9a-f]{7,}\b/iu)
+		}
+	)
+	test.each([
+		'a',
+		'ab',
+		'abc',
+		'abcd',
+		'abcde',
+		'abcdef',
+		'xdeadbeef',
+		'deadbeefx',
+	])(
+		'preserves %j without a whole hex word of seven or more characters',
+		text => {
+			expect(toPlainText(text)).toBe(text)
+		}
+	)
+	test.each([
+		['_policy_', ' policy '],
+		['__policy__', '  policy  '],
+		['*policy*', ' policy '],
+		['**policy**', '  policy  '],
+		['src/policy_name.ts', 'src/policy name.ts'],
+	] as const)(
+		'replaces emphasis delimiters in %j with spaces',
+		(text, expected) => {
+			expect(toPlainText(text)).toBe(expected)
+			expect(toPlainText(text)).not.toMatch(/[_*]/u)
+		}
+	)
+})
