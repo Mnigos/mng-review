@@ -890,6 +890,32 @@ layer(Layer.empty, { excludeTestServices: true })(
 					expect(report.results[0]?.decision.action).toBe('disputed')
 				})
 		)
+		test.effect(
+			'a symlink deleted at head never supplies evidence from the merge base',
+			() =>
+				Effect.gen(function* () {
+					const scriptSpy = vi.fn(
+						afterRead(
+							'read_file',
+							{ path: 'policy-link', range: '1-1', ref: 'base' },
+							['policy-link:1 target']
+						)
+					)
+					const fixture = setup(scriptSpy)
+					symlinkSync('src/store.ts', join(fixture.repo.root, 'policy-link'))
+					const mergeBase = fixture.repo.commit()
+					fixture.repo.git('rm', 'policy-link')
+					const headRef = fixture.repo.commit()
+					const report = yield* ReplyService.use(service =>
+						service.decide({ ...fixture.request, mergeBase, headRef })
+					).pipe(Effect.provide(fixture.services))
+					expect(fixture.repo.git('ls-tree', mergeBase, 'policy-link')).toMatch(
+						/^120000 /u
+					)
+					expect(report.results[0]?.error).toBeUndefined()
+					expect(report.results[0]?.decision.action).toBe('disputed')
+				})
+		)
 		for (const ref of ['head', 'base'] as const)
 			test.effect(
 				`a deleted file uses base numbering and requires a ${ref} read`,
