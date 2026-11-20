@@ -1,5 +1,7 @@
 import { GITHUB_ACTIONS_IDENTITY } from '../../../platform/bot-identity.helper'
+import { config, file } from '../../../shared/mocks/domain-test.helper'
 import {
+	ACCEPTING_RULES,
 	APP_IDENTITY,
 	bug,
 	botThread,
@@ -19,6 +21,7 @@ import {
 	countDisputes,
 	getApplicableReplies,
 	getPendingReply,
+	isPastLimit,
 	toDecidedReplies,
 	toReplyItems,
 } from './thread-conversation.helper'
@@ -240,5 +243,88 @@ describe('toDecidedReplies', () => {
 				},
 			])
 		).toEqual([decidedReply(undefined, { threadId: 'second', commentId: 43 })])
+	})
+})
+
+describe('isPastLimit', () => {
+	test('critical in the bot marker stays past a critical configured limit', () => {
+		expect(
+			isPastLimit(
+				pendingBotThread({
+					marker: { ...botThread().marker, severity: 'critical' },
+				}),
+				config({ disputes: { accept_intentional_up_to: 'critical' } }),
+				{ files: [] }
+			)
+		).toBe(true)
+	})
+	test.each([
+		['low', false],
+		['medium', false],
+		['high', true],
+	] as const)(
+		'marker severity %s at a medium limit is past=%s',
+		(severity, expected) => {
+			expect(
+				isPastLimit(
+					pendingBotThread({ marker: { ...botThread().marker, severity } }),
+					config({ disputes: { accept_intentional_up_to: 'medium' } }),
+					{ files: [] }
+				)
+			).toBe(expected)
+		}
+	)
+	test('high at the configured high limit is allowed', () => {
+		expect(
+			isPastLimit(pendingBotThread(), ACCEPTING_RULES.config, { files: [] })
+		).toBe(false)
+	})
+	test('the current thread path under risk_paths is past the limit', () => {
+		expect(
+			isPastLimit(
+				pendingBotThread(),
+				{
+					...ACCEPTING_RULES.config,
+					risk_paths: ['src/**'],
+				},
+				{ files: [file(bug().path)] }
+			)
+		).toBe(true)
+	})
+	test('a renamed file at its old risk path is past the limit', () => {
+		expect(
+			isPastLimit(
+				pendingBotThread(),
+				{
+					...ACCEPTING_RULES.config,
+					risk_paths: ['src/risk/**'],
+				},
+				{
+					files: [
+						file(bug().path, {
+							status: 'renamed',
+							oldPath: 'src/risk/store.ts',
+						}),
+					],
+				}
+			)
+		).toBe(true)
+	})
+	test('a neighboring path outside risk_paths is allowed', () => {
+		expect(
+			isPastLimit(
+				pendingBotThread({ path: 'src/risks/store.ts' }),
+				{
+					...ACCEPTING_RULES.config,
+					risk_paths: ['src/risk/**'],
+				},
+				{ files: [] }
+			)
+		).toBe(false)
+	})
+	test('a failed git read is past the limit even with accepting rules', () => {
+		expect(
+			isPastLimit(pendingBotThread(), ACCEPTING_RULES.config, undefined)
+		).toBe(true)
 	})
 })

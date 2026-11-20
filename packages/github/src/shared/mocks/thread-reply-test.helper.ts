@@ -66,6 +66,14 @@ export function pendingReply(
 	}
 }
 
+/** An intentional reply whose evidence and memory passed the review job's checks. */
+export const ACCEPTED_DECISION = {
+	action: 'accepted',
+	reason: 'The caller guards it.',
+	memory: 'Keep the guard.',
+	evidence: ['src/store.ts:10'],
+} as const satisfies ThreadReplyDecision
+
 const SEEN = { action: 'seen' } as const satisfies ThreadReplyDecision
 
 /** A decision bound to the shared pending reply. */
