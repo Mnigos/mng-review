@@ -5,6 +5,7 @@ import {
 	getCarriedBugs,
 	type MarkerUpdate,
 	toNextSummaryMarker,
+	toRepliedMarker,
 } from './summary-marker.helper'
 
 describe('toNextSummaryMarker', () => {
@@ -439,5 +440,45 @@ describe('toNextSummaryMarker waiting threads', () => {
 				{ head: 'new-head', finished: false, partial: true, unthreadedBugs: 0 }
 			).needsOwner
 		).toEqual(['kept'])
+	})
+})
+
+describe('toRepliedMarker', () => {
+	test.each([false, true])(
+		'changes only the waiting list with finished=%s',
+		finished => {
+			const previous = {
+				...PREVIOUS,
+				finished,
+				unthreadedBugs: 2,
+				needsOwner: ['cleared', 'kept'],
+			}
+			const snapshot = structuredClone(previous)
+			expect(
+				toRepliedMarker(previous, {
+					added: ['new', 'new', 'kept'],
+					cleared: new Set(['cleared']),
+				})
+			).toEqual({ ...previous, needsOwner: ['kept', 'new'] })
+			expect(previous).toEqual(snapshot)
+		}
+	)
+	test('omits a fully cleared waiting list and keeps every review field', () => {
+		expect(
+			toRepliedMarker(
+				{ ...PREVIOUS, unthreadedBugs: 3, needsOwner: ['cleared'] },
+				{ added: [], cleared: new Set(['cleared']) }
+			)
+		).toEqual({ ...PREVIOUS, unthreadedBugs: 3 })
+	})
+	test('a legacy marker gains no full review fields', () => {
+		expect(
+			toRepliedMarker(SUMMARY_MARKER, { added: [], cleared: new Set() })
+		).toEqual(SUMMARY_MARKER)
+	})
+	test('no earlier summary starts at zero runs without claiming a reviewed head', () => {
+		expect(
+			toRepliedMarker(undefined, { added: ['new'], cleared: new Set() })
+		).toEqual({ v: MARKER_VERSION, runs: 0, needsOwner: ['new'] })
 	})
 })

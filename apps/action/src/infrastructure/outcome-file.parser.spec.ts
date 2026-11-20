@@ -143,6 +143,44 @@ layer(Layer.empty)('parseOutcomeFile', test => {
 				).toEqual(file)
 			})
 	)
+	test.effect(
+		'drops a changed-file list from a replied outcome, which publishing reads from git',
+		() =>
+			Effect.gen(function* () {
+				const { report: _report, ...base } = outcomeFile()
+				const file = {
+					...base,
+					binding: { ...base.binding, trigger: 'converse' as const },
+					status: 'replied' as const,
+					replies: { decided: [decidedReply()], tokens: {} },
+				}
+				expect(
+					yield* parseOutcomeFile(
+						JSON.stringify({
+							...file,
+							change: {
+								files: [{ path: 'safe.ts', oldPath: '.mng/review.yml' }],
+							},
+						})
+					)
+				).toEqual(file)
+			})
+	)
+	test.effect('rejects a replied outcome outside the converse trigger', () =>
+		Effect.gen(function* () {
+			const { report: _report, ...base } = outcomeFile()
+			const error = yield* parseOutcomeFile(
+				JSON.stringify({
+					...base,
+					status: 'replied',
+					replies: { decided: [decidedReply()], tokens: {} },
+				})
+			).pipe(Effect.flip)
+			expect(error.message).toContain(
+				'a replied outcome needs its decisions and the converse trigger'
+			)
+		})
+	)
 	test.effect('rejects an unknown outcome status', () =>
 		Effect.gen(function* () {
 			const error = yield* parseOutcomeFile(

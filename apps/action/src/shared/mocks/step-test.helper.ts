@@ -1,4 +1,5 @@
 import { join } from 'node:path'
+import type { ReviewConfig } from '@mng-review/domain'
 import { RulesService } from '@mng-review/engine'
 import {
 	GitHubReadConfigLive,
@@ -32,7 +33,8 @@ export function stepFixture(
 	previous: readonly string[] = RULES.config.identity.previous,
 	appMode = false,
 	readOnly = false,
-	allow: readonly string[] = RULES.config.commands.allow
+	allow: readonly string[] = RULES.config.commands.allow,
+	disputes: ReviewConfig['disputes'] = RULES.config.disputes
 ) {
 	const repo = createRepo()
 	repo.write('src/items/store.ts', 'first\nold value\nlast\n')
@@ -99,6 +101,7 @@ export function stepFixture(
 			...RULES.config,
 			identity: { previous },
 			commands: { ...RULES.config.commands, allow },
+			disputes,
 		},
 	}
 	const loads: (string | undefined)[] = []

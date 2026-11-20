@@ -1,6 +1,7 @@
 import {
 	getCommandMismatch,
 	getCommandStateMismatch,
+	getConverseMismatch,
 	toCommandEvent,
 } from './command-event.helper'
 
@@ -132,4 +133,24 @@ describe('getCommandMismatch', () => {
 			).toBe('the pull request comes from a fork')
 		}
 	)
+})
+
+describe('getConverseMismatch', () => {
+	for (const moved of [false, true])
+		test(`converse checks the scheduled base with moved base=${moved}`, () => {
+			const pr = {
+				...PULL_REQUEST,
+				draft: false,
+				base: {
+					...PULL_REQUEST.base,
+					sha: moved ? 'c'.repeat(40) : SETTINGS.base,
+				},
+				head: { sha: SETTINGS.head, repo: PULL_REQUEST.base.repo },
+			}
+			expect(getConverseMismatch(pr, SETTINGS)).toBe(
+				moved
+					? 'the pull request has a new base since the schedule listed it; the next run reads it again'
+					: undefined
+			)
+		})
 })

@@ -1,10 +1,23 @@
 import { layer } from '@effect/vitest'
-import { GitHubConfig, GitHubWriteConfigLive } from '@mng-review/github'
+import {
+	GitHubApiError,
+	GitHubConfig,
+	GitHubWriteConfigLive,
+	parseSummaryMarker,
+	toMarkerComment,
+} from '@mng-review/github'
 import { Effect, FileSystem } from 'effect'
 // oxlint-disable-next-line no-restricted-imports -- The test brief requires shared GitHub fixtures.
-import { reviewThread } from '../../../../../packages/github/src/shared/mocks/publish-test.helper'
+import {
+	reviewThread,
+	appSummary,
+	SUMMARY_MARKER,
+} from '../../../../../packages/github/src/shared/mocks/publish-test.helper'
 // oxlint-disable-next-line no-restricted-imports -- The test brief requires shared GitHub reply fixtures.
-import { decidedReply } from '../../../../../packages/github/src/shared/mocks/thread-reply-test.helper'
+import {
+	decidedReply,
+	pendingReviewThread,
+} from '../../../../../packages/github/src/shared/mocks/thread-reply-test.helper'
 import { PublishRunService } from '../../application/publish-run.service'
 import {
 	MAX_OUTCOME_BYTES,
@@ -17,7 +30,11 @@ import {
 } from '../../shared/mocks/git-test.helper'
 import { eventPayload } from '../../shared/mocks/pull-request-event.helper'
 import { stepFixture } from '../../shared/mocks/step-test.helper'
-import { failPublishConfig, runPublishStep } from './publish-step.handler'
+import {
+	failPublishConfig,
+	publishMissingOutcome,
+	runPublishStep,
+} from './publish-step.handler'
 
 afterEach(() => {
 	cleanupRepos()
@@ -617,3 +634,337 @@ layer(FileSystemLayer, { excludeTestServices: true })(
 		)
 	}
 )
+
+layer(FileSystemLayer)('publish converse', test => {
+	for (const scenario of ['draft', 'head', 'base'] as const)
+		for (const wrongRun of [false, true])
+			test.effect(
+				`converse with a new ${scenario} and wrong run=${wrongRun} posts nothing and exits ${wrongRun ? 1 : 0}`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = stepFixture()
+						const fs = yield* FileSystem.FileSystem
+						const pr = fixture.api.command.pullRequest
+						fixture.api.command.pullRequest = {
+							...pr,
+							draft: scenario === 'draft',
+							base: {
+								...pr.base,
+								sha: scenario === 'base' ? 'd'.repeat(40) : fixture.base,
+							},
+							head: {
+								...pr.head,
+								sha: scenario === 'head' ? 'e'.repeat(40) : fixture.head,
+							},
+						}
+						yield* fs.writeFileString(
+							fixture.paths.outcome,
+							JSON.stringify({
+								version: 1,
+								binding: {
+									...fixture.file.binding,
+									trigger: 'converse',
+									...(wrongRun ? { runId: '456' } : {}),
+								},
+								status: 'replied',
+								replies: { decided: [decidedReply()], tokens: {} },
+							})
+						)
+						yield* fs.writeFileString(
+							fixture.paths.result,
+							JSON.stringify({ version: 1 })
+						)
+						const completed = yield* runPublishStep.pipe(
+							Effect.provide(fixture.publishRunLayer),
+							Effect.provide(
+								fixture.envLayer({
+									MNG_REVIEW_TRIGGER: 'converse',
+									MNG_REVIEW_TARGET_PR: '17',
+									MNG_REVIEW_TARGET_BASE: fixture.base,
+									MNG_REVIEW_TARGET_HEAD: fixture.head,
+								})
+							),
+							Effect.result
+						)
+						if (wrongRun)
+							expect(completed).toMatchObject({
+								_tag: 'Failure',
+								failure: { _tag: 'ActionExit', code: 1 },
+							})
+						else expect(completed._tag).toBe('Success')
+						const reason = wrongRun
+							? 'the outcome file belongs to another run: runId differs'
+							: scenario === 'draft'
+								? 'the pull request is a draft; replies are answered once it is ready'
+								: `the pull request has a new ${scenario} since the schedule listed it; the next run reads it again`
+						expect(
+							JSON.parse(yield* fs.readFileString(fixture.paths.result))
+						).toMatchObject({
+							publish: {
+								status: wrongRun ? 'failed' : 'not-published',
+								reason,
+							},
+						})
+						expect(yield* fs.readFileString(fixture.paths.summary)).toContain(
+							reason
+						)
+						expect(fixture.api.reads).toEqual(['getPullRequest:17'])
+						expect(fixture.api.writes).toEqual([])
+						expect(fixture.status.checks).toEqual([])
+						expect(fixture.status.statuses).toEqual([])
+						expect(fixture.loads).toEqual([])
+					})
+			)
+	for (const trigger of ['converse', 'push', 'command'] as const)
+		test.effect(
+			`a missing outcome for ${trigger} exits ${trigger === 'converse' ? 0 : 1} without GitHub writes`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = stepFixture()
+					const completed = yield* runPublishStep.pipe(
+						Effect.provide(fixture.publishRunLayer),
+						Effect.provide(fixture.envLayer({ MNG_REVIEW_TRIGGER: trigger })),
+						Effect.result
+					)
+					if (trigger === 'converse') expect(completed._tag).toBe('Success')
+					else
+						expect(completed).toMatchObject({
+							_tag: 'Failure',
+							failure: { _tag: 'ActionExit', code: 1 },
+						})
+					expect(fixture.api.writes).toEqual([])
+					expect(fixture.api.reads).toEqual([])
+					expect(fixture.status.checks).toEqual([])
+					expect(fixture.status.statuses).toEqual([])
+					expect(fixture.loads).toEqual([])
+				})
+		)
+	for (const trigger of ['converse', 'push'] as const)
+		test.effect(
+			`a missing outcome for ${trigger} is ${trigger === 'converse' ? '' : 'not '}reported before any publish service is built`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = stepFixture()
+					const fs = yield* FileSystem.FileSystem
+					yield* fs.writeFileString(
+						fixture.paths.result,
+						JSON.stringify({ version: 1 })
+					)
+					const reported = yield* publishMissingOutcome.pipe(
+						Effect.provide(fixture.envLayer({ MNG_REVIEW_TRIGGER: trigger }))
+					)
+					expect(reported).toBe(trigger === 'converse')
+					const result = yield* fs.readFileString(fixture.paths.result)
+					if (trigger === 'converse')
+						expect(result).toContain('"not-published"')
+					else expect(result).not.toContain('"publish"')
+				})
+		)
+	for (const action of ['accepted', 'needs-owner'] as const)
+		test.effect(
+			`${action} updates the standing verdict with no new thread or check run`,
+			() =>
+				Effect.gen(function* () {
+					// The shared bug is high: an accepted reply stands only when the rules accept up to it, and a
+					// needs-owner answer only past that limit.
+					const fixture = stepFixture(undefined, false, false, undefined, {
+						accept_intentional_up_to: action === 'accepted' ? 'high' : 'medium',
+						max_rounds: 1,
+					})
+					const fs = yield* FileSystem.FileSystem
+					const pr = fixture.api.command.pullRequest
+					fixture.api.command.pullRequest = {
+						...pr,
+						base: { ...pr.base, sha: fixture.base },
+						head: { ...pr.head, sha: fixture.head },
+					}
+					fixture.api.threads.push(pendingReviewThread())
+					const marker = {
+						...SUMMARY_MARKER,
+						runs: 4,
+						manualRuns: 2,
+						head: fixture.head,
+						finished: true,
+					}
+					const body = `# MNG Review\n\n**Verdict: needs fixes** · risk normal (rules) · 1 open bug thread(s) · run 4 of 6\n\nKeep the model report and evidence.\n\n${toMarkerComment('summary', marker)}`
+					fixture.api.comments.push(
+						appSummary(marker, {
+							body,
+							author: { __typename: 'Bot', login: 'github-actions' },
+						})
+					)
+					const decision =
+						action === 'accepted'
+							? ({
+									action,
+									reason: 'The caller guards it.',
+									memory: 'Keep the guard.',
+									evidence: ['src/items/store.ts:1'],
+								} as const)
+							: ({ action, reason: 'An owner must decide.' } as const)
+					yield* fs.writeFileString(
+						fixture.paths.outcome,
+						JSON.stringify({
+							version: 1,
+							binding: { ...fixture.file.binding, trigger: 'converse' },
+							status: 'replied',
+							replies: { decided: [decidedReply(decision)], tokens: {} },
+						})
+					)
+					yield* runPublishStep.pipe(
+						Effect.provide(fixture.publishRunLayer),
+						Effect.provide(
+							fixture.envLayer({
+								MNG_REVIEW_TRIGGER: 'converse',
+								MNG_REVIEW_TARGET_PR: '17',
+								MNG_REVIEW_TARGET_BASE: fixture.base,
+								MNG_REVIEW_TARGET_HEAD: fixture.head,
+							})
+						)
+					)
+					const updated = fixture.api.comments[0]?.body ?? ''
+					expect(parseSummaryMarker(updated)).toEqual({
+						...marker,
+						...(action === 'needs-owner' ? { needsOwner: ['thread'] } : {}),
+					})
+					expect(updated).toContain(
+						`**Verdict: ${action === 'accepted' ? 'ready' : 'needs owner'}**`
+					)
+					expect(updated).toContain('run 4 of 6')
+					expect(updated).toContain('Keep the model report and evidence.')
+					expect(
+						fixture.api.writes.filter(write =>
+							['review', 'comment', 'create'].includes(write.method)
+						)
+					).toEqual([])
+					expect(
+						fixture.api.writes.filter(write => write.method === 'reply')
+					).toHaveLength(1)
+					expect(fixture.status.checks).toEqual([])
+					expect(fixture.status.statuses).toMatchObject([
+						{
+							sha: fixture.head,
+							state: action === 'accepted' ? 'success' : 'failure',
+						},
+					])
+					expect(fixture.api.threads).toHaveLength(1)
+				})
+		)
+	test.effect(
+		'a reply whose author has no write access at publish is not answered',
+		() =>
+			Effect.gen(function* () {
+				const fixture = stepFixture()
+				const fs = yield* FileSystem.FileSystem
+				const pr = fixture.api.command.pullRequest
+				fixture.api.command.pullRequest = {
+					...pr,
+					base: { ...pr.base, sha: fixture.base },
+					head: { ...pr.head, sha: fixture.head },
+				}
+				fixture.api.threads.push(pendingReviewThread())
+				fixture.api.failures.getCollaboratorRole.push(
+					new GitHubApiError({
+						operation: 'role',
+						reason: 'not found',
+						status: 404,
+					})
+				)
+				const marker = { ...SUMMARY_MARKER, runs: 4, head: fixture.head }
+				fixture.api.comments.push(
+					appSummary(marker, {
+						author: { __typename: 'Bot', login: 'github-actions' },
+					})
+				)
+				yield* fs.writeFileString(
+					fixture.paths.outcome,
+					JSON.stringify({
+						version: 1,
+						binding: { ...fixture.file.binding, trigger: 'converse' },
+						status: 'replied',
+						replies: {
+							decided: [
+								decidedReply({
+									action: 'accepted',
+									reason: 'The caller guards it.',
+									memory: 'Keep the guard.',
+									evidence: ['src/store.ts:10'],
+								}),
+							],
+							tokens: {},
+						},
+					})
+				)
+				yield* runPublishStep.pipe(
+					Effect.provide(fixture.publishRunLayer),
+					Effect.provide(
+						fixture.envLayer({
+							MNG_REVIEW_TRIGGER: 'converse',
+							MNG_REVIEW_TARGET_PR: '17',
+							MNG_REVIEW_TARGET_BASE: fixture.base,
+							MNG_REVIEW_TARGET_HEAD: fixture.head,
+						})
+					)
+				)
+				expect(
+					fixture.api.writes.filter(write => write.method === 'reply')
+				).toEqual([])
+				expect(parseSummaryMarker(fixture.api.comments[0]?.body ?? '')).toEqual(
+					marker
+				)
+			})
+	)
+	for (const finished of [false, true])
+		test.effect(
+			`a reply keeps finished=${finished}, the prior full head and unthreaded bugs`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = stepFixture()
+					const fs = yield* FileSystem.FileSystem
+					const pr = fixture.api.command.pullRequest
+					fixture.api.command.pullRequest = {
+						...pr,
+						base: { ...pr.base, sha: fixture.base },
+						head: { ...pr.head, sha: fixture.head },
+					}
+					fixture.api.threads.push(pendingReviewThread())
+					const marker = {
+						...SUMMARY_MARKER,
+						runs: 4,
+						manualRuns: 2,
+						head: fixture.base,
+						finished,
+						unthreadedBugs: 3,
+					}
+					fixture.api.comments.push(
+						appSummary(marker, {
+							author: { __typename: 'Bot', login: 'github-actions' },
+						})
+					)
+					yield* fs.writeFileString(
+						fixture.paths.outcome,
+						JSON.stringify({
+							version: 1,
+							binding: { ...fixture.file.binding, trigger: 'converse' },
+							status: 'replied',
+							replies: { decided: [decidedReply()], tokens: {} },
+						})
+					)
+					yield* runPublishStep.pipe(
+						Effect.provide(fixture.publishRunLayer),
+						Effect.provide(
+							fixture.envLayer({
+								MNG_REVIEW_TRIGGER: 'converse',
+								MNG_REVIEW_TARGET_PR: '17',
+								MNG_REVIEW_TARGET_BASE: fixture.base,
+								MNG_REVIEW_TARGET_HEAD: fixture.head,
+							})
+						)
+					)
+					expect(
+						parseSummaryMarker(fixture.api.comments[0]?.body ?? '')
+					).toEqual(marker)
+					expect(fixture.status.checks).toEqual([])
+				})
+		)
+})
