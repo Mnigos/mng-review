@@ -33,6 +33,7 @@ describe('isDeclined', () => {
 					operation: 'minimize',
 					reason: 'not minimizable',
 					graphqlErrors: true,
+					graphqlTypes: ['FORBIDDEN'],
 				})
 			)
 		).toBe(true)

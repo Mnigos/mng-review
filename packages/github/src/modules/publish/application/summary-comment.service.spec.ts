@@ -447,7 +447,7 @@ layer(APP_MODE_OWNED)('SummaryCommentService identity switches', test => {
 	)
 	for (const storedFailure of [false, true])
 		test.effect(
-			`a ${storedFailure ? 'stored unanswered' : 'successful'} create is kept when updating the older summary fails, then repaired`,
+			`a ${storedFailure ? 'stored unanswered' : 'successful'} create is deleted and the write fails when updating the older summary fails`,
 			() =>
 				Effect.gen(function* () {
 					const { fake, service } = setup(APP_IDENTITY, {
@@ -466,50 +466,30 @@ layer(APP_MODE_OWNED)('SummaryCommentService identity switches', test => {
 					const summaries = yield* SummaryCommentService.pipe(
 						Effect.provide(service)
 					)
-					expect(yield* summaries.write(17, render)).toMatchObject({
-						marker: { runs: 4 },
-						cleanup: 'kept',
-					})
-					expect(
-						fake.comments.find(
-							comment => comment.databaseId === older.databaseId
-						)
-					).toEqual(older)
-					expect(
-						fake.comments.filter(
-							comment => comment.author?.login === APP_IDENTITY.login
-						)
-					).toHaveLength(2)
-					expect(
-						parseSummaryMarker(
-							fake.comments.find(comment => comment.databaseId === 1)?.body ??
-								''
-						)
-					).toMatchObject({ runs: 4, head: 'finished-head' })
-					expect(fake.writes.map(write => write.method)).toEqual([
-						'create',
-						'update',
-						'minimize',
+					expect(yield* Effect.flip(summaries.write(17, render))).toMatchObject(
+						{
+							status: 503,
+						}
+					)
+					expect(fake.comments.map(comment => comment.databaseId)).toEqual([
+						previous.databaseId,
+						older.databaseId,
+					])
+					expect(fake.writes).toEqual([
+						expect.objectContaining({ method: 'create' }),
+						expect.objectContaining({ method: 'update', id: older.databaseId }),
+						{ method: 'delete', id: 1 },
 					])
 					expect(yield* summaries.write(17, render)).toMatchObject({
 						marker: { runs: 8, head: 'older-head' },
-						cleanup: 'none',
+						cleanup: 'minimized',
+						created: false,
 					})
 					expect(
 						fake.comments
 							.filter(comment => !comment.isMinimized)
 							.map(comment => comment.databaseId)
 					).toEqual([older.databaseId])
-					expect(
-						fake.writes
-							.filter(write => write.method === 'update')
-							.map(write => write.id)
-					).toEqual([older.databaseId, older.databaseId])
-					expect(
-						fake.writes
-							.filter(write => write.method === 'delete')
-							.map(write => write.id)
-					).toEqual([1])
 				})
 		)
 	for (const status of [undefined, 503])
@@ -582,6 +562,7 @@ layer(APP_MODE_OWNED)('SummaryCommentService identity switches', test => {
 						operation: 'minimize',
 						reason: 'not minimizable',
 						graphqlErrors: true,
+						graphqlTypes: ['UNPROCESSABLE'],
 					})
 				)
 				expect(

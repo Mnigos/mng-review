@@ -30,9 +30,13 @@ export interface RenderedSummary {
 	readonly marker: SummaryMarker
 }
 
-/** What a write left: the summary written and what became of other identities' summaries. */
+/**
+ * What a write left: the summary written, what became of other summaries, and whether the
+ * summary kept is a comment this write created.
+ */
 export interface WrittenSummary extends RenderedSummary {
 	readonly cleanup: SummaryCleanup
+	readonly created: boolean
 }
 
 /** Builds the summary over the one read just before the write; `undefined` when there is none. */
@@ -41,13 +45,13 @@ export type SummaryRender = (
 ) => RenderedSummary
 
 /**
- * The summary written and the comments as read after the write, which the cleanup works from.
- * `kept` is this run's comment, left beside an older summary of the same identity whose update failed.
+ * The summary written, the comments as read after the write, which the cleanup works from, and
+ * whether the summary kept is this run's new comment.
  */
 interface CreatedSummary {
 	readonly rendered: RenderedSummary
 	readonly summaries: readonly SummaryComment[]
-	readonly kept?: number
+	readonly created: boolean
 }
 
 /**
@@ -62,6 +66,11 @@ interface CreateAttempt {
 
 /** Leaves a comment visible on a failure that may not have been applied, retried on the next write. */
 const keepOnFailure = Effect.orElseSucceed((): SummaryCleanup => 'kept')
+
+/** True when GitHub answered that the comment does not exist. */
+function isNotFound(error: GitHubApiError): boolean {
+	return error.status === NOT_FOUND_STATUS
+}
 
 export class SummaryCommentService extends Context.Service<
 	SummaryCommentService,
@@ -80,7 +89,7 @@ export class SummaryCommentService extends Context.Service<
 		/**
 		 * The offline path: a status summary when there is none, the marker set to unfinished on the
 		 * current identity's summary, and another identity's summary moved to the current identity
-		 * with the marker set to unfinished. `false` when the current identity's summary was edited.
+		 * with the marker set to unfinished. `true` when the write created the summary it kept.
 		 */
 		readonly publishStatus: (
 			input: StatusInput
@@ -129,10 +138,20 @@ export const SummaryCommentServiceLive = Layer.effect(
 			return rendered
 		})
 
+		/** Deletes a comment; one GitHub no longer has counts as deleted. */
+		const remove = Effect.fn('SummaryCommentService.remove')(function* (
+			id: number
+		) {
+			return yield* api
+				.deleteIssueComment(id)
+				.pipe(Effect.catchIf(isNotFound, () => Effect.void))
+		})
+
 		/**
 		 * After a create: the current identity's oldest summary is the one kept. When it is not this
-		 * run's comment, it is edited over its own marker, and the cleanup deletes this run's. A
-		 * create with no answer and no summary found fails with the create's error.
+		 * run's comment, it is edited over its own marker, and the cleanup deletes this run's. When
+		 * that edit fails, this run's comment is deleted and the write fails, so the next run starts
+		 * from one summary. A create with no answer and no summary found fails with its error.
 		 */
 		const settle = Effect.fn('SummaryCommentService.settle')(function* (
 			render: SummaryRender,
@@ -143,18 +162,23 @@ export const SummaryCommentServiceLive = Layer.effect(
 			const oldest = getOwnSummary(summaries)
 			if (!oldest && failure) return yield* failure
 			if (!oldest || oldest.id === own)
-				return { rendered, summaries } satisfies CreatedSummary
+				return { rendered, summaries, created: true } satisfies CreatedSummary
 			const updated = yield* Effect.result(update(oldest, render))
 			if (Result.isSuccess(updated))
-				return { rendered: updated.success, summaries } satisfies CreatedSummary
-			if (own === undefined) return yield* updated.failure
-			return { rendered, summaries, kept: own } satisfies CreatedSummary
+				return {
+					rendered: updated.success,
+					summaries,
+					created: false,
+				} satisfies CreatedSummary
+			if (own !== undefined) yield* Effect.ignore(remove(own))
+			return yield* updated.failure
 		})
 
 		/**
 		 * Creates the summary, then reads again and settles on the identity's oldest. A create with
-		 * no answer or a 5xx is checked by that read: a summary with this run's body is this run's own
-		 * create, kept as it is. `gone` is a summary GitHub just answered 404 for, never picked again.
+		 * no answer or a 5xx is checked by that read: the newest summary of the current identity that
+		 * was not in `before` and has this run's body is this run's own create. `gone` is a summary
+		 * GitHub just answered 404 for, never picked again.
 		 */
 		const create = Effect.fn('SummaryCommentService.create')(function* (
 			pullNumber: number,
@@ -174,8 +198,12 @@ export const SummaryCommentServiceLive = Layer.effect(
 			if (Result.isFailure(created)) {
 				if (!isTransient(created.failure)) return yield* created.failure
 				const summaries = yield* listLive
-				const own = summaries.find(
-					summary => summary.mine && summary.body === rendered.body
+				const known = new Set(before.map(summary => summary.id))
+				const own = summaries.findLast(
+					summary =>
+						summary.mine &&
+						!known.has(summary.id) &&
+						summary.body === rendered.body
 				)
 				return yield* settle(render, rendered, {
 					summaries,
@@ -185,7 +213,11 @@ export const SummaryCommentServiceLive = Layer.effect(
 			}
 			const after = yield* Effect.result(listLive)
 			if (Result.isFailure(after))
-				return { rendered, summaries: before } satisfies CreatedSummary
+				return {
+					rendered,
+					summaries: before,
+					created: true,
+				} satisfies CreatedSummary
 			return yield* settle(render, rendered, {
 				summaries: after.success,
 				own: created.success,
@@ -195,12 +227,11 @@ export const SummaryCommentServiceLive = Layer.effect(
 
 		/**
 		 * Hides each summary of another identity, deleting it only when GitHub refuses to hide it;
-		 * deletes the current identity's duplicates after its oldest, except `kept`. Anything left
-		 * visible that should not be reports `kept`, and the next write tries again.
+		 * deletes the current identity's duplicates after its oldest. Anything left visible that
+		 * should not be reports `kept`, and the next write tries again.
 		 */
 		const cleanUp = Effect.fn('SummaryCommentService.cleanUp')(function* (
-			summaries: readonly SummaryComment[],
-			kept: number | undefined
+			summaries: readonly SummaryComment[]
 		) {
 			const stale = yield* Effect.forEach(
 				getStaleSummaries(summaries),
@@ -208,27 +239,25 @@ export const SummaryCommentServiceLive = Layer.effect(
 					api.minimizeComment(summary.nodeId).pipe(
 						Effect.as<SummaryCleanup>('minimized'),
 						Effect.catchIf(isDeclined, () =>
-							api
-								.deleteIssueComment(summary.id)
-								.pipe(Effect.as<SummaryCleanup>('deleted'), keepOnFailure)
+							remove(summary.id).pipe(
+								Effect.as<SummaryCleanup>('deleted'),
+								keepOnFailure
+							)
 						),
 						keepOnFailure
 					),
 				{ concurrency: 1 }
 			)
 			const duplicates = yield* Effect.forEach(
-				getDuplicateSummaries(summaries).filter(summary => summary.id !== kept),
+				getDuplicateSummaries(summaries),
 				summary =>
-					api
-						.deleteIssueComment(summary.id)
-						.pipe(Effect.as<SummaryCleanup>('none'), keepOnFailure),
+					remove(summary.id).pipe(
+						Effect.as<SummaryCleanup>('none'),
+						keepOnFailure
+					),
 				{ concurrency: 1 }
 			)
-			return toSummaryCleanup([
-				...stale,
-				...duplicates,
-				...(kept === undefined ? [] : ['kept' as const]),
-			])
+			return toSummaryCleanup([...stale, ...duplicates])
 		})
 
 		/**
@@ -249,15 +278,13 @@ export const SummaryCommentServiceLive = Layer.effect(
 					.updateIssueComment(current.id, rendered.body)
 					.pipe(
 						Effect.as(true),
-						Effect.catchIf(
-							error => error.status === NOT_FOUND_STATUS,
-							() => Effect.succeed(false)
-						)
+						Effect.catchIf(isNotFound, () => Effect.succeed(false))
 					)
 				if (updated)
 					return {
 						...rendered,
-						cleanup: yield* cleanUp(summaries, undefined),
+						cleanup: yield* cleanUp(summaries),
+						created: false,
 					} satisfies WrittenSummary
 			}
 			const created = yield* create(
@@ -269,7 +296,8 @@ export const SummaryCommentServiceLive = Layer.effect(
 			)
 			return {
 				...created.rendered,
-				cleanup: yield* cleanUp(created.summaries, created.kept),
+				cleanup: yield* cleanUp(created.summaries),
+				created: created.created,
 			} satisfies WrittenSummary
 		})
 
@@ -310,8 +338,8 @@ export const SummaryCommentServiceLive = Layer.effect(
 						marker,
 					}
 				}
-				yield* writeOver(input.pullNumber, renderOffline, summaries)
-				return !getSummary(summaries)?.mine
+				return (yield* writeOver(input.pullNumber, renderOffline, summaries))
+					.created
 			}
 		)
 

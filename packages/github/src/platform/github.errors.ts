@@ -10,6 +10,12 @@ export class GitHubApiError extends Schema.TaggedError<GitHubApiError>()(
 		reason: Schema.String,
 		/** GitHub answered with GraphQL errors: the request reached it and was refused. */
 		graphqlErrors: Schema.optionalKey(Schema.Boolean),
+		/** The `type` of each GraphQL error, `null` where GitHub gave none. */
+		graphqlTypes: Schema.optionalKey(
+			Schema.Array(Schema.NullOr(Schema.String))
+		),
+		/** The answer's headers said the token hit a rate limit: `retry-after` or no requests left. */
+		rateLimited: Schema.optionalKey(Schema.Boolean),
 	}
 ) {
 	override get message(): string {
