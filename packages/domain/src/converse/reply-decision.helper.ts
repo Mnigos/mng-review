@@ -5,7 +5,11 @@ import type { Finding } from '../findings/finding.types'
 import { matchesAtEitherPath } from '../routing/helpers/agent-selection.helper'
 import type { Validation } from '../validation/validation.types'
 import type { ReplyAnswer } from './reply-answer.schema'
-import { MEMORY_REASON_MAX_CHARS } from './reply.constants'
+import { toCutLine, toOneLine, toPlainText } from './reply-text.helper'
+import {
+	MEMORY_REASON_MAX_CHARS,
+	REPLY_REASON_MAX_CHARS,
+} from './reply.constants'
 import type {
 	IntentionalLimit,
 	ReplyClaim,
@@ -19,8 +23,8 @@ export interface ReplyDecisionInput {
 	readonly claim: ReplyClaim
 	readonly config: ReviewConfig
 	readonly limit: IntentionalLimit
-	/** At least one evidence entry passed the engine's check. */
-	readonly evidenceChecked: boolean
+	/** The evidence entries that passed the engine's check; an `intentional` claim needs one. */
+	readonly checkedEvidence: readonly string[]
 	/** `fixed` only: the validator's answer at the head, when it gave one. */
 	readonly recheck?: Validation
 	/** `fixed` only: a commit since the thread's commit changed its file. */
@@ -32,17 +36,9 @@ const NOT_RECHECKED = 'the finding could not be checked again at the head'
 const SECOND_DISAGREEMENT =
 	'the reason was disputed before; the owner decides now'
 const MISSING_EVIDENCE =
-	'no evidence names a line this pull request did not add'
+	'no evidence cites lines that were read in the code and that this pull request did not add'
 const UNNAMED_REASON = 'the author gave a reason'
 const UNHELD_REASON = 'the reason does not hold against the code'
-
-/** Whitespace runs, line breaks included. */
-const WHITESPACE = /\s+/gu
-
-/** The text on one line with its whitespace runs collapsed. */
-function toOneLine(text: string): string {
-	return text.replace(WHITESPACE, ' ').trim()
-}
 
 /**
  * Why an `intentional` reply on this finding goes to the owner whatever its reason: a `critical`
@@ -56,7 +52,9 @@ export function getIntentionalLimit(
 	change: Pick<Change, 'files'>
 ): IntentionalLimit {
 	if (finding.severity === 'critical') return 'critical'
-	const file = change.files.find(entry => entry.path === finding.path) ?? {
+	const file = change.files.find(
+		entry => entry.path === finding.path || entry.oldPath === finding.path
+	) ?? {
 		path: finding.path,
 	}
 	if (matchesAtEitherPath(file, config.risk_paths)) return 'risk_paths'
@@ -82,18 +80,15 @@ export function toReplyClaim(answer: ReplyAnswer): ReplyClaim {
 
 /**
  * One line for `.mng/MEMORY.md`: the finding's path and the model's reason, the reason cut to
- * `MEMORY_REASON_MAX_CHARS`. It never holds the reply's text.
+ * `MEMORY_REASON_MAX_CHARS`. It never holds the reply's text, and holds no `<`, `>`, backtick or
+ * `@`, so wherever it is rendered it opens no markup, code span or mention.
  */
 export function toMemoryCandidate(
 	finding: Pick<Finding, 'path'>,
 	reason: string
 ): string {
-	const line = toOneLine(reason)
-	const cut =
-		line.length > MEMORY_REASON_MAX_CHARS
-			? `${line.slice(0, MEMORY_REASON_MAX_CHARS - 1).trimEnd()}…`
-			: line
-	return `${toOneLine(finding.path)}: ${cut}`
+	const path = toOneLine(toPlainText(finding.path))
+	return `${path}: ${toCutLine(toPlainText(reason), MEMORY_REASON_MAX_CHARS)}`
 }
 
 /** Why a limit sends an `intentional` reply to the owner. */
@@ -124,25 +119,20 @@ function toFixedDecision(input: ReplyDecisionInput): ReplyDecision {
 	return { action: 'still-found', reason: recheck.reason }
 }
 
-/**
- * Decides on one reply; the first rule that matches wins. `unclear` is only seen. `fixed` resolves
- * only when a commit since the thread's commit changed the file and the validator rejects the
- * finding at the head; otherwise the finding is still found, with no dispute round. `intentional`
- * goes to the owner past a limit, is accepted when its reason holds and checked evidence backs it,
- * goes to the owner once `disputes.max_rounds` disputes were answered, and is disputed otherwise.
- */
-export function toReplyDecision(input: ReplyDecisionInput): ReplyDecision {
+/** The decision of `toReplyDecision` before its reason is cut. */
+function getReplyDecision(input: ReplyDecisionInput): ReplyDecision {
 	const { item, claim, config, limit } = input
 	if (claim.claim === 'unclear') return { action: 'seen' }
 	if (claim.claim === 'fixed') return toFixedDecision(input)
 	if (limit !== 'ok')
 		return { action: 'needs-owner', reason: toLimitReason(limit, item, config) }
-	if (claim.holds && input.evidenceChecked) {
+	if (claim.holds && input.checkedEvidence.length > 0) {
 		const reason = claim.reason ?? item.finding.title
 		return {
 			action: 'accepted',
 			reason: claim.reason ?? UNNAMED_REASON,
 			memory: toMemoryCandidate(item.finding, reason),
+			evidence: input.checkedEvidence,
 		}
 	}
 	if (item.disputes >= config.disputes.max_rounds)
@@ -153,4 +143,21 @@ export function toReplyDecision(input: ReplyDecisionInput): ReplyDecision {
 			reason: claim.failedPremise ?? UNHELD_REASON,
 		}
 	return { action: 'disputed', reason: MISSING_EVIDENCE }
+}
+
+/**
+ * Decides on one reply; the first rule that matches wins. `unclear` is only seen. `fixed` resolves
+ * only when a commit since the thread's commit changed the file and the validator rejects the
+ * finding at the head; otherwise the finding is still found, with no dispute round. `intentional`
+ * goes to the owner past a limit, is accepted when its reason holds and checked evidence backs it,
+ * goes to the owner once `disputes.max_rounds` disputes were answered, and is disputed otherwise.
+ * Every reason is one line of at most `REPLY_REASON_MAX_CHARS`.
+ */
+export function toReplyDecision(input: ReplyDecisionInput): ReplyDecision {
+	const decision = getReplyDecision(input)
+	if (decision.action === 'seen') return decision
+	return {
+		...decision,
+		reason: toCutLine(decision.reason, REPLY_REASON_MAX_CHARS),
+	}
 }

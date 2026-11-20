@@ -42,9 +42,9 @@ describe('isEvidenceInCode', () => {
 			false,
 		],
 		[
-			'base-only lines past the head end',
+			'base-only lines past the head end of a file at head',
 			{ headLines: 1, baseLines: 5, added: [] },
-			true,
+			false,
 		],
 		[
 			'a file deleted at head',

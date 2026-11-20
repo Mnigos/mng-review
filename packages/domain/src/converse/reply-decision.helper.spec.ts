@@ -30,7 +30,7 @@ function input(
 		},
 		config: config(),
 		limit: 'ok',
-		evidenceChecked: true,
+		checkedEvidence: ['src/money.ts:2'],
 		commitSince: true,
 		...overrides,
 	}
@@ -138,10 +138,11 @@ describe('toReplyDecision', () => {
 			action: 'accepted',
 			reason: 'The ledger uses integer cents.',
 			memory: `${input().item.finding.path}: The ledger uses integer cents.`,
+			evidence: ['src/money.ts:2'],
 		})
 	})
 	test('holds without checked evidence is disputed with the missing evidence', () => {
-		const decision = toReplyDecision(input({ evidenceChecked: false }))
+		const decision = toReplyDecision(input({ checkedEvidence: [] }))
 		expect(decision.action).toBe('disputed')
 		expect(decision).toHaveProperty(
 			'reason',
@@ -176,7 +177,7 @@ describe('toReplyDecision', () => {
 					input({
 						item: item(disputes),
 						config: config({ disputes: { max_rounds } }),
-						evidenceChecked: false,
+						checkedEvidence: [],
 					})
 				).action
 			).toBe(action)

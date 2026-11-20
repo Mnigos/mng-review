@@ -26,7 +26,8 @@ function isOverlapping(a: LineRange, b: LineRange): boolean {
 /**
  * True when the entry points at code the pull request did not write. No cited line may be one the
  * pull request added, so a line number that also exists at the merge base never clears added code.
- * Lines within the head's end pass; lines past it pass when they exist at the merge base.
+ * A file at the head is numbered as at the head, and the whole range must lie within it; only a
+ * file missing at the head is numbered as at the merge base.
  */
 export function isEvidenceInCode(
 	ref: EvidenceRef,
@@ -34,6 +35,6 @@ export function isEvidenceInCode(
 ): boolean {
 	const { end } = ref.lines
 	if (file.added.some(range => isOverlapping(range, ref.lines))) return false
-	if (file.headLines !== undefined && end <= file.headLines) return true
+	if (file.headLines !== undefined) return end <= file.headLines
 	return file.baseLines !== undefined && end <= file.baseLines
 }

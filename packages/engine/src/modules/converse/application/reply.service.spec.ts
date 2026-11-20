@@ -29,6 +29,7 @@ import {
 	verdict,
 } from '../../../shared/mocks/review-test.helper'
 import { fenceData } from '../../../utils/fence.util'
+import { ReportReplyTool } from '../../review/application/report-reply.tool'
 import { ReviewLimits } from '../../review/application/review-limits.context'
 import { AgentLoopServiceLive } from '../../review/application/services/agent-loop.service'
 import { ModelHealthServiceLive } from '../../review/application/services/model-health.service'
@@ -45,7 +46,6 @@ import {
 	REPLY_ATTEMPTS,
 	type ReplyRequest,
 } from './reply.service'
-import { ReportReplyTool } from './report-reply.tool'
 
 vi.mock(
 	'../../validation/infrastructure/validation.layers',
@@ -280,7 +280,7 @@ layer(Layer.empty, { excludeTestServices: true })('ReplyService', test => {
 		})
 	)
 	test.effect(
-		'intentional evidence at the merge base beyond the head end is accepted',
+		'intentional evidence at the merge base beyond the head end of a file at head is disputed',
 		() =>
 			Effect.gen(function* () {
 				const fixture = setup(
@@ -294,11 +294,7 @@ layer(Layer.empty, { excludeTestServices: true })('ReplyService', test => {
 				const report = yield* ReplyService.use(service =>
 					service.decide(fixture.request)
 				).pipe(Effect.provide(fixture.services))
-				expect(report.results[0]?.decision).toEqual({
-					action: 'accepted',
-					reason: 'The inherited policy defines these units.',
-					memory: 'src/store.ts: The inherited policy defines these units.',
-				})
+				expect(report.results[0]?.decision.action).toBe('disputed')
 				expect(fixture.recheckSpy).not.toHaveBeenCalled()
 			})
 	)
