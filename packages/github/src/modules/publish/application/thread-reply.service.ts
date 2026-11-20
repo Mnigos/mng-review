@@ -3,6 +3,7 @@ import type { CollaboratorRole } from '../../../platform/github-api.schema'
 import { GitHubApiService } from '../../../platform/github-api.service'
 import { OwnedIdentities } from '../../../platform/owned-identities.context'
 import { hasWriteAccess } from '../../command/domain/command-access.helper'
+import { toBodyDigest } from '../domain/bot-thread.helper'
 import { MAX_REPLY_CHARS, MAX_REPLY_THREADS } from '../domain/publish.constants'
 import type { AppliedReply, BotThread } from '../domain/publish.types'
 import {
@@ -61,8 +62,9 @@ export class ThreadReplyService extends Context.Service<
 			input: ReplyCollectInput
 		) => Effect.Effect<readonly PendingReply[], never, OwnedIdentities>
 		/**
-		 * Answers each decision that still holds (`getApplicableReplies`) and tries to resolve a
-		 * thread it closes; a failed answer leaves the thread out of the result.
+		 * Answers each decision that still holds (`getApplicableReplies`) and whose reply's author
+		 * still has write access, and tries to resolve a thread it closes; a failed answer leaves the
+		 * thread out of the result.
 		 */
 		readonly apply: (
 			input: ReplyApplyInput
@@ -85,6 +87,22 @@ export const ThreadReplyServiceLive = Layer.effect(
 			)
 		})
 
+		/** The logins, lowercased, that have write access; one lookup per login, a failed one counts as none. */
+		const getWriters = Effect.fn('ThreadReplyService.getWriters')(function* (
+			logins: readonly string[]
+		) {
+			const distinct = [...new Set(logins.map(login => login.toLowerCase()))]
+			const writers = yield* Effect.filter(
+				distinct,
+				login =>
+					readRole(login).pipe(
+						Effect.map(access => access !== undefined && hasWriteAccess(access))
+					),
+				{ concurrency: 1 }
+			)
+			return new Set(writers)
+		})
+
 		/** The reply as the thread's comments show it now; none once another comment followed it. */
 		const readReply = Effect.fn('ThreadReplyService.readReply')(function* (
 			pending: PendingThread
@@ -98,6 +116,7 @@ export const ThreadReplyServiceLive = Layer.effect(
 				threadId: pending.thread.id,
 				fingerprint: pending.thread.marker.fingerprint,
 				commentId: pending.ref.commentId,
+				digest: toBodyDigest(last.body),
 				author: pending.ref.author,
 				body: last.body.slice(0, MAX_REPLY_CHARS),
 				disputes: countDisputes(comments, identities),
@@ -111,19 +130,9 @@ export const ThreadReplyServiceLive = Layer.effect(
 				const ref = getPendingReply(thread)
 				return ref ? [{ thread, ref }] : []
 			})
-			const logins = [
-				...new Set(pending.map(entry => entry.ref.author.toLowerCase())),
-			]
-			const writers = yield* Effect.filter(
-				logins,
-				login =>
-					readRole(login).pipe(
-						Effect.map(access => access !== undefined && hasWriteAccess(access))
-					),
-				{ concurrency: 1 }
-			)
+			const writers = yield* getWriters(pending.map(entry => entry.ref.author))
 			const counting = pending.filter(entry =>
-				writers.includes(entry.ref.author.toLowerCase())
+				writers.has(entry.ref.author.toLowerCase())
 			)
 			const batch = getRotated(
 				counting,
@@ -159,8 +168,15 @@ export const ThreadReplyServiceLive = Layer.effect(
 			input: ReplyApplyInput
 		) {
 			const applicable = getApplicableReplies(input.decisions, input.threads)
+			const writers = yield* getWriters(
+				applicable.flatMap(entry => entry.thread.latestAuthor?.login ?? [])
+			)
+			// A review job could name a reader's reply, or the author lost access since prepare.
+			const allowed = applicable.filter(entry =>
+				writers.has(entry.thread.latestAuthor?.login.toLowerCase() ?? '')
+			)
 			const answered = yield* Effect.forEach(
-				applicable,
+				allowed,
 				entry => answer(entry, input.links),
 				{ concurrency: 1 }
 			)

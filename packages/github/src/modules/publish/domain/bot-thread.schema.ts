@@ -23,5 +23,7 @@ export const botThreadSchema = Schema.Struct({
 		Schema.Struct({ type: Schema.String, login: Schema.String })
 	),
 	latestMarked: Schema.Boolean,
+	latestDigest: Schema.optionalKey(Schema.String),
+	closedAt: Schema.optionalKey(Schema.String),
 })
 export type BotThreadFile = typeof botThreadSchema.Type

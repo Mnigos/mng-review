@@ -32,6 +32,13 @@ export interface BotThread {
 	readonly latestAuthor: ThreadAuthor | undefined
 	/** The latest comment ends with a marker of the bot's form; such a comment is never a reply. */
 	readonly latestMarked: boolean
+	/** A digest of the latest comment's text (`toBodyDigest`), so an edit after a decision shows. */
+	readonly latestDigest: string | undefined
+	/**
+	 * The head the bot's `resolved` or `accepted` reply names when that reply is the latest comment:
+	 * the baseline for whether the finding's code changed since the thread was closed.
+	 */
+	readonly closedAt: string | undefined
 }
 
 /** A comment's author as the thread read names it. */

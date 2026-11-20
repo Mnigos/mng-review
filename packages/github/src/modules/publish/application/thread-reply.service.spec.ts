@@ -17,7 +17,7 @@ import {
 	pendingReviewThread,
 } from '../../../shared/mocks/thread-reply-test.helper'
 import { parseMentionCommand } from '../../command/domain/mention-command.parser'
-import { toBotThread } from '../domain/bot-thread.helper'
+import { toBodyDigest, toBotThread } from '../domain/bot-thread.helper'
 import { parseReplyMarker } from '../domain/publish-marker.parser'
 import {
 	MARKER_VERSION,
@@ -174,7 +174,11 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService collect', test => {
 						Effect.provide(ThreadReplyServiceLive.pipe(Layer.provide(fake.api)))
 					)
 				).toEqual([
-					pendingReply({ body: 'x'.repeat(MAX_REPLY_CHARS), disputes: 1 }),
+					pendingReply({
+						body: 'x'.repeat(MAX_REPLY_CHARS),
+						digest: toBodyDigest('x'.repeat(MAX_REPLY_CHARS + 20)),
+						disputes: 1,
+					}),
 				])
 			})
 	)

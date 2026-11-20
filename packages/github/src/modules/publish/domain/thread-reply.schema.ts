@@ -9,12 +9,14 @@ const reasonFields = { reason: textSchema } as const
 /**
  * An author's reply the prepare step found in one of the bot's threads, for the review step to
  * decide on: the thread, the comment it answers by `databaseId`, and the reply cut to
- * `MAX_REPLY_CHARS`. `disputes` counts the bot's earlier `disputed` answers in the thread.
+ * `MAX_REPLY_CHARS`. `digest` is `toBodyDigest` of the whole reply as read, so publishing sees an
+ * edit since. `disputes` counts the bot's earlier `disputed` answers in the thread.
  */
 export const pendingReplySchema = Schema.Struct({
 	threadId: textSchema,
 	fingerprint: textSchema,
 	commentId: Schema.Int,
+	digest: textSchema,
 	author: textSchema,
 	body: Schema.String.check(Schema.isMaxLength(MAX_REPLY_CHARS)),
 	disputes: countSchema,
@@ -43,14 +45,15 @@ export const replyDecisionSchema = Schema.Union([
 export type ThreadReplyDecision = typeof replyDecisionSchema.Type
 
 /**
- * A decision on one reply, bound to its thread, the thread's fingerprint and the comment it
- * answers; publishing applies it only while its own read still shows that comment as the latest.
- * It never holds the reply's text.
+ * A decision on one reply, bound to its thread, the thread's fingerprint, the comment it answers
+ * and that comment's digest; publishing applies it only while its own read still shows that
+ * comment, unedited, as the latest. It never holds the reply's text.
  */
 export const decidedThreadReplySchema = Schema.Struct({
 	threadId: textSchema,
 	fingerprint: textSchema,
 	commentId: Schema.Int,
+	digest: textSchema,
 	decision: replyDecisionSchema,
 })
 export type DecidedThreadReply = typeof decidedThreadReplySchema.Type

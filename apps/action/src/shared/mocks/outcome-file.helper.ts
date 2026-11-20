@@ -72,6 +72,8 @@ export function recheckProposals(): ThreadRecheckProposals {
 				latestCommentId: undefined,
 				latestAuthor: undefined,
 				latestMarked: true,
+				latestDigest: undefined,
+				closedAt: undefined,
 				marker: toFindingMarker(
 					{ finding, kind: 'bug' },
 					{

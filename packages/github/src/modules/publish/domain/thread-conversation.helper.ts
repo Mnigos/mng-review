@@ -98,8 +98,9 @@ export function toReplyItems(
 
 /**
  * The decisions that still hold in a fresh read, each with its thread: the thread's pending reply
- * (`getPendingReply`) is the comment the decision names and the fingerprint matches. Anything else
- * is dropped, since someone answered meanwhile; a thread decided twice counts once.
+ * (`getPendingReply`) is the comment the decision names, with the digest it was decided on, and the
+ * fingerprint matches. Anything else is dropped, since someone answered or edited meanwhile; a
+ * thread decided twice counts once.
  */
 export function getApplicableReplies(
 	decisions: readonly DecidedThreadReply[],
@@ -113,7 +114,8 @@ export function getApplicableReplies(
 			decisions.findIndex(other => other.threadId === decided.threadId) !==
 				index ||
 			thread.marker.fingerprint !== decided.fingerprint ||
-			getPendingReply(thread)?.commentId !== decided.commentId
+			getPendingReply(thread)?.commentId !== decided.commentId ||
+			thread.latestDigest !== decided.digest
 		)
 			return []
 		return [
@@ -147,7 +149,9 @@ export function toDecidedReplies(
 	return results.flatMap((result, index) => {
 		const pair = pairs[index]
 		if (!pair || result.error !== undefined) return []
-		const { threadId, fingerprint, commentId } = pair.reply
-		return [{ threadId, fingerprint, commentId, decision: result.decision }]
+		const { threadId, fingerprint, commentId, digest } = pair.reply
+		return [
+			{ threadId, fingerprint, commentId, digest, decision: result.decision },
+		]
 	})
 }

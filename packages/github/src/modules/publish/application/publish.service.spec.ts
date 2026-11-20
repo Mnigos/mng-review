@@ -42,6 +42,7 @@ import {
 	toCommitStatus,
 	UNFINISHED_NOTE,
 } from '../../status/domain/status.helper'
+import { toBodyDigest } from '../domain/bot-thread.helper'
 import {
 	parseSummaryMarker,
 	parseFindingMarker,
@@ -1349,6 +1350,9 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 						botThread({
 							latestCommentId: 1,
 							latestAuthor: { type: 'Bot', login: 'github-actions' },
+							latestDigest: toBodyDigest(
+								reviewThread().comments.nodes[0]?.body ?? ''
+							),
 						}),
 					])
 					expect(fixture.fake.threadReads).toEqual([17])

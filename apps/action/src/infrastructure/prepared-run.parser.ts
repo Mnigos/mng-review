@@ -20,6 +20,8 @@ function toThread(thread: BotThreadFile): BotThread {
 		commit: thread.commit,
 		latestCommentId: thread.latestCommentId,
 		latestAuthor: thread.latestAuthor,
+		latestDigest: thread.latestDigest,
+		closedAt: thread.closedAt,
 	}
 }
 

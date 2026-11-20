@@ -243,7 +243,11 @@ export const PublishServiceLive = Layer.effect(
 				resolvedIds.has(thread.id) ? { ...thread, resolved: true } : thread
 			)
 			const lines = yield* places.readCommentableLines(report, input.head)
-			const changedPlaces = yield* places.getChangedPlaces(input, threads)
+			// A thread this run closed was judged at this head, so its finding is dismissed, not posted.
+			const changedPlaces = yield* places.getChangedPlaces(
+				input,
+				threads.filter(thread => !resolvedIds.has(thread.id))
+			)
 			const planned = planPublish(
 				{ outcome: report, config: input.rules.config, agents },
 				{ threads, lines, changedPlaces }
