@@ -3,6 +3,7 @@ import {
 	type PullRequestInfo,
 	toAgentOnlyPlan,
 	toIncrementalPlan,
+	toUnknownAgentPlan,
 } from '@mng-review/domain'
 import { Clock, Context, Effect, Layer } from 'effect'
 import type { Rules } from '../../../../platform/config/rules.service'
@@ -37,7 +38,10 @@ export interface ReviewRunRequest {
 	 * `input: incremental` review only the files changed since; otherwise it is ignored.
 	 */
 	readonly since?: string
-	/** A declared agent a command named: only it runs, on every reviewable file if its rules skip it. */
+	/**
+	 * A declared agent a command named: only it runs, on every reviewable file if its rules skip it.
+	 * A name the rules do not declare skips the run without a model call.
+	 */
 	readonly onlyAgent?: string
 }
 
@@ -63,6 +67,28 @@ const toIncrementalReport = Effect.fn('ReviewRunService.toIncrementalReport')(
 	}
 )
 
+/** Why the router does not run when a command names an agent the rules do not declare. */
+const UNKNOWN_AGENT_ROUTER_REASON = 'a command named an undeclared agent'
+
+/**
+ * The plan narrowed to the agent a command named, or skipped when the rules do not declare it; a
+ * plan the gate already skipped, or a request that names no agent, is left as it is.
+ */
+function toRequestedReport(
+	report: PlanReport,
+	request: ReviewRunRequest
+): PlanReport {
+	const { onlyAgent, rules } = request
+	if (onlyAgent === undefined || report.plan.skippedRun) return report
+	const agent = rules.agents.find(entry => entry.name === onlyAgent)
+	return {
+		...report,
+		plan: agent
+			? toAgentOnlyPlan(report.plan, agent, rules.config)
+			: toUnknownAgentPlan(report.plan, onlyAgent),
+	}
+}
+
 /**
  * Plans the change and reviews it unless the gate skipped it or nothing is planned. The router and
  * the review pipeline are built from the rules' `limits`, on the endpoint from the environment.
@@ -73,11 +99,15 @@ export const reviewChange = Effect.fn('ReviewRunService.reviewChange')(
 		const startedAt = yield* Clock.currentTimeMillis
 		const { rules, pr } = request
 		const { limits } = rules.config
+		const unknownAgent =
+			request.onlyAgent !== undefined &&
+			!rules.agents.some(entry => entry.name === request.onlyAgent)
+		const disabledReason = unknownAgent
+			? UNKNOWN_AGENT_ROUTER_REASON
+			: request.routerDisabledReason
 		const routerLayer = makeRouterLayer({
 			concurrency: limits.concurrency,
-			...(request.routerDisabledReason === undefined
-				? {}
-				: { disabledReason: request.routerDisabledReason }),
+			...(disabledReason === undefined ? {} : { disabledReason }),
 		})
 		const planned = yield* PlanService.use(service =>
 			service.plan({
@@ -88,14 +118,7 @@ export const reviewChange = Effect.fn('ReviewRunService.reviewChange')(
 			})
 		).pipe(Effect.provide(PlanServiceLive.pipe(Layer.provide(routerLayer))))
 		const incremental = yield* toIncrementalReport(planned, request.since)
-		const agent = rules.agents.find(entry => entry.name === request.onlyAgent)
-		const planReport =
-			agent && !incremental.plan.skippedRun
-				? {
-						...incremental,
-						plan: toAgentOnlyPlan(incremental.plan, agent, rules.config),
-					}
-				: incremental
+		const planReport = toRequestedReport(incremental, request)
 		const { plan } = planReport
 		if (plan.skippedRun || plan.runs.length === 0)
 			return toEmptyReviewReport(

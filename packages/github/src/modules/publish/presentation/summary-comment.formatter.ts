@@ -49,7 +49,7 @@ export interface SummaryInput {
 	readonly plan: PublishPlan
 	readonly verdict: Verdict
 	readonly openBugs: number
-	/** Of `openBugs`, the bugs without a thread the last full review left on this head. */
+	/** Of `openBugs`, the bugs without a thread earlier runs left on this head since the last full review. */
 	readonly carriedBugs?: number
 	readonly marker: SummaryMarker
 	readonly maxRuns: number
@@ -316,7 +316,7 @@ function toSummaryBody(input: SummaryInput, depth: SummaryDepth): string {
 		...(input.carriedBugs
 			? [
 					'',
-					`${input.carriedBugs} bug(s) without a thread from the last full review still count until a full review checks them again.`,
+					`${input.carriedBugs} bug(s) without a thread from earlier runs on this head still count until a full review checks them again.`,
 				]
 			: []),
 		...body,

@@ -306,11 +306,18 @@ describe('getCarriedBugs', () => {
 					expect(
 						getCarriedBugs(
 							{ ...SUMMARY_MARKER, head, unthreadedBugs },
-							{ head: 'head', partial }
+							{ head: 'head', partial, finished: true, unthreadedBugs: 0 }
 						)
 					).toBe(partial && head === 'head' ? (unthreadedBugs ?? 0) : 0)
 				})
 	test('no previous marker carries no bugs', () => {
-		expect(getCarriedBugs(undefined, { head: 'head', partial: true })).toBe(0)
+		expect(
+			getCarriedBugs(undefined, {
+				head: 'head',
+				partial: true,
+				finished: true,
+				unthreadedBugs: 0,
+			})
+		).toBe(0)
 	})
 })

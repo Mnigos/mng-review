@@ -34,6 +34,7 @@ import type {
 import {
 	getCarriedBugs,
 	type MarkedRun,
+	type MarkerUpdate,
 	toNextSummaryMarker,
 } from '../domain/summary-marker.helper'
 import {
@@ -334,9 +335,15 @@ export const PublishServiceLive = Layer.effect(
 			)
 			const threadBugs = countOpenBugs(plan, latest)
 			const run = yield* checkRun(input)
+			const update = {
+				head: run.head,
+				partial: run.partial,
+				finished: isFinished(report),
+				unthreadedBugs: countUnthreadedBugs(plan, latest),
+			} satisfies MarkerUpdate
 			const standing = (marker: SummaryMarker) => {
 				const finished = isFullReview(report, marker, run)
-				const openBugs = threadBugs + getCarriedBugs(marker, run)
+				const openBugs = threadBugs + getCarriedBugs(marker, update)
 				return {
 					finished,
 					openBugs,
@@ -345,12 +352,7 @@ export const PublishServiceLive = Layer.effect(
 			}
 			const written = yield* summaries
 				.write(pullNumber, current => {
-					const marker = toNextSummaryMarker(current?.marker, {
-						head: run.head,
-						partial: run.partial,
-						finished: isFinished(report),
-						unthreadedBugs: countUnthreadedBugs(plan, latest),
-					})
+					const marker = toNextSummaryMarker(current?.marker, update)
 					// The summary describes the head; a run whose head moved only counts itself.
 					if (current && run.moved)
 						return { body: toSummaryWithMarker(current.body, marker), marker }
@@ -358,7 +360,7 @@ export const PublishServiceLive = Layer.effect(
 						report,
 						plan,
 						...standing(marker),
-						carriedBugs: getCarriedBugs(marker, run),
+						carriedBugs: getCarriedBugs(marker, update),
 						marker,
 						maxRuns: input.rules.config.limits.max_runs_per_pr,
 						links,
