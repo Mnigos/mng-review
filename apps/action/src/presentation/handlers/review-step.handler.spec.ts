@@ -276,3 +276,107 @@ layer(FileSystemLayer)(
 		)
 	}
 )
+
+layer(FileSystemLayer)('review command without GitHub services', test => {
+	for (const depth of ['quick', 'deep'] as const)
+		for (const agent of ['', 'storage'])
+			for (const online of [true, false])
+				test.effect(
+					`${depth}, agent=${agent || 'all'}, online=${online} passes trusted options and suppresses offline publish`,
+					() =>
+						Effect.gen(function* () {
+							const fixture = stepFixture()
+							const fs = yield* FileSystem.FileSystem
+							const event = yield* parsePullRequestEvent(
+								yield* fs.readFileString(fixture.environment.GITHUB_EVENT_PATH)
+							)
+							const manualEvent = {
+								...event,
+								pr: { ...event.pr, trigger: 'manual', depth },
+							} as const
+							yield* fs.writeFileString(
+								fixture.paths.prepared,
+								JSON.stringify({
+									status: 'ready',
+									event: manualEvent,
+									threads: [],
+									prior: { runs: 3, head: fixture.base },
+								})
+							)
+							const runSpy = vi.fn(
+								(_input: Parameters<ReviewRunService['Service']['run']>[0]) =>
+									Effect.succeed(fixture.report)
+							)
+							const probeSpy = vi.fn(() =>
+								Effect.succeed(
+									online
+										? { status: 'online' as const }
+										: { status: 'offline' as const, reason: 'unavailable' }
+								)
+							)
+							const proposeSpy = vi.fn(() =>
+								Effect.succeed({ checked: 0, rejected: [], tokens: {} })
+							)
+							yield* runReviewStep.pipe(
+								Effect.provide(
+									ShadowRunServiceLive.pipe(
+										Layer.provide(PrepareRunServiceLive),
+										Layer.provide(
+											Layer.mergeAll(
+												fixture.rulesLayer,
+												Layer.succeed(ReviewRunService, { run: runSpy }),
+												Layer.succeed(EndpointProbeService, { probe: probeSpy })
+											)
+										)
+									)
+								),
+								Effect.provide(
+									Layer.succeed(ThreadRecheckService, { propose: proposeSpy })
+								),
+								Effect.provide(
+									fixture.envLayer({
+										GITHUB_EVENT_NAME: 'issue_comment',
+										MNG_REVIEW_TRIGGER: 'command',
+										MNG_REVIEW_TARGET_PR: '17',
+										MNG_REVIEW_TARGET_BASE: fixture.base,
+										MNG_REVIEW_TARGET_HEAD: fixture.head,
+										MNG_REVIEW_COMMAND_DEPTH: depth,
+										MNG_REVIEW_COMMAND_AGENT: agent,
+									})
+								)
+							)
+							expect(yield* fs.readFileString(fixture.paths.output)).toBe(
+								`publish=${online}\n`
+							)
+							expect(probeSpy).toHaveBeenCalledOnce()
+							const outcome = yield* parseOutcomeFile(
+								yield* fs.readFileString(fixture.paths.outcome)
+							)
+							expect(outcome.binding).toMatchObject({
+								trigger: 'command',
+								baseSha: fixture.base,
+								headSha: fixture.head,
+							})
+							if (online) {
+								expect(runSpy).toHaveBeenCalledOnce()
+								expect(runSpy.mock.calls[0]?.[0]).toMatchObject({
+									baseRef: fixture.base,
+									headRef: fixture.head,
+									pr: { depth, trigger: 'manual' },
+									...(agent ? { onlyAgent: agent } : {}),
+								})
+								expect(runSpy.mock.calls[0]?.[0]).not.toHaveProperty('since')
+								if (!agent)
+									expect(runSpy.mock.calls[0]?.[0]).not.toHaveProperty(
+										'onlyAgent'
+									)
+							} else {
+								expect(runSpy).not.toHaveBeenCalled()
+								expect(proposeSpy).not.toHaveBeenCalled()
+								expect(outcome.status).toBe('offline')
+							}
+							expect(fixture.api.reads).toEqual([])
+							expect(fixture.api.writes).toEqual([])
+						})
+				)
+})

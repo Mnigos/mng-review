@@ -181,3 +181,110 @@ describe('app credentials stay in writing jobs', () => {
 		expect(action).toContain('GITHUB_TOKEN: ${{ inputs.token }}')
 	})
 })
+
+describe('mention command workflow boundaries', () => {
+	const command = readWorkflow('workflows/review-command.yml')
+	test('authorize holds no secret, checks created and User, and reads with no write permission', () => {
+		const authorize = getJob(command, 'authorize')
+		expect(authorize).not.toMatch(/\bsecrets\s*[.[]/u)
+		expect(authorize).not.toContain('create-github-app-token')
+		expect(authorize).not.toContain('llm-')
+		expect(authorize).not.toMatch(/^\s+[\w-]+:\s*write\s*$/mu)
+		expect(authorize).toContain("github.event_name == 'issue_comment'")
+		expect(authorize).toContain("github.event.action == 'created'")
+		expect(authorize).toContain("github.event.comment.user.type == 'User'")
+		expect(authorize).toContain(
+			'!github.event.comment.performed_via_github_app'
+		)
+		expect(authorize).toContain('MNG_REVIEW_MODE: authorize')
+		expect(authorize).not.toContain('github.run_attempt')
+	})
+	for (const job of ['reserve', 'review', 'publish'])
+		test(`${job} requires the first attempt and only review receives endpoint secrets`, () => {
+			const block = getJob(command, job)
+			expect(block).toMatch(/^ {4}if:.*github\.run_attempt == '1'/mu)
+			if (job === 'review') {
+				expect(block).toContain('secrets.llm-url')
+				expect(block).toContain('secrets.llm-key')
+				expect(block).not.toMatch(
+					/app-private-key|app-client-id|create-github-app-token/u
+				)
+				expect(block).not.toMatch(/^\s+[\w-]+:\s*write\s*$/mu)
+			} else expect(block).not.toMatch(/llm-|tailscale-oauth/u)
+		})
+	for (const job of ['reserve', 'publish'])
+		test(`${job} serializes summary writes by pull request without cancelling a running writer`, () => {
+			const block = getJob(command, job)
+			expect(block).toContain(
+				'group: mng-review-publish-${{ github.event.issue.number }}'
+			)
+			expect(block).toContain('cancel-in-progress: false')
+			expect(
+				getJob(readWorkflow('workflows/review-publish.yml'), 'publish')
+			).toContain(
+				'group: mng-review-publish-${{ github.event.pull_request.number }}'
+			)
+		})
+	test('reserve mints exactly pull requests write and contents read, with automatic revocation', () => {
+		const mint = getJob(command, 'reserve')
+			.split(/^ {6}- /mu)
+			.find(step => step.includes('uses: actions/create-github-app-token@'))
+		expect(mint).toBeDefined()
+		expect(
+			mint
+				?.match(/^\s+permission-[\w-]+:\s*\w+/gmu)
+				?.map(value => value.trim())
+				.toSorted()
+		).toEqual(['permission-contents: read', 'permission-pull-requests: write'])
+		expect(mint).not.toMatch(/^\s*(?:owner|repositories|skip-token-revoke):/mu)
+	})
+	test('publish uses the same app-token mint and scope as push publishing', () => {
+		const commandMint = getJob(command, 'publish')
+			.split(/^ {6}- /mu)
+			.find(step => step.includes('uses: actions/create-github-app-token@'))
+		const pushMint = getJob(
+			readWorkflow('workflows/review-publish.yml'),
+			'publish'
+		)
+			.split(/^ {6}- /mu)
+			.find(step => step.includes('uses: actions/create-github-app-token@'))
+		expect(commandMint).toBeDefined()
+		expect(
+			commandMint
+				?.split('\n')
+				.filter(line => !line.trim().startsWith('#') && line.trim())
+				.join('\n')
+		).toBe(
+			pushMint
+				?.split('\n')
+				.filter(line => !line.trim().startsWith('#') && line.trim())
+				.join('\n')
+		)
+	})
+	for (const [path, job] of [
+		['workflows/review-command.yml', 'authorize'],
+		['workflows/review-command.yml', 'reserve'],
+		['workflows/status-sweep.yml', 'sweep'],
+	] as const)
+		test(`${path} ${job} installs through setup-engine`, () => {
+			const block = getJob(readWorkflow(path), job)
+			expect(block).toContain(
+				'uses: ./.mng-review-engine/.github/actions/setup-engine'
+			)
+			expect(block).not.toMatch(/oven-sh\/setup-bun|bun install/u)
+		})
+	test('later jobs take target commits and options from authorization outputs', () => {
+		for (const job of ['reserve', 'review', 'publish']) {
+			const block = getJob(command, job)
+			for (const output of [
+				'pull_number',
+				'base_sha',
+				'head_sha',
+				'depth',
+				'agent',
+			])
+				expect(block).toContain(`needs.authorize.outputs.${output}`)
+			expect(block).not.toContain('github.event.comment.body')
+		}
+	})
+})

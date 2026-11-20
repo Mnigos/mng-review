@@ -184,3 +184,75 @@ layer(FileSystemLayer)('prepare app identity from base rules', test => {
 				})
 		)
 })
+
+layer(FileSystemLayer)('prepare command target', test => {
+	for (const moved of [true, false])
+		test.effect(
+			`reads the pull request again and moved=${moved} controls readiness beyond the push cap`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = stepFixture()
+					const pr = fixture.api.command.pullRequest
+					fixture.api.command.pullRequest = {
+						...pr,
+						base: { ...pr.base, sha: fixture.base },
+						head: { ...pr.head, sha: moved ? 'c'.repeat(40) : fixture.head },
+					}
+					fixture.api.comments.push(
+						appSummary(
+							{
+								...SUMMARY_MARKER,
+								runs: fixture.rules.config.limits.max_runs_per_pr,
+								head: fixture.base,
+							},
+							{ author: { __typename: 'Bot', login: 'github-actions' } }
+						)
+					)
+					yield* runPrepareStep.pipe(
+						Effect.provide(
+							PrepareRunServiceLive.pipe(Layer.provide(fixture.rulesLayer))
+						),
+						Effect.provide(fixture.publisherLayer),
+						Effect.provide(
+							fixture.envLayer({
+								GITHUB_EVENT_NAME: 'issue_comment',
+								GITHUB_EVENT_PATH: `${fixture.repo.root}/missing.json`,
+								MNG_REVIEW_TRIGGER: 'command',
+								MNG_REVIEW_TARGET_PR: '17',
+								MNG_REVIEW_TARGET_BASE: fixture.base,
+								MNG_REVIEW_TARGET_HEAD: fixture.head,
+								MNG_REVIEW_COMMAND_DEPTH: 'quick',
+							})
+						)
+					)
+					const fs = yield* FileSystem.FileSystem
+					const prepared = yield* parsePreparedRun(
+						yield* fs.readFileString(fixture.paths.prepared)
+					)
+					expect(prepared).toMatchObject(
+						moved
+							? {
+									status: 'skipped',
+									reason:
+										'the pull request has a new head since the command; comment again to review it',
+								}
+							: {
+									status: 'ready',
+									event: {
+										number: 17,
+										baseSha: fixture.base,
+										headSha: fixture.head,
+										pr: { trigger: 'manual', depth: 'quick' },
+									},
+									prior: { runs: fixture.rules.config.limits.max_runs_per_pr },
+								}
+					)
+					expect(yield* fs.readFileString(fixture.paths.output)).toBe(
+						`ready=${!moved}\n`
+					)
+					expect(fixture.api.reads).toEqual(['getPullRequest:17'])
+					expect(fixture.loads).toEqual(moved ? [] : [fixture.base])
+					expect(fixture.api.writes).toEqual([])
+				})
+		)
+})
