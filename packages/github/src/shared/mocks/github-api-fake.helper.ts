@@ -36,8 +36,16 @@ export type ApiWrite =
 	| { readonly method: 'reply'; readonly id: string; readonly body: string }
 	| { readonly method: 'resolve'; readonly id: string }
 
+/** Failure injection for a create GitHub stored before its response was lost. */
+export interface GitHubApiFakeOptions {
+	readonly storeFailedCreates?: boolean
+}
+
 /** In-memory GitHub with call recording and explicit per-operation failures, never an HTTP client. */
-export function githubApiFake(identity: BotIdentity = GITHUB_ACTIONS_IDENTITY) {
+export function githubApiFake(
+	identity: BotIdentity = GITHUB_ACTIONS_IDENTITY,
+	options: GitHubApiFakeOptions = {}
+) {
 	const threads: ReviewThread[] = []
 	const comments: PullRequestComment[] = []
 	const writes: ApiWrite[] = []
@@ -155,7 +163,7 @@ export function githubApiFake(identity: BotIdentity = GITHUB_ACTIONS_IDENTITY) {
 			Effect.gen(function* () {
 				writes.push({ method: 'create', pullNumber, body })
 				const error = failures.create.shift()
-				if (error) return yield* error
+				if (error && !options.storeFailedCreates) return yield* error
 				const id = writes.length
 				comments.push({
 					id: `comment-${id}`,
@@ -165,6 +173,7 @@ export function githubApiFake(identity: BotIdentity = GITHUB_ACTIONS_IDENTITY) {
 					author,
 					editor: null,
 				})
+				if (error) return yield* error
 				return id
 			}),
 		deleteIssueComment: id =>
