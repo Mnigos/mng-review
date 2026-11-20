@@ -2,6 +2,7 @@ import { layer } from '@effect/vitest'
 import { Effect, Layer, Redacted } from 'effect'
 import { GITHUB_ACTIONS_IDENTITY } from '../../../platform/bot-identity.helper'
 import { GitHubApiService } from '../../../platform/github-api.service'
+import { GitHubConfig } from '../../../platform/github.config'
 import { GitHubApiError } from '../../../platform/github.errors'
 import { githubApiFake } from '../../../shared/mocks/github-api-fake.helper'
 import {
@@ -20,6 +21,11 @@ import {
 	SUMMARY_MARKER,
 	TOKEN_MODE_OWNED,
 } from '../../../shared/mocks/publish-test.helper'
+import {
+	SummaryCommentService,
+	SummaryCommentServiceLive,
+} from '../../publish/application/summary-comment.service'
+import { parseSummaryMarker } from '../../publish/domain/publish-marker.parser'
 import { toMarkerComment } from '../../publish/presentation/thread-comment.formatter'
 import { toCommitStatus, UNFINISHED_NOTE } from '../domain/status.helper'
 import {
@@ -580,4 +586,190 @@ layer(APP_MODE_OWNED)('StatusSweepService app mode', test => {
 				expect(api.writes).toEqual([])
 			})
 	)
+})
+
+layer(APP_MODE_OWNED)('StatusSweepService after an identity switch', test => {
+	for (const cleanupFails of [false, true])
+		test.effect(
+			`an offline publish after switching to the app stays error when swept with the old summary ${cleanupFails ? 'visible' : 'hidden'}`,
+			() =>
+				Effect.gen(function* () {
+					const api = githubApiFake(APP_IDENTITY)
+					api.comments.push(
+						appSummary(
+							{ ...SUMMARY_MARKER, runs: 3, finished: true },
+							{
+								id: 'previous-summary',
+								databaseId: 101,
+								author: {
+									__typename: 'Bot',
+									login: GITHUB_ACTIONS_IDENTITY.login,
+								},
+							}
+						)
+					)
+					if (cleanupFails)
+						api.failures.minimize.push(
+							new GitHubApiError({
+								operation: 'minimize',
+								reason: 'server error',
+								status: 503,
+							})
+						)
+					const summaryLayer = SummaryCommentServiceLive.pipe(
+						Layer.provide(
+							Layer.merge(
+								api.api,
+								Layer.succeed(GitHubConfig, {
+									...GITHUB_SETTINGS,
+									identity: APP_IDENTITY,
+								})
+							)
+						)
+					)
+					expect(
+						yield* SummaryCommentService.use(service =>
+							service.publishStatus({
+								pullNumber: 17,
+								head: 'new-head',
+								engineCommit: undefined,
+								status: 'offline',
+							})
+						).pipe(Effect.provide(summaryLayer))
+					).toBe(true)
+					expect(
+						parseSummaryMarker(
+							api.comments.find(
+								comment => comment.author?.login === APP_IDENTITY.login
+							)?.body ?? ''
+						)
+					).toEqual({ ...SUMMARY_MARKER, runs: 3, finished: false })
+					const previous = {
+						id: 1,
+						...toCommitStatus('incomplete', 0, false),
+						context: 'MNG Review',
+						creator: { login: APP_IDENTITY.restLogin, type: 'Bot' },
+					}
+					const statuses = githubStatusFake({
+						listOpenPullRequests: () =>
+							Effect.succeed([{ number: 17, head: { sha: 'new-head' } }]),
+						getStatus: () => Effect.succeed(previous),
+					})
+					expect(
+						yield* StatusSweepService.use(service => service.sweep()).pipe(
+							Effect.provide(
+								StatusSweepServiceLive.pipe(
+									Layer.provide(Layer.merge(statuses.layer, api.api))
+								)
+							)
+						)
+					).toEqual({ checked: 1, updated: 0, failed: 0 })
+					expect(statuses.statuses).toEqual([])
+					expect(statuses.statuses.at(-1)?.state ?? previous.state).toBe(
+						'error'
+					)
+					expect(api.writes.map(write => write.method)).toEqual([
+						'create',
+						'minimize',
+					])
+					expect(
+						api.comments.find(comment => comment.databaseId === 101)
+							?.isMinimized
+					).toBe(!cleanupFails)
+				})
+		)
+	for (const scenario of [
+		{
+			name: 'a previous finished marker for another head falls back to the error status',
+			previousHead: 'older-head',
+			previousFinished: true,
+			own: false,
+			expectedFinished: false,
+		},
+		{
+			name: 'a previous finished marker for the same head is still used',
+			previousHead: 'head',
+			previousFinished: true,
+			own: false,
+			expectedFinished: true,
+		},
+		{
+			name: 'a previous unfinished marker for the same head overrides successful status text',
+			previousHead: 'head',
+			previousFinished: false,
+			own: false,
+			expectedFinished: false,
+		},
+		{
+			name: 'the current unfinished marker wins over a previous finished marker on the swept head',
+			previousHead: 'head',
+			previousFinished: true,
+			own: true,
+			expectedFinished: false,
+		},
+	] as const)
+		test.effect(scenario.name, () =>
+			Effect.gen(function* () {
+				const api = githubApiFake(APP_IDENTITY)
+				api.comments.push(
+					appSummary(
+						{
+							...SUMMARY_MARKER,
+							head: scenario.previousHead,
+							finished: scenario.previousFinished,
+						},
+						{
+							databaseId: 101,
+							id: 'previous-summary',
+							author: {
+								__typename: 'Bot',
+								login: GITHUB_ACTIONS_IDENTITY.login,
+							},
+						}
+					)
+				)
+				if (scenario.own)
+					api.comments.push(
+						appSummary({
+							...SUMMARY_MARKER,
+							head: 'older-head',
+							finished: false,
+						})
+					)
+				const statuses = githubStatusFake({
+					listOpenPullRequests: () =>
+						Effect.succeed([{ number: 17, head: { sha: 'head' } }]),
+					getStatus: () =>
+						Effect.succeed({
+							id: 1,
+							state:
+								scenario.own || !scenario.previousFinished
+									? 'success'
+									: 'error',
+							description: 'stale',
+							context: 'MNG Review',
+							creator: {
+								login: GITHUB_ACTIONS_IDENTITY.restLogin,
+								type: 'Bot',
+							},
+						}),
+				})
+				expect(
+					yield* StatusSweepService.use(service => service.sweep()).pipe(
+						Effect.provide(
+							StatusSweepServiceLive.pipe(
+								Layer.provide(Layer.merge(statuses.layer, api.api))
+							)
+						)
+					)
+				).toEqual({ checked: 1, updated: 1, failed: 0 })
+				expect(statuses.statuses).toEqual([
+					{
+						sha: 'head',
+						...toCommitStatus('ready', 0, scenario.expectedFinished),
+					},
+				])
+				expect(api.writes).toEqual([])
+			})
+		)
 })

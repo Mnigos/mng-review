@@ -4,7 +4,10 @@ import { GITHUB_ACTIONS_IDENTITY } from '../../../platform/bot-identity.helper'
 import { GitHubConfig } from '../../../platform/github.config'
 import { GitHubApiError } from '../../../platform/github.errors'
 import { provideOwnedIdentities } from '../../../platform/owned-identities.context'
-import { githubApiFake } from '../../../shared/mocks/github-api-fake.helper'
+import {
+	githubApiFake,
+	type GitHubApiFakeOptions,
+} from '../../../shared/mocks/github-api-fake.helper'
 import { GITHUB_SETTINGS } from '../../../shared/mocks/github-http.helper'
 import {
 	APP_IDENTITY,
@@ -31,8 +34,8 @@ const render: SummaryRender = current => {
 }
 
 /** Summary writes over the recording API and a chosen token identity. */
-function setup(current = APP_IDENTITY) {
-	const fake = githubApiFake(current)
+function setup(current = APP_IDENTITY, options: GitHubApiFakeOptions = {}) {
+	const fake = githubApiFake(current, options)
 	const service = SummaryCommentServiceLive.pipe(
 		Layer.provide(
 			Layer.merge(
@@ -47,7 +50,13 @@ function setup(current = APP_IDENTITY) {
 /** A previous identity's summary with completed state that must survive a switch. */
 function priorSummary() {
 	return appSummary(
-		{ ...SUMMARY_MARKER, runs: 3, head: 'finished-head', finished: true },
+		{
+			...SUMMARY_MARKER,
+			runs: 3,
+			head: 'finished-head',
+			finished: true,
+			unthreadedBugs: 2,
+		},
 		{
 			id: 'previous-node',
 			databaseId: 101,
@@ -298,40 +307,345 @@ layer(APP_MODE_OWNED)('SummaryCommentService identity switches', test => {
 					expect(fake.commentReads).toEqual([17, 17])
 				})
 		)
+	for (const status of [undefined, 500, 503]) {
+		test.effect(
+			`a stored unanswered create ${status} counts migration once without an update or second create`,
+			() =>
+				Effect.gen(function* () {
+					const { fake, service } = setup(APP_IDENTITY, {
+						storeFailedCreates: true,
+					})
+					fake.comments.push(priorSummary())
+					fake.failures.create.push(writeError(status))
+					expect(
+						yield* SummaryCommentService.use(api => api.write(17, render)).pipe(
+							Effect.provide(service)
+						)
+					).toMatchObject({
+						marker: {
+							runs: 4,
+							head: 'finished-head',
+							finished: true,
+							unthreadedBugs: 2,
+						},
+						cleanup: 'minimized',
+					})
+					const own = fake.comments.filter(
+						comment => comment.author?.login === APP_IDENTITY.login
+					)
+					expect(own).toHaveLength(1)
+					expect(parseSummaryMarker(own[0]?.body ?? '')).toMatchObject({
+						runs: 4,
+					})
+					expect(own[0]?.body).toBe(
+						fake.writes.find(write => write.method === 'create')?.body
+					)
+					expect(fake.writes.map(write => write.method)).toEqual([
+						'create',
+						'minimize',
+					])
+					expect(fake.commentReads).toEqual([17, 17])
+				})
+		)
+		test.effect(
+			`a stored unanswered create ${status} updates an older own marker and deletes only this run's comment`,
+			() =>
+				Effect.gen(function* () {
+					const { fake, service } = setup(APP_IDENTITY, {
+						storeFailedCreates: true,
+					})
+					const previous = priorSummary()
+					const older = appSummary({
+						...SUMMARY_MARKER,
+						runs: 7,
+						head: 'older-head',
+						finished: true,
+					})
+					fake.comments.push(previous, older)
+					fake.commentSnapshots.push([previous])
+					fake.failures.create.push(writeError(status))
+					expect(
+						yield* SummaryCommentService.use(api => api.write(17, render)).pipe(
+							Effect.provide(service)
+						)
+					).toMatchObject({
+						marker: { runs: 8, head: 'older-head', finished: true },
+						cleanup: 'minimized',
+					})
+					expect(fake.writes.map(write => write.method)).toEqual([
+						'create',
+						'update',
+						'minimize',
+						'delete',
+					])
+					expect(
+						fake.writes
+							.filter(write => write.method === 'update')
+							.map(write => write.id)
+					).toEqual([older.databaseId])
+					expect(
+						fake.writes
+							.filter(write => write.method === 'delete')
+							.map(write => write.id)
+					).toEqual([1])
+					expect(
+						parseSummaryMarker(
+							fake.comments.find(
+								comment => comment.databaseId === older.databaseId
+							)?.body ?? ''
+						)
+					).toMatchObject({ runs: 8, head: 'older-head' })
+					expect(
+						fake.comments.filter(
+							comment => comment.author?.login === APP_IDENTITY.login
+						)
+					).toHaveLength(1)
+				})
+		)
+	}
 	test.effect(
-		'offline with only a previous identity summary moves it to the current identity unfinished',
+		'a transient duplicate delete keeps both summaries until the next write repairs them',
+		() =>
+			Effect.gen(function* () {
+				const { fake, service } = setup()
+				const older = appSummary({ ...SUMMARY_MARKER, runs: 3 })
+				const newer = appSummary(
+					{ ...SUMMARY_MARKER, runs: 20 },
+					{ databaseId: 102, id: 'newer-app' }
+				)
+				fake.comments.push(older, newer)
+				fake.failures.delete.push(writeError(503))
+				const summaries = yield* SummaryCommentService.pipe(
+					Effect.provide(service)
+				)
+				expect(yield* summaries.write(17, render)).toMatchObject({
+					marker: { runs: 4 },
+					cleanup: 'kept',
+				})
+				expect(fake.comments.map(comment => comment.databaseId)).toEqual([
+					older.databaseId,
+					newer.databaseId,
+				])
+				expect(parseSummaryMarker(fake.comments[0]?.body ?? '')).toMatchObject({
+					runs: 4,
+				})
+				expect(fake.comments[1]).toEqual(newer)
+				expect(yield* summaries.write(17, render)).toMatchObject({
+					marker: { runs: 5 },
+					cleanup: 'none',
+				})
+				expect(fake.comments.map(comment => comment.databaseId)).toEqual([
+					older.databaseId,
+				])
+				expect(fake.writes).toEqual([
+					expect.objectContaining({ method: 'update', id: older.databaseId }),
+					{ method: 'delete', id: newer.databaseId },
+					expect.objectContaining({ method: 'update', id: older.databaseId }),
+					{ method: 'delete', id: newer.databaseId },
+				])
+			})
+	)
+	for (const storedFailure of [false, true])
+		test.effect(
+			`a ${storedFailure ? 'stored unanswered' : 'successful'} create is kept when updating the older summary fails, then repaired`,
+			() =>
+				Effect.gen(function* () {
+					const { fake, service } = setup(APP_IDENTITY, {
+						storeFailedCreates: storedFailure,
+					})
+					const previous = priorSummary()
+					const older = appSummary({
+						...SUMMARY_MARKER,
+						runs: 7,
+						head: 'older-head',
+					})
+					fake.comments.push(previous, older)
+					fake.commentSnapshots.push([previous])
+					if (storedFailure) fake.failures.create.push(writeError())
+					fake.failures.update.push(writeError(503))
+					const summaries = yield* SummaryCommentService.pipe(
+						Effect.provide(service)
+					)
+					expect(yield* summaries.write(17, render)).toMatchObject({
+						marker: { runs: 4 },
+						cleanup: 'kept',
+					})
+					expect(
+						fake.comments.find(
+							comment => comment.databaseId === older.databaseId
+						)
+					).toEqual(older)
+					expect(
+						fake.comments.filter(
+							comment => comment.author?.login === APP_IDENTITY.login
+						)
+					).toHaveLength(2)
+					expect(
+						parseSummaryMarker(
+							fake.comments.find(comment => comment.databaseId === 1)?.body ??
+								''
+						)
+					).toMatchObject({ runs: 4, head: 'finished-head' })
+					expect(fake.writes.map(write => write.method)).toEqual([
+						'create',
+						'update',
+						'minimize',
+					])
+					expect(yield* summaries.write(17, render)).toMatchObject({
+						marker: { runs: 8, head: 'older-head' },
+						cleanup: 'none',
+					})
+					expect(
+						fake.comments
+							.filter(comment => !comment.isMinimized)
+							.map(comment => comment.databaseId)
+					).toEqual([older.databaseId])
+					expect(
+						fake.writes
+							.filter(write => write.method === 'update')
+							.map(write => write.id)
+					).toEqual([older.databaseId, older.databaseId])
+					expect(
+						fake.writes
+							.filter(write => write.method === 'delete')
+							.map(write => write.id)
+					).toEqual([1])
+				})
+		)
+	for (const status of [undefined, 503])
+		test.effect(
+			`a transient minimize ${status} keeps the previous summary without deleting and retries on the next write`,
+			() =>
+				Effect.gen(function* () {
+					const { fake, service } = setup()
+					const previous = priorSummary()
+					fake.comments.push(previous)
+					fake.failures.minimize.push(
+						new GitHubApiError({
+							operation: 'minimize',
+							reason: 'request timed out',
+							...(status === undefined ? {} : { status }),
+						})
+					)
+					const summaries = yield* SummaryCommentService.pipe(
+						Effect.provide(service)
+					)
+					expect(yield* summaries.write(17, render)).toMatchObject({
+						cleanup: 'kept',
+						marker: { runs: 4 },
+					})
+					expect(
+						fake.comments.find(
+							comment => comment.databaseId === previous.databaseId
+						)
+					).toEqual(previous)
+					expect(
+						fake.comments.filter(comment => !comment.isMinimized)
+					).toHaveLength(2)
+					expect(fake.writes.map(write => write.method)).toEqual([
+						'create',
+						'minimize',
+					])
+					expect(yield* summaries.write(17, render)).toMatchObject({
+						cleanup: 'minimized',
+						marker: { runs: 5 },
+					})
+					expect(fake.writes.map(write => write.method)).toEqual([
+						'create',
+						'minimize',
+						'update',
+						'minimize',
+					])
+					expect(
+						fake.writes
+							.filter(write => write.method === 'update')
+							.map(write => write.id)
+					).toEqual([1])
+					expect(
+						fake.comments.find(
+							comment => comment.databaseId === previous.databaseId
+						)
+					).toEqual({ ...previous, isMinimized: true })
+					expect(
+						fake.comments.filter(comment => !comment.isMinimized)
+					).toHaveLength(1)
+				})
+		)
+	test.effect(
+		'GraphQL errors declining minimize delete the previous identity summary without updating it',
 		() =>
 			Effect.gen(function* () {
 				const { fake, service } = setup()
 				fake.comments.push(priorSummary())
+				fake.failures.minimize.push(
+					new GitHubApiError({
+						operation: 'minimize',
+						reason: 'not minimizable',
+						graphqlErrors: true,
+					})
+				)
 				expect(
-					yield* SummaryCommentService.use(api =>
-						api.publishStatus({
-							pullNumber: 17,
-							head: 'head',
-							engineCommit: undefined,
-							status: 'offline',
-						})
-					).pipe(Effect.provide(service))
-				).toBe(true)
+					yield* SummaryCommentService.use(api => api.write(17, render)).pipe(
+						Effect.provide(service)
+					)
+				).toMatchObject({ cleanup: 'deleted' })
 				expect(fake.writes.map(write => write.method)).toEqual([
 					'create',
 					'minimize',
+					'delete',
 				])
-				expect(
-					fake.comments
-						.filter(comment => !comment.isMinimized)
-						.map(comment => parseSummaryMarker(comment.body))
-				).toEqual([
-					{
-						...SUMMARY_MARKER,
-						runs: 3,
-						head: 'finished-head',
-						finished: false,
-					},
+				expect(fake.writes[2]).toEqual({ method: 'delete', id: 101 })
+				expect(fake.comments.map(comment => comment.author?.login)).toEqual([
+					APP_IDENTITY.login,
 				])
 			})
 	)
+	for (const cleanup of ['minimized', 'deleted'] as const)
+		test.effect(
+			`offline migration preserves the whole previous marker unfinished and leaves the old summary ${cleanup}`,
+			() =>
+				Effect.gen(function* () {
+					const { fake, service } = setup()
+					const previous = priorSummary()
+					fake.comments.push(previous)
+					if (cleanup === 'deleted')
+						fake.failures.minimize.push(writeError(403))
+					expect(
+						yield* SummaryCommentService.use(api =>
+							api.publishStatus({
+								pullNumber: 17,
+								head: 'new-head',
+								engineCommit: undefined,
+								status: 'offline',
+							})
+						).pipe(Effect.provide(service))
+					).toBe(true)
+					expect(fake.writes.map(write => write.method)).toEqual(
+						cleanup === 'deleted'
+							? ['create', 'minimize', 'delete']
+							: ['create', 'minimize']
+					)
+					const visible = fake.comments.filter(comment => !comment.isMinimized)
+					expect(visible).toHaveLength(1)
+					expect(visible[0]?.author?.login).toBe(APP_IDENTITY.login)
+					expect(parseSummaryMarker(visible[0]?.body ?? '')).toEqual({
+						...parseSummaryMarker(previous.body),
+						finished: false,
+					})
+					expect(
+						fake.comments.find(
+							comment => comment.databaseId === previous.databaseId
+						)
+					).toEqual(
+						cleanup === 'deleted'
+							? undefined
+							: { ...previous, isMinimized: true }
+					)
+					expect(
+						fake.writes.filter(write => write.method === 'update')
+					).toEqual([])
+				})
+		)
 	test.effect(
 		'an update returning 404 creates a replacement without editing the old identity',
 		() =>
