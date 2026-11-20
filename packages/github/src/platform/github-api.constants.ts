@@ -6,6 +6,15 @@ export const PAGE_SIZE = 100
 export const MAX_PAGES = 20
 export const CLIENT_ERROR_STATUS = 400
 export const SERVER_ERROR_STATUS = 500
+export const TOO_MANY_REQUESTS_STATUS = 429
+/** GraphQL error types that mean GitHub read the request and refused it, not that it was throttled. */
+export const DECLINED_GRAPHQL_TYPES: ReadonlySet<string> = new Set([
+	'FORBIDDEN',
+	'NOT_FOUND',
+	'UNPROCESSABLE',
+])
+/** GitHub's message for a primary or secondary rate limit. */
+export const RATE_LIMIT_MESSAGE = /rate limit/iu
 /** One request, its body included, may take this long; a hung request would hold the job. */
 export const REQUEST_TIMEOUT = Duration.seconds(30)
 /** Reads are retried twice on a network failure, a timeout or a 5xx; writes never, so nothing is posted twice. */

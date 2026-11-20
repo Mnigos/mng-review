@@ -67,7 +67,12 @@ export interface ConnectionPage<TNode> {
 
 /** GraphQL's errors, present when the query or a field failed, even beside data. */
 const graphqlErrorsSchema = Schema.optionalKey(
-	Schema.Array(Schema.Struct({ message: Schema.String }))
+	Schema.Array(
+		Schema.Struct({
+			message: Schema.String,
+			type: Schema.optionalKey(Schema.String),
+		})
+	)
 )
 
 /** The answer to the review threads query. */

@@ -5,6 +5,7 @@ import type { GitHubApiError } from '../../../platform/github.errors'
 import { OwnedIdentities } from '../../../platform/owned-identities.context'
 import { toBotThread } from '../../publish/domain/bot-thread.helper'
 import {
+	getDuplicateSummaries,
 	getSummary,
 	toSummaryComments,
 } from '../../publish/domain/summary-comment.helper'
@@ -24,7 +25,8 @@ export interface SweepResult {
  * owned identity, from the open bug threads of the owned identities now, so a thread resolved by hand counts. It runs no model and posts no
  * comment; pull requests the bot never reviewed are left alone. It reads the status again right
  * before it writes and leaves a newer one alone; a publish run that lands between that read and
- * the write can still be overwritten until the next sweep or push.
+ * the write can still be overwritten until the next sweep or push. While the current identity
+ * has more than one visible summary, the status is left as it is until a write removes the extra.
  */
 export class StatusSweepService extends Context.Service<
 	StatusSweepService,
@@ -57,13 +59,14 @@ export const StatusSweepServiceLive = Layer.effect(
 			const openBugs = threads.filter(
 				thread => !thread.resolved && thread.marker.kind === 'bug'
 			).length
-			const summary = getSummary(
-				toSummaryComments(
-					yield* api.listComments(pullNumber),
-					identities,
-					current
-				)
+			const summaries = toSummaryComments(
+				yield* api.listComments(pullNumber),
+				identities,
+				current
 			)
+			// With two summaries of the current identity, the oldest may be a stale finished one.
+			if (getDuplicateSummaries(summaries).length > 0) return 'kept' as const
+			const summary = getSummary(summaries)
 			const marker = summary?.marker
 			const onHead = marker?.head === head
 			// Bugs the last finished run on this head left without a thread still block it.

@@ -6,14 +6,16 @@ import {
 	type HttpClientResponse,
 } from 'effect/http'
 import { API_VERSION, REQUEST_TIMEOUT } from './github-api.constants'
-import { getGraphqlErrors, read } from './github-api.helper'
+import { getGraphqlErrors, isRateLimited, read } from './github-api.helper'
 import { errorBodySchema } from './github-api.schema'
 import { GitHubConfig } from './github.config'
 import { GitHubApiError } from './github.errors'
 
 /** A GraphQL answer: its errors, whatever the data. */
 interface GraphqlAnswer {
-	readonly errors?: readonly { readonly message: string }[] | undefined
+	readonly errors?:
+		| readonly { readonly message: string; readonly type?: string }[]
+		| undefined
 }
 
 /** Gives the exchange `REQUEST_TIMEOUT` and turns any other failure into a `GitHubApiError`. */
@@ -84,6 +86,9 @@ export const makeGitHubHttp = Effect.gen(function* () {
 											operation,
 											status: response.status,
 											reason,
+											...(isRateLimited(response.headers)
+												? { rateLimited: true }
+												: {}),
 										})
 									)
 								)
@@ -137,6 +142,9 @@ export const makeGitHubHttp = Effect.gen(function* () {
 								operation,
 								reason: toSafeReason(errors),
 								graphqlErrors: true,
+								graphqlTypes: (answer.errors ?? []).map(
+									error => error.type ?? null
+								),
 							})
 						)
 			})
