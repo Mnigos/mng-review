@@ -12,6 +12,8 @@ export const RISK_CATEGORIES = [
 	'stored_data',
 	'secrets',
 ] as const
+/** How deep a run reviews, from the cheapest to the most thorough. */
+export const DEPTHS = ['quick', 'balanced', 'deep'] as const
 /** Run and skip name of the built-in main reviewer. */
 export const REVIEWER_NAME = 'reviewer'
 export const REVIEWER_TITLE = 'Main reviewer'

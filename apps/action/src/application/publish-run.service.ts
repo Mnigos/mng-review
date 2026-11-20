@@ -1,3 +1,4 @@
+import { RulesService } from '@mng-review/engine'
 import {
 	type PublishResult,
 	PublishService,
@@ -5,11 +6,17 @@ import {
 	StatusReportService,
 } from '@mng-review/github'
 import { Context, Effect, Layer } from 'effect'
-import type { ShadowOutcome } from './shadow-run.types'
+import type { OutcomeFile } from '../infrastructure/outcome-file.schema'
 
-/** Which engine posts, named in every marker. */
+/**
+ * What publishing trusts besides the outcome file: which engine posts, named in every marker, and
+ * the pull request and head from the runner and the event, which the file's binding was checked
+ * against.
+ */
 export interface PublishContext {
 	readonly engineCommit: string | undefined
+	readonly pullNumber: number
+	readonly head: string
 }
 
 /** What publishing did with an outcome. */
@@ -30,18 +37,19 @@ export type PublishReport =
 	| { readonly status: 'failed'; readonly reason: string }
 
 /**
- * Publishes an outcome on its pull request: a reviewed run gets threads, the sticky summary, a
- * check run per agent and the `MNG Review` commit status, also when no finder had to run (the
- * re-check and the status still matter); an offline endpoint gets the summary when there is none
- * and an `error` status. A skip, an invalid configuration or a git failure posts
- * nothing; the job summary and the job's exit code report them. A GitHub failure never fails the
- * job: the report says what happened.
+ * Publishes a parsed outcome file on its pull request: a reviewed run gets threads, the sticky
+ * summary, a check run per agent and the `MNG Review` commit status, also when no finder had to
+ * run (the re-check's proposals and the status still matter); an offline endpoint gets the
+ * summary when there is none and an `error` status. A skip, an invalid configuration or a git
+ * failure posts nothing; the job summary and the job's exit code report them. The rules are
+ * loaded again from the binding's base commit, never taken from the file, and no model is
+ * called. A GitHub or rules failure never fails the job: the report says what happened.
  */
 export class PublishRunService extends Context.Service<
 	PublishRunService,
 	{
 		readonly run: (
-			outcome: ShadowOutcome,
+			outcome: OutcomeFile,
 			context: PublishContext
 		) => Effect.Effect<PublishReport>
 	}
@@ -52,28 +60,38 @@ export const PublishRunServiceLive = Layer.effect(
 	Effect.gen(function* () {
 		const publisher = yield* PublishService
 		const statuses = yield* StatusReportService
+		const rulesService = yield* RulesService
 
 		const publish = Effect.fn('PublishRunService.publish')(function* (
-			outcome: ShadowOutcome,
+			outcome: OutcomeFile,
 			context: PublishContext
 		) {
-			if (outcome.status === 'reviewed') {
-				const { report, event, rules } = outcome
+			const { report, recheck } = outcome
+			if (outcome.status === 'reviewed' && report) {
 				if (report.planReport.plan.skippedRun)
 					return {
 						status: 'not-published',
 						reason: report.planReport.plan.skippedRun,
 					} satisfies PublishReport
+				const rules = yield* rulesService.load(outcome.binding.baseSha)
 				const result = yield* publisher.publish({
-					pullNumber: event.number,
+					pullNumber: context.pullNumber,
 					report,
 					rules,
-					pr: event.pr,
-					head: event.headSha,
+					head: context.head,
 					engineCommit: context.engineCommit,
+					...(recheck
+						? {
+								recheck: {
+									checked: recheck.checked,
+									proposals: recheck.rejected,
+									tokens: recheck.tokens,
+								},
+							}
+						: {}),
 				})
 				const checks = yield* statuses.report({
-					head: event.headSha,
+					head: context.head,
 					report,
 					verdict: result.verdict,
 					openBugs: result.openBugs,
@@ -81,14 +99,14 @@ export const PublishRunServiceLive = Layer.effect(
 				return { status: 'published', result, checks } satisfies PublishReport
 			}
 			if (outcome.status === 'offline') {
-				const reason = `Reviewer offline: ${outcome.reason}. Nothing was reviewed.`
+				const reason = `Reviewer offline: ${outcome.reason ?? 'no reason given'}. Nothing was reviewed.`
 				const posted = yield* publisher.publishStatus({
-					pullNumber: outcome.event.number,
+					pullNumber: context.pullNumber,
 					status: reason,
-					head: outcome.event.headSha,
+					head: context.head,
 					engineCommit: context.engineCommit,
 				})
-				yield* statuses.reportOffline(outcome.event.headSha)
+				yield* statuses.reportOffline(context.head)
 				return { status: 'status-only', reason, posted } satisfies PublishReport
 			}
 			return {
@@ -98,16 +116,27 @@ export const PublishRunServiceLive = Layer.effect(
 		})
 
 		const run = Effect.fn('PublishRunService.run')(function* (
-			outcome: ShadowOutcome,
+			outcome: OutcomeFile,
 			context: PublishContext
 		) {
 			return yield* publish(outcome, context).pipe(
-				Effect.catchTag('GitHubApiError', error =>
-					Effect.succeed({
-						status: 'failed',
-						reason: error.message,
-					} satisfies PublishReport)
-				)
+				Effect.catchTags({
+					GitHubApiError: error =>
+						Effect.succeed({
+							status: 'failed',
+							reason: error.message,
+						} satisfies PublishReport),
+					ConfigError: error =>
+						Effect.succeed({
+							status: 'failed',
+							reason: `the rules at the base commit: ${error.source}: ${error.reason}`,
+						} satisfies PublishReport),
+					GitError: error =>
+						Effect.succeed({
+							status: 'failed',
+							reason: `the rules at the base commit: git: ${error.message}`,
+						} satisfies PublishReport),
+				})
 			)
 		})
 

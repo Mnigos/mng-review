@@ -46,7 +46,7 @@ import type {
 	PublishResult,
 	StatusInput,
 } from './publish.service.types'
-import { ThreadRecheckService } from './thread-recheck.service'
+import { ThreadResolutionService } from './thread-resolution.service'
 
 /** Git reads that run at once when checking resolved threads. */
 const GIT_CONCURRENCY = 4
@@ -71,6 +71,10 @@ export class PublishService extends Context.Service<
 		readonly publishStatus: (
 			input: StatusInput
 		) => Effect.Effect<boolean, GitHubApiError>
+		/** The bot's review threads, found by author and marker; comments someone else edited do not count. */
+		readonly readThreads: (
+			pullNumber: number
+		) => Effect.Effect<readonly BotThread[], GitHubApiError>
 		/** The sticky summary's marker: how many runs reviewed the pull request and the last head. */
 		readonly readPrior: (
 			pullNumber: number
@@ -84,7 +88,7 @@ export const PublishServiceLive = Layer.effect(
 		const api = yield* GitHubApiService
 		const git = yield* GitService
 		const config = yield* GitHubConfig
-		const rechecker = yield* ThreadRecheckService
+		const resolution = yield* ThreadResolutionService
 
 		/** The bot's sticky summary: its oldest unedited comment that ends with a summary marker. */
 		const readSummary = Effect.fn('PublishService.readSummary')(function* (
@@ -98,6 +102,14 @@ export const PublishServiceLive = Layer.effect(
 					? [{ id: comment.databaseId, marker, body: comment.body }]
 					: []
 			})[0]
+		})
+
+		const readThreads = Effect.fn('PublishService.readThreads')(function* (
+			pullNumber: number
+		) {
+			return (yield* api.listReviewThreads(pullNumber)).flatMap(
+				thread => toBotThread(thread) ?? []
+			)
 		})
 
 		/** Edits the summary, or creates it when there is none or it was deleted since it was read. */
@@ -290,29 +302,19 @@ export const PublishServiceLive = Layer.effect(
 		) {
 			const { report, pullNumber } = input
 			const links = toBlobLinks(config, input)
-			const found = (yield* api.listReviewThreads(pullNumber)).flatMap(
-				thread => toBotThread(thread) ?? []
-			)
+			const found = yield* readThreads(pullNumber)
 			const summary = yield* readSummary(pullNumber)
 			const agents = new Map(
 				input.rules.agents.map(agent => [agent.name, agent])
 			)
-			const recheck = yield* rechecker.recheck({
-				pullNumber,
-				rotation: summary?.marker.runs ?? 0,
-				pr: input.pr,
-				rules: input.rules,
-				links,
-				threads: found,
-				published: getPublishedFindings({
-					outcome: report,
-					config: input.rules.config,
-					agents,
-				}),
-			})
-			const resolvedIds = new Set(
-				recheck.resolved.map(entry => entry.thread.id)
-			)
+			const resolved = input.recheck
+				? yield* resolution.apply({
+						links,
+						proposals: input.recheck.proposals,
+						threads: found,
+					})
+				: []
+			const resolvedIds = new Set(resolved.map(entry => entry.thread.id))
 			const threads = found.map(thread =>
 				resolvedIds.has(thread.id) ? { ...thread, resolved: true } : thread
 			)
@@ -342,8 +344,8 @@ export const PublishServiceLive = Layer.effect(
 					marker,
 					maxRuns: input.rules.config.limits.max_runs_per_pr,
 					links,
-					resolved: recheck.resolved,
-					tokens: recheck.tokens ?? report.tokens,
+					resolved,
+					tokens: input.recheck?.tokens ?? report.tokens,
 				})
 			)
 			const count = (place: PlannedThread['place']) =>
@@ -357,8 +359,8 @@ export const PublishServiceLive = Layer.effect(
 				unposted: count('unposted'),
 				repeated: plan.repeated.length,
 				dismissed: plan.dismissed.length,
-				rechecked: recheck.checked,
-				resolved: recheck.resolved.length,
+				rechecked: input.recheck?.checked ?? 0,
+				resolved: resolved.length,
 				run: marker.runs,
 			} satisfies PublishResult
 		})
@@ -391,6 +393,6 @@ export const PublishServiceLive = Layer.effect(
 			return (yield* readSummary(pullNumber))?.marker
 		})
 
-		return { publish, publishStatus, readPrior }
+		return { publish, publishStatus, readThreads, readPrior }
 	})
 )

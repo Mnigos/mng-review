@@ -1,10 +1,10 @@
-import { REDACTED, toReviewJson } from '@mng-review/engine'
-import { Predicate } from 'effect'
+import { toReviewJson } from '@mng-review/engine'
 import type { PublishReport } from '../application/publish-run.service'
 import type {
 	PullRequestEvent,
 	ShadowOutcome,
 } from '../application/shadow-run.types'
+import { toRedactedValue } from '../utils/redact.util'
 import { toVerdictLine } from './summary.formatter'
 
 /** Bumped when a field of the result file changes meaning or goes away. */
@@ -56,42 +56,6 @@ function toOutcomeJson(outcome: ShadowOutcome) {
 		tokens: {},
 		review: null,
 	}
-}
-
-/** The text with every masked value replaced, longest first so a value that holds another goes whole. */
-function toRedacted(text: string, masked: readonly string[]): string {
-	return masked
-		.toSorted((a, b) => b.length - a.length)
-		.reduce((out, value) => out.replaceAll(value, REDACTED), text)
-}
-
-/** Maps keyed by names from the configuration (model names), whose keys are data, not schema. */
-const DATA_KEYED_MAPS = new Set(['tokens', 'tokenSources'])
-
-/**
- * A JSON value with the masked values replaced in strings and in the keys of the maps keyed by
- * model names; names that become equal get a ` (2)`, ` (3)` suffix so no entry is lost. Schema keys, numbers, booleans and arrays pass through; `JSON.stringify` visits
- * the members.
- */
-function toRedactedValue(
-	key: string,
-	value: unknown,
-	masked: readonly string[]
-): unknown {
-	if (Predicate.isString(value)) return toRedacted(value, masked)
-	if (!DATA_KEYED_MAPS.has(key) || !Predicate.isObject(value)) return value
-	return Object.entries(value).reduce<Record<string, unknown>>(
-		(out, [name, member]) => {
-			const redacted = toRedacted(name, masked)
-			const taken = Object.keys(out).filter(
-				existing =>
-					existing === redacted || existing.startsWith(`${redacted} (`)
-			).length
-			out[taken === 0 ? redacted : `${redacted} (${taken + 1})`] = member
-			return out
-		},
-		{}
-	)
 }
 
 /**

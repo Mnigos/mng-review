@@ -1,9 +1,5 @@
+import { commitShaSchema } from '@mng-review/domain'
 import { Schema } from 'effect'
-
-/** A full commit SHA, SHA-1 or SHA-256, so a ref from the event can never read as a git option. */
-const commitShaSchema = Schema.String.check(
-	Schema.isPattern(/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u)
-)
 
 /** A repository as the event names it; only its full name is read. */
 const repositorySchema = Schema.Struct({ full_name: Schema.String })

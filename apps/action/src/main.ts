@@ -13,19 +13,30 @@ import {
 	GitHubApiServiceLive,
 	GitHubConfigLive,
 	GitHubStatusServiceLive,
+	getPublishedFindings,
 	PublishService,
 	PublishServiceLive,
 	StatusReportServiceLive,
 	StatusSweepService,
 	StatusSweepServiceLive,
+	ThreadRecheckService,
 	ThreadRecheckServiceLive,
+	ThreadResolutionServiceLive,
 	toLogText,
 } from '@mng-review/github'
-import { Clock, Console, Effect, FileSystem, Layer } from 'effect'
+import { Clock, Console, Effect, FileSystem, Layer, Ref } from 'effect'
 import { FetchHttpClient } from 'effect/http'
+import {
+	getBindingMismatch,
+	toOutcomeBinding,
+	toOutcomeFile,
+	toOutcomeText,
+} from './application/outcome-file.helper'
 import {
 	PublishRunService,
 	PublishRunServiceLive,
+	type PublishContext,
+	type PublishReport,
 } from './application/publish-run.service'
 import {
 	ShadowRunService,
@@ -33,15 +44,20 @@ import {
 } from './application/shadow-run.service'
 import type {
 	PullRequestEvent,
+	ReviewedRun,
 	ShadowOutcome,
 } from './application/shadow-run.types'
+import { parseOutcomeFile } from './infrastructure/outcome-file.parser'
+import type { OutcomeFile } from './infrastructure/outcome-file.schema'
 import {
 	MODE_VARIABLE,
 	maskEndpoint,
 	modeConfig,
 	readEventText,
 	repoDirConfig,
+	type RunnerEnvironment,
 	runnerEnvironmentConfig,
+	writeOutcome,
 	writeResult,
 	writeSummary,
 } from './infrastructure/runner.client'
@@ -84,22 +100,30 @@ const SessionLive = Layer.mergeAll(
 /** The shadow run over the session, which stays available for publishing. */
 const ActionLive = ShadowRunServiceLive.pipe(Layer.provideMerge(SessionLive))
 
-/** Publishing over the job token; built only in publish mode, so a shadow run never needs a token. */
 /** The GitHub API and status calls over the job token; built only in publish and sweep mode. */
 const GitHubLive = Layer.mergeAll(
 	GitHubApiServiceLive,
 	GitHubStatusServiceLive
 ).pipe(Layer.provideMerge(GitHubConfigLive))
 
-/** Publishing, the re-check and the status over the job token, and the publish run on top. */
+/** Publishing, thread resolution and the status over the job token. */
+const PublisherLive = Layer.mergeAll(
+	PublishServiceLive,
+	StatusReportServiceLive
+).pipe(
+	Layer.provide(ThreadResolutionServiceLive),
+	Layer.provideMerge(GitHubLive)
+)
+
+/** The publish run on top of the publisher; it calls no model. */
 const PublishLive = PublishRunServiceLive.pipe(
-	Layer.provideMerge(
-		Layer.mergeAll(PublishServiceLive, StatusReportServiceLive).pipe(
-			Layer.provide(ThreadRecheckServiceLive),
-			Layer.provideMerge(RecheckServiceLive),
-			Layer.provideMerge(GitHubLive)
-		)
-	)
+	Layer.provideMerge(PublisherLive)
+)
+
+/** The re-check of the bot's threads over the model, and the publisher to read them. */
+const RecheckLive = Layer.mergeAll(
+	ThreadRecheckServiceLive.pipe(Layer.provide(RecheckServiceLive)),
+	PublisherLive
 )
 
 /** Refreshes the status of open pull requests; a missing token or a GitHub error is reported. */
@@ -125,20 +149,103 @@ const runSweep = Effect.gen(function* () {
  */
 const readPrior = (event: PullRequestEvent) =>
 	PublishService.use(service => service.readPrior(event.number)).pipe(
-		Effect.provide(PublishLive),
+		Effect.provide(PublisherLive),
 		Effect.orElseSucceed(() => undefined)
 	)
 
-/** Publishes the outcome; a missing token or repository is reported, never fatal. */
-const publishOutcome = (
-	outcome: ShadowOutcome,
-	engineCommit: string | undefined
-) =>
-	PublishRunService.use(service => service.run(outcome, { engineCommit })).pipe(
+/**
+ * Reads the bot's threads and checks the changed ones again with the validator; `rotation` is the
+ * run count from the prior summary. A missing token or a GitHub error means no proposals.
+ */
+const proposeRecheck = (outcome: ReviewedRun, rotation: number) =>
+	Effect.gen(function* () {
+		const { event, report, rules } = outcome
+		const threads = yield* PublishService.use(service =>
+			service.readThreads(event.number)
+		)
+		return yield* ThreadRecheckService.use(service =>
+			service.propose({
+				rotation,
+				pr: event.pr,
+				rules,
+				head: event.headSha,
+				threads,
+				published: getPublishedFindings({
+					outcome: report,
+					config: rules.config,
+					agents: new Map(rules.agents.map(agent => [agent.name, agent])),
+				}),
+			})
+		)
+	}).pipe(
+		Effect.provide(RecheckLive),
+		Effect.orElseSucceed(() => undefined)
+	)
+
+/** Publishes a parsed outcome file; a missing token or repository is reported, never fatal. */
+const publishParsed = (outcome: OutcomeFile, context: PublishContext) =>
+	PublishRunService.use(service => service.run(outcome, context)).pipe(
 		Effect.provide(PublishLive),
 		Effect.catchTag('ConfigError', error =>
-			Effect.succeed({ status: 'failed', reason: error.message } as const)
+			Effect.succeed({
+				status: 'failed',
+				reason: error.message,
+			} satisfies PublishReport)
 		)
+	)
+
+/**
+ * Publish mode after the review: the re-check proposes, the outcome becomes the outcome file,
+ * written when `MNG_REVIEW_OUTCOME_PATH` is set and parsed back, its binding is checked against
+ * the runner and the event, and publishing works from the parsed file alone. A file that fails
+ * to write, parse or match publishes nothing and the report says why.
+ */
+const publishOutcome = (
+	outcome: ShadowOutcome,
+	rotation: number,
+	env: RunnerEnvironment,
+	masked: readonly string[]
+) =>
+	Effect.gen(function* () {
+		const recheck =
+			outcome.status === 'reviewed' &&
+			!outcome.report.planReport.plan.skippedRun
+				? yield* proposeRecheck(outcome, rotation)
+				: undefined
+		const file = toOutcomeFile(outcome, recheck, env)
+		if (!file || !outcome.event)
+			return {
+				status: 'not-published',
+				reason: `the run ended ${outcome.status}`,
+			} satisfies PublishReport
+		const trusted = toOutcomeBinding(outcome.event, env)
+		const text = toOutcomeText(file, masked)
+		yield* writeOutcome(env.outcomePath, text)
+		const parsed = yield* parseOutcomeFile(text)
+		const mismatch = getBindingMismatch(parsed.binding, trusted)
+		if (mismatch !== undefined)
+			return {
+				status: 'failed',
+				reason: `the outcome file belongs to another run: ${mismatch} differs`,
+			} satisfies PublishReport
+		return yield* publishParsed(parsed, {
+			engineCommit: env.engineCommit,
+			pullNumber: trusted.pullNumber,
+			head: trusted.headSha,
+		})
+	}).pipe(
+		Effect.catchTags({
+			OutcomeFileError: error =>
+				Effect.succeed({
+					status: 'failed',
+					reason: error.message,
+				} satisfies PublishReport),
+			PlatformError: error =>
+				Effect.succeed({
+					status: 'failed',
+					reason: `the outcome file cannot be written: ${error.message}`,
+				} satisfies PublishReport),
+		})
 	)
 
 /**
@@ -175,6 +282,7 @@ const runAction = Effect.gen(function* () {
 	const fs = yield* FileSystem.FileSystem
 	const priorServices =
 		yield* Effect.context<Effect.Services<ReturnType<typeof readPrior>>>()
+	const priorRuns = yield* Ref.make(0)
 	const outcome = yield* ShadowRunService.use(service =>
 		service.run({
 			eventName: env.eventName,
@@ -184,14 +292,17 @@ const runAction = Effect.gen(function* () {
 			...(mode.value === 'publish'
 				? {
 						readPrior: (event: PullRequestEvent) =>
-							readPrior(event).pipe(Effect.provideContext(priorServices)),
+							readPrior(event).pipe(
+								Effect.tap(marker => Ref.set(priorRuns, marker?.runs ?? 0)),
+								Effect.provideContext(priorServices)
+							),
 					}
 				: {}),
 		})
 	)
 	const publish =
 		mode.value === 'publish'
-			? yield* publishOutcome(outcome, env.engineCommit)
+			? yield* publishOutcome(outcome, yield* Ref.get(priorRuns), env, masked)
 			: undefined
 	const wallMillis = (yield* Clock.currentTimeMillis) - startedAt
 	yield* Console.log(formatLogLine(outcome))

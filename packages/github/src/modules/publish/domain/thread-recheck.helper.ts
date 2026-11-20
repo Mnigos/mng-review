@@ -2,7 +2,12 @@ import type { Finding } from '@mng-review/domain'
 import type { ThreadKind } from './publish-marker.schema'
 import { isSameProblem } from './publish-plan.helper'
 import { MAX_RECHECKS } from './publish.constants'
-import type { BotThread, PublishedFinding } from './publish.types'
+import type {
+	BotThread,
+	PublishedFinding,
+	RecheckProposal,
+	ResolvedThread,
+} from './publish.types'
 
 /** Thread kinds the bot checks again; a nit is never resolved by the bot. */
 const RECHECKED_KINDS = [
@@ -66,4 +71,35 @@ export function getRotated<TItem>(
 	if (items.length <= MAX_RECHECKS) return [...items]
 	const start = (rotation * MAX_RECHECKS) % items.length
 	return [...items.slice(start), ...items.slice(0, start)]
+}
+
+/**
+ * The proposals that still hold in a fresh read of the bot's threads, each with its thread: the
+ * thread exists, carries the proposal's fingerprint, is a bug or unverified thread, is open, has
+ * no reply, and was posted on a commit other than the head. Any other proposal is dropped, and a
+ * thread proposed twice counts once.
+ */
+export function getApplicableProposals(
+	proposals: readonly RecheckProposal[],
+	threads: readonly BotThread[],
+	head: string
+): ResolvedThread[] {
+	const kinds: readonly ThreadKind[] = RECHECKED_KINDS
+	const byId = new Map(threads.map(thread => [thread.id, thread]))
+	return proposals.flatMap((proposal, index) => {
+		const thread = byId.get(proposal.threadId)
+		if (
+			!thread ||
+			proposals.findIndex(other => other.threadId === proposal.threadId) !==
+				index ||
+			thread.marker.fingerprint !== proposal.fingerprint ||
+			!kinds.includes(thread.marker.kind) ||
+			thread.resolved ||
+			thread.replies > 0 ||
+			thread.commit === undefined ||
+			thread.commit === head
+		)
+			return []
+		return [{ thread, reason: proposal.reason }]
+	})
 }
