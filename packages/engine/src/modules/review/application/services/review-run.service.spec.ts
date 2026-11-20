@@ -4,6 +4,7 @@ import { HttpClient } from 'effect/http'
 import { GitService } from '../../../../platform/git/git.service'
 import {
 	makeScriptedLlmLayer,
+	ScriptedLlm,
 	type ScriptedLlmCall,
 } from '../../../../platform/llm/scripted-llm.layer'
 import { TokenLedgerLive } from '../../../../platform/llm/token-ledger.service'
@@ -23,6 +24,12 @@ import {
 import { ReviewLimits } from '../review-limits.context'
 import { ReviewRunService, ReviewRunServiceLive } from './review-run.service'
 import { ReviewService, type ReviewRequest } from './review.service'
+
+vi.mock('../../../../platform/llm/llm.layer', async () => {
+	const { Layer: EffectLayer } = await import('effect')
+	const { LlmService } = await import('../../../../platform/llm/llm.service')
+	return { LlmLive: EffectLayer.effect(LlmService, LlmService) }
+})
 
 vi.mock('../../infrastructure/review.layers', async importOriginal => ({
 	...(await importOriginal<
@@ -328,4 +335,125 @@ layer(Layer.empty)('ReviewRunService command agent selection', test => {
 				expect(makeReviewLayer).not.toHaveBeenCalled()
 			})
 		)
+})
+
+layer(Layer.empty)('ReviewRunService undeclared command agents', test => {
+	for (const onlyAgent of ['missing-agent', 'Storage', 'storage extra', ''])
+		test.effect(
+			`onlyAgent=${JSON.stringify(onlyAgent)} skips every model call including routing`,
+			() =>
+				Effect.gen(function* () {
+					const services = ReviewRunServiceLive.pipe(
+						Layer.provideMerge(
+							makeScriptedLlmLayer(() => Effect.succeed(answer()))
+						),
+						Layer.provide(
+							Layer.mergeAll(
+								TokenLedgerLive,
+								Layer.succeed(GitService, gitFixture()),
+								Layer.succeed(
+									HttpClient.HttpClient,
+									HttpClient.make(() => Effect.die('HTTP must not run'))
+								)
+							)
+						)
+					)
+					yield* Effect.gen(function* () {
+						const report = yield* ReviewRunService.use(service =>
+							service.run({
+								rules: {
+									config: config(),
+									agents: [
+										agent('storage', { when: { paths: ['unmatched/**'] } }),
+										agent('security'),
+									],
+									source: 'base-sha',
+								},
+								baseRef: 'base-ref',
+								headRef: 'head-ref',
+								pr: pr({ trigger: 'manual' }),
+								onlyAgent,
+							})
+						)
+						expect(report.planReport.plan.skippedRun).toBe(
+							onlyAgent === 'missing-agent'
+								? 'a command named agent missing-agent, which the rules do not declare'
+								: 'a command named an agent, which the rules do not declare'
+						)
+						expect(report.planReport.plan.runs).toEqual([])
+						expect(report.planReport.plan.skips).toEqual([])
+						expect(report.planReport.plan.router).toMatchObject({
+							status: 'failed',
+							detail: 'a command named an undeclared agent',
+						})
+						expect(report).toMatchObject({
+							bugs: [],
+							nits: [],
+							agents: [],
+							tokens: {},
+							blocking: false,
+						})
+						expect(yield* ScriptedLlm.use(model => model.calls)).toEqual([])
+						expect(makeReviewLayer).not.toHaveBeenCalled()
+					}).pipe(
+						Effect.provide(services),
+						Effect.provide(
+							ConfigProvider.layer(ConfigProvider.fromEnvRecord({}))
+						)
+					)
+				})
+		)
+	test.effect('a declared command agent still reaches the scripted model', () =>
+		Effect.gen(function* () {
+			const scriptedLlmLayer = makeScriptedLlmLayer(() =>
+				Effect.succeed(answer())
+			)
+			vi.mocked(makeReviewLayer).mockImplementationOnce(limits =>
+				ReviewPipelineLive.pipe(
+					Layer.provide(scriptedLlmLayer),
+					Layer.provide(Layer.succeed(ReviewLimits, limits))
+				)
+			)
+			const services = ReviewRunServiceLive.pipe(
+				Layer.provideMerge(scriptedLlmLayer),
+				Layer.provide(
+					Layer.mergeAll(
+						TokenLedgerLive,
+						Layer.succeed(GitService, gitFixture()),
+						Layer.succeed(
+							HttpClient.HttpClient,
+							HttpClient.make(() => Effect.die('HTTP must not run'))
+						)
+					)
+				)
+			)
+			yield* Effect.gen(function* () {
+				const report = yield* ReviewRunService.use(service =>
+					service.run({
+						rules: {
+							config: config(),
+							agents: [agent('storage')],
+							source: 'base-sha',
+						},
+						baseRef: 'base-ref',
+						headRef: 'head-ref',
+						pr: pr({ trigger: 'manual' }),
+						routerDisabledReason: 'fixture',
+						onlyAgent: 'storage',
+					})
+				)
+				expect(report.planReport.plan.skippedRun).toBeUndefined()
+				expect(report.planReport.plan.runs.map(run => run.name)).toEqual([
+					'storage',
+				])
+				expect(report.agents).toEqual([
+					expect.objectContaining({ name: 'storage', status: 'ok' }),
+				])
+				expect(yield* ScriptedLlm.use(model => model.calls)).toHaveLength(1)
+			}).pipe(
+				Effect.provide(services),
+				Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnvRecord({})))
+			)
+		})
+	)
 })

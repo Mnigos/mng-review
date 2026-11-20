@@ -7,7 +7,7 @@ import {
 	planInput,
 	plannedRun,
 } from '../shared/mocks/domain-test.helper'
-import { toAgentOnlyPlan } from './agent-plan.helper'
+import { toAgentOnlyPlan, toUnknownAgentPlan } from './agent-plan.helper'
 
 describe('toAgentOnlyPlan', () => {
 	test('keeps every already planned run for the agent without changing its files or settings', () => {
@@ -133,4 +133,39 @@ describe('toAgentOnlyPlan', () => {
 			},
 		])
 	})
+})
+
+describe('toUnknownAgentPlan', () => {
+	for (const name of ['storage', 'storage-2', '2-storage'])
+		test(`names the undeclared agent ${name} and clears planned runs and skips`, () => {
+			const original = {
+				...buildPlan(planInput(), NORMAL_ROUTER),
+				skips: [{ name: 'other', title: 'Other', reason: 'no matching files' }],
+			}
+			const snapshot = structuredClone(original)
+			expect(toUnknownAgentPlan(original, name)).toEqual({
+				...original,
+				skippedRun: `a command named agent ${name}, which the rules do not declare`,
+				runs: [],
+				skips: [],
+			})
+			expect(original).toEqual(snapshot)
+		})
+	for (const name of [
+		'',
+		'Storage',
+		'-storage',
+		'storage agent',
+		'storage\nextra',
+		'<agent>',
+	])
+		test(`does not repeat an invalid agent name ${JSON.stringify(name)}`, () => {
+			const plan = buildPlan(planInput(), NORMAL_ROUTER)
+			expect(toUnknownAgentPlan(plan, name)).toEqual({
+				...plan,
+				skippedRun: 'a command named an agent, which the rules do not declare',
+				runs: [],
+				skips: [],
+			})
+		})
 })
