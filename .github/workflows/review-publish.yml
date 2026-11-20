@@ -140,6 +140,11 @@ jobs:
     # Only a reviewed or offline outcome is posted; a failed or skipped review job skips this one.
     needs: review
     if: needs.review.outputs.publish == 'true'
+    # One publish job at a time per pull request, from any workflow that writes the summary: two
+    # writers that both read the marker would otherwise record one run instead of two.
+    concurrency:
+      group: mng-review-publish-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
     runs-on: ${{ inputs.runner }}
     # No endpoint or tailnet secret is named here, and the job never joins the tailnet. In app mode
     # the job token keeps write, since permissions are static text, but only checks out and fetches.
