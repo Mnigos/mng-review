@@ -18,8 +18,26 @@ describe('parseMentionCommand', () => {
 		['@mng-review run x\n@mng-review review', { agent: 'x' }],
 		['<!-- hidden -->\n@mng-review review', {}],
 		['<!-- hidden --> @mng-review review', {}],
+		['<!-- first --><!-- second --> @mng-review review', {}],
+		['<!--\n@mng-review review deep\n-->\n@mng-review review', {}],
+		['<!--\n~~~\n-->\n@mng-review review', {}],
+		['<!-- ~~~ -->\n@mng-review review', {}],
+		[
+			'<!-- first --><!-- second\n@mng-review review deep\n-->\n@mng-review review',
+			{},
+		],
+		['<!-- first\n--><!-- second --> @mng-review review', {}],
+		[
+			'<!-- first\n--><!-- second\n@mng-review review deep\n--> @mng-review review',
+			{},
+		],
 		['> quoted paragraph\n\n@mng-review review', {}],
 		['   > quoted paragraph\n \t\n@mng-review review', {}],
+		['> quoted example\n~~~\nexample\n~~~\n\n@mng-review review', {}],
+		['> quoted example\n~~~\n\n~~~\n\n@mng-review review', {}],
+		['~~~\n<!--\n~~~\n-->\n@mng-review review', {}],
+		['```\n<!--\n```\n-->\n@mng-review review', {}],
+		['~~~\n<!--\n~~~\n@mng-review review', {}],
 		[
 			'```ts\n@mng-review review deep\n````\n@mng-review run storage',
 			{ agent: 'storage' },
@@ -89,11 +107,27 @@ describe('parseMentionCommand', () => {
 		'~~~~\n~~~\n@mng-review review',
 		'<!-- @mng-review review -->',
 		'<!--\n@mng-review review\n-->',
+		'<!--\n~~~\n@mng-review review\n~~~\n-->',
 		'<!-- open\n@mng-review review',
+		'<!-- first --><!-- second\n@mng-review review',
+		'<!-- first\n--><!-- second\n@mng-review review',
+		'<!-- first --><!-- @mng-review review -->',
+		['~~~', '<!--', '~~~', '-->', '~~~', '@mng-review review', '~~~'].join(
+			'\n'
+		),
+		['```', '<!--', '```', '-->', '```', '@mng-review review', '```'].join(
+			'\n'
+		),
 		'> @mng-review review',
 		'   > @mng-review review',
 		'> quoted paragraph\n@mng-review review',
 		'   > quoted paragraph\n@mng-review review',
+		'> quoted example\n~~~\nexample\n~~~\n@mng-review review',
+		'> quoted example\n```\nexample\n```\n@mng-review review',
+		'> quoted example\n~~~\n\n~~~\n@mng-review review',
+		'> quoted example\n~~~\n \t\n~~~\n@mng-review review',
+		'> quoted example\n~~~\nexample\n~~~\n<!-- hidden -->\n@mng-review review',
+		'> quoted example\n~~~\nexample\n~~~\n<!--\n\n-->\n@mng-review review',
 	])('ignores %j', body => {
 		expect(parseMentionCommand(body, 'mng-review')).toBeUndefined()
 	})
