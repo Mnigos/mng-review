@@ -266,6 +266,42 @@ layer(Layer.empty)('StatusReportService unfinished and offline', test => {
 					expect(fake.checks).toEqual([])
 				})
 		)
+	for (const fail of [true, false])
+		test.effect(
+			`unfinished publishing reports an error and returns write success=${!fail}`,
+			() =>
+				Effect.gen(function* () {
+					const fake = githubStatusFake({
+						setStatus: () =>
+							fail
+								? Effect.fail(
+										new GitHubApiError({
+											operation: 'setStatus',
+											reason: 'status denied',
+											status: 403,
+										})
+									)
+								: Effect.void,
+					})
+					expect(
+						yield* StatusReportService.use(service =>
+							service.reportUnfinished('head')
+						).pipe(
+							Effect.provide(
+								StatusReportServiceLive.pipe(Layer.provide(fake.layer))
+							)
+						)
+					).toBe(!fail)
+					expect(fake.statuses).toEqual([
+						{
+							sha: 'head',
+							state: 'error',
+							description: `publishing failed; ${UNFINISHED_NOTE}`,
+						},
+					])
+					expect(fake.checks).toEqual([])
+				})
+		)
 	for (const statuses of [
 		['ok', 'ok'],
 		['failed', 'ok'],

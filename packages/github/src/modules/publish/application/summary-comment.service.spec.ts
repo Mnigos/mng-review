@@ -1,6 +1,7 @@
 import { layer } from '@effect/vitest'
 import { Effect, Layer } from 'effect'
 import { GITHUB_ACTIONS_IDENTITY } from '../../../platform/bot-identity.helper'
+import { GitHubApiService } from '../../../platform/github-api.service'
 import { GitHubConfig } from '../../../platform/github.config'
 import { GitHubApiError } from '../../../platform/github.errors'
 import { provideOwnedIdentities } from '../../../platform/owned-identities.context'
@@ -484,6 +485,7 @@ layer(APP_MODE_OWNED)('SummaryCommentService identity switches', test => {
 						expect.objectContaining({ method: 'update', id: older.databaseId }),
 						...(storedFailure ? [] : [{ method: 'delete', id: 1 }]),
 					])
+					expect(fake.comments.slice(0, 2)).toEqual([previous, older])
 					expect(yield* summaries.write(17, render)).toMatchObject({
 						marker: { runs: 8, head: 'older-head' },
 						cleanup: 'minimized',
@@ -697,6 +699,52 @@ layer(Layer.empty)('SummaryCommentService return to token mode', test => {
 
 layer(APP_MODE_OWNED)('SummaryCommentService reconciliation failures', test => {
 	test.effect(
+		'a failed read after an answered create preserves the read error without another create or cleanup',
+		() =>
+			Effect.gen(function* () {
+				const { fake, service } = setup()
+				const previous = priorSummary()
+				const older = appSummary({ ...SUMMARY_MARKER, runs: 7 })
+				const readError = new GitHubApiError({
+					operation: 'listComments',
+					reason: 'comments unavailable after create',
+					status: 503,
+				})
+				fake.comments.push(previous, older)
+				fake.commentSnapshots.push([previous])
+				const api = yield* GitHubApiService.pipe(Effect.provide(fake.api))
+				const { createIssueComment } = api
+				const createIssueCommentSpy = vi
+					.spyOn(api, 'createIssueComment')
+					.mockImplementation((pullNumber, body) =>
+						createIssueComment(pullNumber, body).pipe(
+							Effect.tap(() =>
+								Effect.sync(() => {
+									fake.failures.listComments.push(readError)
+								})
+							)
+						)
+					)
+				expect(
+					yield* SummaryCommentService.use(summaries =>
+						summaries.write(17, render)
+					).pipe(Effect.provide(service), Effect.flip)
+				).toBe(readError)
+				expect(createIssueCommentSpy).toHaveBeenCalledTimes(1)
+				expect(fake.commentReads).toEqual([17, 17])
+				expect(fake.failures.listComments).toEqual([])
+				expect(fake.writes).toEqual([
+					expect.objectContaining({ method: 'create', pullNumber: 17 }),
+				])
+				expect(fake.comments.slice(0, 2)).toEqual([previous, older])
+				expect(fake.comments.map(comment => comment.databaseId)).toEqual([
+					previous.databaseId,
+					older.databaseId,
+					1,
+				])
+			})
+	)
+	test.effect(
 		'a successful create preserves the update error when deleting its comment also fails',
 		() =>
 			Effect.gen(function* () {
@@ -796,7 +844,7 @@ layer(APP_MODE_OWNED)('SummaryCommentService reconciliation failures', test => {
 layer(APP_MODE_OWNED)(
 	'SummaryCommentService unanswered create ownership',
 	test => {
-		for (const status of [undefined, 503]) {
+		for (const status of [undefined, 500, 503]) {
 			test.effect(
 				`an unanswered create ${status} never claims an identical summary present before the create`,
 				() =>
