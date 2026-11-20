@@ -17,7 +17,7 @@ import { Effect, Schema } from 'effect'
 /** Most entries in each finding list, the agent reports, and the plan's runs and skips. */
 export const MAX_REPORT_ENTRIES = 500
 /** Most changed files a report lists. */
-export const MAX_REPORT_FILES = 5000
+export const MAX_REPORT_FILES = 50_000
 /** Most characters in any one string of a report. */
 export const MAX_REPORT_TEXT = 20_000
 const textSchema = Schema.String.check(Schema.isMaxLength(MAX_REPORT_TEXT))
@@ -123,8 +123,9 @@ const rejectedFindingSchema = Schema.Struct({
 })
 
 const changedFileSchema = Schema.Struct({
-	path: repoPathSchema,
-	oldPath: Schema.optional(repoPathSchema),
+	// A file name as git gives it; only finding paths, which place comments, must be repository paths.
+	path: textSchema,
+	oldPath: Schema.optional(textSchema),
 	status: Schema.Literals([
 		'added',
 		'modified',

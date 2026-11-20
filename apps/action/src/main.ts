@@ -220,7 +220,6 @@ const publishOutcome = (
 			} satisfies PublishReport
 		const trusted = toOutcomeBinding(outcome.event, env)
 		const text = toOutcomeText(file, masked)
-		yield* writeOutcome(env.outcomePath, text)
 		const parsed = yield* parseOutcomeFile(text)
 		const mismatch = getBindingMismatch(parsed.binding, trusted)
 		if (mismatch !== undefined)
@@ -228,6 +227,7 @@ const publishOutcome = (
 				status: 'failed',
 				reason: `the outcome file belongs to another run: ${mismatch} differs`,
 			} satisfies PublishReport
+		yield* writeOutcome(env.outcomePath, text)
 		return yield* publishParsed(parsed, {
 			engineCommit: env.engineCommit,
 			pullNumber: trusted.pullNumber,

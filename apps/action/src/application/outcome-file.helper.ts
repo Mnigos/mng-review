@@ -1,12 +1,22 @@
-import type { ThreadRecheckProposals } from '@mng-review/github'
+import {
+	MAX_REPORT_ENTRIES,
+	MAX_REPORT_NAME,
+	MAX_REPORT_TEXT,
+	type ThreadRecheckProposals,
+} from '@mng-review/github'
+import { Predicate } from 'effect'
 import {
 	type OutcomeBinding,
 	type OutcomeFile,
 	OUTCOME_VERSION,
 } from '../infrastructure/outcome-file.schema'
 import type { RunnerEnvironment } from '../infrastructure/runner.client'
-import { toRedactedValue } from '../utils/redact.util'
-import type { PullRequestEvent, ShadowOutcome } from './shadow-run.types'
+import { toRedacted, toRedactedValue } from '../utils/redact.util'
+import type {
+	PullRequestEvent,
+	ReviewedRun,
+	ShadowOutcome,
+} from './shadow-run.types'
 
 /** The runner's variables an outcome is bound to. */
 export type BindingEnvironment = Pick<
@@ -44,6 +54,17 @@ export function toOutcomeBinding(
 	}
 }
 
+/** The report publishing needs: without the plan's file list, which only the review reads. */
+function toPublishedReport(
+	report: ReviewedRun['report']
+): ReviewedRun['report'] {
+	const { planReport } = report
+	return {
+		...report,
+		planReport: { ...planReport, plan: { ...planReport.plan, files: [] } },
+	}
+}
+
 /** The outcome's reason and, for an invalid configuration, the file or key it names. */
 function toOutcomeReason(outcome: ShadowOutcome) {
 	if (outcome.status === 'reviewed') return {}
@@ -69,7 +90,9 @@ export function toOutcomeFile(
 		binding: toOutcomeBinding(outcome.event, env),
 		status: outcome.status,
 		...toOutcomeReason(outcome),
-		...(outcome.status === 'reviewed' ? { report: outcome.report } : {}),
+		...(outcome.status === 'reviewed'
+			? { report: toPublishedReport(outcome.report) }
+			: {}),
 		...(recheck && tokens
 			? {
 					recheck: {
@@ -86,9 +109,75 @@ export function toOutcomeFile(
 	}
 }
 
+/** Keys of model and error text, cut to `MAX_REPORT_TEXT`; their values may carry the endpoint. */
+const TEXT_KEYS = new Set([
+	'title',
+	'trigger',
+	'impact',
+	'suggestion',
+	'reason',
+	'error',
+	'endpointError',
+	'detail',
+	'premise',
+	'note',
+	'loweredBecause',
+])
+/** Keys of model names, cut to `MAX_REPORT_NAME`. */
+const NAME_KEYS = new Set(['model', 'fellBackFrom', 'validatedBy'])
+/** Keys of text lists and name lists, each entry cut and the list capped. */
+const TEXT_LIST_KEYS = new Set(['evidence'])
+const NAME_LIST_KEYS = new Set(['models'])
+
+/** The text with the masked values replaced, then cut to `max` characters. */
+function toBoundedText(
+	text: string,
+	masked: readonly string[],
+	max: number
+): string {
+	return toRedacted(text, masked).slice(0, max)
+}
+
+/** A list of texts redacted and cut, at most `MAX_REPORT_ENTRIES` of them. */
+function toBoundedList(
+	value: unknown,
+	masked: readonly string[],
+	max: number
+): unknown {
+	if (!Array.isArray(value)) return value
+	const entries: readonly unknown[] = value
+	return entries
+		.slice(0, MAX_REPORT_ENTRIES)
+		.map(entry =>
+			Predicate.isString(entry) ? toBoundedText(entry, masked, max) : entry
+		)
+}
+
 /**
- * The outcome file as JSON, with the endpoint's masked values replaced in every string and in the
- * model names that key the token maps, as in the result file.
+ * One JSON value of the outcome file: model and error text redacted and cut to the schema's
+ * bounds, the model names that key the token maps redacted. Protocol values, the binding, paths
+ * and fingerprints pass unchanged, so a masked value that is a common word cannot break them.
+ */
+function toOutcomeValue(
+	key: string,
+	value: unknown,
+	masked: readonly string[]
+): unknown {
+	if (Predicate.isString(value)) {
+		if (TEXT_KEYS.has(key)) return toBoundedText(value, masked, MAX_REPORT_TEXT)
+		if (NAME_KEYS.has(key)) return toBoundedText(value, masked, MAX_REPORT_NAME)
+		return value
+	}
+	if (TEXT_LIST_KEYS.has(key))
+		return toBoundedList(value, masked, MAX_REPORT_TEXT)
+	if (NAME_LIST_KEYS.has(key))
+		return toBoundedList(value, masked, MAX_REPORT_NAME)
+	return toRedactedValue(key, value, masked)
+}
+
+/**
+ * The outcome file as JSON. Model and error text is redacted and cut to the schema's bounds, so
+ * one long or unlucky field never stops the whole run from publishing; see `toOutcomeValue`.
  */
 export function toOutcomeText(
 	file: OutcomeFile,
@@ -96,7 +185,7 @@ export function toOutcomeText(
 ): string {
 	const values = masked.filter(value => value.length > 0)
 	return JSON.stringify(file, (key, value: unknown) =>
-		toRedactedValue(key, value, values)
+		toOutcomeValue(key, value, values)
 	)
 }
 
