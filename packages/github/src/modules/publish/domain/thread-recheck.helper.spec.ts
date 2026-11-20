@@ -35,7 +35,7 @@ describe('getRecheckCandidates', () => {
 			)
 		).toEqual([])
 	})
-	test.each(['bug', 'unverified', 'nit'] as const)(
+	test.each(['bug', 'unverified'] as const)(
 		'a matching published %s prevents rechecking',
 		kind => {
 			expect(
@@ -43,6 +43,16 @@ describe('getRecheckCandidates', () => {
 			).toEqual([])
 		}
 	)
+	test('a published nit on the same line does not keep a bug thread from the re-check', () => {
+		const thread = botThread()
+		expect(
+			getRecheckCandidates(
+				[thread],
+				[{ finding: bug({ title: 'A different nit title' }), kind: 'nit' }],
+				HEAD
+			)
+		).toEqual([thread])
+	})
 	test('an unrelated published finding does not suppress the thread', () => {
 		const thread = botThread()
 		expect(
