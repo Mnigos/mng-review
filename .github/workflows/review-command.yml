@@ -190,8 +190,9 @@ jobs:
             exit 1
           fi
 
-      # The calling repository only, pull requests write and contents read only; revoked when the
-      # job ends, before the review job starts.
+      # The calling repository only, pull requests write only: the reservation reads the pull
+      # request and its conversation comments and writes one comment, and never reads a GraphQL
+      # field that names a commit. Revoked when the job ends, before the review job starts.
       - name: Mint the app token
         id: app
         if: inputs.app-slug != ''
@@ -200,8 +201,6 @@ jobs:
           client-id: ${{ secrets.app-client-id }}
           private-key: ${{ secrets.app-private-key }}
           permission-pull-requests: write
-          # Summary and thread reads through GraphQL name commits, which needs contents read.
-          permission-contents: read
 
       - name: Set up MNG Review
         uses: ./.mng-review-engine/.github/actions/setup-engine

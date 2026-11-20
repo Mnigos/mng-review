@@ -1,6 +1,9 @@
 import { GitHubApiService } from '@mng-review/github'
 import { Console, Effect } from 'effect'
-import { toCommandEvent } from '../../application/command-event.helper'
+import {
+	getCommandStateMismatch,
+	toCommandEvent,
+} from '../../application/command-event.helper'
 import {
 	getBindingMismatch,
 	toMismatchReason,
@@ -55,14 +58,18 @@ const readPushEvent = Effect.fn('publishStep.readPushEvent')(function* (
 
 /**
  * The pull request a command run publishes: the number and both commits from the authorize job's
- * outputs, what the gates read from the API. A target or a pull request that cannot be read
- * refuses the file.
+ * outputs, what the gates read from the API. A target or a pull request that cannot be read, or one
+ * that closed or became a fork while the review ran, refuses the file; a moved head is published as
+ * a partial run.
  */
 const readCommandTarget = Effect.gen(function* () {
 	const target = yield* commandTargetConfig
 	const pr = yield* GitHubApiService.use(api =>
 		api.getPullRequest(target.pullNumber)
 	)
+	const mismatch = getCommandStateMismatch(pr)
+	if (mismatch !== undefined)
+		return yield* new OutcomeFileError({ message: mismatch })
 	return {
 		event: toCommandEvent(pr, target),
 		command: { agentOnly: target.agent !== undefined },

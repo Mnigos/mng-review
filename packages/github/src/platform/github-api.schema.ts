@@ -187,7 +187,13 @@ export const issueCommentSchema = Schema.Struct({
 })
 export type IssueComment = typeof issueCommentSchema.Type
 
-/** A collaborator's role on the repository: `admin`, `maintain`, `write`, `triage`, `read` or a custom role. */
+/**
+ * A collaborator's access to the repository: `role_name` is `admin`, `maintain`, `write`, `triage`,
+ * `read` or a custom role's name, and `permission` the base access it maps to (`admin`, `write`,
+ * `read` or `none`).
+ */
 export const collaboratorRoleSchema = Schema.Struct({
 	role_name: Schema.String,
+	permission: Schema.String,
 })
+export type CollaboratorRole = typeof collaboratorRoleSchema.Type
