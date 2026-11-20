@@ -1,3 +1,4 @@
+import type { Change, ReviewConfig } from '@mng-review/domain'
 import { Context, Effect, Layer, Option } from 'effect'
 import type { CollaboratorRole } from '../../../platform/github-api.schema'
 import { GitHubApiService } from '../../../platform/github-api.service'
@@ -10,6 +11,7 @@ import {
 	countDisputes,
 	getApplicableReplies,
 	getPendingReply,
+	isPastLimit,
 	type ReplyRef,
 } from '../domain/thread-conversation.helper'
 import { getRotated } from '../domain/thread-recheck.helper'
@@ -37,6 +39,10 @@ export interface ReplyApplyInput {
 	readonly links: BlobLinks
 	readonly decisions: readonly DecidedThreadReply[]
 	readonly threads: readonly BotThread[]
+	/** The rules in force: `disputes` and `risk_paths` set the limit an `accepted` cannot pass. */
+	readonly config: ReviewConfig
+	/** The reviewed change as publishing read it from git; `undefined` when the read failed. */
+	readonly change: Pick<Change, 'files'> | undefined
 }
 
 /** A pending reply found in a thread, before its comments are read. */
@@ -64,7 +70,8 @@ export class ThreadReplyService extends Context.Service<
 		/**
 		 * Answers each decision that still holds (`getApplicableReplies`) and whose reply's author
 		 * still has write access, and tries to resolve a thread it closes; a failed answer leaves the
-		 * thread out of the result.
+		 * thread out of the result. An `accepted` decision on a finding past the limit (`isPastLimit`)
+		 * is dropped.
 		 */
 		readonly apply: (
 			input: ReplyApplyInput
@@ -167,7 +174,15 @@ export const ThreadReplyServiceLive = Layer.effect(
 		const apply = Effect.fn('ThreadReplyService.apply')(function* (
 			input: ReplyApplyInput
 		) {
-			const applicable = getApplicableReplies(input.decisions, input.threads)
+			// The outcome file is the review job's: it may accept what only the owner can.
+			const applicable = getApplicableReplies(
+				input.decisions,
+				input.threads
+			).filter(
+				entry =>
+					entry.decision.action !== 'accepted' ||
+					!isPastLimit(entry.thread, input.config, input.change)
+			)
 			const writers = yield* getWriters(
 				applicable.flatMap(entry => entry.thread.latestAuthor?.login ?? [])
 			)

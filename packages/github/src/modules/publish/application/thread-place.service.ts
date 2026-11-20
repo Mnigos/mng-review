@@ -1,3 +1,4 @@
+import type { Change } from '@mng-review/domain'
 import { GitService, type ReviewReport, SAFE_DIFF } from '@mng-review/engine'
 import { Context, Effect, Layer } from 'effect'
 import { createCommentableLinesFold } from '../domain/diff-hunk.parser'
@@ -18,9 +19,9 @@ const COMMIT_MARK = 'mng-review-commit:'
 export type PlaceInput = Pick<PublishInput, 'report' | 'rules' | 'head'>
 
 /**
- * What git says about places in the pull request: the head lines that take an inline comment, and
+ * What git says about places in the pull request: the head lines that take an inline comment,
  * which resolved threads had their code changed since, so a finding found again under them is
- * posted again instead of dismissed.
+ * posted again instead of dismissed, and the change's files between two commits.
  */
 export class ThreadPlaceService extends Context.Service<
 	ThreadPlaceService,
@@ -33,6 +34,14 @@ export class ThreadPlaceService extends Context.Service<
 			input: PlaceInput,
 			threads: readonly BotThread[]
 		) => Effect.Effect<ReadonlySet<string>>
+		/**
+		 * The changed files and renames between the merge base of `base` and `head`, as git reads
+		 * them; `undefined` when git fails. Never from the outcome file, which the review job shapes.
+		 */
+		readonly readChange: (
+			base: string,
+			head: string
+		) => Effect.Effect<Pick<Change, 'files'> | undefined>
 	}
 >()('mng-review/ThreadPlaceService') {}
 
@@ -126,6 +135,19 @@ export const ThreadPlaceServiceLive = Layer.effect(
 			}
 		)
 
-		return { readCommentableLines, getChangedPlaces }
+		const readChange = Effect.fn('ThreadPlaceService.readChange')(function* (
+			base: string,
+			head: string
+		) {
+			return yield* git
+				.readChange(base, head)
+				.pipe(
+					Effect.orElseSucceed(
+						(): Pick<Change, 'files'> | undefined => undefined
+					)
+				)
+		})
+
+		return { readCommentableLines, getChangedPlaces, readChange }
 	})
 )

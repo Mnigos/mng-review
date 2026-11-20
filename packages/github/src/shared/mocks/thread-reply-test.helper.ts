@@ -1,3 +1,4 @@
+import type { ReplyApplyInput } from '../../modules/publish/application/thread-reply.service'
 import { toBodyDigest } from '../../modules/publish/domain/bot-thread.helper'
 import type { BotThread } from '../../modules/publish/domain/publish.types'
 import type {
@@ -6,6 +7,7 @@ import type {
 	ThreadReplyDecision,
 } from '../../modules/publish/domain/thread-reply.schema'
 import type { ReviewThread } from '../../platform/github-api.schema'
+import { config } from './domain-test.helper'
 import { botThread, reviewThread } from './publish-test.helper'
 
 /** The shared reply's text, as the thread read and the prepared reply carry it. */
@@ -73,4 +75,9 @@ export function decidedReply(
 ): DecidedThreadReply {
 	const { threadId, fingerprint, commentId, digest } = pendingReply()
 	return { threadId, fingerprint, commentId, digest, decision, ...overrides }
+}
+
+/** The default rules and an empty change, for `apply`'s limit check. */
+export function replyRules(): Pick<ReplyApplyInput, 'config' | 'change'> {
+	return { config: config(), change: { files: [] } }
 }

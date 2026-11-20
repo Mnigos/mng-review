@@ -1,7 +1,10 @@
 import {
+	type Change,
 	commitShaSchema,
+	getIntentionalLimit,
 	normalizeRepoPath,
 	type ReplyItem,
+	type ReviewConfig,
 } from '@mng-review/domain'
 import type { DecidedReply } from '@mng-review/engine'
 import { Schema } from 'effect'
@@ -122,6 +125,20 @@ export function getApplicableReplies(
 			{ thread, decision: decided.decision, commentId: decided.commentId },
 		]
 	})
+}
+
+/**
+ * Whether the thread's finding is past the limit an `intentional` reply cannot pass
+ * (`getIntentionalLimit`): the severity from the bot's marker, the path from the thread, the rules
+ * in force and the change publishing read from git. Without a change it counts as past the limit.
+ */
+export function isPastLimit(
+	thread: BotThread,
+	config: ReviewConfig,
+	change: Pick<Change, 'files'> | undefined
+): boolean {
+	if (change === undefined) return true
+	return getIntentionalLimit(toThreadFinding(thread), config, change) !== 'ok'
 }
 
 /** The answers by action. */

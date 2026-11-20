@@ -14,6 +14,7 @@ import {
 import { githubApiFake } from '../../../shared/mocks/github-api-fake.helper'
 import { githubStatusFake } from '../../../shared/mocks/github-status-fake.helper'
 import {
+	ACCEPTING_RULES,
 	APP_IDENTITY,
 	APP_MODE_OWNED,
 	bug,
@@ -2621,6 +2622,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 									: {
 											replies: {
 												tokens: {},
+												base: fixture.base,
 												decisions: [
 													decidedReply(
 														action === 'accepted'
@@ -2637,7 +2639,11 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 										}
 							expect(
 								yield* PublishService.use(service =>
-									service.publish({ ...fixture.input, ...closing })
+									service.publish({
+										...fixture.input,
+										rules: ACCEPTING_RULES,
+										...closing,
+									})
 								).pipe(Effect.provide(fixture.publisher))
 							).toMatchObject({
 								dismissed: 1,
@@ -2667,6 +2673,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 							...fixture.input,
 							replies: {
 								tokens: {},
+								base: fixture.base,
 								decisions: [
 									decidedReply({
 										action: 'needs-owner',
@@ -2738,7 +2745,12 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 						const published = yield* PublishService.use(service =>
 							service.publish({
 								...fixture.input,
-								replies: { tokens: {}, decisions: [decidedReply(decision)] },
+								rules: ACCEPTING_RULES,
+								replies: {
+									tokens: {},
+									base: fixture.base,
+									decisions: [decidedReply(decision)],
+								},
 							})
 						).pipe(Effect.provide(fixture.publisher))
 						expect(published).toMatchObject({
