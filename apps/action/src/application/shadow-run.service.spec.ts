@@ -28,12 +28,8 @@ import {
 	eventPayload,
 } from '../shared/mocks/pull-request-event.helper'
 import { reviewReport } from '../shared/mocks/review-report.helper'
-import {
-	FORK_REASON,
-	getRunLimitReason,
-	PrepareRunService,
-	PrepareRunServiceLive,
-} from './prepare-run.service'
+import { PrepareRunService, PrepareRunServiceLive } from './prepare-run.service'
+import { FORK_REASON, getRunLimitReason } from './run-gate.helper'
 import { ShadowRunService, ShadowRunServiceLive } from './shadow-run.service'
 import type { PreparedRun, ShadowRunInput } from './shadow-run.types'
 

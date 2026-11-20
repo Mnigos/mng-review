@@ -5,6 +5,8 @@ import {
 	PublishService,
 	GitHubApiError,
 	StatusReportService,
+	MARKER_VERSION,
+	type SummaryMarker,
 } from '@mng-review/github'
 import { Effect, Layer } from 'effect'
 import { parseOutcomeFile } from '../infrastructure/outcome-file.parser'
@@ -17,7 +19,12 @@ import {
 	outcomeFile as boundOutcomeFile,
 } from '../shared/mocks/outcome-file.helper'
 import { reviewReport, RULES } from '../shared/mocks/review-report.helper'
-import { PublishRunService, PublishRunServiceLive } from './publish-run.service'
+import {
+	PublishRunService,
+	PublishRunServiceLive,
+	type PublishContext,
+} from './publish-run.service'
+import { FORK_REASON } from './run-gate.helper'
 import type { PullRequestEvent } from './shadow-run.types'
 
 const EVENT = {
@@ -30,7 +37,8 @@ const CONTEXT = {
 	engineCommit: 'engine',
 	pullNumber: EVENT.number,
 	head: EVENT.headSha,
-} as const
+	event: EVENT,
+} as const satisfies PublishContext
 const BINDING = {
 	repository: 'example/project',
 	runId: '1',
@@ -62,7 +70,16 @@ const PUBLISHED = {
 } as const
 
 /** Publisher test layer records which outcome path is taken and can fail either write. */
-function setup(fail = false, rulesError?: ConfigError, rules: Rules = RULES) {
+function setup(
+	fail = false,
+	rulesError?: ConfigError,
+	rules: Rules = RULES,
+	prior?: SummaryMarker,
+	readPriorError?: GitHubApiError
+) {
+	const readPriorSpy = vi.fn(() =>
+		readPriorError ? Effect.fail(readPriorError) : Effect.succeed(prior)
+	)
 	const publishSpy = vi.fn(() =>
 		fail
 			? Effect.fail(
@@ -95,7 +112,7 @@ function setup(fail = false, rulesError?: ConfigError, rules: Rules = RULES) {
 					reportOffline: reportOfflineSpy,
 				}),
 				Layer.succeed(PublishService, {
-					readPrior: () => Effect.succeed(undefined),
+					readPrior: readPriorSpy,
 					readThreads: () => Effect.succeed([]),
 					publish: publishSpy,
 					publishStatus: publishStatusSpy,
@@ -106,6 +123,7 @@ function setup(fail = false, rulesError?: ConfigError, rules: Rules = RULES) {
 	return {
 		service,
 		loadSpy,
+		readPriorSpy,
 		publishSpy,
 		publishStatusSpy,
 		reportSpy,
@@ -143,6 +161,7 @@ layer(Layer.empty)('PublishRunService', test => {
 				engineCommit: CONTEXT.engineCommit,
 			})
 			expect(fixture.loadSpy).toHaveBeenCalledExactlyOnceWith(EVENT.baseSha)
+			expect(fixture.readPriorSpy).toHaveBeenCalledExactlyOnceWith(EVENT.number)
 			expect(fixture.publishStatusSpy).not.toHaveBeenCalled()
 			expect(fixture.reportSpy).toHaveBeenCalledExactlyOnceWith({
 				head: EVENT.headSha,
@@ -321,7 +340,9 @@ layer(Layer.empty)('PublishRunService decoded outcomes', test => {
 					blocking: false,
 				}
 				expect(fixture.publishSpy).toHaveBeenCalledExactlyOnceWith({
-					...CONTEXT,
+					engineCommit: CONTEXT.engineCommit,
+					pullNumber: CONTEXT.pullNumber,
+					head: CONTEXT.head,
 					report: placed,
 					rules,
 				})
@@ -395,7 +416,9 @@ layer(Layer.empty)('PublishRunService decoded outcomes', test => {
 					blocking,
 				}
 				expect(fixture.publishSpy).toHaveBeenCalledExactlyOnceWith({
-					...CONTEXT,
+					engineCommit: CONTEXT.engineCommit,
+					pullNumber: CONTEXT.pullNumber,
+					head: CONTEXT.head,
 					report: placed,
 					rules,
 				})
@@ -444,6 +467,7 @@ layer(Layer.empty)('PublishRunService decoded outcomes', test => {
 					engineCommit: file.binding.engineCommit ?? undefined,
 					pullNumber: file.binding.pullNumber,
 					head: file.binding.headSha,
+					event: EVENT,
 				}
 				expect(
 					yield* PublishRunService.use(service =>
@@ -458,7 +482,9 @@ layer(Layer.empty)('PublishRunService decoded outcomes', test => {
 					file.binding.baseSha
 				)
 				expect(fixture.publishSpy).toHaveBeenCalledExactlyOnceWith({
-					...context,
+					engineCommit: context.engineCommit,
+					pullNumber: context.pullNumber,
+					head: context.head,
 					report: {
 						...boundReviewReport(),
 						nits: boundReviewReport().nits.map(nit => ({
@@ -501,4 +527,96 @@ layer(Layer.empty)('PublishRunService decoded outcomes', test => {
 				expect(fixture.reportOfflineSpy).not.toHaveBeenCalled()
 			})
 	)
+})
+
+layer(Layer.empty)('PublishRunService independent run gates', test => {
+	for (const status of ['offline', 'reviewed'] as const) {
+		for (const gate of ['draft', 'skip label', 'fork', 'run limit'] as const)
+			test.effect(`${status} for a ${gate} writes nothing`, () =>
+				Effect.gen(function* () {
+					const rules = {
+						...RULES,
+						config: {
+							...RULES.config,
+							skip: { ...RULES.config.skip, labels: ['skip-review'] },
+						},
+					}
+					const runs = rules.config.limits.max_runs_per_pr
+					const fixture = setup(
+						false,
+						undefined,
+						rules,
+						gate === 'run limit'
+							? { v: MARKER_VERSION, runs, head: 'previous-head' }
+							: undefined
+					)
+					const event = {
+						...EVENT,
+						pr: {
+							...EVENT.pr,
+							draft: gate === 'draft',
+							fork: gate === 'fork',
+							labels: gate === 'skip label' ? ['skip-review'] : [],
+						},
+					}
+					const outcome = outcomeFile(
+						status === 'reviewed'
+							? { status, report: reviewReport() }
+							: { status, reason: 'no endpoint' }
+					)
+					expect(
+						yield* PublishRunService.use(service =>
+							service.run(outcome, { ...CONTEXT, event })
+						).pipe(Effect.provide(fixture.service))
+					).toEqual({
+						status: 'not-published',
+						reason:
+							gate === 'draft'
+								? 'draft pull request (skip.drafts)'
+								: gate === 'skip label'
+									? 'label skip-review is in skip.labels'
+									: gate === 'fork'
+										? FORK_REASON
+										: `run limit reached: ${runs} of ${runs} runs on this pull request; a manual command still runs`,
+					})
+					expect(fixture.loadSpy).toHaveBeenCalledExactlyOnceWith(
+						BINDING.baseSha
+					)
+					expect(fixture.readPriorSpy).toHaveBeenCalledExactlyOnceWith(
+						CONTEXT.pullNumber
+					)
+					expect(fixture.publishSpy).not.toHaveBeenCalled()
+					expect(fixture.publishStatusSpy).not.toHaveBeenCalled()
+					expect(fixture.reportSpy).not.toHaveBeenCalled()
+					expect(fixture.reportOfflineSpy).not.toHaveBeenCalled()
+				})
+			)
+		test.effect(`${status} with a failed prior read fails without writes`, () =>
+			Effect.gen(function* () {
+				const error = new GitHubApiError({
+					operation: 'readPrior',
+					reason: 'summary unavailable',
+					status: 503,
+				})
+				const fixture = setup(false, undefined, RULES, undefined, error)
+				const outcome = outcomeFile(
+					status === 'reviewed'
+						? { status, report: reviewReport() }
+						: { status, reason: 'no endpoint' }
+				)
+				expect(
+					yield* PublishRunService.use(service =>
+						service.run(outcome, CONTEXT)
+					).pipe(Effect.provide(fixture.service))
+				).toEqual({ status: 'failed', reason: error.message })
+				expect(fixture.readPriorSpy).toHaveBeenCalledExactlyOnceWith(
+					CONTEXT.pullNumber
+				)
+				expect(fixture.publishSpy).not.toHaveBeenCalled()
+				expect(fixture.publishStatusSpy).not.toHaveBeenCalled()
+				expect(fixture.reportSpy).not.toHaveBeenCalled()
+				expect(fixture.reportOfflineSpy).not.toHaveBeenCalled()
+			})
+		)
+	}
 })
