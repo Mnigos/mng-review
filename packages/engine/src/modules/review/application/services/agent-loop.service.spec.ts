@@ -49,7 +49,7 @@ import {
 	TOOL_OUTPUT_LABEL,
 	WRAP_UP_GRACE,
 } from '../../domain/review.constants'
-import type { LoopRequest } from '../agent-loop.types'
+import type { LoopRequest, ToolOutput } from '../agent-loop.types'
 import { ReviewLimits } from '../review-limits.context'
 import { AgentLoopService, AgentLoopServiceLive } from './agent-loop.service'
 import {
@@ -1948,4 +1948,164 @@ layer(Layer.empty)('reserved coverage after forced wrap-up', test => {
 					)
 				})
 		)
+})
+
+layer(Layer.empty)('agent loop tool output hook', test => {
+	test.effect(
+		'reports each repository turn in call order with the outputs delivered to the model',
+		() =>
+			Effect.gen(function* () {
+				const onToolOutputsSpy = vi.fn(
+					(_outputs: readonly ToolOutput[]) => Effect.void
+				)
+				const callSpy = vi.fn(
+					(_scope: RepoScope, name: string, params: unknown) =>
+						Effect.succeed(
+							name === 'grep'
+								? 'src/policy.ts:2:match'
+								: JSON.stringify(params).includes('missing')
+									? 'error: missing file'
+									: '2| policy'
+						)
+				)
+				yield* Effect.gen(function* () {
+					yield* AgentLoopService.use(loop =>
+						loop.run({ ...REQUEST, onToolOutputs: onToolOutputsSpy })
+					)
+					expect(onToolOutputsSpy).toHaveBeenCalledTimes(2)
+					expect(onToolOutputsSpy.mock.calls[0]?.[0]).toMatchObject([
+						{
+							call: {
+								id: 'read',
+								name: 'read_file',
+								params: { path: BILLING_PATH },
+							},
+							output: '2| policy',
+						},
+						{
+							call: {
+								id: 'search',
+								name: 'grep',
+								params: { pattern: 'match' },
+							},
+							output: 'src/policy.ts:2:match',
+						},
+					])
+					expect(onToolOutputsSpy.mock.calls[1]?.[0]).toMatchObject([
+						{
+							call: {
+								id: 'missing',
+								name: 'read_file',
+								params: { path: 'missing.ts' },
+							},
+							output: 'error: missing file',
+						},
+					])
+					const calls = yield* ScriptedLlm.use(script => script.calls)
+					for (const [
+						turn,
+						[outputs],
+					] of onToolOutputsSpy.mock.calls.entries()) {
+						const next = calls[turn + 1]?.options.prompt.content.at(-1)
+						expect(next).toMatchObject({
+							role: 'tool',
+							content: outputs.map(({ call, output }) => ({
+								name: call.name,
+								id: call.id,
+								result: fenceData(TOOL_OUTPUT_LABEL, output),
+							})),
+						})
+					}
+				}).pipe(
+					Effect.provide(
+						loopLayer(
+							(_call, index) =>
+								Effect.succeed(
+									index === 0
+										? [
+												toolCall('read_file', { path: BILLING_PATH }, 'read'),
+												toolCall('grep', { pattern: 'match' }, 'search'),
+												FINISH,
+											]
+										: index === 1
+											? [
+													toolCall(
+														'read_file',
+														{ path: 'missing.ts' },
+														'missing'
+													),
+													FINISH,
+												]
+											: answer()
+								),
+							{},
+							callSpy
+						)
+					)
+				)
+			})
+	)
+	test.effect(
+		'a token-refused output reaches the hook as the same error text the model receives',
+		() =>
+			Effect.gen(function* () {
+				const onToolOutputsSpy = vi.fn(
+					(_outputs: readonly ToolOutput[]) => Effect.void
+				)
+				const output = 'x'.repeat(CHARS_PER_TOKEN * 1000)
+				const callSpy = vi.fn(() => Effect.succeed(output))
+				yield* Effect.gen(function* () {
+					yield* AgentLoopService.use(loop =>
+						loop.run({
+							...REQUEST,
+							onToolOutputs: onToolOutputsSpy,
+							budget: {
+								runTokens: LIMITS.tokensPerRun,
+								conversationTokens: 1000,
+							},
+						})
+					)
+					const refusal = `error: token budget reached; call ${REQUEST.finish} now`
+					expect(callSpy).toHaveBeenCalledTimes(1)
+					expect(onToolOutputsSpy).toHaveBeenCalledExactlyOnceWith([
+						expect.objectContaining({
+							call: expect.objectContaining({ name: 'read_file' }) as unknown,
+							output: refusal,
+						}),
+					])
+					const calls = yield* ScriptedLlm.use(script => script.calls)
+					expect(calls[1]?.options.prompt.content.at(-1)).toMatchObject({
+						role: 'tool',
+						content: [{ name: 'read_file', result: refusal }],
+					})
+					expect(JSON.stringify(calls[1]?.options.prompt)).not.toContain(output)
+				}).pipe(
+					Effect.provide(
+						loopLayer(
+							(_call, index) =>
+								Effect.succeed(
+									index === 0
+										? [toolCall('read_file', { path: BILLING_PATH }), FINISH]
+										: answer()
+								),
+							{},
+							callSpy
+						)
+					)
+				)
+			})
+	)
+	test.effect(
+		'a finish-only answer does not call the repository output hook',
+		() =>
+			Effect.gen(function* () {
+				const onToolOutputsSpy = vi.fn(
+					(_outputs: readonly ToolOutput[]) => Effect.void
+				)
+				yield* AgentLoopService.use(loop =>
+					loop.run({ ...REQUEST, onToolOutputs: onToolOutputsSpy })
+				)
+				expect(onToolOutputsSpy).not.toHaveBeenCalled()
+			}).pipe(Effect.provide(loopLayer(() => Effect.succeed(answer()))))
+	)
 })

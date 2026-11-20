@@ -1,6 +1,6 @@
 import { Schema } from 'effect'
 import { replyAnswerSchema } from './reply-answer.schema'
-import { REPLY_CLAIMS } from './reply.constants'
+import { REPLY_CLAIMS, REPLY_REASON_MAX_CHARS } from './reply.constants'
 
 const decode = Schema.decodeUnknownSync(replyAnswerSchema)
 
@@ -51,4 +51,28 @@ describe('replyAnswerSchema', () => {
 			).toThrow()
 		}
 	)
+})
+
+describe('reply answer text bounds', () => {
+	test.each(['reason', 'failed_premise'] as const)(
+		'decodes a long %s to at most 300 characters with an ellipsis',
+		field => {
+			const text = 'x'.repeat(REPLY_REASON_MAX_CHARS + 80)
+			expect(
+				decode({ claim: 'intentional', [field]: `  ${text}\n tail ` })[field]
+			).toBe(`${'x'.repeat(REPLY_REASON_MAX_CHARS - 1)}…`)
+		}
+	)
+	test('normalizes internal whitespace in both optional sentences', () => {
+		expect(
+			decode({
+				claim: 'intentional',
+				reason: '  Integer\ncents.\tStable. ',
+				failed_premise: ' Dollars\r\n differ. ',
+			})
+		).toMatchObject({
+			reason: 'Integer cents. Stable.',
+			failed_premise: 'Dollars differ.',
+		})
+	})
 })
