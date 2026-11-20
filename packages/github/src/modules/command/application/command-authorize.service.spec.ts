@@ -172,6 +172,77 @@ layer(APP_MODE_OWNED)('CommandAuthorizeService', test => {
 					})
 			)
 
+	for (const permission of ['write', 'admin'])
+		test.effect(
+			`a listed custom role inheriting ${permission} is authorized`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = harness()
+					fixture.rules.config = config({ commands: { allow: ['AUTHOR-A'] } })
+					fixture.fake.command.role = 'custom'
+					fixture.fake.command.permission = permission
+					const pr = fixture.fake.command.pullRequest
+					expect(yield* fixture.authorize()).toEqual({
+						status: 'authorized',
+						pullNumber: pr.number,
+						base: pr.base.sha,
+						head: pr.head.sha,
+					})
+					expect(fixture.fake.reads).toContain('getCollaboratorRole:author-a')
+					expect(fixture.fake.writes).toEqual([])
+				})
+		)
+
+	for (const [permission, listed] of [
+		['read', true],
+		['none', true],
+		['admin', false],
+	] as const)
+		test.effect(
+			`a custom role inheriting ${permission} with listed=${listed} is denied`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = harness()
+					fixture.rules.config = config({
+						commands: { allow: listed ? [COMMENT.login] : [] },
+					})
+					fixture.fake.command.role = 'custom'
+					fixture.fake.command.permission = permission
+					expect(yield* fixture.authorize()).toEqual({
+						status: 'denied',
+						reason: 'the commenter is not an admin and not in commands.allow',
+					})
+					expect(fixture.fake.reads).toEqual([
+						'getIssueComment:23',
+						'getCollaboratorRole:author-a',
+					])
+					expect(fixture.fake.commentReads).toEqual([])
+					expect(fixture.fake.writes).toEqual([])
+				})
+		)
+
+	for (const [role, permission, listed, status] of [
+		['admin', 'none', false, 'authorized'],
+		['maintain', 'read', true, 'authorized'],
+		['write', 'read', true, 'authorized'],
+		['triage', 'write', true, 'denied'],
+		['read', 'admin', true, 'denied'],
+	] as const)
+		test.effect(
+			`built-in ${role} decides by role name despite permission=${permission}`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = harness()
+					fixture.rules.config = config({
+						commands: { allow: listed ? [COMMENT.login] : [] },
+					})
+					fixture.fake.command.role = role
+					fixture.fake.command.permission = permission
+					expect(yield* fixture.authorize()).toMatchObject({ status })
+					expect(fixture.fake.writes).toEqual([])
+				})
+		)
+
 	test.effect(
 		'an undeclared agent denies before the pull request is read',
 		() =>

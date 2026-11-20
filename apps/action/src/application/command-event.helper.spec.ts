@@ -1,4 +1,8 @@
-import { getCommandMismatch, toCommandEvent } from './command-event.helper'
+import {
+	getCommandMismatch,
+	getCommandStateMismatch,
+	toCommandEvent,
+} from './command-event.helper'
 
 const PULL_REQUEST = {
 	number: 99,
@@ -68,6 +72,34 @@ describe('toCommandEvent', () => {
 			toCommandEvent({ ...PULL_REQUEST, body: '', draft: false }, SETTINGS).pr
 		).toMatchObject({ body: '', draft: false })
 	})
+})
+
+describe('getCommandStateMismatch', () => {
+	for (const head of [SETTINGS.head, 'c'.repeat(40)])
+		test(`accepts an open same-repository pull request with head ${head}`, () => {
+			expect(
+				getCommandStateMismatch({
+					...PULL_REQUEST,
+					head: { sha: head, repo: PULL_REQUEST.base.repo },
+				})
+			).toBeUndefined()
+		})
+	test('rejects a closed pull request before checking its fork or moved head', () => {
+		expect(getCommandStateMismatch({ ...PULL_REQUEST, state: 'closed' })).toBe(
+			'the pull request closed after the command'
+		)
+	})
+	test.each([null, { full_name: 'example/fork' }])(
+		'rejects an open pull request with head repository %j',
+		repo => {
+			expect(
+				getCommandStateMismatch({
+					...PULL_REQUEST,
+					head: { sha: SETTINGS.head, repo },
+				})
+			).toBe('the pull request comes from a fork')
+		}
+	)
 })
 
 describe('getCommandMismatch', () => {
