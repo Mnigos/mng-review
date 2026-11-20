@@ -15,6 +15,8 @@ const COMMENT_CLOSE = '-->'
 /** Indentation that makes an indented code block: a tab or four spaces. */
 const CODE_INDENT = /^(?: {4}| {0,3}\t)/u
 const LEADING_SPACES = /^ {0,3}/u
+/** List item markers at the start of a line, nested ones included: `-`, `*`, `+`, `1.` or `1)`. */
+const LIST_MARKERS = /^(?: {0,3}(?:[-*+]|\d{1,9}[.)])[ \t]+)+/u
 /** A blank line: spaces and tabs only, as Markdown counts it (a no-break space is not blank). */
 const BLANK_LINE = /^[ \t]*$/u
 /** Line breaks as Markdown reads them: CRLF, a bare CR or LF. */
@@ -65,7 +67,7 @@ function toVisibleLine(line: string, inComment: boolean): VisibleLine {
 
 /** The fence a line opens, or `undefined`; a backtick fence whose info string holds a backtick opens none. */
 function getOpenedFence(line: string): string | undefined {
-	const trimmed = line.replace(LEADING_SPACES, '')
+	const trimmed = line.replace(LIST_MARKERS, '').replace(LEADING_SPACES, '')
 	const [, fence] = FENCE.exec(trimmed) ?? []
 	if (fence === undefined) return undefined
 	if (fence.startsWith('`') && trimmed.slice(fence.length).includes('`'))
@@ -156,7 +158,8 @@ export function parseMentionCommand(
 		if (visible.text.trim() === '') continue
 		state.current = { ...state.current, afterText: true }
 		const line = visible.text.replace(LEADING_SPACES, '')
-		if (line.startsWith(QUOTE_START)) {
+		// A quote inside a list item still quotes what follows it.
+		if (line.replace(LIST_MARKERS, '').startsWith(QUOTE_START)) {
 			state.current = { ...state.current, quoted: true }
 			continue
 		}
