@@ -2,6 +2,8 @@ import { GITHUB_ACTIONS_IDENTITY } from '../../../platform/bot-identity.helper'
 import type { ThreadComment } from '../../../platform/github-api.schema'
 import { GitHubApiError } from '../../../platform/github.errors'
 import {
+	APP_MODE_IDENTITIES,
+	APP_IDENTITY,
 	report,
 	reviewThread,
 	threadReply,
@@ -319,5 +321,61 @@ describe('bot closing replies', () => {
 		expect(countOpenBugs(plan, [thread])).toBe(0)
 		expect(getVerdict(review, countOpenBugs(plan, [thread]))).toBe('ready')
 		expect(getRecheckCandidates([thread], [], 'next-head')).toEqual([])
+	})
+})
+
+describe('ownership across a switch', () => {
+	test.each([
+		{ editor: null, owned: true },
+		{ editor: { __typename: 'Bot', login: 'GITHUB-ACTIONS' }, owned: true },
+		{ editor: { __typename: 'Bot', login: APP_IDENTITY.login }, owned: false },
+		{ editor: { __typename: 'User', login: 'github-actions' }, owned: false },
+	])('same author editor rule: $editor', ({ editor, owned }) => {
+		expect(
+			isBotComment(
+				{ author: { __typename: 'Bot', login: 'GitHub-Actions' }, editor },
+				APP_MODE_IDENTITIES
+			)
+		).toBe(owned)
+	})
+	test.each(['other-app', 'mng-review', 'github-actions'])(
+		'a copied marker from %s cannot claim ownership',
+		login => {
+			const thread = reviewThread()
+			expect(
+				toBotThread(
+					{
+						...thread,
+						comments: {
+							...thread.comments,
+							nodes: thread.comments.nodes.map(comment => ({
+								...comment,
+								author: {
+									__typename: login === 'other-app' ? 'Bot' : 'User',
+									login,
+								},
+							})),
+						},
+					},
+					APP_MODE_IDENTITIES
+				)
+			).toBeUndefined()
+		}
+	)
+	test('an app closing reply closes an earlier job-token thread', () => {
+		expect(
+			toBotThread(
+				botClosedReviewThread({
+					latest: {
+						nodes: [
+							threadReply({
+								author: { __typename: 'Bot', login: APP_IDENTITY.login },
+							}),
+						],
+					},
+				}),
+				APP_MODE_IDENTITIES
+			)
+		).toMatchObject({ resolved: true, closedByBot: true })
 	})
 })

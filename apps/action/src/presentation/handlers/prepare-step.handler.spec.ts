@@ -6,7 +6,11 @@ import {
 } from '@mng-review/github'
 import { ConfigProvider, Effect, FileSystem, Layer } from 'effect'
 // oxlint-disable-next-line no-restricted-imports -- The test brief requires these existing unexported GitHub fixtures.
-import { reviewThread } from '../../../../../packages/github/src/shared/mocks/publish-test.helper'
+import {
+	appSummary,
+	reviewThread,
+	SUMMARY_MARKER,
+} from '../../../../../packages/github/src/shared/mocks/publish-test.helper'
 import { PrepareRunServiceLive } from '../../application/prepare-run.service'
 import { parsePreparedRun } from '../../infrastructure/prepared-run.parser'
 import {
@@ -135,5 +139,48 @@ layer(Layer.empty)('prepare configuration', test => {
 					)
 				).toMatchObject({ _tag: 'ConfigError', source: 'GITHUB_TOKEN' })
 			})
+		)
+})
+
+layer(FileSystemLayer)('prepare app identity from base rules', test => {
+	for (const previous of [[], ['github-actions']])
+		test.effect(
+			`base identity.previous=${previous.join(',')} controls prior summary and threads`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = stepFixture(previous, true, true)
+					fixture.repo.write(
+						'.mng/review.yml',
+						`identity: {previous: ${previous.length ? '[]' : '[github-actions]'}}`
+					)
+					fixture.repo.commit()
+					fixture.api.threads.push(reviewThread())
+					fixture.api.comments.push(
+						appSummary(
+							{ ...SUMMARY_MARKER, runs: 3, head: 'earlier-head' },
+							{ author: { __typename: 'Bot', login: 'github-actions' } }
+						)
+					)
+					yield* runPrepareStep.pipe(
+						Effect.provide(
+							PrepareRunServiceLive.pipe(Layer.provide(fixture.rulesLayer))
+						),
+						Effect.provide(fixture.publisherLayer),
+						Effect.provide(fixture.envLayer())
+					)
+					const prepared = yield* parsePreparedRun(
+						yield* (yield* FileSystem.FileSystem).readFileString(
+							fixture.paths.prepared
+						)
+					)
+					expect(fixture.loads).toEqual([fixture.base])
+					expect(prepared.status).toBe('ready')
+					if (prepared.status !== 'ready') return
+					expect(prepared.threads).toHaveLength(previous.length ? 1 : 0)
+					expect(prepared.prior).toEqual(
+						previous.length ? { runs: 3, head: 'earlier-head' } : undefined
+					)
+					expect(fixture.api.writes).toEqual([])
+				})
 		)
 })

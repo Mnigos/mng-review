@@ -1,4 +1,5 @@
 import { layer } from '@effect/vitest'
+import { GitHubConfig, GitHubWriteConfigLive } from '@mng-review/github'
 import { Effect, FileSystem } from 'effect'
 import { PublishRunService } from '../../application/publish-run.service'
 import {
@@ -12,7 +13,7 @@ import {
 } from '../../shared/mocks/git-test.helper'
 import { eventPayload } from '../../shared/mocks/pull-request-event.helper'
 import { stepFixture } from '../../shared/mocks/step-test.helper'
-import { runPublishStep } from './publish-step.handler'
+import { failPublishConfig, runPublishStep } from './publish-step.handler'
 
 afterEach(() => {
 	cleanupRepos()
@@ -201,5 +202,80 @@ layer(FileSystemLayer, { excludeTestServices: true })(
 						else expect(yield* fs.exists(fixture.paths.result)).toBe(false)
 					})
 			)
+	}
+)
+
+layer(FileSystemLayer, { excludeTestServices: true })(
+	'publish app configuration',
+	test => {
+		for (const settings of [
+			{ MNG_REVIEW_APP_SLUG: 'mng-review' },
+			{ MNG_REVIEW_APP_TOKEN: 'app-fixture' },
+			{
+				MNG_REVIEW_APP_SLUG: 'mng-review',
+				MNG_REVIEW_APP_TOKEN: 'app-fixture',
+				MNG_REVIEW_MINTED_APP_SLUG: 'other-app',
+			},
+			{
+				GITHUB_TOKEN: 'job-fixture',
+				MNG_REVIEW_APP_SLUG: 'mng-review',
+				MNG_REVIEW_APP_TOKEN: 'app-fixture',
+				MNG_REVIEW_MINTED_APP_SLUG: 'mng-review',
+			},
+		])
+			test.effect(
+				`broken app configuration exits 2 before a request: ${Object.keys(settings).join(',')}`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = stepFixture()
+						expect(
+							yield* GitHubConfig.pipe(
+								Effect.provide(GitHubWriteConfigLive),
+								Effect.flatMap(() =>
+									runPublishStep.pipe(Effect.provide(fixture.publishRunLayer))
+								),
+								Effect.catchTag('ConfigError', failPublishConfig),
+								Effect.provide(
+									fixture.envLayer(Object.fromEntries(Object.entries(settings)))
+								),
+								Effect.flip
+							)
+						).toMatchObject({ _tag: 'ActionExit', code: 2 })
+						expect(fixture.api.writes).toEqual([])
+						expect(fixture.api.threadReads).toEqual([])
+						expect(fixture.api.commentReads).toEqual([])
+						expect(fixture.status.checks).toEqual([])
+						expect(fixture.status.statuses).toEqual([])
+						expect(fixture.loads).toEqual([])
+						expect(
+							yield* (yield* FileSystem.FileSystem).readFileString(
+								fixture.paths.summary
+							)
+						).toContain('publishing failed')
+					})
+			)
+		test.effect('the published result file includes cleanup', () =>
+			Effect.gen(function* () {
+				const fixture = stepFixture()
+				const fs = yield* FileSystem.FileSystem
+				yield* fs.writeFileString(
+					fixture.paths.outcome,
+					JSON.stringify(fixture.file)
+				)
+				yield* fs.writeFileString(
+					fixture.paths.result,
+					JSON.stringify({ version: 1 })
+				)
+				yield* runPublishStep.pipe(
+					Effect.provide(fixture.publishRunLayer),
+					Effect.provide(fixture.envLayer())
+				)
+				expect(
+					JSON.parse(yield* fs.readFileString(fixture.paths.result))
+				).toMatchObject({
+					publish: { status: 'published', result: { cleanup: 'none' } },
+				})
+			})
+		)
 	}
 )

@@ -2,6 +2,10 @@ import { layer } from '@effect/vitest'
 import { ConfigProvider, Effect, Layer, Redacted } from 'effect'
 import { GITHUB_CREDENTIAL } from '../shared/mocks/github-http.helper'
 import {
+	APP_SLUG_VARIABLE,
+	APP_TOKEN_VARIABLE,
+	MINTED_APP_SLUG_VARIABLE,
+	GitHubReadConfigLive,
 	GITHUB_TOKEN_VARIABLE,
 	GitHubConfig,
 	GitHubWriteConfigLive,
@@ -103,4 +107,123 @@ layer(Layer.empty)('GitHubConfig', test => {
 				})
 			})
 	)
+})
+
+layer(Layer.empty)('GitHub identity configuration', test => {
+	for (const [mode, slug, jobToken, appToken, minted, expectedToken, login] of [
+		['write', '', 'job-fixture', '', '', 'job-fixture', 'github-actions'],
+		[
+			'write',
+			'mng-review',
+			'',
+			'app-fixture',
+			'mng-review',
+			'app-fixture',
+			'mng-review',
+		],
+		[
+			'write',
+			'MNG-REVIEW',
+			'',
+			'app-fixture',
+			'MnG-ReViEw',
+			'app-fixture',
+			'mng-review',
+		],
+		['read', '', 'job-fixture', '', '', 'job-fixture', 'github-actions'],
+		['read', 'mng-review', 'job-fixture', '', '', 'job-fixture', 'mng-review'],
+	] as const)
+		test.effect(
+			`${mode} slug=${slug} minted=${minted} selects the required redacted token`,
+			() =>
+				Effect.gen(function* () {
+					const config = yield* GitHubConfig.pipe(
+						Effect.provide(
+							mode === 'write' ? GitHubWriteConfigLive : GitHubReadConfigLive
+						),
+						Effect.provide(
+							ConfigProvider.layer(
+								ConfigProvider.fromEnvRecord({
+									...ENVIRONMENT,
+									GITHUB_TOKEN: jobToken,
+									MNG_REVIEW_APP_SLUG: slug,
+									MNG_REVIEW_APP_TOKEN: appToken,
+									MNG_REVIEW_MINTED_APP_SLUG: minted,
+								})
+							)
+						)
+					)
+					expect(config.identity).toEqual({ login, restLogin: `${login}[bot]` })
+					expect(Redacted.value(config.token)).toBe(expectedToken)
+					expect(JSON.stringify(config)).not.toContain(expectedToken)
+				})
+		)
+	for (const [mode, slug, jobToken, appToken, minted, source] of [
+		['write', '', 'job-fixture', 'app-fixture', '', APP_TOKEN_VARIABLE],
+		['write', '', 'job-fixture', '', 'mng-review', MINTED_APP_SLUG_VARIABLE],
+		['write', 'mng-review', '', '', 'mng-review', APP_TOKEN_VARIABLE],
+		['write', 'mng-review', '', 'app-fixture', '', MINTED_APP_SLUG_VARIABLE],
+		[
+			'write',
+			'mng-review',
+			'',
+			'app-fixture',
+			'other-app',
+			MINTED_APP_SLUG_VARIABLE,
+		],
+		[
+			'write',
+			'mng-review',
+			'job-fixture',
+			'app-fixture',
+			'mng-review',
+			GITHUB_TOKEN_VARIABLE,
+		],
+		['write', 'Mng Review', '', 'app-fixture', 'Mng Review', APP_SLUG_VARIABLE],
+		[
+			'write',
+			'mng-review[bot]',
+			'',
+			'app-fixture',
+			'mng-review[bot]',
+			APP_SLUG_VARIABLE,
+		],
+		['read', 'Mng Review', 'job-fixture', '', '', APP_SLUG_VARIABLE],
+		['read', 'mng-review[bot]', 'job-fixture', '', '', APP_SLUG_VARIABLE],
+		[
+			'read',
+			'mng-review',
+			'',
+			'app-fixture',
+			'mng-review',
+			GITHUB_TOKEN_VARIABLE,
+		],
+	] as const)
+		test.effect(
+			`${mode} rejects slug=${slug} job=${jobToken !== ''} app=${appToken !== ''} minted=${minted}`,
+			() =>
+				Effect.gen(function* () {
+					const failure = yield* GitHubConfig.pipe(
+						Effect.provide(
+							mode === 'write' ? GitHubWriteConfigLive : GitHubReadConfigLive
+						),
+						Effect.provide(
+							ConfigProvider.layer(
+								ConfigProvider.fromEnvRecord({
+									...ENVIRONMENT,
+									GITHUB_TOKEN: jobToken,
+									MNG_REVIEW_APP_SLUG: slug,
+									MNG_REVIEW_APP_TOKEN: appToken,
+									MNG_REVIEW_MINTED_APP_SLUG: minted,
+								})
+							)
+						),
+						Effect.flip
+					)
+					expect(failure).toMatchObject({ _tag: 'ConfigError', source })
+					expect(failure.message).toContain(source)
+					expect(failure.message).not.toContain('app-fixture')
+					expect(failure.message).not.toContain('job-fixture')
+				})
+		)
 })

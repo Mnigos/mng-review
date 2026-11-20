@@ -319,3 +319,35 @@ layer(Layer.empty)('depth token config', test => {
 		})
 	)
 })
+
+layer(Layer.empty)('previous bot identities', test => {
+	for (const previous of ['["mng-review[bot]"]', '[""]', 'mng-review'])
+		test.effect(
+			`rejects identity.previous ${previous} and names the field`,
+			() =>
+				Effect.gen(function* () {
+					const failure = yield* parseReviewConfig(
+						`identity: {previous: ${previous}}`
+					).pipe(Effect.flip)
+					expect(failure).toBeInstanceOf(ConfigError)
+					expect(failure.message).toContain('identity.previous')
+				})
+		)
+	test.effect(
+		'inherits the preset when absent and accepts an empty or replacement list',
+		() =>
+			Effect.gen(function* () {
+				expect((yield* parseReviewConfig('{}')).identity).toEqual(
+					DEFAULT_PRESET.identity
+				)
+				expect(
+					(yield* parseReviewConfig('identity: {previous: []}')).identity
+						.previous
+				).toEqual([])
+				expect(
+					(yield* parseReviewConfig('identity: {previous: [mng-review]}'))
+						.identity.previous
+				).toEqual(['mng-review'])
+			})
+	)
+})

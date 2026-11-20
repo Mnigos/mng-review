@@ -14,6 +14,7 @@ import { reviewReport, RULES } from '../shared/mocks/review-report.helper'
 import { parseOutcomeFile } from './outcome-file.parser'
 import { parsePullRequestEvent } from './pull-request-event.parser'
 import {
+	maskAppToken,
 	maskEndpoint,
 	modeConfig,
 	readEventText,
@@ -568,4 +569,24 @@ layer(RunnerLayer)('runner outcome file', test => {
 			expect(yield* TestConsole.logLines).toEqual([])
 		}).pipe(Effect.provide(Layer.fresh(TestConsole.layer)))
 	)
+})
+
+layer(Layer.empty)('app token masking', test => {
+	for (const value of [undefined, '', '   ', 'app-fixture'])
+		test.effect(`masks only a nonblank app token ${String(value)}`, () =>
+			Effect.gen(function* () {
+				yield* maskAppToken().pipe(
+					Effect.provide(
+						ConfigProvider.layer(
+							ConfigProvider.fromEnvRecord(
+								value === undefined ? {} : { MNG_REVIEW_APP_TOKEN: value }
+							)
+						)
+					)
+				)
+				expect(yield* TestConsole.logLines).toEqual(
+					value?.trim() ? ['::add-mask::app-fixture'] : []
+				)
+			})
+		)
 })

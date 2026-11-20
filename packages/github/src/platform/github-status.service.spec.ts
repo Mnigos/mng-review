@@ -6,7 +6,11 @@ import {
 	getGitHubRequestBody,
 	GITHUB_SETTINGS,
 } from '../shared/mocks/github-http.helper'
-import { TOKEN_MODE_OWNED } from '../shared/mocks/publish-test.helper'
+import {
+	APP_IDENTITY,
+	APP_MODE_OWNED,
+	TOKEN_MODE_OWNED,
+} from '../shared/mocks/publish-test.helper'
 import { GITHUB_ACTIONS_IDENTITY } from './bot-identity.helper'
 import { PAGE_SIZE } from './github-api.constants'
 import { GitHubStatusService, STATUS_CONTEXT } from './github-status.service'
@@ -177,4 +181,58 @@ layer(TOKEN_MODE_OWNED)('GitHubStatusService', test => {
 			expect(fake.requests).toHaveLength(1)
 		})
 	)
+})
+
+layer(APP_MODE_OWNED)('GitHubStatusService owned creators', test => {
+	for (const newest of [APP_IDENTITY, GITHUB_ACTIONS_IDENTITY])
+		test.effect(
+			`picks the newest owned status by ${newest.login} and skips users and other apps`,
+			() =>
+				Effect.gen(function* () {
+					const expected = {
+						...BOT_STATUS,
+						id: 20,
+						creator: { login: newest.restLogin.toUpperCase(), type: 'Bot' },
+					}
+					const fake = makeGitHubHttp(() =>
+						Effect.succeed(
+							Response.json([
+								{
+									...BOT_STATUS,
+									id: 23,
+									creator: { login: APP_IDENTITY.restLogin, type: 'User' },
+								},
+								{
+									...BOT_STATUS,
+									id: 22,
+									creator: { login: 'other-app[bot]', type: 'Bot' },
+								},
+								{
+									...BOT_STATUS,
+									id: 21,
+									context: 'another check',
+									creator: { login: APP_IDENTITY.restLogin, type: 'Bot' },
+								},
+								expected,
+								{
+									...BOT_STATUS,
+									id: 19,
+									creator: {
+										login:
+											newest.login === APP_IDENTITY.login
+												? GITHUB_ACTIONS_IDENTITY.restLogin
+												: APP_IDENTITY.restLogin,
+										type: 'Bot',
+									},
+								},
+							])
+						)
+					)
+					expect(
+						yield* GitHubStatusService.use(service =>
+							service.getStatus('head')
+						).pipe(Effect.provide(fake.statusLayer))
+					).toEqual(expected)
+				})
+		)
 })

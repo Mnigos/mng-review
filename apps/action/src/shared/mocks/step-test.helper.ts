@@ -2,6 +2,8 @@ import { join } from 'node:path'
 import { RulesService } from '@mng-review/engine'
 import {
 	GitHubWriteConfigLive,
+	GitHubReadConfigLive,
+	toBotIdentity,
 	PublishServiceLive,
 	StatusReportServiceLive,
 	SummaryCommentServiceLive,
@@ -23,7 +25,11 @@ import { eventPayload } from './pull-request-event.helper'
 import { RULES } from './review-report.helper'
 
 /** Local repository and runner files with recording GitHub boundaries and no HTTP layer. */
-export function stepFixture() {
+export function stepFixture(
+	previous: readonly string[] = RULES.config.identity.previous,
+	appMode = false,
+	readOnly = false
+) {
 	const repo = createRepo()
 	repo.write('src/items/store.ts', 'first\nold value\nlast\n')
 	const base = repo.commit()
@@ -82,7 +88,11 @@ export function stepFixture() {
 		report,
 		binding: { ...file.binding, baseSha: base, headSha: head },
 	}
-	const rules = { ...RULES, source: base }
+	const rules = {
+		...RULES,
+		source: base,
+		config: { ...RULES.config, identity: { previous } },
+	}
 	const loads: (string | undefined)[] = []
 	const load = (source: string | undefined) =>
 		Effect.sync(() => {
@@ -90,7 +100,9 @@ export function stepFixture() {
 			return rules
 		})
 	const rulesLayer = Layer.succeed(RulesService, { load })
-	const api = githubApiFake()
+	const api = githubApiFake(
+		toBotIdentity(appMode ? 'mng-review' : 'github-actions')
+	)
 	const status = githubStatusFake()
 	const publisherLayer = PublishServiceLive.pipe(
 		Layer.provideMerge(SummaryCommentServiceLive),
@@ -98,8 +110,19 @@ export function stepFixture() {
 			Layer.mergeAll(
 				api.api,
 				ThreadResolutionServiceLive.pipe(Layer.provide(api.api)),
-				GitHubWriteConfigLive.pipe(
-					Layer.provide(envLayer({ GITHUB_TOKEN: 'fixture-token' }))
+				(readOnly ? GitHubReadConfigLive : GitHubWriteConfigLive).pipe(
+					Layer.provide(
+						envLayer(
+							appMode
+								? {
+										GITHUB_TOKEN: readOnly ? 'job-fixture' : '',
+										MNG_REVIEW_APP_SLUG: 'mng-review',
+										MNG_REVIEW_APP_TOKEN: 'app-fixture',
+										MNG_REVIEW_MINTED_APP_SLUG: 'mng-review',
+									}
+								: { GITHUB_TOKEN: 'fixture-token' }
+						)
+					)
 				),
 				gitLayer(repo.root)
 			)

@@ -1,5 +1,8 @@
 import { Effect, Layer } from 'effect'
-import { GITHUB_ACTIONS_IDENTITY } from '../../platform/bot-identity.helper'
+import {
+	type BotIdentity,
+	GITHUB_ACTIONS_IDENTITY,
+} from '../../platform/bot-identity.helper'
 import type {
 	PullRequestComment,
 	ReviewThread,
@@ -34,10 +37,12 @@ export type ApiWrite =
 	| { readonly method: 'resolve'; readonly id: string }
 
 /** In-memory GitHub with call recording and explicit per-operation failures, never an HTTP client. */
-export function githubApiFake() {
+export function githubApiFake(identity: BotIdentity = GITHUB_ACTIONS_IDENTITY) {
 	const threads: ReviewThread[] = []
 	const comments: PullRequestComment[] = []
 	const writes: ApiWrite[] = []
+	const commentReads: number[] = []
+	const commentSnapshots: PullRequestComment[][] = []
 	const failures = {
 		review: [] as GitHubApiError[],
 		comment: [] as GitHubApiError[],
@@ -50,7 +55,7 @@ export function githubApiFake() {
 		listThreads: [] as GitHubApiError[],
 		listComments: [] as GitHubApiError[],
 	}
-	const author = { __typename: 'Bot', login: GITHUB_ACTIONS_IDENTITY.login }
+	const author = { __typename: 'Bot', login: identity.login }
 	const addThread = (input: ReviewCommentInput) => {
 		threads.push({
 			id: `thread-${threads.length}`,
@@ -122,11 +127,12 @@ export function githubApiFake() {
 				return undefined
 			}),
 		listReviewThreads,
-		listComments: () =>
+		listComments: pullNumber =>
 			Effect.gen(function* () {
+				commentReads.push(pullNumber)
 				const error = failures.listComments.shift()
 				if (error) return yield* error
-				return [...comments]
+				return commentSnapshots.shift() ?? [...comments]
 			}),
 		createReview: (pullNumber, input) =>
 			Effect.gen(function* () {
@@ -191,5 +197,14 @@ export function githubApiFake() {
 				return undefined
 			}),
 	})
-	return { api, threads, comments, writes, failures, threadReads }
+	return {
+		api,
+		threads,
+		comments,
+		writes,
+		failures,
+		threadReads,
+		commentReads,
+		commentSnapshots,
+	}
 }

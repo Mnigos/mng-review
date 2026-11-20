@@ -61,7 +61,10 @@ export type GitHubReply = (
 ) => Effect.Effect<Response, HttpClientError.HttpClientError>
 
 /** Captures the real client's requests while replacing all HTTP with an in-memory reply. */
-export function makeGitHubHttp(reply: GitHubReply) {
+export function makeGitHubHttp(
+	reply: GitHubReply,
+	settings: GitHubConfig['Service'] = GITHUB_SETTINGS
+) {
 	const requests: HttpClientRequest.HttpClientRequest[] = []
 	const client = HttpClient.make(request =>
 		Effect.gen(function* () {
@@ -73,7 +76,7 @@ export function makeGitHubHttp(reply: GitHubReply) {
 		})
 	)
 	const dependencies = Layer.merge(
-		Layer.succeed(GitHubConfig, GITHUB_SETTINGS),
+		Layer.succeed(GitHubConfig, settings),
 		Layer.succeed(HttpClient.HttpClient, client)
 	)
 	return {
