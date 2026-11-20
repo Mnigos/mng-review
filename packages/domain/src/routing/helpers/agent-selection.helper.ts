@@ -5,8 +5,8 @@ import { matchesAnyGlob } from '../../utils/glob.util'
 import type { PullRequestInfo, RuleSelection } from '../routing.types'
 
 /** True when the file matches at its new path or, for a rename or copy, its old path. */
-function matchesAtEitherPath(
-	file: ChangedFile,
+export function matchesAtEitherPath(
+	file: Pick<ChangedFile, 'path' | 'oldPath'>,
 	patterns: readonly string[]
 ): boolean {
 	return (

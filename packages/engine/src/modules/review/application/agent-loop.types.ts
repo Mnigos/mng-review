@@ -1,15 +1,26 @@
 import type { ModelSetting } from '@mng-review/domain'
 import type { Effect } from 'effect'
-import type { Prompt } from 'effect/ai'
+import type { Prompt, Response } from 'effect/ai'
 import type { LoopBudget, SpentTokens } from '../domain/loop-budget.helper'
+import type { ToolResult } from './repo-tools.types'
 import type { RepoToolName } from './repo.toolkit'
 import type { ReportFindingsTool } from './report-findings.tool'
+import type { ReportReplyTool } from './report-reply.tool'
 import type { ReportVerdictTool } from './report-verdict.tool'
 import type { RepoScope } from './services/repo-tools.service'
 
 export type FinishToolName =
 	| typeof ReportFindingsTool.name
 	| typeof ReportVerdictTool.name
+	| typeof ReportReplyTool.name
+
+/**
+ * A repository call of a turn and the output the agent received; a refused one starts `error:`.
+ * `shown` comes from the tool, only for an output the agent received.
+ */
+export interface ToolOutput extends ToolResult {
+	readonly call: Response.ToolCallPart<string, unknown>
+}
 
 /** A problem with an answer, told back to the model. */
 export interface AnswerProblem {
@@ -34,6 +45,10 @@ export interface LoopRequest<TValue> {
 	readonly source?: string
 	/** Files the agent must read with a tool before it answers; see `LoopCoverage`. */
 	readonly coverage?: LoopCoverage<TValue>
+	/** Sees each turn's repository calls with the outputs the agent received. */
+	readonly onToolOutputs?: (
+		outputs: readonly ToolOutput[]
+	) => Effect.Effect<void>
 }
 
 /**

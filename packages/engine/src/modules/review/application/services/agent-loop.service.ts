@@ -24,6 +24,7 @@ import { parseAnswerJson } from '../../infrastructure/answer-json.parser'
 import type { LoopRequest, LoopResult, LoopState } from '../agent-loop.types'
 import { DiffTool, REPO_TOOLS } from '../repo.toolkit'
 import { ReportFindingsTool } from '../report-findings.tool'
+import { ReportReplyTool } from '../report-reply.tool'
 import { ReportVerdictTool } from '../report-verdict.tool'
 import { ReviewLimits } from '../review-limits.context'
 import { type ModelCallError, ModelHealthService } from './model-health.service'
@@ -33,9 +34,15 @@ import { RepoToolsService } from './repo-tools.service'
 const AGENT_TOOLKIT = Toolkit.make(
 	...REPO_TOOLS,
 	ReportFindingsTool,
-	ReportVerdictTool
+	ReportVerdictTool,
+	ReportReplyTool
 )
 type ToolCall = Response.ToolCallPart<string, unknown>
+
+/** A call's answer when the tool did not run or did not finish. */
+function refuse(output: string) {
+	return Effect.succeed({ output })
+}
 
 /**
  * Runs one agent as a tool loop on `effect/ai` `Chat`: one model call per turn, the turn's tool
@@ -182,20 +189,16 @@ export const AgentLoopServiceLive = Layer.effect(
 					calls,
 					call => {
 						if (!allowed.includes(call))
-							return Effect.succeed(`error: tool ${call.name} is not available`)
+							return refuse(`error: tool ${call.name} is not available`)
 						if (stop.outOfTokens)
-							return Effect.succeed(
-								`error: token budget reached; call ${finish} now`
-							)
+							return refuse(`error: token budget reached; call ${finish} now`)
 						if (!runnable.has(call.id))
-							return Effect.succeed(
-								`error: tool call limit reached; call ${finish}`
-							)
-						return repoTools.call(request.scope, call.name, call.params).pipe(
+							return refuse(`error: tool call limit reached; call ${finish}`)
+						return repoTools.run(request.scope, call.name, call.params).pipe(
 							Effect.timeoutOrElse({
 								duration: Math.max(0, deadline - now),
 								orElse: () =>
-									Effect.succeed(
+									refuse(
 										`error: tool ${call.name} ran past the agent's wall time`
 									),
 							})
@@ -325,7 +328,7 @@ export const AgentLoopServiceLive = Layer.effect(
 							),
 						])
 					}
-					const outputs = yield* resolveCalls(
+					const results = yield* resolveCalls(
 						calls,
 						state,
 						{
@@ -336,24 +339,22 @@ export const AgentLoopServiceLive = Layer.effect(
 					)
 					const refusal = `error: token budget reached; call ${finish} now`
 					const fenced = toAffordableOutputs(
-						outputs.map(output => fenceData(TOOL_OUTPUT_LABEL, output)),
+						results.map(({ output }) => fenceData(TOOL_OUTPUT_LABEL, output)),
 						yield* tokens.current,
 						sent,
 						refusal
 					)
 					// Only an output the model receives counts as read.
-					yield* Ref.update(touched, paths => {
-						const read = calls.flatMap((call, index) =>
-							fenced[index] === refusal
-								? []
-								: getReadPaths(
-										call,
-										outputs[index] ?? '',
-										call.name === DiffTool.name
-									)
-						)
-						return new Set([...paths, ...read])
-					})
+					const shown = calls.map((call, index) =>
+						fenced[index] === refusal
+							? { call, output: refusal }
+							: { call, output: '', ...results[index] }
+					)
+					const read = shown.flatMap(({ call, output }) =>
+						getReadPaths(call, output, call.name === DiffTool.name)
+					)
+					yield* Ref.update(touched, paths => new Set([...paths, ...read]))
+					if (request.onToolOutputs) yield* request.onToolOutputs(shown)
 					const message = toToolMessage(calls, fenced)
 					const next = {
 						...sent,

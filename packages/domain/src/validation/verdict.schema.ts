@@ -9,7 +9,8 @@ export const VERDICTS = ['confirm', 'reject', 'unverified'] as const
 /** `path:line` or `path:start-end`, optionally followed by a note; the path may hold spaces, not colons. */
 const EVIDENCE_PATTERN = /^[^\s:](?:[^:]*[^\s:])?:\d+(?:-\d+)?(?:\s|$)/u
 
-const evidenceSchema = Schema.Trim.check(
+/** One `path:line` evidence entry, trimmed. */
+export const evidenceSchema = Schema.Trim.check(
 	Schema.isPattern(EVIDENCE_PATTERN, {
 		message: 'evidence must start with path:line',
 	})

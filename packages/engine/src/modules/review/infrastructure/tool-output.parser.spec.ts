@@ -1,10 +1,11 @@
+import { MAX_TRUNCATION_MARKER_CHARS } from '../../../utils/fence.util'
 import {
 	MAX_GREP_LINES,
 	MAX_TOOL_OUTPUT_CHARS,
 } from '../domain/review.constants'
 import { addGrepMatch, addNumberedLine } from './tool-output.parser'
 
-const EMPTY_LINES = { text: '', seen: 0, binary: false } as const
+const EMPTY_LINES = { text: '', seen: 0, binary: false, whole: 0 } as const
 const EMPTY_MATCHES = { text: '', shown: 0, rest: 0 } as const
 
 describe('addNumberedLine', () => {
@@ -14,7 +15,7 @@ describe('addNumberedLine', () => {
 				addNumberedLine({ start: 2, end: 3 }),
 				EMPTY_LINES
 			)
-		).toEqual({ text: '2| two\n3| three', seen: 4, binary: true })
+		).toEqual({ text: '2| two\n3| three', seen: 4, binary: true, whole: 3 })
 	})
 	test('stops keeping lines once the kept text passes the output cap', () => {
 		const line = 'x'.repeat(MAX_TOOL_OUTPUT_CHARS)
@@ -45,5 +46,34 @@ describe('addGrepMatch', () => {
 		expect(state.shown).toBe(MAX_GREP_LINES)
 		expect(state.rest).toBe(5)
 		expect(state.text.split('\n')).toHaveLength(MAX_GREP_LINES)
+	})
+})
+
+describe('addNumberedLine whole-line cut boundary', () => {
+	test.each([-1, 0, 1])(
+		'tracks a numbered line ending at cut bound offset %s',
+		offset => {
+			const bound = MAX_TOOL_OUTPUT_CHARS - MAX_TRUNCATION_MARKER_CHARS
+			const state = ['x'.repeat(bound - '1| '.length + offset), 'tail'].reduce(
+				addNumberedLine(undefined),
+				EMPTY_LINES
+			)
+			expect(state.whole).toBe(offset <= 0 ? 1 : 0)
+			expect(state.seen).toBe(2)
+		}
+	)
+	test('preserves the last whole selected line after a cut line and later unselected lines', () => {
+		const state = [
+			'outside',
+			'policy',
+			'x'.repeat(MAX_TOOL_OUTPUT_CHARS),
+			'outside\0',
+		].reduce(addNumberedLine({ start: 2, end: 3 }), EMPTY_LINES)
+		expect(state.whole).toBe(2)
+		expect(state.seen).toBe(4)
+		expect(state.binary).toBe(true)
+		expect(state.text).toBe(
+			`2| policy\n3| ${'x'.repeat(MAX_TOOL_OUTPUT_CHARS)}`
+		)
 	})
 })

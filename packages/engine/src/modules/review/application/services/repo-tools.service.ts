@@ -6,7 +6,7 @@ import {
 	parseLsTree,
 	type PullRequestInfo,
 } from '@mng-review/domain'
-import { Context, Effect, Layer, Result, Schema } from 'effect'
+import { Context, Effect, Layer, Predicate, Result, Schema } from 'effect'
 import { GitService } from '../../../../platform/git/git.service'
 import { truncateText } from '../../../../utils/fence.util'
 import { toOutputPart } from '../../domain/output-part.helper'
@@ -20,6 +20,7 @@ import {
 	addGrepMatch,
 	addNumberedLine,
 } from '../../infrastructure/tool-output.parser'
+import type { ToolRef, ToolResult } from '../repo-tools.types'
 import {
 	BlameTool,
 	DiffTool,
@@ -29,7 +30,6 @@ import {
 	ReadFileTool,
 	REPO_TOOLS,
 	type RepoToolName,
-	type TOOL_REFS,
 } from '../repo.toolkit'
 import { ReviewLimits } from '../review-limits.context'
 
@@ -39,16 +39,20 @@ export interface RepoScope {
 	readonly pr: PullRequestInfo
 }
 
-type ToolRef = (typeof TOOL_REFS)[number]
-
 /**
  * Read-only repository tools. Every answer is text; a problem (a bad path, a missing file, a git
  * failure) comes back as `error: …`, never as a failed effect. Output is cut to
- * `MAX_TOOL_OUTPUT_CHARS`, the cut marker included.
+ * `MAX_TOOL_OUTPUT_CHARS`, the cut marker included. `run` also says which lines a `read_file`
+ * showed; `call` gives the text alone.
  */
 export class RepoToolsService extends Context.Service<
 	RepoToolsService,
 	{
+		readonly run: (
+			scope: RepoScope,
+			name: string,
+			params: unknown
+		) => Effect.Effect<ToolResult>
 		readonly call: (
 			scope: RepoScope,
 			name: string,
@@ -151,7 +155,7 @@ export const RepoToolsServiceLive = Layer.effect(
 			const { exitCode, stderr, state } = yield* git.foldLines(
 				['show', '--no-textconv', `${commit}:${path}`],
 				{
-					initial: { text: '', seen: 0, binary: false },
+					initial: { text: '', seen: 0, binary: false, whole: 0 },
 					maxLineChars: MAX_TOOL_OUTPUT_CHARS,
 					step: addNumberedLine(range),
 				}
@@ -162,7 +166,17 @@ export const RepoToolsServiceLive = Layer.effect(
 				})
 			if (state.binary)
 				return yield* new ToolError({ reason: `${path} is a binary file` })
-			return state.text || '(no lines in range)'
+			const start = range?.start ?? 1
+			const truncated = state.text.length > MAX_TOOL_OUTPUT_CHARS
+			// Uncut, every line of the range that exists was kept whole.
+			const end = truncated
+				? state.whole
+				: Math.min(range?.end ?? state.seen, state.seen)
+			if (end < start) return state.text || '(no lines in range)'
+			return {
+				output: state.text,
+				shown: { ref: params.ref, path, lines: { start, end }, truncated },
+			} satisfies ToolResult
 		})
 
 		const grep = Effect.fn('RepoToolsService.grep')(function* (
@@ -342,20 +356,37 @@ export const RepoToolsServiceLive = Layer.effect(
 			const tool = REPO_TOOLS.find(entry => entry.name === name)
 			if (!tool)
 				return Effect.fail(new ToolError({ reason: `unknown tool ${name}` }))
-			return handlers[tool.name]()
+			return handlers[tool.name]().pipe(
+				Effect.map((result: string | ToolResult): ToolResult =>
+					Predicate.isString(result) ? { output: result } : result
+				)
+			)
 		}
+
+		const run = Effect.fn('RepoToolsService.run')(function* (
+			scope: RepoScope,
+			name: string,
+			params: unknown
+		) {
+			return yield* dispatch(scope, name, params).pipe(
+				Effect.catch(error =>
+					Effect.succeed({ output: `error: ${error.message}` })
+				),
+				Effect.map((result): ToolResult => ({
+					...result,
+					output: truncateText(result.output, MAX_TOOL_OUTPUT_CHARS),
+				}))
+			)
+		})
 
 		const call = Effect.fn('RepoToolsService.call')(function* (
 			scope: RepoScope,
 			name: string,
 			params: unknown
 		) {
-			return yield* dispatch(scope, name, params).pipe(
-				Effect.catch(error => Effect.succeed(`error: ${error.message}`)),
-				Effect.map(output => truncateText(output, MAX_TOOL_OUTPUT_CHARS))
-			)
+			return (yield* run(scope, name, params)).output
 		})
 
-		return { call }
+		return { run, call }
 	})
 )

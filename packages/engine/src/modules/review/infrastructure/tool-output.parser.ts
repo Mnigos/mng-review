@@ -1,4 +1,5 @@
 import { type LineRange, matchesGlob } from '@mng-review/domain'
+import { MAX_TRUNCATION_MARKER_CHARS } from '../../../utils/fence.util'
 import {
 	MAX_GREP_LINES,
 	MAX_TOOL_OUTPUT_CHARS,
@@ -9,7 +10,16 @@ export interface NumberedLines {
 	readonly text: string
 	readonly seen: number
 	readonly binary: boolean
+	/**
+	 * The last kept line that ends inside the part a cut output keeps, so the agent sees it whole even
+	 * when `truncateText` cuts the text; 0 for none. A line `splitCappedLines` cut is longer than that
+	 * part and never counts.
+	 */
+	readonly whole: number
 }
+
+/** Kept text up to this length survives any cut to `MAX_TOOL_OUTPUT_CHARS`. */
+const WHOLE_LINE_BOUND = MAX_TOOL_OUTPUT_CHARS - MAX_TRUNCATION_MARKER_CHARS
 
 /** Matches read record by record: the lines kept so far, how many, and how many more were found. */
 export interface GrepMatches {
@@ -33,10 +43,12 @@ export function addNumberedLine(range: LineRange | undefined) {
 			number <= (range?.end ?? Number.POSITIVE_INFINITY) &&
 			state.text.length <= MAX_TOOL_OUTPUT_CHARS
 		if (!shown) return { ...state, seen: number, binary }
+		const text = appendLine(state.text, `${number}| ${line}`)
 		return {
 			seen: number,
 			binary,
-			text: appendLine(state.text, `${number}| ${line}`),
+			text,
+			whole: text.length <= WHOLE_LINE_BOUND ? number : state.whole,
 		}
 	}
 }
