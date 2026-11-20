@@ -20,10 +20,12 @@ import { MARKER_VERSION } from './publish.constants'
 import {
 	countDisputes,
 	getApplicableReplies,
+	getOwnerCleared,
 	getPendingReply,
 	isPastLimit,
 	toDecidedReplies,
 	toReplyItems,
+	toResolvers,
 } from './thread-conversation.helper'
 
 const OWNED = [GITHUB_ACTIONS_IDENTITY] as const
@@ -37,7 +39,7 @@ const DISPUTED = toMarkerComment('reply', {
 
 describe('getPendingReply', () => {
 	test('the latest user comment counts', () => {
-		expect(getPendingReply(pendingBotThread())).toEqual({
+		expect(getPendingReply(pendingBotThread(), [])).toEqual({
 			commentId: 42,
 			author: 'contributor',
 		})
@@ -52,14 +54,15 @@ describe('getPendingReply', () => {
 		pendingBotThread({ resolved: true }),
 		pendingBotThread({ marker: { ...botThread().marker, kind: 'nit' } }),
 	])('ineligible latest comment or thread is ignored: %j', thread => {
-		expect(getPendingReply(thread)).toBeUndefined()
+		expect(getPendingReply(thread, [])).toBeUndefined()
 	})
 	test('an unverified thread counts', () => {
 		expect(
 			getPendingReply(
 				pendingBotThread({
 					marker: { ...botThread().marker, kind: 'unverified' },
-				})
+				}),
+				[]
 			)
 		).toBeDefined()
 	})
@@ -76,7 +79,7 @@ describe('getPendingReply', () => {
 		})
 		const thread = toBotThread(raw, OWNED)
 		expect(thread).toBeDefined()
-		if (thread) expect(getPendingReply(thread)).toBeUndefined()
+		if (thread) expect(getPendingReply(thread, [])).toBeUndefined()
 	})
 	test.each(['resolved', 'accepted'] as const)(
 		'an owned %s answer closes the thread for the bot',
@@ -102,9 +105,24 @@ describe('getPendingReply', () => {
 				OWNED
 			)
 			expect(thread).toMatchObject({ resolved: true, closedByBot: true })
-			if (thread) expect(getPendingReply(thread)).toBeUndefined()
+			if (thread) expect(getPendingReply(thread, [])).toBeUndefined()
 		}
 	)
+	test('an owner answer blocks a later user reply without a summary marker', () => {
+		expect(
+			getPendingReply(pendingBotThread({ sentToOwner: true }), [])
+		).toBeUndefined()
+		expect(
+			getApplicableReplies(
+				[decidedReply()],
+				[pendingBotThread({ sentToOwner: true })],
+				[]
+			)
+		).toEqual([])
+	})
+	test('a thread waiting for the owner is ignored', () => {
+		expect(getPendingReply(pendingBotThread(), ['thread'])).toBeUndefined()
+	})
 })
 
 describe('countDisputes', () => {
@@ -134,6 +152,41 @@ describe('countDisputes', () => {
 				OWNED
 			)
 		).toBe(2)
+	})
+})
+
+describe('getOwnerCleared', () => {
+	test.each([
+		['admin', [], true],
+		['write', ['CONTRIBUTOR'], true],
+		['maintain', ['contributor'], true],
+		['write', [], false],
+		['read', ['contributor'], false],
+		['triage', ['contributor'], false],
+	] as const)('%s with allow %j clears=%s', (permission, allow, cleared) => {
+		expect(
+			getOwnerCleared(
+				'Contributor',
+				new Map([['contributor', { role_name: permission, permission }]]),
+				allow
+			)
+		).toBe(cleared)
+	})
+	test('an unresolved GitHub thread does not retain its resolver', () => {
+		expect(
+			toResolvers([
+				reviewThread(undefined, {
+					isResolved: false,
+					resolvedBy: { login: 'contributor' },
+				}),
+			])
+		).toEqual(new Map())
+	})
+	test('missing role or resolver clears nothing', () => {
+		expect(getOwnerCleared('contributor', new Map(), ['contributor'])).toBe(
+			false
+		)
+		expect(getOwnerCleared(undefined, new Map(), ['contributor'])).toBe(false)
 	})
 })
 
@@ -178,13 +231,14 @@ describe('getApplicableReplies', () => {
 		})
 		expect(thread.latestCommentId).toBe(decision.commentId)
 		expect(thread.marker.fingerprint).toBe(decision.fingerprint)
-		expect(getApplicableReplies([decision], [thread])).toEqual([])
+		expect(getApplicableReplies([decision], [thread], [])).toEqual([])
 	})
 	test('keeps a current decision once', () => {
 		expect(
 			getApplicableReplies(
 				[decidedReply(), decidedReply()],
-				[pendingBotThread()]
+				[pendingBotThread()],
+				[]
 			)
 		).toHaveLength(1)
 	})
@@ -193,7 +247,14 @@ describe('getApplicableReplies', () => {
 		decidedReply(undefined, { fingerprint: 'other' }),
 		decidedReply(undefined, { threadId: 'unknown' }),
 	])('drops stale or mismatched decisions %j', decision => {
-		expect(getApplicableReplies([decision], [pendingBotThread()])).toEqual([])
+		expect(getApplicableReplies([decision], [pendingBotThread()], [])).toEqual(
+			[]
+		)
+	})
+	test('drops a waiting thread', () => {
+		expect(
+			getApplicableReplies([decidedReply()], [pendingBotThread()], ['thread'])
+		).toEqual([])
 	})
 })
 

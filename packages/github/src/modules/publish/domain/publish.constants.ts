@@ -11,3 +11,5 @@ export const MAX_RECHECKS = 8
 export const MAX_REPLY_THREADS = 8
 /** Characters of an author's reply the classifier reads. */
 export const MAX_REPLY_CHARS = 4000
+/** The label a pull request carries while a thread waits for the owner. */
+export const NEEDS_OWNER_LABEL = 'needs-owner'

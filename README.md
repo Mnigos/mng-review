@@ -312,9 +312,9 @@ Reply in one of the bot's bug or unverified threads to tell it what happened to 
 - `intentional because` and the reason, with a `path:line` that shows it. A reason that holds against the code, backed by a line that exists outside what the pull request added, is accepted: the bot stops counting the thread and offers one line for `.mng/MEMORY.md`, which counts only once a person merges it. A reason that does not hold is disputed once. A second disagreement, a `critical` finding, a file under `risk_paths` or a severity above `disputes.accept_intentional_up_to` goes to the owner.
 - Anything else gets one line saying what the bot understands.
 
-Only the latest comment of a thread counts, and only when a person with write access to the repository wrote it. The bot answers each reply once, at most eight threads per run. Answers come with the next push or command run.
+Only the latest comment of a thread counts, and only when a person with write access to the repository wrote it. The bot answers each reply once, at most eight threads per run, and never in a thread that waits for the owner. Answers come with the next push or command run.
 
-A thread that goes to the owner gets an answer saying so.
+A thread that goes to the owner gets one last answer, and the pull request gets the `needs-owner` label, the verdict `needs owner` and a `failure` status until an admin, or a login in `commands.allow` with write access, resolves the thread on GitHub. A writer resolving it or removing the label does not clear it. The next run after the owner resolves it removes the label; the status sweep turns the status green sooner.
 
 ### Exit codes
 

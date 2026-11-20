@@ -21,19 +21,22 @@ export const REQUEST_TIMEOUT = Duration.seconds(30)
 export const READ_RETRIES = 2
 export const READ_RETRY = Schedule.exponential('500 millis')
 
-/** The pull request's review threads with their first and latest comment, oldest first. */
+/** The latest comments each thread read brings, so an answer the bot gave a few comments back is seen. */
+export const RECENT_COMMENTS = 10
+
+/** The pull request's review threads with their first and their `RECENT_COMMENTS` latest comments, oldest first. */
 export const REVIEW_THREADS_QUERY = `query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       reviewThreads(first: ${PAGE_SIZE}, after: $cursor) {
         pageInfo { hasNextPage endCursor }
         nodes {
-          id isResolved isOutdated path line originalLine subjectType
+          id isResolved isOutdated path line originalLine subjectType resolvedBy { login }
           comments(first: 1) {
             totalCount
             nodes { databaseId body author { __typename login } editor { __typename login } originalCommit { oid } }
           }
-          latest: comments(last: 1) {
+          latest: comments(last: ${RECENT_COMMENTS}) {
             nodes { databaseId body author { __typename login } editor { __typename login } originalCommit { oid } }
           }
         }

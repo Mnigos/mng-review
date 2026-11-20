@@ -20,7 +20,7 @@ layer(FileSystemLayer)('sweep step app identity', test => {
 			`loads HEAD rules before sweeping with previous=${previous.join(',')}`,
 			() =>
 				Effect.gen(function* () {
-					const fixture = stepFixture(previous, true)
+					const fixture = stepFixture(previous, true, false, ['release-owner'])
 					const observed: string[][] = []
 					const sweepSpy = vi.fn(() =>
 						OwnedIdentities.pipe(
@@ -48,7 +48,7 @@ layer(FileSystemLayer)('sweep step app identity', test => {
 					)
 					expect(fixture.loads).toEqual(['HEAD'])
 					expect(observed).toEqual([['mng-review', ...previous]])
-					expect(sweepSpy).toHaveBeenCalledOnce()
+					expect(sweepSpy).toHaveBeenCalledExactlyOnceWith(['release-owner'])
 				})
 		)
 	for (const settings of [

@@ -1,6 +1,7 @@
 import type { ReviewReport, Rules, TokensByModel } from '@mng-review/engine'
 import type {
 	AnswerCounts,
+	LabelOutcome,
 	RecheckProposal,
 	SummaryCleanup,
 } from '../domain/publish.types'
@@ -78,6 +79,9 @@ export interface PublishResult {
 	readonly resolved: number
 	/** Authors' replies this run answered, by action. */
 	readonly answered: AnswerCounts
+	/** Threads that wait for the owner after the run. */
+	readonly waiting: number
+	readonly label: LabelOutcome
 	readonly run: number
 	/** A full review finished on this head: this run, or for a partial run the last full one. */
 	readonly finished: boolean

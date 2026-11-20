@@ -64,6 +64,8 @@ export interface SummaryInput {
 	readonly resolved: readonly ResolvedThread[]
 	/** Authors' replies this run answered; none when unset. */
 	readonly answered?: readonly AppliedReply[]
+	/** Threads that wait for the owner; none when unset. */
+	readonly waiting?: readonly BotThread[]
 	/** Tokens of the whole job, the re-check and the reply decisions included. */
 	readonly tokens: TokensByModel
 }
@@ -148,7 +150,7 @@ function bySeverity(a: PlannedThread, b: PlannedThread): number {
 
 /** New threads, findings that could not get one, and what stays in the summary. */
 function toFindingLines(input: SummaryInput, limit: number): string[] {
-	const { plan, report, links, answered = [] } = input
+	const { plan, report, links, answered = [], waiting = [] } = input
 	const threads = plan.threads.toSorted(bySeverity)
 	const posted = threads.filter(
 		thread => thread.place === 'line' || thread.place === 'file'
@@ -189,6 +191,10 @@ function toFindingLines(input: SummaryInput, limit: number): string[] {
 					'',
 					`${plan.repeated.length} finding(s) already have a thread and were not posted again.`,
 				]),
+		...toSection(
+			`Waiting for the owner (${waiting.length}):`,
+			toCapped(waiting, limit, toThreadLine)
+		),
 		...toSection(
 			`Closed by this run, no longer found at the head (${input.resolved.length}):`,
 			toCapped(

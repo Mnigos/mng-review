@@ -17,6 +17,8 @@ export interface PullRequestEvent {
 export interface PriorRun {
 	readonly runs: number
 	readonly head?: string
+	/** Thread ids the summary marker says wait for the owner. */
+	readonly waiting?: readonly string[]
 }
 
 /** What the workflow entry is given: the event's name and how to read its payload, read only for a pull request event. */

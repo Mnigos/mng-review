@@ -12,6 +12,7 @@ import type {
 } from '../domain/publish.types'
 import {
 	getDuplicateSummaries,
+	getListedWaiting,
 	getOwnSummary,
 	getStaleSummaries,
 	getSummary,
@@ -108,6 +109,10 @@ export class SummaryCommentService extends Context.Service<
 			GitHubApiError,
 			OwnedIdentities
 		>
+		/** The threads the summaries list as waiting for the owner, hidden summaries included (`getListedWaiting`). */
+		readonly readWaiting: (
+			pullNumber: number
+		) => Effect.Effect<readonly string[], GitHubApiError, OwnedIdentities>
 		/** Counts a manual run in the summary before it starts; `false` at the cap, with nothing written. */
 		readonly reserveManualRun: (
 			input: ManualRunInput
@@ -131,6 +136,13 @@ export const SummaryCommentServiceLive = Layer.effect(
 				current
 			)
 		})
+
+		const readWaiting = Effect.fn('SummaryCommentService.readWaiting')(
+			function* (pullNumber: number) {
+				const { identities } = yield* OwnedIdentities
+				return getListedWaiting(yield* api.listComments(pullNumber), identities)
+			}
+		)
 
 		const read = Effect.fn('SummaryCommentService.read')(function* (
 			pullNumber: number
@@ -356,6 +368,13 @@ export const SummaryCommentServiceLive = Layer.effect(
 			return true
 		})
 
-		return { read, write, publishStatus, readPrior, reserveManualRun }
+		return {
+			read,
+			write,
+			publishStatus,
+			readPrior,
+			readWaiting,
+			reserveManualRun,
+		}
 	})
 )

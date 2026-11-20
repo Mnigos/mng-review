@@ -16,3 +16,18 @@ export function hasWriteAccess(access: CollaboratorRole): boolean {
 		return WRITE_ROLES.some(role => role === access.role_name)
 	return WRITE_PERMISSIONS.some(permission => permission === access.permission)
 }
+
+/**
+ * True for an owner of the bot's decisions: the built-in `admin` role, never a custom one, or a
+ * login in `commands.allow`, compared without case, that still has write access.
+ */
+export function isOwnerAccess(
+	login: string,
+	access: CollaboratorRole,
+	allow: readonly string[]
+): boolean {
+	const listed = allow.some(
+		entry => entry.toLowerCase() === login.toLowerCase()
+	)
+	return access.role_name === 'admin' || (listed && hasWriteAccess(access))
+}

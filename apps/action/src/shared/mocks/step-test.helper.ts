@@ -29,7 +29,8 @@ import { RULES } from './review-report.helper'
 export function stepFixture(
 	previous: readonly string[] = RULES.config.identity.previous,
 	appMode = false,
-	readOnly = false
+	readOnly = false,
+	allow: readonly string[] = RULES.config.commands.allow
 ) {
 	const repo = createRepo()
 	repo.write('src/items/store.ts', 'first\nold value\nlast\n')
@@ -92,7 +93,11 @@ export function stepFixture(
 	const rules = {
 		...RULES,
 		source: base,
-		config: { ...RULES.config, identity: { previous } },
+		config: {
+			...RULES.config,
+			identity: { previous },
+			commands: { ...RULES.config.commands, allow },
+		},
 	}
 	const loads: (string | undefined)[] = []
 	const load = (source: string | undefined) =>

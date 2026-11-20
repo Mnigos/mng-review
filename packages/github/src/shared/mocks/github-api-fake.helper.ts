@@ -3,6 +3,7 @@ import {
 	type BotIdentity,
 	GITHUB_ACTIONS_IDENTITY,
 } from '../../platform/bot-identity.helper'
+import { RECENT_COMMENTS } from '../../platform/github-api.constants'
 import type {
 	IssueComment,
 	PullRequest,
@@ -38,6 +39,11 @@ export type ApiWrite =
 	| { readonly method: 'minimize'; readonly id: string }
 	| { readonly method: 'reply'; readonly id: string; readonly body: string }
 	| { readonly method: 'resolve'; readonly id: string }
+	| {
+			readonly method: 'label' | 'unlabel'
+			readonly pullNumber: number
+			readonly name: string
+	  }
 
 /** An open same-repository pull request with full commits, as a command run reads it again. */
 export const COMMAND_PULL_REQUEST = {
@@ -124,6 +130,8 @@ export function githubApiFake(
 		getIssueComment: [] as GitHubApiError[],
 		getCollaboratorRole: [] as GitHubApiError[],
 		listThreadComments: [] as GitHubApiError[],
+		label: [] as GitHubApiError[],
+		unlabel: [] as GitHubApiError[],
 	}
 	/** Every comment of a thread by id; unset, a thread shows its first and latest comment. */
 	const threadComments = new Map<string, ThreadComment[]>()
@@ -167,11 +175,16 @@ export function githubApiFake(
 				if (error) return yield* error
 				const index = threads.findIndex(thread => thread.id === id)
 				const thread = threads[index]
+				const earlier =
+					thread && thread.comments.totalCount > 1
+						? (thread.latest?.nodes ?? [])
+						: []
 				if (thread)
 					threads[index] = {
 						...thread,
 						latest: {
 							nodes: [
+								...earlier,
 								{
 									databaseId: writes.length,
 									body,
@@ -179,7 +192,7 @@ export function githubApiFake(
 									editor: null,
 									originalCommit: null,
 								},
-							],
+							].slice(-RECENT_COMMENTS),
 						},
 						comments: {
 							...thread.comments,
@@ -215,6 +228,20 @@ export function githubApiFake(
 						...latest,
 					]
 				)
+			}),
+		addLabel: (pullNumber, name) =>
+			Effect.gen(function* () {
+				writes.push({ method: 'label', pullNumber, name })
+				const error = failures.label.shift()
+				if (error) return yield* error
+				return undefined
+			}),
+		removeLabel: (pullNumber, name) =>
+			Effect.gen(function* () {
+				writes.push({ method: 'unlabel', pullNumber, name })
+				const error = failures.unlabel.shift()
+				if (error) return yield* error
+				return undefined
 			}),
 		listComments: pullNumber =>
 			Effect.gen(function* () {

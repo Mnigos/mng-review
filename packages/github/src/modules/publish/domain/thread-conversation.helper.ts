@@ -9,7 +9,12 @@ import {
 import type { DecidedReply } from '@mng-review/engine'
 import { Schema } from 'effect'
 import type { BotIdentity } from '../../../platform/bot-identity.helper'
-import type { ThreadComment } from '../../../platform/github-api.schema'
+import type {
+	CollaboratorRole,
+	ReviewThread,
+	ThreadComment,
+} from '../../../platform/github-api.schema'
+import { isOwnerAccess } from '../../command/domain/command-access.helper'
 import { isBotComment } from './bot-thread.helper'
 import { parseReplyMarker } from './publish-marker.parser'
 import type { ThreadKind } from './publish-marker.schema'
@@ -38,10 +43,13 @@ export interface ThreadReplyItem {
 
 /**
  * The reply a thread waits on, or `undefined`: the thread is open (not closed by the bot either),
- * a bug or unverified thread, and its latest comment is a person's (`User`) that does not end with
- * a marker of the bot's form.
+ * a bug or unverified thread, not waiting for the owner (in `waiting` or `sentToOwner`), and its
+ * latest comment is a person's (`User`) that does not end with a marker of the bot's form.
  */
-export function getPendingReply(thread: BotThread): ReplyRef | undefined {
+export function getPendingReply(
+	thread: BotThread,
+	waiting: readonly string[]
+): ReplyRef | undefined {
 	const kinds: readonly ThreadKind[] = ANSWERED_KINDS
 	const { latestAuthor, latestCommentId } = thread
 	if (
@@ -49,6 +57,8 @@ export function getPendingReply(thread: BotThread): ReplyRef | undefined {
 		thread.replies === 0 ||
 		thread.latestMarked ||
 		!kinds.includes(thread.marker.kind) ||
+		waiting.includes(thread.id) ||
+		thread.sentToOwner ||
 		latestAuthor?.type !== 'User' ||
 		latestCommentId === undefined
 	)
@@ -69,6 +79,37 @@ export function countDisputes(
 			isBotComment(comment, owned) &&
 			parseReplyMarker(comment.body)?.action === 'disputed'
 	).length
+}
+
+/**
+ * True when an owner cleared a waiting thread: `resolver`, who resolved it on GitHub, is an admin
+ * or a login in `commands.allow` that still has write access. `roles` holds the resolvers' access by
+ * lower-case login; one missing from it, as after a failed lookup, clears nothing.
+ */
+export function getOwnerCleared(
+	resolver: string | undefined,
+	roles: ReadonlyMap<string, CollaboratorRole>,
+	allow: readonly string[]
+): boolean {
+	if (resolver === undefined) return false
+	const access = roles.get(resolver.toLowerCase())
+	return access !== undefined && isOwnerAccess(resolver, access, allow)
+}
+
+/**
+ * Who resolved each resolved thread, by node id, from the raw read: a waiting thread whose first
+ * comment someone edited is no longer the bot's, and an owner can still clear it.
+ */
+export function toResolvers(
+	threads: readonly Pick<ReviewThread, 'id' | 'isResolved' | 'resolvedBy'>[]
+): ReadonlyMap<string, string> {
+	return new Map(
+		threads.flatMap(thread =>
+			thread.isResolved && thread.resolvedBy
+				? [[thread.id, thread.resolvedBy.login] as const]
+				: []
+		)
+	)
 }
 
 /**
@@ -107,7 +148,8 @@ export function toReplyItems(
  */
 export function getApplicableReplies(
 	decisions: readonly DecidedThreadReply[],
-	threads: readonly BotThread[]
+	threads: readonly BotThread[],
+	waiting: readonly string[]
 ): AppliedReply[] {
 	const byId = new Map(threads.map(thread => [thread.id, thread]))
 	return decisions.flatMap((decided, index) => {
@@ -117,7 +159,7 @@ export function getApplicableReplies(
 			decisions.findIndex(other => other.threadId === decided.threadId) !==
 				index ||
 			thread.marker.fingerprint !== decided.fingerprint ||
-			getPendingReply(thread)?.commentId !== decided.commentId ||
+			getPendingReply(thread, waiting)?.commentId !== decided.commentId ||
 			thread.latestDigest !== decided.digest
 		)
 			return []

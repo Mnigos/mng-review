@@ -301,3 +301,47 @@ layer(FileSystemLayer)('prepare author replies', test => {
 			})
 		)
 })
+
+layer(FileSystemLayer)('prepare owner waiting', test => {
+	test.effect(
+		'carries marker waiting ids and omits their replies from the prepared file',
+		() =>
+			Effect.gen(function* () {
+				const fixture = stepFixture()
+				fixture.api.command.role = 'write'
+				fixture.api.threads.push(
+					pendingReviewThread(),
+					pendingReviewThread({ id: 'active-thread' })
+				)
+				fixture.api.comments.push(
+					appSummary(
+						{
+							...SUMMARY_MARKER,
+							head: fixture.base,
+							needsOwner: ['thread'],
+						},
+						{ author: { __typename: 'Bot', login: 'github-actions' } }
+					)
+				)
+				yield* runPrepareStep.pipe(
+					Effect.provide(
+						PrepareRunServiceLive.pipe(Layer.provide(fixture.rulesLayer))
+					),
+					Effect.provide(fixture.publisherLayer),
+					Effect.provide(fixture.envLayer())
+				)
+				const fs = yield* FileSystem.FileSystem
+				const prepared = yield* parsePreparedRun(
+					yield* fs.readFileString(fixture.paths.prepared)
+				)
+				expect(prepared.status).toBe('ready')
+				if (prepared.status !== 'ready') return
+				expect(prepared.prior?.waiting).toEqual(['thread'])
+				expect(prepared.replies).toEqual([
+					pendingReply({ threadId: 'active-thread' }),
+				])
+				expect(fixture.api.reads).not.toContain('listThreadComments:thread')
+				expect(fixture.api.writes).toEqual([])
+			})
+	)
+})

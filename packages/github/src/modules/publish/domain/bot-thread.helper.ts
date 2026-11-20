@@ -8,6 +8,7 @@ import {
 	isOwnedBot,
 	toBotIdentity,
 } from '../../../platform/bot-identity.helper'
+import { RECENT_COMMENTS } from '../../../platform/github-api.constants'
 import type {
 	PullRequestComment,
 	ReviewThread,
@@ -46,6 +47,53 @@ export function isBotComment(
 	const { author, editor } = comment
 	if (!(author && isOwnedBot(author, owned))) return false
 	return editor === null || isIdentity(editor, toBotIdentity(author.login))
+}
+
+/** True when an owned bot's unedited comment among `comments` is a `needs-owner` answer. */
+export function hasOwnerAnswer(
+	comments: readonly ThreadComment[],
+	owned: readonly BotIdentity[]
+): boolean {
+	return comments.some(
+		comment =>
+			isBotComment(comment, owned) &&
+			parseReplyMarker(comment.body)?.action === 'needs-owner'
+	)
+}
+
+/**
+ * Ids of the review threads with an owned, unedited `needs-owner` answer among the latest comments
+ * the read brought, whoever owns the first comment now: an edit to it ends the bot's ownership of
+ * the thread, not of its answers.
+ */
+export function getOwnerAnswered(
+	threads: readonly ReviewThread[],
+	owned: readonly BotIdentity[]
+): string[] {
+	return threads
+		.filter(thread => hasOwnerAnswer(thread.latest?.nodes ?? [], owned))
+		.map(thread => thread.id)
+}
+
+/**
+ * The threads whose `needs-owner` answer may sit before the latest comments the read brought: an
+ * owned bot wrote the first comment, edited or not, as the bot answers only there; the thread has
+ * more comments than the read brought and no answer among them; and it is not the bot's own nit
+ * thread, which it never answers in.
+ */
+export function getUnreadOwnerThreads(
+	threads: readonly ReviewThread[],
+	owned: readonly BotIdentity[]
+): ReviewThread[] {
+	return threads.filter(thread => {
+		const [first] = thread.comments.nodes
+		if (!first?.author || !isOwnedBot(first.author, owned)) return false
+		if (toBotThread(thread, owned)?.marker.kind === 'nit') return false
+		return (
+			thread.comments.totalCount > RECENT_COMMENTS &&
+			!hasOwnerAnswer(thread.latest?.nodes ?? [], owned)
+		)
+	})
 }
 
 /**
@@ -101,7 +149,8 @@ export function toBotThread(
 	const marker = parseFindingMarker(first.body)
 	if (!marker) return undefined
 	const onFile = thread.subjectType === 'FILE'
-	const [latest] = thread.latest?.nodes ?? []
+	const recent = thread.latest?.nodes ?? []
+	const latest = recent.at(-1)
 	const closing = getClosingCommit(thread, latest, owned)
 	const closedByBot = closing !== undefined
 	return {
@@ -118,6 +167,7 @@ export function toBotThread(
 		...toLatestFields(latest ?? first),
 		closedAt:
 			closing !== undefined && isCommitSha(closing) ? closing : undefined,
+		sentToOwner: hasOwnerAnswer(recent, owned),
 	}
 }
 
@@ -127,14 +177,17 @@ export function isRefused(error: GitHubApiError): boolean {
 }
 
 /**
- * `incomplete` when nothing blocks but the run did not finish: an endpoint failure, the token
+ * `needs owner` while a thread waits for the owner, whatever else is open; `needs fixes` while bug
+ * threads are open. `incomplete` when nothing blocks but the run did not finish: an endpoint failure, the token
  * budget, or a finder that failed or stopped, so a run that reviewed nothing never reads as ready.
  */
 export function getVerdict(
 	report: ReviewReport,
 	openBugs: number,
-	finished: boolean = isFinished(report)
+	finished: boolean = isFinished(report),
+	waiting = 0
 ): Verdict {
+	if (waiting > 0) return 'needs owner'
 	if (openBugs > 0) return 'needs fixes'
 	return finished ? 'ready' : 'incomplete'
 }
