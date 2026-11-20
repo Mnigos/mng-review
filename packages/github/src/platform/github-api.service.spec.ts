@@ -691,8 +691,8 @@ const MANUAL_READS = [
 		invoke: (service: GitHubApiService['Service']) =>
 			service.getCollaboratorRole('review helper/@name?#'),
 		path: '/collaborators/review%20helper%2F%40name%3F%23/permission',
-		answer: { role_name: 'write' },
-		expected: 'write',
+		answer: { role_name: 'write', permission: 'write' },
+		expected: { role_name: 'write', permission: 'write' },
 		invalid: { role_name: 42 },
 	},
 ] as const

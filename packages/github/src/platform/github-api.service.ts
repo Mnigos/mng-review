@@ -9,6 +9,7 @@ import {
 } from './github-api.constants'
 import { collect, read } from './github-api.helper'
 import {
+	type CollaboratorRole,
 	collaboratorRoleSchema,
 	createdSchema,
 	type IssueComment,
@@ -94,10 +95,10 @@ export class GitHubApiService extends Context.Service<
 		readonly getIssueComment: (
 			commentId: number
 		) => Effect.Effect<IssueComment, GitHubApiError>
-		/** The login's role on the repository; a login that is no collaborator fails with 404. */
+		/** The login's role and base permission; a login that is no collaborator fails with 404. */
 		readonly getCollaboratorRole: (
 			login: string
-		) => Effect.Effect<string, GitHubApiError>
+		) => Effect.Effect<CollaboratorRole, GitHubApiError>
 	}
 >()('mng-review/GitHubApiService') {}
 
@@ -295,7 +296,7 @@ export const GitHubApiServiceLive = Layer.effect(
 		const getCollaboratorRole = Effect.fn(
 			'GitHubApiService.getCollaboratorRole'
 		)(function* (login: string) {
-			const answer = yield* read(
+			return yield* read(
 				sendJson(
 					'getCollaboratorRole',
 					HttpClientRequest.get(
@@ -304,7 +305,6 @@ export const GitHubApiServiceLive = Layer.effect(
 					collaboratorRoleSchema
 				)
 			)
-			return answer.role_name
 		})
 
 		return {

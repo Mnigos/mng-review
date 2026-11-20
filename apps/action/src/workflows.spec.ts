@@ -225,7 +225,7 @@ describe('mention command workflow boundaries', () => {
 				'group: mng-review-publish-${{ github.event.pull_request.number }}'
 			)
 		})
-	test('reserve mints exactly pull requests write and contents read, with automatic revocation', () => {
+	test('reserve mints exactly pull requests write, with automatic revocation', () => {
 		const mint = getJob(command, 'reserve')
 			.split(/^ {6}- /mu)
 			.find(step => step.includes('uses: actions/create-github-app-token@'))
@@ -235,7 +235,7 @@ describe('mention command workflow boundaries', () => {
 				?.match(/^\s+permission-[\w-]+:\s*\w+/gmu)
 				?.map(value => value.trim())
 				.toSorted()
-		).toEqual(['permission-contents: read', 'permission-pull-requests: write'])
+		).toEqual(['permission-pull-requests: write'])
 		expect(mint).not.toMatch(/^\s*(?:owner|repositories|skip-token-revoke):/mu)
 	})
 	test('publish uses the same app-token mint and scope as push publishing', () => {
