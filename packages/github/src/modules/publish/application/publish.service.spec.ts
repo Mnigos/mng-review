@@ -1932,7 +1932,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 						).toEqual(marker)
 						expect(fixture.fake.threads).toEqual([])
 						expect(fixture.fake.comments[0]?.body).not.toContain(
-							'from the last full review still count'
+							'from earlier runs on this head still count'
 						)
 						const clean = {
 							...fixture.input,
@@ -1952,7 +1952,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 							parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
 						).toEqual({ ...marker, runs: 2 })
 						expect(fixture.fake.comments[0]?.body).toContain(
-							'1 bug(s) without a thread from the last full review still count until a full review checks them again.'
+							'1 bug(s) without a thread from earlier runs on this head still count until a full review checks them again.'
 						)
 						expect(yield* publisher.publish(clean)).toMatchObject({
 							verdict: 'ready',
@@ -1968,39 +1968,45 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 							finished: true,
 						})
 						expect(fixture.fake.comments[0]?.body).not.toContain(
-							'from the last full review still count'
+							'from earlier runs on this head still count'
 						)
 					})
 			)
-		test.effect('a full unfinished run keeps the last full review count', () =>
-			Effect.gen(function* () {
-				const fixture = setup()
-				const marker = {
-					...SUMMARY_MARKER,
-					head: fixture.head,
-					finished: true,
-					unthreadedBugs: 2,
-				}
-				fixture.fake.comments.push({
-					...summary(),
-					body: toMarkerComment('summary', marker),
+		test.effect(
+			'a full unfinished run counts the unthreaded bugs of the last full review',
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup()
+					const marker = {
+						...SUMMARY_MARKER,
+						head: fixture.head,
+						finished: true,
+						unthreadedBugs: 2,
+					}
+					fixture.fake.comments.push({
+						...summary(),
+						body: toMarkerComment('summary', marker),
+					})
+					expect(
+						yield* PublishService.use(publisher =>
+							publisher.publish({
+								...fixture.input,
+								report: {
+									...fixture.input.report,
+									bugs: [],
+									endpointError: 'offline',
+								},
+							})
+						).pipe(Effect.provide(fixture.publisher))
+					).toMatchObject({
+						verdict: 'needs fixes',
+						openBugs: 2,
+						finished: false,
+					})
+					expect(
+						parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
+					).toEqual({ ...marker, runs: 2, finished: false })
 				})
-				expect(
-					yield* PublishService.use(publisher =>
-						publisher.publish({
-							...fixture.input,
-							report: {
-								...fixture.input.report,
-								bugs: [],
-								endpointError: 'offline',
-							},
-						})
-					).pipe(Effect.provide(fixture.publisher))
-				).toMatchObject({ verdict: 'incomplete', finished: false })
-				expect(
-					parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
-				).toEqual({ ...marker, runs: 2, finished: false })
-			})
 		)
 		for (const commandHead of ['same', 'moved', 'unreadable'] as const)
 			for (const sameMarkerHead of [false, true])
@@ -2072,7 +2078,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 					parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
 				).toEqual({ ...marker, runs: 2 })
 				expect(fixture.fake.comments[0]?.body).toContain(
-					'2 bug(s) without a thread from the last full review'
+					'2 bug(s) without a thread from earlier runs on this head'
 				)
 			})
 		)

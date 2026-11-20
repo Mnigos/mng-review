@@ -18,11 +18,21 @@ export interface MarkerUpdate {
 /** A run as the marker judges it: its head, and whether it stands for a full review. */
 export type MarkedRun = Pick<MarkerUpdate, 'head' | 'partial'>
 
+/** True when the run replaces the last full review in the marker: a full run that finished. */
+function isReplacing(
+	update: Pick<MarkerUpdate, 'finished' | 'partial'>
+): boolean {
+	return update.finished && !update.partial
+}
+
 /**
  * The summary marker after a run: one more run, and the head, finished flag and unthreaded bugs of
- * the last full review. An unfinished run keeps the previous head and unthreaded bugs; a partial
- * run keeps the previous finished flag as well, so it never stands for a full review. Every other
- * field of the previous marker, such as the manual runs, is carried as it was.
+ * the last full review. A run that does not replace it (a partial run, or a full run that did not
+ * finish) keeps the previous head; a partial run keeps the previous finished flag as well, so it
+ * never stands for a full review. Such a run adds its own unthreaded bugs to those already on the
+ * same head, so they keep blocking until the next full review replaces the count; a bug it found
+ * again is counted twice until then. Every other field of the previous marker, such as the manual
+ * runs, is carried as it was.
  */
 export function toNextSummaryMarker(
 	previous: SummaryMarker | undefined,
@@ -33,12 +43,15 @@ export function toNextSummaryMarker(
 		unthreadedBugs: previousBugs,
 		...carried
 	} = previous ?? { v: MARKER_VERSION, runs: 0 }
-	const reviewed = update.finished && !update.partial
+	const reviewed = isReplacing(update)
 	const finished = update.partial
 		? (carried.finished ?? false)
 		: update.finished
 	const head = reviewed ? update.head : previousHead
-	const unthreadedBugs = reviewed ? update.unthreadedBugs : (previousBugs ?? 0)
+	const added = previousHead === update.head ? update.unthreadedBugs : 0
+	const unthreadedBugs = reviewed
+		? update.unthreadedBugs
+		: (previousBugs ?? 0) + added
 	return {
 		...carried,
 		v: MARKER_VERSION,
@@ -50,13 +63,14 @@ export function toNextSummaryMarker(
 }
 
 /**
- * The bugs without a thread a partial run still counts: those the last full review left on the
- * same head, read from the marker the run builds on or wrote, which a partial run keeps as it was.
+ * The bugs without a thread a run that does not replace the last full review still counts: those
+ * the marker held for the run's head before the run. `marker` is the one the run wrote with
+ * `toNextSummaryMarker`, so the run's own unthreaded bugs, which it counts itself, come off.
  */
 export function getCarriedBugs(
 	marker: Pick<SummaryMarker, 'head' | 'unthreadedBugs'> | undefined,
-	run: MarkedRun
+	update: MarkerUpdate
 ): number {
-	if (!run.partial || marker?.head !== run.head) return 0
-	return marker.unthreadedBugs ?? 0
+	if (isReplacing(update) || marker?.head !== update.head) return 0
+	return Math.max(0, (marker.unthreadedBugs ?? 0) - update.unthreadedBugs)
 }

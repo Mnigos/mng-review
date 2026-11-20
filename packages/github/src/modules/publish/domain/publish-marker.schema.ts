@@ -40,9 +40,9 @@ export const summaryMarkerSchema = Schema.Struct({
 	/** Runs a command started, counted before the endpoint is used; `commands.max_runs` caps them. */
 	manualRuns: Schema.optionalKey(countSchema),
 	/**
-	 * Bugs of the last full review on `head` that got no thread (in the summary, or unposted). A run
-	 * that does not stand for a full review and the status sweep count them, since no thread holds
-	 * them.
+	 * Bugs on `head` that got no thread (in the summary, or unposted): the last full review's, plus
+	 * those of every run since on the same head that did not replace it. Such a run and the status
+	 * sweep count them, since no thread holds them; the next full review replaces the count.
 	 */
 	unthreadedBugs: Schema.optionalKey(countSchema),
 })

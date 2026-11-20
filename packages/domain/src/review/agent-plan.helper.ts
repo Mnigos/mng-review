@@ -1,3 +1,4 @@
+import { AGENT_NAME_PATTERN } from '../agents/agent.constants'
 import { getAgentSettings } from '../agents/agent.helper'
 import type { DeclaredAgent } from '../agents/agent.types'
 import type { ReviewConfig } from '../config/review-config.schema'
@@ -48,4 +49,19 @@ export function toAgentOnlyPlan(
 			reason: OTHER_RUNS_REASON,
 		}))
 	return { ...plan, runs, skips: [...plan.skips, ...others] }
+}
+
+/**
+ * The plan when a command names an agent the rules do not declare: the run is skipped, so a
+ * mistyped name never turns into a full review. Only a name that could be declared is repeated in
+ * the reason, so the reason never carries the command's other text.
+ */
+export function toUnknownAgentPlan(plan: Plan, name: string): Plan {
+	const named = AGENT_NAME_PATTERN.test(name) ? `agent ${name}` : 'an agent'
+	return {
+		...plan,
+		skippedRun: `a command named ${named}, which the rules do not declare`,
+		runs: [],
+		skips: [],
+	}
 }
