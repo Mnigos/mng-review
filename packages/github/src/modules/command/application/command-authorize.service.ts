@@ -1,10 +1,10 @@
 import { commitShaSchema } from '@mng-review/domain'
 import type { Rules } from '@mng-review/engine'
 import { Context, Effect, Layer, Schema } from 'effect'
-import type { CollaboratorRole } from '../../../platform/github-api.schema'
 import { GitHubApiService } from '../../../platform/github-api.service'
 import { OwnedIdentities } from '../../../platform/owned-identities.context'
 import { SummaryCommentService } from '../../publish/application/summary-comment.service'
+import { hasWriteAccess } from '../domain/command-access.helper'
 import { getCommandHandle } from '../domain/command-handle.helper'
 import type {
 	AuthorizedCommand,
@@ -16,24 +16,6 @@ import type {
 import { parseMentionCommand } from '../domain/mention-command.parser'
 
 const isCommitSha = Schema.is(commitShaSchema)
-/** GitHub's built-in repository roles; any other `role_name` is a custom role. */
-const BUILT_IN_ROLES = ['admin', 'maintain', 'write', 'triage', 'read'] as const
-/** Roles a login listed in `commands.allow` must still have; a renamed or demoted login drops out. */
-const ALLOWED_ROLES = ['admin', 'maintain', 'write'] as const
-/** Base permissions a custom role of a listed login must map to: it inherits write or more. */
-const ALLOWED_PERMISSIONS = ['admin', 'write'] as const
-
-/**
- * True when a login listed in `commands.allow` still has write access: a built-in role of write or
- * more, or a custom role whose base permission is write or admin.
- */
-function hasWriteAccess(access: CollaboratorRole): boolean {
-	if (BUILT_IN_ROLES.some(role => role === access.role_name))
-		return ALLOWED_ROLES.some(role => role === access.role_name)
-	return ALLOWED_PERMISSIONS.some(
-		permission => permission === access.permission
-	)
-}
 
 /** What the authorize step decides on: the comment, the handle inputs and the default branch's rules. */
 export interface AuthorizeInput {

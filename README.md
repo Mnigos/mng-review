@@ -304,6 +304,18 @@ Each command run shows four jobs. `MNG Review (authorize)` holds no secret and a
 
 `reserve` and both publish jobs, the push one and the command one, share one concurrency group per pull request, and GitHub keeps only one waiting job per group: a newer waiting job cancels an older waiting one. A command's publish can then be cancelled after its run was counted and the model was paid for, and a command's `reserve` can cancel a waiting push publish, which leaves that head without a status. To recover, re-run the push run's workflow, or post a new command comment. A pull request that closes or moves to a fork while a command reviews it gets nothing posted.
 
+### Replies
+
+Reply in one of the bot's bug or unverified threads to tell it what happened to the finding:
+
+- `fixed`, after a commit that fixes it. The validator checks the finding again over the change since the thread's commit, without your text. When it no longer holds, the bot answers "no longer found" and stops counting the thread; otherwise it answers that the finding is still found at the head.
+- `intentional because` and the reason, with a `path:line` that shows it. A reason that holds against the code, backed by a line that exists outside what the pull request added, is accepted: the bot stops counting the thread and offers one line for `.mng/MEMORY.md`, which counts only once a person merges it. A reason that does not hold is disputed once. A second disagreement, a `critical` finding, a file under `risk_paths` or a severity above `disputes.accept_intentional_up_to` goes to the owner.
+- Anything else gets one line saying what the bot understands.
+
+Only the latest comment of a thread counts, and only when a person with write access to the repository wrote it. The bot answers each reply once, at most eight threads per run. Answers come with the next push or command run.
+
+A thread that goes to the owner gets an answer saying so.
+
 ### Exit codes
 
 | Code | `mng-review`                                              | `plan`, `init`                                                                 |

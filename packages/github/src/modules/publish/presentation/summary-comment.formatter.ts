@@ -4,11 +4,17 @@ import { escapeMarkdown, toCodeSpan } from '../../../utils/markdown.util'
 import type { SummaryMarker } from '../domain/publish-marker.schema'
 import { MARKER_PREFIX, SHORT_SHA_LENGTH } from '../domain/publish.constants'
 import type {
+	AppliedReply,
+	BotThread,
 	PlannedThread,
 	PublishPlan,
 	ResolvedThread,
 } from '../domain/publish.types'
-import { toAgentRows, toRiskSource } from './summary-agents.formatter'
+import {
+	toAgentRows,
+	toRiskSource,
+	toRunNotes,
+} from './summary-agents.formatter'
 import {
 	type BlobLinks,
 	toFindingDetailLines,
@@ -56,7 +62,9 @@ export interface SummaryInput {
 	readonly links: BlobLinks
 	/** Threads this run resolved after checking them again. */
 	readonly resolved: readonly ResolvedThread[]
-	/** Tokens of the whole job, the re-check included. */
+	/** Authors' replies this run answered; none when unset. */
+	readonly answered?: readonly AppliedReply[]
+	/** Tokens of the whole job, the re-check and the reply decisions included. */
 	readonly tokens: TokensByModel
 }
 
@@ -140,7 +148,7 @@ function bySeverity(a: PlannedThread, b: PlannedThread): number {
 
 /** New threads, findings that could not get one, and what stays in the summary. */
 function toFindingLines(input: SummaryInput, limit: number): string[] {
-	const { plan, report, links } = input
+	const { plan, report, links, answered = [] } = input
 	const threads = plan.threads.toSorted(bySeverity)
 	const posted = threads.filter(
 		thread => thread.place === 'line' || thread.place === 'file'
@@ -187,7 +195,15 @@ function toFindingLines(input: SummaryInput, limit: number): string[] {
 				input.resolved,
 				limit,
 				entry =>
-					`- ${toCodeSpan(`${entry.thread.path}:${entry.thread.line ?? entry.thread.originalLine ?? entry.thread.marker.line}`)} ${escapeMarkdown(toShortText(entry.thread.marker.title))}: ${escapeMarkdown(toShortText(entry.reason))}`
+					`${toThreadLine(entry.thread)}: ${escapeMarkdown(toShortText(entry.reason))}`
+			)
+		),
+		...toSection(
+			`Replies answered by this run (${answered.length}):`,
+			toCapped(
+				answered,
+				limit,
+				entry => `${toThreadLine(entry.thread)}: ${entry.decision.action}`
 			)
 		),
 		...toSection(
@@ -213,6 +229,11 @@ function toFindingLines(input: SummaryInput, limit: number): string[] {
 	]
 }
 
+/** One of the bot's threads as a list line: its place and title. */
+function toThreadLine(thread: BotThread): string {
+	return `- ${toCodeSpan(`${thread.path}:${thread.line ?? thread.originalLine ?? thread.marker.line}`)} ${escapeMarkdown(toShortText(thread.marker.title))}`
+}
+
 /** Model text cut to `MAX_TEXT_CHARS` before it is escaped, so a list line stays short. */
 function toShortText(text: string): string {
 	return text.length > MAX_TEXT_CHARS
@@ -235,38 +256,6 @@ function toRejectedLines(report: ReviewReport, limit: number): string[] {
 		),
 		'',
 		'</details>',
-	]
-}
-
-/** Skipped agents, units that did not finish, dropped models and an endpoint failure. */
-function toRunNotes(report: ReviewReport, limit: number): string[] {
-	const { skips } = report.planReport.plan
-	const unfinished = [
-		...report.agents
-			.filter(agent => agent.status === 'failed')
-			.map(agent => `${agent.name} failed`),
-		...(report.incomplete?.unfinished ?? []),
-		...report.droppedModels.map(drop => `model ${drop.model} dropped`),
-	]
-	const skipped = skips
-		.slice(0, limit)
-		.map(
-			skip => `${escapeMarkdown(skip.name)} (${escapeMarkdown(skip.reason)})`
-		)
-	return [
-		...(skipped.length === 0 ? [] : ['', `Skipped: ${skipped.join(', ')}`]),
-		...(unfinished.length === 0
-			? []
-			: [
-					'',
-					`Did not finish: ${unfinished.slice(0, limit).map(escapeMarkdown).join(', ')}`,
-				]),
-		...(report.endpointError
-			? [
-					'',
-					`The model endpoint failed: ${escapeMarkdown(report.endpointError)}`,
-				]
-			: []),
 	]
 }
 

@@ -99,6 +99,25 @@ export const reviewThreadsAnswerSchema = Schema.Struct({
 })
 export type ReviewThreadsAnswer = typeof reviewThreadsAnswerSchema.Type
 
+/** The answer to the thread comments query; `node` is `null` for an id GitHub does not know. */
+export const threadCommentsAnswerSchema = Schema.Struct({
+	data: Schema.optionalKey(
+		Schema.NullOr(
+			Schema.Struct({
+				node: Schema.NullOr(
+					Schema.Struct({
+						comments: Schema.Struct({
+							pageInfo: pageInfoSchema,
+							nodes: Schema.Array(Schema.NullOr(threadCommentSchema)),
+						}),
+					})
+				),
+			})
+		)
+	),
+	errors: graphqlErrorsSchema,
+})
+
 /** The answer to the pull request comments query. */
 export const pullRequestCommentsAnswerSchema = Schema.Struct({
 	data: Schema.optionalKey(

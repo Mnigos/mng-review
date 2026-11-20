@@ -1,9 +1,11 @@
 import type { Rules } from '@mng-review/engine'
 import {
+	type BotThread,
 	GitHubConfig,
 	provideOwnedIdentities,
 	PublishService,
 	SummaryCommentService,
+	ThreadReplyService,
 	toLogText,
 } from '@mng-review/github'
 import { Console, Effect, FileSystem } from 'effect'
@@ -54,7 +56,8 @@ const readCommandRun = Effect.gen(function* () {
 /**
  * The prepare step of the review job: the checks before the probe and the GitHub reads over the
  * read token, with no endpoint variable and no model. The comments of every bot identity the base
- * rules own count. A GitHub error counts as no prior run and no threads. It writes the prepared file and the step output `ready`, and never fails on an
+ * rules own count. A GitHub error counts as no prior run and no threads. The authors' replies in
+ * those threads are collected before any model call; a GitHub error there counts as no reply. It writes the prepared file and the step output `ready`, and never fails on an
  * outcome; the review step reports it.
  */
 export const runPrepareStep = Effect.gen(function* () {
@@ -62,6 +65,7 @@ export const runPrepareStep = Effect.gen(function* () {
 	const fs = yield* FileSystem.FileSystem
 	const publisher = yield* PublishService
 	const summaries = yield* SummaryCommentService
+	const conversation = yield* ThreadReplyService
 	const { identity } = yield* GitHubConfig
 	const readPrior = (event: PullRequestEvent, rules: Rules) =>
 		summaries.readPrior(event.number).pipe(
@@ -81,6 +85,19 @@ export const runPrepareStep = Effect.gen(function* () {
 			provideOwnedIdentities(identity, rules.config.identity.previous),
 			Effect.orElseSucceed(() => [])
 		)
+	const readReplies = (
+		event: PullRequestEvent,
+		rules: Rules,
+		threads: readonly BotThread[],
+		prior: PriorRun | undefined
+	) =>
+		conversation
+			.collect({
+				pullNumber: event.number,
+				threads,
+				rotation: prior?.runs ?? 0,
+			})
+			.pipe(provideOwnedIdentities(identity, rules.config.identity.previous))
 	const command = yield* readCommandRun
 	const prepared: PreparedRun =
 		command?.status === 'skipped'
@@ -93,6 +110,7 @@ export const runPrepareStep = Effect.gen(function* () {
 						),
 						readPrior,
 						readThreads,
+						readReplies,
 						...(command ? { event: command.event } : {}),
 					})
 				)

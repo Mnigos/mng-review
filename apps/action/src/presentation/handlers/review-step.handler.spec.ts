@@ -5,7 +5,7 @@ import {
 	GitError,
 	ReviewRunService,
 } from '@mng-review/engine'
-import { ThreadRecheckService } from '@mng-review/github'
+import { ReplyDecisionService, ThreadRecheckService } from '@mng-review/github'
 import { Effect, FileSystem, Layer } from 'effect'
 import { PrepareRunServiceLive } from '../../application/prepare-run.service'
 import {
@@ -22,6 +22,10 @@ import {
 import { recheckProposals } from '../../shared/mocks/outcome-file.helper'
 import { stepFixture } from '../../shared/mocks/step-test.helper'
 import { runReviewStep } from './review-step.handler'
+
+const NO_REPLY_DECISIONS = Layer.succeed(ReplyDecisionService, {
+	decide: () => Effect.succeed(undefined),
+})
 
 afterEach(() => {
 	cleanupRepos()
@@ -116,6 +120,7 @@ layer(FileSystemLayer)(
 						)
 						const completed = yield* runReviewStep.pipe(
 							Effect.provide(reviewLayer),
+							Effect.provide(NO_REPLY_DECISIONS),
 							Effect.provide(
 								Layer.succeed(ThreadRecheckService, { propose: proposeSpy })
 							),
@@ -203,6 +208,7 @@ layer(FileSystemLayer)(
 											Effect.succeed({ status: 'skipped', reason: 'unused' }),
 									})
 								),
+								Effect.provide(NO_REPLY_DECISIONS),
 								Effect.provide(
 									Layer.succeed(ThreadRecheckService, {
 										propose: () => Effect.die('unexpected proposal'),
@@ -252,6 +258,7 @@ layer(FileSystemLayer)(
 					expect(
 						yield* runReviewStep.pipe(
 							Effect.provide(reviewLayer),
+							Effect.provide(NO_REPLY_DECISIONS),
 							Effect.provide(
 								Layer.succeed(ThreadRecheckService, {
 									propose: () =>
@@ -330,6 +337,7 @@ layer(FileSystemLayer)('review command without GitHub services', test => {
 										)
 									)
 								),
+								Effect.provide(NO_REPLY_DECISIONS),
 								Effect.provide(
 									Layer.succeed(ThreadRecheckService, { propose: proposeSpy })
 								),

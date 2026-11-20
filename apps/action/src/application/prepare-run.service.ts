@@ -52,10 +52,14 @@ export const PrepareRunServiceLive = Layer.effect(
 			const threads = input.readThreads
 				? yield* input.readThreads(event, rules)
 				: []
+			const replies = input.readReplies
+				? yield* input.readReplies(event, rules, threads, prior)
+				: []
 			return {
 				status: 'ready',
 				event,
 				threads,
+				...(replies.length > 0 ? { replies } : {}),
 				rules,
 				...(prior ? { prior } : {}),
 			} as const

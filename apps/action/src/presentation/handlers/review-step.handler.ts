@@ -1,5 +1,7 @@
 import {
 	getPublishedFindings,
+	ReplyDecisionService,
+	type ReplyDecisions,
 	ThreadRecheckService,
 	type ThreadRecheckProposals,
 } from '@mng-review/github'
@@ -142,14 +144,32 @@ const proposeRecheck = (outcome: ReviewedRun, prepared: PreparedRun) =>
 	)
 
 /**
+ * The engine's decisions on the authors' replies the prepare step read, after the re-check and on
+ * the same token ledger. Only reviewed runs get here, so a skipped or offline run decides nothing.
+ */
+const decideReplies = (outcome: ReviewedRun, prepared: PreparedRun) =>
+	prepared.status === 'ready'
+		? ReplyDecisionService.use(service =>
+				service.decide({
+					rules: outcome.rules,
+					pr: outcome.event.pr,
+					head: outcome.event.headSha,
+					mergeBase: outcome.report.planReport.change.mergeBase,
+					replies: prepared.replies ?? [],
+					threads: prepared.threads,
+				})
+			)
+		: Effect.succeed(undefined)
+
+/**
  * Builds the outcome file's text, parses it back and checks its binding against this job's event
  * and runner before it writes it, so a file that would not parse or would be refused is never
  * written. The publish job parses it again and checks it against its own trusted binding.
  */
 const writeCheckedOutcome = Effect.fn('reviewStep.writeCheckedOutcome')(
 	function* (outcome: ShadowOutcome, report: OutcomeContext) {
-		const { env, recheck } = report
-		const file = toOutcomeFile(outcome, recheck, env)
+		const { env, recheck, replies } = report
+		const file = toOutcomeFile(outcome, recheck, env, replies)
 		if (!file || !outcome.event) return undefined
 		const text = toOutcomeText(file, report.masked)
 		const parsed = yield* parseOutcomeFile(text)
@@ -174,12 +194,14 @@ interface ReviewEnvironment extends RunnerEnvironment {
 interface OutcomeContext {
 	readonly env: ReviewEnvironment
 	readonly recheck: ThreadRecheckProposals | undefined
+	readonly replies: ReplyDecisions | undefined
 	readonly masked: readonly string[]
 }
 
 /**
  * The review step of publish mode's review job: every model call and nothing on GitHub. It reads
- * the prepared file, reviews, proposes the re-check over the prepared threads, writes the checked
+ * the prepared file, reviews, proposes the re-check over the prepared threads, decides on the
+ * authors' replies the prepare step read, writes the checked
  * outcome file, the job summary, the result file and the step output `publish`. A prepared file
  * that cannot be read or decoded is an invalid configuration naming `MNG_REVIEW_PREPARED_PATH`. An
  * outcome to post whose file fails its own parse or binding check is not written, and the step
@@ -205,13 +227,20 @@ export const runReviewStep = Effect.gen(function* () {
 	const outcome = yield* ShadowRunService.use(service =>
 		service.review(prepared, onlyAgent ? { onlyAgent } : {})
 	)
-	const recheck =
+	const reviewed =
 		outcome.status === 'reviewed' && !outcome.report.planReport.plan.skippedRun
-			? yield* proposeRecheck(outcome, prepared)
+			? outcome
 			: undefined
+	const recheck = reviewed
+		? yield* proposeRecheck(reviewed, prepared)
+		: undefined
+	const replies = reviewed
+		? yield* decideReplies(reviewed, prepared)
+		: undefined
 	const refused = yield* writeCheckedOutcome(outcome, {
 		env: { ...env, trigger },
 		recheck,
+		replies,
 		masked,
 	}).pipe(
 		Effect.as(undefined),

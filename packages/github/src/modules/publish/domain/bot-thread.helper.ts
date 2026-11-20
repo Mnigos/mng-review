@@ -8,16 +8,23 @@ import {
 import type {
 	PullRequestComment,
 	ReviewThread,
+	ThreadComment,
 } from '../../../platform/github-api.schema'
 import type { GitHubApiError } from '../../../platform/github.errors'
 import type { Verdict } from '../presentation/summary-comment.formatter'
-import { parseFindingMarker, parseReplyMarker } from './publish-marker.parser'
+import {
+	hasBotMarker,
+	parseFindingMarker,
+	parseReplyMarker,
+} from './publish-marker.parser'
 import type { SummaryMarker } from './publish-marker.schema'
 import type { BotThread } from './publish.types'
 import type { MarkedRun } from './summary-marker.helper'
 
 /** The status GitHub answers when it refuses a comment's place, such as a line outside the diff. */
 const UNPROCESSABLE_STATUS = 422
+/** The bot's reply actions that close a thread for its counts. */
+const CLOSING_ACTIONS: ReadonlySet<string> = new Set(['resolved', 'accepted'])
 
 /**
  * True when an owned bot wrote the comment and nobody but that same bot edited it since. An edit
@@ -32,10 +39,38 @@ export function isBotComment(
 	return editor === null || isIdentity(editor, toBotIdentity(author.login))
 }
 
+/** True when the thread's latest comment is an owned bot's `resolved` or `accepted` reply. */
+function isClosedByBot(
+	thread: Pick<ReviewThread, 'comments'>,
+	latest: ThreadComment | undefined,
+	owned: readonly BotIdentity[]
+): boolean {
+	return (
+		thread.comments.totalCount > 1 &&
+		latest !== undefined &&
+		isBotComment(latest, owned) &&
+		CLOSING_ACTIONS.has(parseReplyMarker(latest.body)?.action ?? '')
+	)
+}
+
+/** What a thread keeps of its latest comment: id, author and whether it ends with a marker. */
+function toLatestFields(
+	comment: ThreadComment
+): Pick<BotThread, 'latestCommentId' | 'latestAuthor' | 'latestMarked'> {
+	const { author } = comment
+	return {
+		latestCommentId: comment.databaseId ?? undefined,
+		latestAuthor: author
+			? { type: author.__typename, login: author.login }
+			: undefined,
+		latestMarked: hasBotMarker(comment.body),
+	}
+}
+
 /**
  * The bot's thread with its marker, or `undefined` for anyone else's thread, an edited one or an
- * unmarked one. A thread whose latest comment is a reply of any owned identity that the finding no
- * longer holds counts as resolved: the bot's tokens cannot resolve threads (GitHub asks for
+ * unmarked one. A thread whose latest comment is a `resolved` or `accepted` reply of any owned
+ * identity counts as resolved: the bot's tokens cannot resolve threads (GitHub asks for
  * `contents: write`).
  */
 export function toBotThread(
@@ -48,11 +83,7 @@ export function toBotThread(
 	if (!marker) return undefined
 	const onFile = thread.subjectType === 'FILE'
 	const [latest] = thread.latest?.nodes ?? []
-	const closedByBot =
-		thread.comments.totalCount > 1 &&
-		latest !== undefined &&
-		isBotComment(latest, owned) &&
-		parseReplyMarker(latest.body)?.action === 'resolved'
+	const closedByBot = isClosedByBot(thread, latest, owned)
 	return {
 		id: thread.id,
 		resolved: thread.isResolved || closedByBot,
@@ -64,6 +95,7 @@ export function toBotThread(
 		commit: first.originalCommit?.oid,
 		marker,
 		replies: Math.max(0, thread.comments.totalCount - 1),
+		...toLatestFields(latest ?? first),
 	}
 }
 

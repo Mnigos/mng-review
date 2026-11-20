@@ -1,6 +1,8 @@
 import { commitShaSchema, countSchema } from '@mng-review/domain'
 import {
+	decidedThreadReplySchema,
 	MAX_RECHECKS,
+	MAX_REPLY_THREADS,
 	MAX_REPORT_TEXT,
 	reviewReportSchema,
 	tokensByModelSchema,
@@ -50,10 +52,21 @@ export const recheckProposalSchema = Schema.Struct({
 	reason: textSchema,
 })
 
+/** The review's decisions on authors' replies; publishing applies each after its own read. */
+export const outcomeRepliesSchema = Schema.Struct({
+	decided: Schema.Array(decidedThreadReplySchema).check(
+		Schema.isMaxLength(MAX_REPLY_THREADS)
+	),
+	/** The job's tokens after the decisions. */
+	tokens: tokensByModelSchema,
+})
+export type OutcomeReplies = typeof outcomeRepliesSchema.Type
+
 /**
- * What the review hands to publishing: the binding, the status, the review report and the
- * re-check's proposals. It never holds the rules, the pull request's title or body, the run count,
- * a marker, a comment body, Markdown, a token or a key; publishing reads or builds those itself.
+ * What the review hands to publishing: the binding, the status, the review report, the re-check's
+ * proposals and the decisions on authors' replies. It never holds the rules, the pull request's
+ * title or body, the run count, a marker, a comment body, a reply's text, Markdown, a token or a
+ * key; publishing reads or builds those itself.
  */
 export const outcomeFileSchema = Schema.Struct({
 	version: Schema.Literal(OUTCOME_VERSION),
@@ -72,6 +85,7 @@ export const outcomeFileSchema = Schema.Struct({
 			tokens: tokensByModelSchema,
 		})
 	),
+	replies: Schema.optionalKey(outcomeRepliesSchema),
 }).check(
 	Schema.makeFilter(
 		file =>

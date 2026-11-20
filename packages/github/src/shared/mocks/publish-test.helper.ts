@@ -99,6 +99,9 @@ export function botThread(overrides: Partial<BotThread> = {}): BotThread {
 		commit: 'head',
 		marker: toFindingMarker({ finding: bug(), kind: 'bug' }, LINKS),
 		replies: 0,
+		latestCommentId: undefined,
+		latestAuthor: undefined,
+		latestMarked: true,
 		...overrides,
 	}
 }

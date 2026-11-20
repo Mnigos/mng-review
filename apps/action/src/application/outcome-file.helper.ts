@@ -10,6 +10,7 @@ import type { RunTrigger } from '../infrastructure/command-run.config'
 import {
 	type OutcomeBinding,
 	type OutcomeFile,
+	type OutcomeReplies,
 	OUTCOME_VERSION,
 } from '../infrastructure/outcome-file.schema'
 import type { RunnerEnvironment } from '../infrastructure/runner.client'
@@ -80,14 +81,15 @@ function toOutcomeReason(outcome: ShadowOutcome) {
 }
 
 /**
- * The outcome file of a run: its binding, status, reason, the review report and the threads the
- * re-check proposes to resolve. An outcome without an event (an invalid event, not a pull
- * request) has nothing to publish and gives no file.
+ * The outcome file of a run: its binding, status, reason, the review report, the threads the
+ * re-check proposes to resolve and the decisions on authors' replies. An outcome without an event
+ * (an invalid event, not a pull request) has nothing to publish and gives no file.
  */
 export function toOutcomeFile(
 	outcome: ShadowOutcome,
 	recheck: ThreadRecheckProposals | undefined,
-	env: BindingEnvironment
+	env: BindingEnvironment,
+	replies?: OutcomeReplies
 ): OutcomeFile | undefined {
 	if (!outcome.event) return undefined
 	const tokens = recheck?.tokens
@@ -112,6 +114,7 @@ export function toOutcomeFile(
 					},
 				}
 			: {}),
+		...(replies ? { replies } : {}),
 	}
 }
 
@@ -128,6 +131,7 @@ const TEXT_KEYS = new Set([
 	'premise',
 	'note',
 	'loweredBecause',
+	'memory',
 ])
 /** Keys of model names, cut to `MAX_REPORT_NAME`. */
 const NAME_KEYS = new Set(['model', 'fellBackFrom', 'validatedBy'])

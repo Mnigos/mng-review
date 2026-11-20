@@ -8,6 +8,7 @@ import type {
 	PullRequest,
 	PullRequestComment,
 	ReviewThread,
+	ThreadComment,
 } from '../../platform/github-api.schema'
 import {
 	GitHubApiService,
@@ -122,7 +123,10 @@ export function githubApiFake(
 		getPullRequest: [] as GitHubApiError[],
 		getIssueComment: [] as GitHubApiError[],
 		getCollaboratorRole: [] as GitHubApiError[],
+		listThreadComments: [] as GitHubApiError[],
 	}
+	/** Every comment of a thread by id; unset, a thread shows its first and latest comment. */
+	const threadComments = new Map<string, ThreadComment[]>()
 	const author = { __typename: 'Bot', login: identity.login }
 	const addThread = (input: ReviewCommentInput) => {
 		threads.push({
@@ -195,6 +199,23 @@ export function githubApiFake(
 				return undefined
 			}),
 		listReviewThreads,
+		listThreadComments: id =>
+			Effect.gen(function* () {
+				reads.push(`listThreadComments:${id}`)
+				const error = failures.listThreadComments.shift()
+				if (error) return yield* error
+				const thread = threads.find(entry => entry.id === id)
+				const latest =
+					thread && thread.comments.totalCount > 1
+						? (thread.latest?.nodes ?? [])
+						: []
+				return (
+					threadComments.get(id) ?? [
+						...(thread?.comments.nodes ?? []),
+						...latest,
+					]
+				)
+			}),
 		listComments: pullNumber =>
 			Effect.gen(function* () {
 				commentReads.push(pullNumber)
@@ -302,5 +323,6 @@ export function githubApiFake(
 		commentSnapshots,
 		reads,
 		command,
+		threadComments,
 	}
 }

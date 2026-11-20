@@ -69,6 +69,9 @@ export function recheckProposals(): ThreadRecheckProposals {
 				originalLine: finding.line,
 				commit: BASE_SHA,
 				replies: 0,
+				latestCommentId: undefined,
+				latestAuthor: undefined,
+				latestMarked: true,
 				marker: toFindingMarker(
 					{ finding, kind: 'bug' },
 					{

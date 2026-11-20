@@ -9,6 +9,7 @@ import type { AgentRunReport, ReviewReport } from '@mng-review/engine'
 import {
 	escapeMarkdown,
 	getAgentReport,
+	type PublishResult,
 	type SweepResult,
 	toCodeSpan,
 	toLogText,
@@ -243,6 +244,13 @@ function toOutcomeLines(outcome: ShadowOutcome, posted: boolean): string[] {
 	return toReviewedLines(outcome, posted)
 }
 
+/** Answers by action, such as `resolved 1, disputed 2`, or `none`. */
+function toAnswerText(answered: PublishResult['answered']): string {
+	const entries = Object.entries(answered)
+	if (entries.length === 0) return 'none'
+	return entries.map(([action, count]) => `${action} ${count}`).join(', ')
+}
+
 /** What publish mode did on the pull request, in one line of plain text. */
 function toPublishText(report: PublishReport): string {
 	if (report.status === 'failed') return `publishing failed: ${report.reason}`
@@ -253,7 +261,7 @@ function toPublishText(report: PublishReport): string {
 			? 'posted the offline status as the summary comment'
 			: 'kept the existing summary comment; the reviewer was offline'
 	const { result, checks } = report
-	return `posted run ${result.run}: verdict ${result.verdict}, ${result.openBugs} open bug thread(s); new threads: ${result.onLine} on lines, ${result.onFile} on files, ${result.inSummary} in the summary comment, ${result.unposted} not posted; ${result.repeated} already had a thread, ${result.dismissed} found again under resolved threads; ${result.resolved} of ${result.rechecked} rechecked thread(s) resolved; ${checks.checks} check run(s), status ${checks.status ? 'set' : 'not set'}; earlier summaries: ${result.cleanup}`
+	return `posted run ${result.run}: verdict ${result.verdict}, ${result.openBugs} open bug thread(s); new threads: ${result.onLine} on lines, ${result.onFile} on files, ${result.inSummary} in the summary comment, ${result.unposted} not posted; ${result.repeated} already had a thread, ${result.dismissed} found again under resolved threads; ${result.resolved} of ${result.rechecked} rechecked thread(s) resolved; ${checks.checks} check run(s), status ${checks.status ? 'set' : 'not set'}; earlier summaries: ${result.cleanup}; replies answered: ${toAnswerText(result.answered)}`
 }
 
 /** The engine's commit in a sentence. */

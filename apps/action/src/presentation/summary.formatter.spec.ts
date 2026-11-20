@@ -525,6 +525,7 @@ test.each(['published', 'failed', 'status-only', 'not-published'] as const)(
 							resolved: 3,
 							run: 6,
 							finished: true,
+							answered: {},
 							cleanup: 'none',
 						},
 					} as const)
@@ -596,6 +597,7 @@ test.each(['none', 'minimized', 'deleted', 'kept'] as const)(
 					dismissed: 0,
 					rechecked: 0,
 					resolved: 0,
+					answered: {},
 					run: 1,
 					finished: true,
 					cleanup,
