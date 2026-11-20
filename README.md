@@ -195,7 +195,7 @@ jobs:
 
 By default the bot is `github-actions[bot]`. To post threads, replies, the summary, check runs and the status as your own app instead:
 
-1. Create a GitHub App with no webhook and no events. Give it read and write on pull requests, checks and commit statuses, and read on metadata.
+1. Create a GitHub App with no webhook and no events. Give it read and write on pull requests, checks and commit statuses, and read on contents and metadata. Contents read is needed because the bot reads its review threads through GraphQL, which names each comment's commit; it never writes contents.
 2. Install it on the repositories that run the review, choosing them one by one.
 3. Store its client id and a private key as the repository secrets `MNG_REVIEW_APP_CLIENT_ID` and `MNG_REVIEW_APP_PRIVATE_KEY`.
 4. Reserve the user login that matches the app's slug, for example by creating an empty organization with that name. A mention of the handle then can never reach someone else's account, and a mention of an organization notifies nobody.

@@ -220,6 +220,8 @@ jobs:
           permission-pull-requests: write
           permission-checks: write
           permission-statuses: write
+          # Review threads read through GraphQL name each comment's commit, which needs contents read.
+          permission-contents: read
 
       # In app mode the entry gets the app token and never the job token.
       - name: Publish
