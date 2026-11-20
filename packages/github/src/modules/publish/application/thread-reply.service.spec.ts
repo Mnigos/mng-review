@@ -526,6 +526,150 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService apply', test => {
 				expect(fake.writes).toEqual([])
 			})
 	)
+	for (const scenario of [
+		'edited reply',
+		'newer person comment',
+		'newer bot answer',
+	] as const)
+		test.effect(
+			`${scenario} after the first read is not answered or resolved`,
+			() =>
+				Effect.gen(function* () {
+					const { fake } = setup()
+					const service = yield* ThreadReplyService.pipe(
+						Effect.provide(ThreadReplyServiceLive.pipe(Layer.provide(fake.api)))
+					)
+					const threads = [pendingBotThread()]
+					expect(
+						yield* service.collect({ pullNumber: 17, threads, rotation: 0 })
+					).toEqual([pendingReply()])
+					const original = threadReply({
+						databaseId: 42,
+						body: pendingReply().body,
+						author: { __typename: 'User', login: 'contributor' },
+					})
+					fake.threadComments.set(
+						'thread',
+						scenario === 'edited reply'
+							? [{ ...original, body: 'The guard still needs work.' }]
+							: [
+									original,
+									threadReply({
+										databaseId: 43,
+										...(scenario === 'newer person comment'
+											? { body: original.body, author: original.author }
+											: {}),
+									}),
+								]
+					)
+					expect(
+						yield* service.apply({
+							...replyRules(),
+							links: LINKS,
+							decisions: [
+								decidedReply({
+									action: 'resolved',
+									reason: 'The guard fixes it.',
+								}),
+							],
+							threads,
+						})
+					).toEqual([])
+					expect(
+						fake.reads.filter(read => read.startsWith('listThreadComments:'))
+					).toEqual(['listThreadComments:thread', 'listThreadComments:thread'])
+					expect(fake.writes).toEqual([])
+					expect(fake.threads[0]?.isResolved).toBe(false)
+				})
+		)
+	test.effect(
+		'a failed comment re-read skips only that thread and answers the next',
+		() =>
+			Effect.gen(function* () {
+				const { fake } = setup()
+				fake.threads.push(pendingReviewThread({ id: 'second' }))
+				const service = yield* ThreadReplyService.pipe(
+					Effect.provide(ThreadReplyServiceLive.pipe(Layer.provide(fake.api)))
+				)
+				const threads = [pendingBotThread(), pendingBotThread({ id: 'second' })]
+				expect(
+					yield* service.collect({ pullNumber: 17, threads, rotation: 0 })
+				).toEqual([pendingReply(), pendingReply({ threadId: 'second' })])
+				fake.failures.listThreadComments.push(apiError())
+				const decision = {
+					action: 'resolved',
+					reason: 'The guard fixes it.',
+				} as const satisfies ThreadReplyDecision
+				expect(
+					yield* service.apply({
+						...replyRules(),
+						links: LINKS,
+						decisions: [
+							decidedReply(decision),
+							decidedReply(decision, { threadId: 'second' }),
+						],
+						threads,
+					})
+				).toMatchObject([{ thread: { id: 'second' }, commentId: 42, decision }])
+				expect(
+					fake.reads.filter(read => read.startsWith('listThreadComments:'))
+				).toEqual([
+					'listThreadComments:thread',
+					'listThreadComments:second',
+					'listThreadComments:thread',
+					'listThreadComments:second',
+				])
+				expect(fake.failures.listThreadComments).toEqual([])
+				expect(fake.writes).toEqual([
+					expect.objectContaining({ method: 'reply', id: 'second' }),
+					{ method: 'resolve', id: 'second' },
+				])
+				expect(fake.threads[0]?.isResolved).toBe(false)
+			})
+	)
+	test.effect(
+		'an unchanged reply is re-read before the answer and resolve writes',
+		() =>
+			Effect.gen(function* () {
+				const { fake } = setup()
+				const service = yield* ThreadReplyService.pipe(
+					Effect.provide(ThreadReplyServiceLive.pipe(Layer.provide(fake.api)))
+				)
+				const threads = [pendingBotThread()]
+				expect(
+					yield* service.collect({ pullNumber: 17, threads, rotation: 0 })
+				).toEqual([pendingReply()])
+				const pushReadsSpy = vi.spyOn(fake.reads, 'push')
+				const pushWritesSpy = vi.spyOn(fake.writes, 'push')
+				const decision = {
+					action: 'resolved',
+					reason: 'The guard fixes it.',
+				} as const satisfies ThreadReplyDecision
+				expect(
+					yield* service.apply({
+						...replyRules(),
+						links: LINKS,
+						decisions: [decidedReply(decision)],
+						threads,
+					})
+				).toMatchObject([{ thread: { id: 'thread' }, commentId: 42, decision }])
+				expect(pushReadsSpy.mock.calls).toEqual([
+					['getCollaboratorRole:contributor'],
+					['listThreadComments:thread'],
+				])
+				expect(fake.writes).toEqual([
+					expect.objectContaining({ method: 'reply', id: 'thread' }),
+					{ method: 'resolve', id: 'thread' },
+				])
+				expect(pushReadsSpy.mock.invocationCallOrder.at(-1)).toBeLessThan(
+					pushWritesSpy.mock.invocationCallOrder[0] ?? 0
+				)
+				expect(pushWritesSpy.mock.invocationCallOrder[0]).toBeLessThan(
+					pushWritesSpy.mock.invocationCallOrder[1] ?? 0
+				)
+			})
+	)
+
 	for (const decision of DECISIONS)
 		test.effect(
 			`${decision.action} writes its text and the answered comment marker`,
