@@ -26,3 +26,29 @@ describe('reply text helpers', () => {
 		)
 	})
 })
+
+describe('toPlainText render syntax', () => {
+	test.each([
+		['[x](https://e.com)', ' x (https: //e.com)'],
+		['![a](b.png)', '  a (b.png)'],
+		['https://e.com/x', 'https: //e.com/x'],
+		['www.e.com', 'www e.com'],
+		['WWW.E.COM', 'WWW E.COM'],
+		['@user', ' user'],
+		['`code`', ' code '],
+		['<img src=x>', ' img src x '],
+		[
+			'src/[x]![a]@user`code`<img src=x>/www.e.com.ts',
+			'src/ x   a  user code  img src x /www e.com.ts',
+		],
+	] as const)('removes renderable syntax from %j', (text, expected) => {
+		const plain = toPlainText(text)
+		expect(plain).toBe(expected)
+		expect(plain).not.toMatch(/[[\]!@`<>]|:\/\/|www\./iu)
+		expect(plain).toMatch(/^[\p{L}\p{N} .,;:'"/_()-]*$/u)
+	})
+	test('preserves letters, digits and the supported punctuation', () => {
+		const text = 'Żółć 日本語 0123 .,;:\'"/_-()'
+		expect(toPlainText(text)).toBe(text)
+	})
+})
