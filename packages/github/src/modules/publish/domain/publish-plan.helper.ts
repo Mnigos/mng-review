@@ -67,14 +67,17 @@ function getTitleOverlap(a: string, b: string): number {
 }
 
 /**
- * True when the thread describes the finding's problem: the same fingerprint, or, for a thread on
- * a line of the head, the same path, a line at most `NEAR_LINES` away and similar titles. A thread
- * on a file, or an outdated one whose line left the diff, matches by fingerprint only, since its
- * old line number says nothing about the head.
+ * True when the thread describes the finding's problem: the same fingerprint; for an open thread,
+ * the same path and line (its original line when outdated) whatever the title, since the model
+ * rewords titles between runs; or, for a thread on a line of the head, the same path, a line at
+ * most `NEAR_LINES` away and similar titles. A thread on a file, and a resolved outdated one,
+ * match by fingerprint only, so a fixed bug that comes back on a changed line is posted again.
  */
 export function isSameProblem(finding: Finding, thread: BotThread): boolean {
 	if (thread.marker.fingerprint === finding.fingerprint) return true
 	if (thread.onFile || thread.path !== finding.path) return false
+	if (!thread.resolved && (thread.line ?? thread.originalLine) === finding.line)
+		return true
 	if (
 		thread.line === undefined ||
 		Math.abs(thread.line - finding.line) > NEAR_LINES
