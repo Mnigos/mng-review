@@ -74,7 +74,7 @@ function toPublishedReport(
 
 /** The outcome's reason and, for an invalid configuration, the file or key it names. */
 function toOutcomeReason(outcome: ShadowOutcome) {
-	if (outcome.status === 'reviewed') return {}
+	if (outcome.status === 'reviewed' || outcome.status === 'replied') return {}
 	if (outcome.status === 'invalid-config')
 		return { reason: outcome.reason, source: outcome.source }
 	return { reason: outcome.reason }
@@ -225,14 +225,15 @@ export function getBindingMismatch(
 }
 
 /**
- * True when the publish job has something to post: a reviewed run whose plan did not skip it, or
- * an offline endpoint on a push run. An offline command posts nothing. Every other outcome posts
- * nothing, so the publish job does not start.
+ * True when the publish job has something to post: a reviewed run whose plan did not skip it, the
+ * reply schedule's decisions, or an offline endpoint on a push run. An offline command or reply
+ * schedule run posts nothing. Every other outcome posts nothing, so the publish job does not start.
  */
 export function isPublishable(
 	outcome: ShadowOutcome,
 	trigger: RunTrigger = 'push'
 ): boolean {
+	if (outcome.status === 'replied') return trigger === 'converse'
 	if (outcome.status === 'offline') return trigger === 'push'
 	return (
 		outcome.status === 'reviewed' && !outcome.report.planReport.plan.skippedRun

@@ -162,10 +162,21 @@ export const createdSchema = Schema.Struct({ id: Schema.Number })
 /** GitHub's error body. */
 export const errorBodySchema = Schema.Struct({ message: Schema.String })
 
-/** An open pull request as the sweep needs it: its number and head commit. */
+/**
+ * An open pull request as the sweep and the reply schedule need it: its number, draft flag, both
+ * commits and the repositories, so a fork is told apart without another read.
+ */
 export const openPullRequestSchema = Schema.Struct({
 	number: Schema.Number,
-	head: Schema.Struct({ sha: Schema.String }),
+	draft: Schema.optionalKey(Schema.Boolean),
+	base: Schema.Struct({
+		sha: Schema.String,
+		repo: Schema.Struct({ full_name: Schema.String }),
+	}),
+	head: Schema.Struct({
+		sha: Schema.String,
+		repo: Schema.NullOr(Schema.Struct({ full_name: Schema.String })),
+	}),
 })
 export type OpenPullRequest = typeof openPullRequestSchema.Type
 

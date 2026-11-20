@@ -1,6 +1,11 @@
 import type { ConfigError, PullRequestInfo } from '@mng-review/domain'
 import type { ReviewReport, Rules } from '@mng-review/engine'
-import type { BotThread, PendingReply } from '@mng-review/github'
+import type {
+	BotThread,
+	PendingReply,
+	ReplyDecisions,
+	ReplyPending,
+} from '@mng-review/github'
 import type { Effect } from 'effect'
 
 /** The pull request a workflow run reviews: its number, the two commits and what the engine sees. */
@@ -31,6 +36,12 @@ export interface ShadowRunInput {
 	 */
 	readonly event?: PullRequestEvent
 	/**
+	 * A reply schedule run: no `skip` rule and no run limit gate it, since a reply on a pull request
+	 * with a skip label is still the author's question; a draft skips, and so does a pull request
+	 * with no reply to decide.
+	 */
+	readonly converse?: boolean
+	/**
 	 * The prepare step only: the earlier runs on the pull request, read before any model call, for
 	 * `limits.max_runs_per_pr` and incremental input. The rules at the base commit name the bot
 	 * identities whose summary counts. Unset or `undefined`: no earlier run is known.
@@ -51,6 +62,15 @@ export interface ShadowRunInput {
 		threads: readonly BotThread[],
 		prior: PriorRun | undefined
 	) => Effect.Effect<readonly PendingReply[]>
+	/**
+	 * A reply schedule's prepare step: the threads and the replies in one read, with the waiting list
+	 * the find step and publishing use (`ReplyFindService.readPending`), instead of `readThreads`
+	 * and `readReplies`.
+	 */
+	readonly readPending?: (
+		event: PullRequestEvent,
+		rules: Rules
+	) => Effect.Effect<ReplyPending>
 }
 
 /** What the review step is told besides the prepared run. */
@@ -108,6 +128,13 @@ export interface FailedRun {
 	readonly event: PullRequestEvent
 }
 
+/** A reply schedule run decided on authors' replies and reviewed nothing. */
+export interface RepliedRun {
+	readonly status: 'replied'
+	readonly event: PullRequestEvent
+	readonly replies: ReplyDecisions
+}
+
 /** The change was planned and, unless the plan skipped it, reviewed. */
 export interface ReviewedRun {
 	readonly status: 'reviewed'
@@ -123,3 +150,4 @@ export type ShadowOutcome =
 	| InvalidConfigRun
 	| FailedRun
 	| ReviewedRun
+	| RepliedRun

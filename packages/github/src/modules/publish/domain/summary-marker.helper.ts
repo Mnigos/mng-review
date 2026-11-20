@@ -53,12 +53,7 @@ export function toNextSummaryMarker(
 		needsOwner: previousWaiting,
 		...carried
 	} = previous ?? { v: MARKER_VERSION, runs: 0 }
-	const needsOwner = [
-		...new Set([
-			...(previousWaiting ?? []).filter(id => !update.waiting?.cleared.has(id)),
-			...(update.waiting?.added ?? []),
-		]),
-	]
+	const needsOwner = toNextWaiting(previousWaiting, update.waiting)
 	const reviewed = isReplacing(update)
 	const finished = update.partial
 		? (carried.finished ?? false)
@@ -77,6 +72,35 @@ export function toNextSummaryMarker(
 		...(unthreadedBugs > 0 ? { unthreadedBugs } : {}),
 		...(needsOwner.length > 0 ? { needsOwner } : {}),
 	}
+}
+
+/** The waiting thread ids without those an owner cleared, plus this run's, each once. */
+function toNextWaiting(
+	previous: readonly string[] | undefined,
+	update: WaitingUpdate | undefined
+): string[] {
+	return [
+		...new Set([
+			...(previous ?? []).filter(id => !update?.cleared.has(id)),
+			...(update?.added ?? []),
+		]),
+	]
+}
+
+/**
+ * The summary marker after a reply-only run, which reviewed nothing: the run count, head, finished
+ * flag and unthreaded bugs stay; only the threads waiting for the owner change.
+ */
+export function toRepliedMarker(
+	previous: SummaryMarker | undefined,
+	waiting: WaitingUpdate
+): SummaryMarker {
+	const { needsOwner: previousWaiting, ...carried } = previous ?? {
+		v: MARKER_VERSION,
+		runs: 0,
+	}
+	const needsOwner = toNextWaiting(previousWaiting, waiting)
+	return { ...carried, ...(needsOwner.length > 0 ? { needsOwner } : {}) }
 }
 
 /**

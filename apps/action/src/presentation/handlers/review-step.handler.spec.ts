@@ -23,6 +23,7 @@ import {
 	pendingReply,
 	pendingBotThread,
 } from '../../../../../packages/github/src/shared/mocks/thread-reply-test.helper'
+import { ConverseRunService } from '../../application/converse-run.service'
 import { PrepareRunServiceLive } from '../../application/prepare-run.service'
 import {
 	ShadowRunService,
@@ -47,6 +48,10 @@ vi.mock('@mng-review/engine', async importOriginal => {
 
 const NO_REPLY_DECISIONS = Layer.succeed(ReplyDecisionService, {
 	decide: () => Effect.succeed(undefined),
+})
+/** A push or command run never takes the reply schedule's review. */
+const NO_CONVERSE = Layer.succeed(ConverseRunService, {
+	review: () => Effect.die('a push or command run never answers alone'),
 })
 
 afterEach(() => {
@@ -152,6 +157,7 @@ layer(FileSystemLayer)(
 							)
 						)
 						const completed = yield* runReviewStep.pipe(
+							Effect.provide(NO_CONVERSE),
 							Effect.provide(reviewLayer),
 							Effect.provide(
 								Layer.succeed(ReplyDecisionService, { decide: decideSpy })
@@ -258,6 +264,7 @@ layer(FileSystemLayer)(
 						})
 						expect(
 							yield* runReviewStep.pipe(
+								Effect.provide(NO_CONVERSE),
 								Effect.provide(
 									Layer.succeed(ShadowRunService, {
 										review: reviewSpy,
@@ -314,6 +321,7 @@ layer(FileSystemLayer)(
 					)
 					expect(
 						yield* runReviewStep.pipe(
+							Effect.provide(NO_CONVERSE),
 							Effect.provide(reviewLayer),
 							Effect.provide(NO_REPLY_DECISIONS),
 							Effect.provide(
@@ -382,6 +390,7 @@ layer(FileSystemLayer)('review command without GitHub services', test => {
 								Effect.succeed({ checked: 0, rejected: [], tokens: {} })
 							)
 							yield* runReviewStep.pipe(
+								Effect.provide(NO_CONVERSE),
 								Effect.provide(
 									ShadowRunServiceLive.pipe(
 										Layer.provide(PrepareRunServiceLive),
@@ -506,6 +515,7 @@ layer(FileSystemLayer)('review reply decisions from the engine', test => {
 					)
 					const httpSpy = vi.fn(() => Effect.die('unexpected HTTP request'))
 					yield* runReviewStep.pipe(
+						Effect.provide(NO_CONVERSE),
 						Effect.provide(
 							ShadowRunServiceLive.pipe(
 								Layer.provide(PrepareRunServiceLive),

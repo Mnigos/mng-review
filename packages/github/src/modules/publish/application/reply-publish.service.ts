@@ -1,0 +1,284 @@
+import type { Rules } from '@mng-review/engine'
+import { Context, Effect, Layer } from 'effect'
+import { GitHubApiService } from '../../../platform/github-api.service'
+import { GitHubStatusService } from '../../../platform/github-status.service'
+import { GitHubConfig } from '../../../platform/github.config'
+import type { GitHubApiError } from '../../../platform/github.errors'
+import { OwnedIdentities } from '../../../platform/owned-identities.context'
+import { toCommitStatus } from '../../status/domain/status.helper'
+import {
+	getOwnerAnswered,
+	getStandingVerdict,
+	toBotThread,
+} from '../domain/bot-thread.helper'
+import type { SummaryMarker } from '../domain/publish-marker.schema'
+import type { AnswerCounts, LabelOutcome } from '../domain/publish.types'
+import { toRepliedMarker } from '../domain/summary-marker.helper'
+import {
+	toAnswerCounts,
+	toResolvers,
+} from '../domain/thread-conversation.helper'
+import type { Verdict } from '../presentation/summary-comment.formatter'
+import { formatRepliedSummary } from '../presentation/summary-reply.formatter'
+import { toBlobLinks } from '../presentation/thread-comment.formatter'
+import type { PublishReplies, PublishTarget } from './publish.service.types'
+import { ReplyCheckService, ReplyCheckServiceLive } from './reply-check.service'
+import { SummaryCommentService } from './summary-comment.service'
+import {
+	ThreadPlaceService,
+	ThreadPlaceServiceLive,
+} from './thread-place.service'
+import {
+	ThreadReplyService,
+	ThreadReplyServiceLive,
+} from './thread-reply.service'
+
+/** Answers after which a thread counts as closed. */
+const CLOSING_ACTIONS: ReadonlySet<string> = new Set(['resolved', 'accepted'])
+/** Answers that stand only within the limit, which needs the change read from git. */
+const LIMITED_ACTIONS: ReadonlySet<string> = new Set([
+	'accepted',
+	'needs-owner',
+])
+
+/** A reply-only run to publish: the review's decisions and the rules at the base commit. */
+export interface ReplyPublishInput extends PublishTarget {
+	readonly rules: Rules
+	readonly replies: PublishReplies
+}
+
+/** What a reply-only run did. */
+export interface ReplyPublishResult {
+	readonly verdict: Verdict
+	readonly openBugs: number
+	readonly answered: AnswerCounts
+	/** Threads that wait for the owner after the run. */
+	readonly waiting: number
+	readonly label: LabelOutcome
+	/** The run count, unchanged. */
+	readonly run: number
+	/** Whether the `MNG Review` status was set. */
+	readonly status: boolean
+}
+
+/** What a reply-only run whose summary write failed still writes: the status and the label. */
+interface FailClosedInput {
+	readonly pullNumber: number
+	readonly head: string
+	readonly openBugs: number
+	/** Threads waiting before and after the run. */
+	readonly before: number
+	readonly after: number
+}
+
+/** The open bugs, finished flag and verdict of the summary's head after a reply-only run. */
+function toStanding(marker: SummaryMarker, head: string, threadBugs: number) {
+	const onHead = marker.head === head
+	const openBugs = threadBugs + (onHead ? (marker.unthreadedBugs ?? 0) : 0)
+	const finished = marker.finished === true && onHead
+	const waiting = marker.needsOwner?.length ?? 0
+	return {
+		openBugs,
+		finished,
+		verdict: getStandingVerdict(openBugs, finished, waiting),
+	}
+}
+
+/**
+ * Publishes a reply-only run, which reviewed nothing, with the checks of a push run's publishing:
+ * answers the review's decisions after a fresh read of the bot's threads and publishing's own git
+ * check of the closing ones (`ReplyCheckService`, then `ThreadReplyService.apply`, which
+ * re-checks each reply's author and digest and lets `needs-owner` stand only past the limit or the
+ * rounds), rebuilds the waiting list from every owned summary and the bot's `needs-owner` answers,
+ * updates the summary's verdict and waiting list, the `needs-owner` label and the `MNG Review`
+ * status. It posts no finding thread and no check run, and the summary's run count, head,
+ * finished flag and unthreaded bugs stay as they were.
+ */
+export class ReplyPublishService extends Context.Service<
+	ReplyPublishService,
+	{
+		readonly publish: (
+			input: ReplyPublishInput
+		) => Effect.Effect<ReplyPublishResult, GitHubApiError, OwnedIdentities>
+	}
+>()('mng-review/ReplyPublishService') {}
+
+export const ReplyPublishServiceLive = Layer.effect(
+	ReplyPublishService,
+	Effect.gen(function* () {
+		const api = yield* GitHubApiService
+		const config = yield* GitHubConfig
+		const github = yield* GitHubStatusService
+		const summaries = yield* SummaryCommentService
+		const conversation = yield* ThreadReplyService
+		const places = yield* ThreadPlaceService
+		const replyChecks = yield* ReplyCheckService
+
+		/**
+		 * After a failed summary write: the status and the label from what the run computed, since the
+		 * find step will not list the pull request again. A thread that waits sets `needs owner` and
+		 * `failure`; with none the status stays.
+		 */
+		const failClosed = Effect.fn('ReplyPublishService.failClosed')(function* (
+			input: FailClosedInput
+		) {
+			if (input.after > 0)
+				yield* github
+					.setStatus({
+						sha: input.head,
+						...toCommitStatus('needs owner', input.openBugs, true),
+					})
+					.pipe(Effect.ignore)
+			yield* conversation.syncLabel(input.pullNumber, input.before, input.after)
+		})
+
+		/** The pull request's review threads as GitHub returns them, and the bot's among them. */
+		const readAll = Effect.fn('ReplyPublishService.readAll')(function* (
+			pullNumber: number
+		) {
+			const { identities } = yield* OwnedIdentities
+			const raw = yield* api.listReviewThreads(pullNumber)
+			const threads = raw.flatMap(
+				thread => toBotThread(thread, identities) ?? []
+			)
+			return { raw, threads }
+		})
+
+		const publish = Effect.fn('ReplyPublishService.publish')(function* (
+			input: ReplyPublishInput
+		) {
+			const { pullNumber } = input
+			const links = toBlobLinks(config, input)
+			const first = yield* readAll(pullNumber)
+			const found = first.threads
+			const { identities } = yield* OwnedIdentities
+			// A failed whole-thread read leaves the latest comments the read brought for this run.
+			const sentBefore = yield* conversation
+				.getSentToOwner(first.raw)
+				.pipe(
+					Effect.orElseSucceed(() => getOwnerAnswered(first.raw, identities))
+				)
+			// Every summary's list, hidden ones too, and every thread the bot sent to the owner.
+			const waiting = [
+				...new Set([
+					...(yield* summaries.readWaiting(pullNumber)),
+					...sentBefore,
+				]),
+			]
+			// Publishing's own git read between the bound base and the head, never the outcome file.
+			const change = input.replies.decisions.some(entry =>
+				LIMITED_ACTIONS.has(entry.decision.action)
+			)
+				? yield* places.readChange(input.replies.base, input.head)
+				: undefined
+			const decisions = yield* replyChecks.check({
+				decisions: input.replies.decisions,
+				threads: found,
+				head: input.head,
+				change,
+			})
+			const answered = yield* conversation.apply({
+				links,
+				decisions,
+				threads: found,
+				waiting,
+				config: input.rules.config,
+				change,
+			})
+			const closed = new Set(
+				answered
+					.filter(entry => CLOSING_ACTIONS.has(entry.decision.action))
+					.map(entry => entry.thread.id)
+			)
+			// The answers are posted, so a failed read keeps the first one.
+			const second = yield* readAll(pullNumber).pipe(
+				Effect.orElseSucceed(() => first)
+			)
+			const latest = second.threads.map(thread =>
+				closed.has(thread.id) ? { ...thread, resolved: true } : thread
+			)
+			// Answers this run or one alongside it sent to the owner wait, even if the summary write failed.
+			const all = [
+				...new Set([
+					...waiting,
+					...answered
+						.filter(entry => entry.decision.action === 'needs-owner')
+						.map(entry => entry.thread.id),
+					...getOwnerAnswered(second.raw, identities),
+				]),
+			]
+			const cleared = yield* conversation.getCleared({
+				waiting: all,
+				resolvers: toResolvers(second.raw),
+				allow: input.rules.config.commands.allow,
+			})
+			const update = { added: all.filter(id => !cleared.has(id)), cleared }
+			const threadBugs = latest.filter(
+				thread => !thread.resolved && thread.marker.kind === 'bug'
+			).length
+			const written = yield* summaries
+				.write(pullNumber, current => {
+					const marker = toRepliedMarker(current?.marker, update)
+					const body = formatRepliedSummary(current, {
+						...toStanding(marker, input.head, threadBugs),
+						waiting: latest.filter(thread =>
+							marker.needsOwner?.includes(thread.id)
+						),
+						marker,
+						links,
+					})
+					return { body, marker }
+				})
+				.pipe(
+					Effect.tapError(() =>
+						failClosed({
+							pullNumber,
+							head: input.head,
+							openBugs: threadBugs,
+							before: waiting.length,
+							after: update.added.length,
+						})
+					)
+				)
+			const standing = toStanding(written.marker, input.head, threadBugs)
+			const owner = written.marker.needsOwner?.length ?? 0
+			const status = yield* github
+				.setStatus({
+					sha: input.head,
+					...toCommitStatus(
+						standing.verdict,
+						standing.openBugs,
+						standing.finished
+					),
+				})
+				.pipe(
+					Effect.as(true),
+					Effect.orElseSucceed(() => false)
+				)
+			const label = yield* conversation.syncLabel(
+				pullNumber,
+				waiting.length,
+				owner
+			)
+			return {
+				verdict: standing.verdict,
+				openBugs: standing.openBugs,
+				answered: toAnswerCounts(answered),
+				waiting: owner,
+				label,
+				run: written.marker.runs,
+				status,
+			} satisfies ReplyPublishResult
+		})
+
+		return { publish }
+	})
+).pipe(
+	Layer.provide(
+		Layer.mergeAll(
+			ThreadReplyServiceLive,
+			ThreadPlaceServiceLive,
+			ReplyCheckServiceLive
+		)
+	)
+)

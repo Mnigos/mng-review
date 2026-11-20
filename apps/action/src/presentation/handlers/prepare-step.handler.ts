@@ -4,6 +4,7 @@ import {
 	GitHubConfig,
 	provideOwnedIdentities,
 	PublishService,
+	ReplyFindService,
 	SummaryCommentService,
 	ThreadReplyService,
 	toLogText,
@@ -18,6 +19,7 @@ import type {
 } from '../../application/shadow-run.types'
 import {
 	commandTargetConfig,
+	runNumberConfig,
 	triggerConfig,
 } from '../../infrastructure/command-run.config'
 import {
@@ -38,12 +40,13 @@ function toPrepareLine(prepared: PreparedRun): string {
 }
 
 /**
- * A command run's pull request, read again instead of the comment's event; a closed, moved or
- * fork pull request skips the run. `undefined` for a push run.
+ * A command or reply schedule run's pull request, read again instead of the event; a closed, moved
+ * or fork pull request skips the run. `undefined` for a push run.
  */
 const readCommandRun = Effect.gen(function* () {
-	if ((yield* triggerConfig) !== 'command') return undefined
-	return yield* readCommandEvent(yield* commandTargetConfig)
+	const trigger = yield* triggerConfig
+	if (trigger === 'push') return undefined
+	return yield* readCommandEvent(yield* commandTargetConfig, trigger)
 }).pipe(
 	Effect.catchTag('ConfigError', error =>
 		Effect.succeed({
@@ -58,7 +61,8 @@ const readCommandRun = Effect.gen(function* () {
  * read token, with no endpoint variable and no model. The comments of every bot identity the base
  * rules own count. A GitHub error counts as no prior run and no threads. The authors' replies in
  * those threads are collected before any model call; a GitHub error there counts as no reply. It writes the prepared file and the step output `ready`, and never fails on an
- * outcome; the review step reports it.
+ * outcome; the review step reports it. A reply schedule run reads its threads and replies as the
+ * find step does (`ReplyFindService.readPending`).
  */
 export const runPrepareStep = Effect.gen(function* () {
 	const env = yield* runnerEnvironmentConfig
@@ -66,7 +70,16 @@ export const runPrepareStep = Effect.gen(function* () {
 	const publisher = yield* PublishService
 	const summaries = yield* SummaryCommentService
 	const conversation = yield* ThreadReplyService
+	const finder = yield* ReplyFindService
 	const { identity } = yield* GitHubConfig
+	const trigger = yield* triggerConfig.pipe(
+		Effect.orElseSucceed(() => 'push' as const)
+	)
+	const converse = trigger === 'converse'
+	// A reply-only run never advances the run count, so the schedule's run number shifts the batch.
+	const rotation = converse
+		? yield* runNumberConfig.pipe(Effect.orElseSucceed(() => 0))
+		: undefined
 	const readPrior = (event: PullRequestEvent, rules: Rules) =>
 		summaries.readPrior(event.number).pipe(
 			provideOwnedIdentities(identity, rules.config.identity.previous),
@@ -96,10 +109,18 @@ export const runPrepareStep = Effect.gen(function* () {
 			.collect({
 				pullNumber: event.number,
 				threads,
-				rotation: prior?.runs ?? 0,
+				rotation: rotation ?? prior?.runs ?? 0,
 				waiting: prior?.waiting ?? [],
 			})
 			.pipe(provideOwnedIdentities(identity, rules.config.identity.previous))
+	// The schedule's own read: the waiting list from every summary and the bot's answers.
+	const readPending = (event: PullRequestEvent, rules: Rules) =>
+		finder
+			.readPending({ pullNumber: event.number, rotation: rotation ?? 0 })
+			.pipe(
+				provideOwnedIdentities(identity, rules.config.identity.previous),
+				Effect.orElseSucceed(() => ({ threads: [], replies: [] }))
+			)
 	const command = yield* readCommandRun
 	const prepared: PreparedRun =
 		command?.status === 'skipped'
@@ -111,8 +132,9 @@ export const runPrepareStep = Effect.gen(function* () {
 							Effect.provideService(FileSystem.FileSystem, fs)
 						),
 						readPrior,
-						readThreads,
-						readReplies,
+						...(converse
+							? { converse, readPending }
+							: { readThreads, readReplies }),
 						...(command ? { event: command.event } : {}),
 					})
 				)
