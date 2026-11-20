@@ -3,6 +3,7 @@ import { REDACTED } from '@mng-review/engine'
 import {
 	MAX_REPORT_ENTRIES,
 	MAX_REPORT_NAME,
+	MAX_REPORT_NAMES,
 	MAX_REPORT_TEXT,
 } from '@mng-review/github'
 import { Effect, Layer, Schema } from 'effect'
@@ -198,6 +199,66 @@ describe('outcome file helpers', () => {
 })
 
 layer(Layer.empty)('toOutcomeText', test => {
+	test.effect('caps finding models at the name-list limit', () =>
+		Effect.gen(function* () {
+			const report = boundReviewReport()
+			const models = Array.from(
+				{ length: MAX_REPORT_NAMES + 1 },
+				(_, index) => `model-${index}`
+			)
+			const file = {
+				...outcomeFile(),
+				report: {
+					...report,
+					bugs: report.bugs.map(finding => ({ ...finding, models })),
+				},
+			}
+			const decoded = yield* parseOutcomeFile(toOutcomeText(file, []))
+			expect(decoded.report?.bugs[0]?.models).toHaveLength(MAX_REPORT_NAMES)
+			expect(decoded.report?.bugs[0]?.models).toEqual(
+				models.slice(0, MAX_REPORT_NAMES)
+			)
+		})
+	)
+	test.effect('preserves finding models exactly at the name-list limit', () =>
+		Effect.gen(function* () {
+			const report = boundReviewReport()
+			const models = Array.from(
+				{ length: MAX_REPORT_NAMES },
+				(_, index) => `model-${index}`
+			)
+			const file = {
+				...outcomeFile(),
+				report: {
+					...report,
+					bugs: report.bugs.map(finding => ({ ...finding, models })),
+				},
+			}
+			const decoded = yield* parseOutcomeFile(toOutcomeText(file, []))
+			expect(decoded.report?.bugs[0]?.models).toEqual(models)
+		})
+	)
+	test.effect('caps finding evidence at the report-entry limit', () =>
+		Effect.gen(function* () {
+			const report = boundReviewReport()
+			const evidence = Array.from(
+				{ length: MAX_REPORT_ENTRIES + 1 },
+				(_, index) => `src/evidence-${index}.ts:1`
+			)
+			const file = {
+				...outcomeFile(),
+				report: {
+					...report,
+					bugs: report.bugs.map(finding => ({ ...finding, evidence })),
+				},
+			}
+			const decoded = yield* parseOutcomeFile(toOutcomeText(file, []))
+			expect(decoded.report?.bugs[0]?.evidence).toHaveLength(MAX_REPORT_ENTRIES)
+			expect(decoded.report?.bugs[0]?.evidence).toEqual(
+				evidence.slice(0, MAX_REPORT_ENTRIES)
+			)
+		})
+	)
 	test.effect(
 		'replaces masked values in nested strings and token-map keys without losing colliding entries',
 		() =>
