@@ -5,6 +5,7 @@ import {
 	APP_MODE_IDENTITIES,
 	APP_IDENTITY,
 	report,
+	agentReport,
 	reviewThread,
 	threadReply,
 	botClosedReviewThread,
@@ -12,6 +13,7 @@ import {
 } from '../../../shared/mocks/publish-test.helper'
 import {
 	getVerdict,
+	isFullReview,
 	isBotComment,
 	isRefused,
 	toBotThread,
@@ -378,4 +380,80 @@ describe('ownership across a switch', () => {
 			)
 		).toMatchObject({ resolved: true, closedByBot: true })
 	})
+})
+
+describe('full review completion', () => {
+	test.each([
+		{ previous: undefined, finished: false },
+		{ previous: { head: 'head' }, finished: false },
+		{ previous: { head: 'head', finished: false }, finished: false },
+		{ previous: { finished: true }, finished: false },
+		{ previous: { head: 'old-head', finished: true }, finished: false },
+		{ previous: { head: 'head', finished: true }, finished: true },
+	])(
+		'single-agent completion inherits $previous as $finished',
+		({ previous, finished }) => {
+			for (const endpointError of [undefined, 'offline'])
+				expect(
+					isFullReview({ ...report(), endpointError }, previous, {
+						head: 'head',
+						partial: true,
+					})
+				).toBe(finished)
+		}
+	)
+	test.each([
+		{ label: 'complete', reviewed: report(), finished: true },
+		{
+			label: 'endpoint failure',
+			reviewed: { ...report(), endpointError: 'offline' },
+			finished: false,
+		},
+		{
+			label: 'budget stop',
+			reviewed: {
+				...report(),
+				incomplete: { reason: 'budget', unfinished: [] },
+			},
+			finished: false,
+		},
+		{
+			label: 'failed agent',
+			reviewed: { ...report(), agents: [agentReport('failed')] },
+			finished: false,
+		},
+		{
+			label: 'incomplete agent',
+			reviewed: { ...report(), agents: [agentReport('incomplete')] },
+			finished: false,
+		},
+	])(
+		'full run completion follows the current report: $label',
+		({ reviewed, finished }) => {
+			expect(
+				isFullReview(
+					reviewed,
+					{ head: 'head', finished: !finished },
+					{ head: 'head', partial: false }
+				)
+			).toBe(finished)
+		}
+	)
+	test.each([
+		{ finished: false, openBugs: 0, verdict: 'incomplete' },
+		{ finished: true, openBugs: 0, verdict: 'ready' },
+		{ finished: false, openBugs: 1, verdict: 'needs fixes' },
+		{ finished: true, openBugs: 1, verdict: 'needs fixes' },
+	])(
+		'explicit completion $finished with $openBugs bugs produces $verdict',
+		({ finished, openBugs, verdict }) => {
+			expect(
+				getVerdict(
+					{ ...report(), endpointError: finished ? 'offline' : undefined },
+					openBugs,
+					finished
+				)
+			).toBe(verdict)
+		}
+	)
 })

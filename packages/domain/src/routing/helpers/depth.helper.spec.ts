@@ -65,3 +65,36 @@ describe('depth precedence', () => {
 		).toEqual({ depth: DEPTH_FOR_RISK.normal, source: 'risk normal' })
 	})
 })
+
+describe('command depth', () => {
+	test('takes precedence over risk paths, labels, config and router risk', () => {
+		const cfg = config({ depth: 'quick' })
+		expect(
+			resolveDepth(
+				cfg,
+				pr({ depth: 'deep', labels: [cfg.labels.depth.quick] }),
+				'trivial',
+				['src/risk.ts']
+			)
+		).toEqual({ depth: 'deep', source: 'command' })
+	})
+	test('does not create a label when choosing command depth', () => {
+		const info = pr({ depth: 'deep' })
+		expect(resolveDepth(config(), info, 'normal', [])).toEqual({
+			depth: 'deep',
+			source: 'command',
+		})
+		expect(info.labels).toEqual([])
+	})
+})
+
+describe('requested quick depth', () => {
+	test('wins over a deep label, review.yml and risky paths', () => {
+		const cfg = config({ depth: 'deep' })
+		const info = pr({ depth: 'quick', labels: [cfg.labels.depth.deep] })
+		expect(
+			resolveDepth(cfg, info, 'risky', ['src/billing/invoice.ts'])
+		).toEqual({ depth: 'quick', source: 'command' })
+		expect(info.labels).toEqual([cfg.labels.depth.deep])
+	})
+})

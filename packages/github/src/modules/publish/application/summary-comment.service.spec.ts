@@ -1099,3 +1099,437 @@ layer(APP_MODE_OWNED)('SummaryCommentService offline created result', test => {
 				})
 		)
 })
+
+/** A reservation below the trigger, with no workflow or model. */
+const MANUAL_RUN = {
+	pullNumber: 17,
+	head: 'head',
+	engineCommit: 'engine',
+	maxRuns: 3,
+	handle: 'review-helper',
+} as const
+
+layer(APP_MODE_OWNED)('SummaryCommentService manual reservations', test => {
+	for (const manualRuns of [undefined, 0, 2])
+		test.effect(
+			`increments ${manualRuns} manual runs and preserves all review state and text`,
+			() =>
+				Effect.gen(function* () {
+					const { fake, service } = setup()
+					const marker = {
+						...SUMMARY_MARKER,
+						runs: 12,
+						finished: true,
+						unthreadedBugs: 2,
+						...(manualRuns === undefined ? {} : { manualRuns }),
+					}
+					const visible = `Review details\n${toMarkerComment('summary', { ...SUMMARY_MARKER, manualRuns: 99 })}\nMore details\n\n`
+					fake.comments.push(
+						appSummary(marker, {
+							body: visible + toMarkerComment('summary', marker),
+						})
+					)
+					expect(
+						yield* SummaryCommentService.use(api =>
+							api.reserveManualRun(MANUAL_RUN)
+						).pipe(Effect.provide(service))
+					).toBe(true)
+					const reserved = { ...marker, manualRuns: (manualRuns ?? 0) + 1 }
+					expect(fake.writes).toEqual([
+						{
+							method: 'update',
+							id: fake.comments[0]?.databaseId,
+							body: fake.comments[0]?.body,
+						},
+					])
+					expect(
+						(fake.comments[0]?.body ?? '').replace(
+							/<!-- mng-review:summary .* -->$/u,
+							''
+						)
+					).toBe(visible)
+					expect(parseSummaryMarker(fake.comments[0]?.body ?? '')).toEqual(
+						reserved
+					)
+				})
+		)
+	test.effect(
+		'moves a previous identity summary to the app and carries every marker field',
+		() =>
+			Effect.gen(function* () {
+				const { fake, service } = setup()
+				const previous = priorSummary()
+				const marker = parseSummaryMarker(previous.body)
+				fake.comments.push(previous)
+				expect(
+					yield* SummaryCommentService.use(api =>
+						api.reserveManualRun(MANUAL_RUN)
+					).pipe(Effect.provide(service))
+				).toBe(true)
+				const visible = fake.comments.filter(comment => !comment.isMinimized)
+				expect(visible).toHaveLength(1)
+				expect(visible[0]?.author?.login).toBe(APP_IDENTITY.login)
+				expect(parseSummaryMarker(visible[0]?.body ?? '')).toEqual({
+					...marker,
+					manualRuns: 1,
+				})
+				expect(visible[0]?.body).toBe(
+					previous.body.replace(
+						/<!-- mng-review:summary .* -->$/u,
+						toMarkerComment('summary', {
+							...SUMMARY_MARKER,
+							...marker,
+							manualRuns: 1,
+						})
+					)
+				)
+				expect(
+					fake.comments.find(
+						comment => comment.databaseId === previous.databaseId
+					)
+				).toEqual({ ...previous, isMinimized: true })
+				expect(fake.writes.map(write => write.method)).toEqual([
+					'create',
+					'minimize',
+				])
+				expect(fake.writes.filter(write => write.method === 'update')).toEqual(
+					[]
+				)
+			})
+	)
+	test.effect(
+		'two reservations without a summary create one summary with two manual runs',
+		() =>
+			Effect.gen(function* () {
+				const { fake, service } = setup()
+				const summaries = yield* SummaryCommentService.pipe(
+					Effect.provide(service)
+				)
+				expect(yield* summaries.reserveManualRun(MANUAL_RUN)).toBe(true)
+				expect(yield* summaries.reserveManualRun(MANUAL_RUN)).toBe(true)
+				expect(
+					fake.comments.filter(comment => !comment.isMinimized)
+				).toHaveLength(1)
+				expect(parseSummaryMarker(fake.comments[0]?.body ?? '')).toEqual({
+					v: SUMMARY_MARKER.v,
+					runs: 0,
+					finished: false,
+					manualRuns: 2,
+				})
+				expect(fake.writes.map(write => write.method)).toEqual([
+					'create',
+					'update',
+				])
+			})
+	)
+	for (const previousIdentity of [false, true])
+		for (const manualRuns of [3, 4])
+			test.effect(
+				`cap ${manualRuns} under previous identity=${previousIdentity} writes nothing`,
+				() =>
+					Effect.gen(function* () {
+						const { fake, service } = setup()
+						const original = previousIdentity
+							? {
+									...priorSummary(),
+									body: toMarkerComment('summary', {
+										...SUMMARY_MARKER,
+										manualRuns,
+									}),
+								}
+							: appSummary({ ...SUMMARY_MARKER, manualRuns })
+						fake.comments.push(original)
+						expect(
+							yield* SummaryCommentService.use(api =>
+								api.reserveManualRun(MANUAL_RUN)
+							).pipe(Effect.provide(service))
+						).toBe(false)
+						expect(fake.writes).toEqual([])
+						expect(fake.comments).toEqual([original])
+					})
+			)
+	test.effect(
+		'an identity switch preserves an existing manual and unthreaded bug count',
+		() =>
+			Effect.gen(function* () {
+				const { fake, service } = setup()
+				const marker = {
+					...SUMMARY_MARKER,
+					manualRuns: 2,
+					unthreadedBugs: 4,
+					finished: true,
+				}
+				fake.comments.push({
+					...priorSummary(),
+					body: toMarkerComment('summary', marker),
+				})
+				expect(
+					yield* SummaryCommentService.use(api =>
+						api.reserveManualRun(MANUAL_RUN)
+					).pipe(Effect.provide(service))
+				).toBe(true)
+				expect(
+					parseSummaryMarker(
+						fake.comments.find(comment => !comment.isMinimized)?.body ?? ''
+					)
+				).toEqual({ ...marker, manualRuns: 3 })
+			})
+	)
+	for (const operation of ['listComments', 'create', 'update'] as const)
+		test.effect(`a ${operation} failure fails the reservation`, () =>
+			Effect.gen(function* () {
+				const { fake, service } = setup()
+				if (operation === 'update') fake.comments.push(appSummary())
+				const failure = new GitHubApiError({
+					operation,
+					status: 503,
+					reason: 'unavailable',
+				})
+				fake.failures[operation].push(failure)
+				expect(
+					yield* SummaryCommentService.use(api =>
+						api.reserveManualRun(MANUAL_RUN)
+					).pipe(Effect.provide(service), Effect.flip)
+				).toBe(failure)
+				expect(fake.writes.map(write => write.method)).toEqual(
+					operation === 'listComments' ? [] : [operation]
+				)
+			})
+		)
+	for (const { handle, spans } of [
+		{ handle: 'review-helper', spans: ['`@review-helper`'] },
+		{
+			handle: 'review`helper @second\n@third',
+			spans: ['``@review`helper``', '`@second`', '`@third`'],
+		},
+	])
+		test.effect(
+			`reservation text never mentions anyone outside a code span for ${JSON.stringify(handle)}`,
+			() =>
+				Effect.gen(function* () {
+					const { fake, service } = setup()
+					expect(
+						yield* SummaryCommentService.use(api =>
+							api.reserveManualRun({ ...MANUAL_RUN, handle })
+						).pipe(Effect.provide(service))
+					).toBe(true)
+					const body = fake.comments[0]?.body ?? ''
+					expect(body).toContain('started a manual review')
+					for (const span of spans) expect(body).toContain(span)
+					expect(body.replaceAll(/(`+)(?!`)[\s\S]*?\1(?!`)/gu, '')).not.toMatch(
+						/@[a-z0-9]/iu
+					)
+				})
+		)
+})
+
+/** A render fixture whose body and marker belong to the renderer. */
+const RENDERED_FRESH_SUMMARY = {
+	body: 'Summary body',
+	marker: SUMMARY_MARKER,
+} as const
+layer(APP_MODE_OWNED)('SummaryCommentService fresh render', test => {
+	for (const freshCount of [undefined, 1, 2, 3])
+		for (const deleted of [false, true])
+			test.effect(
+				`renders the fresh summary when manualRuns=${freshCount} and update deleted=${deleted}`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = setup()
+						const stale = { ...SUMMARY_MARKER, manualRuns: 1 }
+						fixture.fake.comments.push(appSummary(stale))
+						const service = yield* SummaryCommentService.pipe(
+							Effect.provide(fixture.service)
+						)
+						expect(yield* service.read(MANUAL_RUN.pullNumber)).toMatchObject({
+							id: 100,
+							marker: stale,
+						})
+						const fresh = {
+							...SUMMARY_MARKER,
+							runs: 4,
+							head: 'fresh-head',
+							finished: true,
+							...(freshCount === undefined ? {} : { manualRuns: freshCount }),
+						}
+						const current = appSummary(fresh, {
+							databaseId: 202,
+							body: `Fresh review text\n\n${toMarkerComment('summary', fresh)}`,
+						})
+						fixture.fake.comments.splice(0, 1, current)
+						if (deleted) {
+							fixture.fake.commentSnapshots.push([current])
+							fixture.fake.comments.splice(0)
+							fixture.fake.failures.update.push(
+								new GitHubApiError({
+									operation: 'update',
+									status: 404,
+									reason: 'deleted',
+								})
+							)
+						}
+						const rendered = {
+							...RENDERED_FRESH_SUMMARY,
+							body: `Renderer owns the body\n${toMarkerComment('summary', SUMMARY_MARKER)}`,
+						}
+						const renderSpy = vi.fn<SummaryRender>(() => rendered)
+						expect(
+							yield* service.write(MANUAL_RUN.pullNumber, renderSpy)
+						).toMatchObject(rendered)
+						expect(renderSpy).toHaveBeenCalledExactlyOnceWith(
+							expect.objectContaining({
+								id: 202,
+								marker: fresh,
+								body: current.body,
+							})
+						)
+						expect(fixture.fake.writes).toEqual([
+							{ method: 'update', id: 202, body: rendered.body },
+							...(deleted
+								? [
+										{
+											method: 'create',
+											pullNumber: MANUAL_RUN.pullNumber,
+											body: rendered.body,
+										},
+									]
+								: []),
+						])
+						expect(fixture.fake.commentReads).toEqual(
+							deleted ? [17, 17, 17] : [17, 17]
+						)
+					})
+			)
+	test.effect(
+		'renders without a summary when it disappeared before writing',
+		() =>
+			Effect.gen(function* () {
+				const fixture = setup()
+				fixture.fake.comments.push(appSummary())
+				const service = yield* SummaryCommentService.pipe(
+					Effect.provide(fixture.service)
+				)
+				expect(yield* service.read(MANUAL_RUN.pullNumber)).toMatchObject({
+					id: 100,
+				})
+				fixture.fake.comments.splice(0)
+				const renderSpy = vi.fn<SummaryRender>(() => RENDERED_FRESH_SUMMARY)
+				expect(
+					yield* service.write(MANUAL_RUN.pullNumber, renderSpy)
+				).toMatchObject(RENDERED_FRESH_SUMMARY)
+				expect(renderSpy).toHaveBeenCalledExactlyOnceWith(undefined)
+				expect(fixture.fake.writes).toEqual([
+					{
+						method: 'create',
+						pullNumber: MANUAL_RUN.pullNumber,
+						body: RENDERED_FRESH_SUMMARY.body,
+					},
+				])
+			})
+	)
+	test.effect('a failed fresh read does not render or write', () =>
+		Effect.gen(function* () {
+			const fixture = setup()
+			const error = new GitHubApiError({
+				operation: 'listComments',
+				status: 503,
+				reason: 'unavailable',
+			})
+			fixture.fake.failures.listComments.push(error)
+			const service = yield* SummaryCommentService.pipe(
+				Effect.provide(fixture.service)
+			)
+			const renderSpy = vi.fn<SummaryRender>(() => RENDERED_FRESH_SUMMARY)
+			expect(
+				yield* service.write(MANUAL_RUN.pullNumber, renderSpy).pipe(Effect.flip)
+			).toBe(error)
+			expect(renderSpy).not.toHaveBeenCalled()
+			expect(fixture.fake.writes).toEqual([])
+		})
+	)
+	for (const deleted of [false, true])
+		test.effect(`a create error fails the write after deleted=${deleted}`, () =>
+			Effect.gen(function* () {
+				const fixture = setup()
+				if (deleted) {
+					fixture.fake.comments.push(appSummary())
+					fixture.fake.failures.update.push(
+						new GitHubApiError({
+							operation: 'update',
+							status: 404,
+							reason: 'deleted',
+						})
+					)
+				}
+				const error = new GitHubApiError({
+					operation: 'create',
+					status: 503,
+					reason: 'unavailable',
+				})
+				fixture.fake.failures.create.push(error)
+				const service = yield* SummaryCommentService.pipe(
+					Effect.provide(fixture.service)
+				)
+				const renderSpy = vi.fn<SummaryRender>(() => RENDERED_FRESH_SUMMARY)
+				expect(
+					yield* service
+						.write(MANUAL_RUN.pullNumber, renderSpy)
+						.pipe(Effect.flip)
+				).toBe(error)
+				expect(renderSpy).toHaveBeenCalledExactlyOnceWith(
+					deleted
+						? expect.objectContaining({
+								id: 100,
+								marker: SUMMARY_MARKER,
+								body: appSummary().body,
+							})
+						: undefined
+				)
+				expect(fixture.fake.writes.map(write => write.method)).toEqual(
+					deleted ? ['update', 'create'] : ['create']
+				)
+			})
+		)
+})
+
+layer(APP_MODE_OWNED)(
+	'SummaryCommentService marker carry across identities',
+	test => {
+		test.effect(
+			'a regular summary write keeps manualRuns and unthreadedBugs across an identity switch',
+			() =>
+				Effect.gen(function* () {
+					const { fake, service } = setup()
+					const marker = {
+						...SUMMARY_MARKER,
+						runs: 7,
+						manualRuns: 2,
+						finished: true,
+						unthreadedBugs: 4,
+					}
+					fake.comments.push({
+						...priorSummary(),
+						body: toMarkerComment('summary', marker),
+					})
+					expect(
+						yield* SummaryCommentService.use(api => api.write(17, render)).pipe(
+							Effect.provide(service)
+						)
+					).toMatchObject({
+						marker: { ...marker, runs: 8 },
+						cleanup: 'minimized',
+					})
+					const visible = fake.comments.filter(comment => !comment.isMinimized)
+					expect(visible).toHaveLength(1)
+					expect(parseSummaryMarker(visible[0]?.body ?? '')).toEqual({
+						...marker,
+						runs: 8,
+					})
+					expect(fake.writes.map(write => write.method)).toEqual([
+						'create',
+						'minimize',
+					])
+				})
+		)
+	}
+)

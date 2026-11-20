@@ -60,6 +60,10 @@ function setup(
 	repo.write(bug().path, original.replace('line 10\n', 'changed 10\n'))
 	const head = repo.commit()
 	const fake = githubApiFake(identity)
+	fake.command.pullRequest = {
+		...fake.command.pullRequest,
+		head: { ...fake.command.pullRequest.head, sha: head },
+	}
 	const dependencies = Layer.mergeAll(
 		fake.api,
 		apply
@@ -1396,6 +1400,853 @@ layer(APP_MODE_OWNED, { excludeTestServices: true })(
 							write => write.method === 'review' || write.method === 'comment'
 						)
 					).toEqual([])
+				})
+		)
+	}
+)
+
+/** Runs the supplied resolution fake between the first thread read and the summary write. */
+function setupOverlap(apply: ThreadResolutionService['Service']['apply']) {
+	const fixture = setup(apply)
+	return {
+		...fixture,
+		input: {
+			...fixture.input,
+			recheck: {
+				checked: 0,
+				proposals: [],
+				tokens: fixture.input.report.tokens,
+			},
+		},
+	}
+}
+layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
+	'PublishService command completion',
+	test => {
+		for (const previous of [
+			'none',
+			'legacy',
+			'unfinished',
+			'other-head',
+			'same-head',
+		] as const)
+			test.effect(
+				`single-agent command completion with ${previous} full review`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = setup()
+						if (previous !== 'none')
+							fixture.fake.comments.push({
+								...summary(),
+								body: toMarkerComment('summary', {
+									...SUMMARY_MARKER,
+									head: previous === 'other-head' ? 'old-head' : fixture.head,
+									manualRuns: 2,
+									...(previous === 'legacy'
+										? {}
+										: { finished: previous !== 'unfinished' }),
+								}),
+							})
+						const publisher = yield* PublishService.pipe(
+							Effect.provide(fixture.publisher)
+						)
+						expect(
+							yield* publisher.publish({
+								...fixture.input,
+								command: { agentOnly: true },
+								report: { ...fixture.input.report, bugs: [] },
+							})
+						).toMatchObject({
+							finished: previous === 'same-head',
+							verdict: previous === 'same-head' ? 'ready' : 'incomplete',
+							openBugs: 0,
+						})
+						expect(
+							parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
+								?.manualRuns
+						).toBe(previous === 'none' ? undefined : 2)
+					})
+			)
+		for (const agentOnly of [false, true])
+			test.effect(
+				`publishing a command with agentOnly=${agentOnly} retains the reserved manual run count across publishes`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = setup()
+						fixture.fake.comments.push({
+							...summary(),
+							body: toMarkerComment('summary', {
+								...SUMMARY_MARKER,
+								head: fixture.head,
+								finished: true,
+								manualRuns: 3,
+							}),
+						})
+						const publisher = yield* PublishService.pipe(
+							Effect.provide(fixture.publisher)
+						)
+						for (const runs of [2, 3]) {
+							yield* publisher.publish({
+								...fixture.input,
+								command: { agentOnly },
+							})
+							expect(
+								parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
+							).toMatchObject({ runs, manualRuns: 3 })
+						}
+					})
+			)
+	}
+)
+
+layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
+	'PublishService summary changed during review',
+	test => {
+		for (const previous of ['none', 'unfinished', 'finished'] as const)
+			for (const freshState of [
+				'same-head',
+				'other-head',
+				'unfinished',
+			] as const)
+				for (const hasBug of [false, true])
+					test.effect(
+						`agent command uses fresh ${freshState} review after ${previous}, bug=${hasBug}`,
+						() =>
+							Effect.gen(function* () {
+								const applySpy =
+									vi.fn<ThreadResolutionService['Service']['apply']>()
+								const fixture = setupOverlap(applySpy)
+								if (previous !== 'none')
+									fixture.fake.comments.push({
+										...summary(),
+										body: toMarkerComment('summary', {
+											...SUMMARY_MARKER,
+											head: fixture.head,
+											runs: 2,
+											manualRuns: 1,
+											finished: previous === 'finished',
+										}),
+									})
+								const fresh = {
+									...SUMMARY_MARKER,
+									runs: 7,
+									manualRuns: 3,
+									head:
+										freshState === 'other-head'
+											? 'new-full-review-head'
+											: fixture.head,
+									finished: freshState !== 'unfinished',
+								}
+								applySpy.mockImplementation(() =>
+									Effect.sync(() => {
+										expect(fixture.fake.reads).toEqual([])
+										fixture.fake.comments.splice(
+											0,
+											fixture.fake.comments.length,
+											{
+												...summary(),
+												databaseId: 202,
+												body: toMarkerComment('summary', fresh),
+											}
+										)
+										return []
+									})
+								)
+								const finished = freshState === 'same-head'
+								const verdict = hasBug
+									? 'needs fixes'
+									: finished
+										? 'ready'
+										: 'incomplete'
+								expect(
+									yield* PublishService.use(publisher =>
+										publisher.publish({
+											...fixture.input,
+											command: { agentOnly: true },
+											report: {
+												...fixture.input.report,
+												bugs: hasBug ? [bug()] : [],
+											},
+										})
+									).pipe(Effect.provide(fixture.publisher))
+								).toMatchObject({
+									run: 8,
+									finished,
+									verdict,
+									openBugs: hasBug ? 1 : 0,
+								})
+								const body = fixture.fake.comments[0]?.body ?? ''
+								expect(parseSummaryMarker(body)).toEqual({ ...fresh, runs: 8 })
+								expect(body).toContain(`**Verdict: ${verdict}**`)
+								expect(body).toContain('run 8 of')
+								expect(
+									fixture.fake.writes.filter(write => write.method === 'update')
+								).toEqual([{ method: 'update', id: 202, body }])
+								expect(fixture.fake.reads).toEqual(['getPullRequest:17'])
+							})
+					)
+		for (const finished of [false, true])
+			test.effect(
+				`push uses its own finished=${finished} and the fresh run count without reading the pull request`,
+				() =>
+					Effect.gen(function* () {
+						const applySpy =
+							vi.fn<ThreadResolutionService['Service']['apply']>()
+						const fixture = setupOverlap(applySpy)
+						fixture.fake.comments.push(summary())
+						fixture.fake.command.pullRequest = {
+							...fixture.fake.command.pullRequest,
+							head: {
+								...fixture.fake.command.pullRequest.head,
+								sha: 'moved-head',
+							},
+						}
+						const fresh = {
+							...SUMMARY_MARKER,
+							head: 'new-full-review-head',
+							runs: 7,
+							manualRuns: 3,
+							finished: !finished,
+						}
+						applySpy.mockImplementation(() =>
+							Effect.sync(() => {
+								fixture.fake.comments.splice(0, 1, {
+									...summary(),
+									body: `**Verdict: needs fixes**\nOther run details.\n\n${toMarkerComment('summary', fresh)}`,
+								})
+								return []
+							})
+						)
+						const verdict = finished ? 'ready' : 'incomplete'
+						expect(
+							yield* PublishService.use(publisher =>
+								publisher.publish({
+									...fixture.input,
+									report: {
+										...fixture.input.report,
+										bugs: [],
+										...(finished ? {} : { endpointError: 'offline' }),
+									},
+								})
+							).pipe(Effect.provide(fixture.publisher))
+						).toMatchObject({ run: 8, finished, verdict })
+						const body = fixture.fake.comments[0]?.body ?? ''
+						expect(parseSummaryMarker(body)).toEqual({
+							...fresh,
+							runs: 8,
+							head: finished ? fixture.head : fresh.head,
+							finished,
+						})
+						expect(body).toContain(`**Verdict: ${verdict}**`)
+						expect(body).not.toContain('Other run details.')
+						expect(fixture.fake.reads).toEqual([])
+					})
+			)
+	}
+)
+
+layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
+	'PublishService command head check',
+	test => {
+		test.effect(
+			'a full command on the unchanged head records its head and completion',
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup()
+					fixture.fake.comments.push({
+						...summary(),
+						body: `**Verdict: needs fixes**\nStale review details.\n\n${toMarkerComment(
+							'summary',
+							{
+								...SUMMARY_MARKER,
+								runs: 4,
+								manualRuns: 2,
+								finished: false,
+							}
+						)}`,
+					})
+					expect(
+						yield* PublishService.use(publisher =>
+							publisher.publish({
+								...fixture.input,
+								command: { agentOnly: false },
+								report: { ...fixture.input.report, bugs: [] },
+							})
+						).pipe(Effect.provide(fixture.publisher))
+					).toMatchObject({ run: 5, finished: true, verdict: 'ready' })
+					expect(
+						parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
+					).toEqual({
+						...SUMMARY_MARKER,
+						runs: 5,
+						manualRuns: 2,
+						head: fixture.head,
+						finished: true,
+					})
+					expect(fixture.fake.comments[0]?.body).toContain('**Verdict: ready**')
+					expect(fixture.fake.comments[0]?.body).not.toContain(
+						'Stale review details.'
+					)
+					expect(fixture.fake.reads).toEqual(['getPullRequest:17'])
+				})
+		)
+		for (const agentOnly of [false, true])
+			for (const previous of [
+				'none',
+				'unfinished',
+				'other-head',
+				'same-head',
+			] as const)
+				test.effect(
+					`moved command head preserves ${previous} full review with agentOnly=${agentOnly}`,
+					() =>
+						Effect.gen(function* () {
+							const fixture = setup()
+							const prior = {
+								...SUMMARY_MARKER,
+								head:
+									previous === 'same-head'
+										? fixture.head
+										: 'new-full-review-head',
+								runs: 4,
+								manualRuns: 2,
+								finished: previous !== 'unfinished',
+							}
+							const visible =
+								'**Verdict: needs fixes**\nCurrent review on the newer head.\n\n'
+							if (previous !== 'none')
+								fixture.fake.comments.push({
+									...summary(),
+									body: visible + toMarkerComment('summary', prior),
+								})
+							fixture.fake.command.pullRequest = {
+								...fixture.fake.command.pullRequest,
+								head: {
+									...fixture.fake.command.pullRequest.head,
+									sha: 'moved-head',
+								},
+							}
+							const finished = previous === 'same-head'
+							const verdict = finished ? 'ready' : 'incomplete'
+							expect(
+								yield* PublishService.use(publisher =>
+									publisher.publish({
+										...fixture.input,
+										command: { agentOnly },
+										report: { ...fixture.input.report, bugs: [] },
+									})
+								).pipe(Effect.provide(fixture.publisher))
+							).toMatchObject({
+								run: previous === 'none' ? 1 : 5,
+								finished,
+								verdict,
+							})
+							const body = fixture.fake.comments[0]?.body ?? ''
+							expect(parseSummaryMarker(body)).toEqual(
+								previous === 'none'
+									? { v: SUMMARY_MARKER.v, runs: 1, finished: false }
+									: { ...prior, runs: 5 }
+							)
+							if (previous === 'none')
+								expect(body).toContain(`**Verdict: ${verdict}**`)
+							else
+								expect(
+									body.replace(/<!-- mng-review:summary .* -->$/u, '')
+								).toBe(visible)
+							expect(fixture.fake.reads).toEqual(['getPullRequest:17'])
+						})
+				)
+		for (const headState of ['moved', 'unreadable'] as const)
+			for (const agentOnly of [false, true])
+				test.effect(
+					`preserves the freshly read summary when the head is ${headState}, agentOnly=${agentOnly}`,
+					() =>
+						Effect.gen(function* () {
+							const applySpy =
+								vi.fn<ThreadResolutionService['Service']['apply']>()
+							const fixture = setupOverlap(applySpy)
+							fixture.fake.comments.push({
+								...summary(),
+								body: `Stale visible review\n\n${toMarkerComment('summary', SUMMARY_MARKER)}`,
+							})
+							const fresh = {
+								...SUMMARY_MARKER,
+								head: 'current-head',
+								finished: true,
+								runs: 7,
+								manualRuns: 3,
+							}
+							const visible =
+								'**Verdict: ready**\nCurrent review details and current-head.\n\n'
+							applySpy.mockImplementation(() =>
+								Effect.sync(() => {
+									fixture.fake.comments.splice(0, 1, {
+										...summary(),
+										databaseId: 202,
+										body: visible + toMarkerComment('summary', fresh),
+									})
+									return []
+								})
+							)
+							if (headState === 'unreadable')
+								fixture.fake.failures.getPullRequest.push(error(503))
+							else
+								fixture.fake.command.pullRequest = {
+									...fixture.fake.command.pullRequest,
+									head: {
+										...fixture.fake.command.pullRequest.head,
+										sha: 'moved-head',
+									},
+								}
+							expect(
+								yield* PublishService.use(publisher =>
+									publisher.publish({
+										...fixture.input,
+										command: { agentOnly },
+									})
+								).pipe(Effect.provide(fixture.publisher))
+							).toMatchObject({
+								run: 8,
+								openBugs: 1,
+								verdict: 'needs fixes',
+								finished: false,
+							})
+							const body = fixture.fake.comments[0]?.body ?? ''
+							expect(parseSummaryMarker(body)).toEqual({ ...fresh, runs: 8 })
+							expect(body.replace(/<!-- mng-review:summary .* -->$/u, '')).toBe(
+								visible
+							)
+							expect(
+								fixture.fake.writes.filter(write => write.method === 'update')
+							).toEqual([{ method: 'update', id: 202, body }])
+						})
+				)
+		for (const agentOnly of [false, true])
+			for (const status of [404, 503])
+				for (const previous of ['none', 'unfinished', 'finished'] as const)
+					test.effect(
+						`getPullRequest ${status} counts as moved with agentOnly=${agentOnly}, previous=${previous}`,
+						() =>
+							Effect.gen(function* () {
+								const fixture = setup()
+								const marker = {
+									...SUMMARY_MARKER,
+									head: 'previous-head',
+									finished: previous === 'finished',
+									runs: 4,
+									manualRuns: 2,
+								}
+								const visible =
+									'**Verdict: needs fixes**\nPrevious review details.\n\n'
+								if (previous !== 'none')
+									fixture.fake.comments.push({
+										...summary(),
+										body: visible + toMarkerComment('summary', marker),
+									})
+								fixture.fake.failures.getPullRequest.push(
+									new GitHubApiError({
+										operation: 'getPullRequest',
+										status,
+										reason: 'unavailable',
+									})
+								)
+								expect(
+									yield* PublishService.use(publisher =>
+										publisher.publish({
+											...fixture.input,
+											command: { agentOnly },
+											report: { ...fixture.input.report, bugs: [] },
+										})
+									).pipe(Effect.provide(fixture.publisher))
+								).toMatchObject({
+									run: previous === 'none' ? 1 : 5,
+									finished: false,
+									verdict: 'incomplete',
+								})
+								const body = fixture.fake.comments[0]?.body ?? ''
+								if (previous === 'none') {
+									expect(parseSummaryMarker(body)).toEqual({
+										v: SUMMARY_MARKER.v,
+										runs: 1,
+										finished: false,
+									})
+									expect(body).toContain('**Verdict: incomplete**')
+								} else {
+									expect(parseSummaryMarker(body)).toEqual({
+										...marker,
+										runs: 5,
+									})
+									expect(
+										body.replace(/<!-- mng-review:summary .* -->$/u, '')
+									).toBe(visible)
+								}
+								expect(fixture.fake.writes.map(write => write.method)).toEqual([
+									previous === 'none' ? 'create' : 'update',
+								])
+								expect(fixture.fake.reads).toEqual(['getPullRequest:17'])
+							})
+					)
+	}
+)
+
+layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
+	'PublishService unthreaded bugs',
+	test => {
+		for (const place of ['summary', 'unposted'] as const)
+			test.effect(
+				`a ${place} bug survives a clean single-agent command until a clean full review`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = setup()
+						if (place === 'unposted')
+							fixture.fake.failures.review.push(error(503))
+						const publisher = yield* PublishService.pipe(
+							Effect.provide(fixture.publisher)
+						)
+						const reviewed = {
+							...fixture.input.report,
+							bugs: [
+								bug({
+									path: place === 'summary' ? 'outside-diff.ts' : bug().path,
+								}),
+							],
+						}
+						expect(
+							yield* publisher.publish({ ...fixture.input, report: reviewed })
+						).toMatchObject({
+							verdict: 'needs fixes',
+							openBugs: 1,
+							finished: true,
+							inSummary: place === 'summary' ? 1 : 0,
+							unposted: place === 'unposted' ? 1 : 0,
+						})
+						const marker = {
+							v: SUMMARY_MARKER.v,
+							runs: 1,
+							head: fixture.head,
+							finished: true,
+							unthreadedBugs: 1,
+						}
+						expect(
+							parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
+						).toEqual(marker)
+						expect(fixture.fake.threads).toEqual([])
+						expect(fixture.fake.comments[0]?.body).not.toContain(
+							'from the last full review still count'
+						)
+						const clean = {
+							...fixture.input,
+							report: { ...fixture.input.report, bugs: [] },
+						}
+						expect(
+							yield* publisher.publish({
+								...clean,
+								command: { agentOnly: true },
+							})
+						).toMatchObject({
+							verdict: 'needs fixes',
+							openBugs: 1,
+							finished: true,
+						})
+						expect(
+							parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
+						).toEqual({ ...marker, runs: 2 })
+						expect(fixture.fake.comments[0]?.body).toContain(
+							'1 bug(s) without a thread from the last full review still count until a full review checks them again.'
+						)
+						expect(yield* publisher.publish(clean)).toMatchObject({
+							verdict: 'ready',
+							openBugs: 0,
+							finished: true,
+						})
+						expect(
+							parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
+						).toEqual({
+							v: SUMMARY_MARKER.v,
+							runs: 3,
+							head: fixture.head,
+							finished: true,
+						})
+						expect(fixture.fake.comments[0]?.body).not.toContain(
+							'from the last full review still count'
+						)
+					})
+			)
+		test.effect('a full unfinished run keeps the last full review count', () =>
+			Effect.gen(function* () {
+				const fixture = setup()
+				const marker = {
+					...SUMMARY_MARKER,
+					head: fixture.head,
+					finished: true,
+					unthreadedBugs: 2,
+				}
+				fixture.fake.comments.push({
+					...summary(),
+					body: toMarkerComment('summary', marker),
+				})
+				expect(
+					yield* PublishService.use(publisher =>
+						publisher.publish({
+							...fixture.input,
+							report: {
+								...fixture.input.report,
+								bugs: [],
+								endpointError: 'offline',
+							},
+						})
+					).pipe(Effect.provide(fixture.publisher))
+				).toMatchObject({ verdict: 'incomplete', finished: false })
+				expect(
+					parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
+				).toEqual({ ...marker, runs: 2, finished: false })
+			})
+		)
+		for (const commandHead of ['same', 'moved', 'unreadable'] as const)
+			for (const sameMarkerHead of [false, true])
+				test.effect(
+					`a ${commandHead} command counts prior bugs only on the recorded head, same=${sameMarkerHead}`,
+					() =>
+						Effect.gen(function* () {
+							const fixture = setup()
+							const marker = {
+								...SUMMARY_MARKER,
+								head: sameMarkerHead ? fixture.head : 'other-head',
+								finished: true,
+								unthreadedBugs: 2,
+							}
+							fixture.fake.comments.push({
+								...summary(),
+								body: toMarkerComment('summary', marker),
+							})
+							if (commandHead === 'moved')
+								fixture.fake.command.pullRequest = {
+									...fixture.fake.command.pullRequest,
+									head: {
+										...fixture.fake.command.pullRequest.head,
+										sha: 'new-head',
+									},
+								}
+							if (commandHead === 'unreadable')
+								fixture.fake.failures.getPullRequest.push(error(503))
+							expect(
+								yield* PublishService.use(publisher =>
+									publisher.publish({
+										...fixture.input,
+										command: { agentOnly: commandHead === 'same' },
+										report: { ...fixture.input.report, bugs: [] },
+									})
+								).pipe(Effect.provide(fixture.publisher))
+							).toMatchObject({
+								verdict: sameMarkerHead ? 'needs fixes' : 'incomplete',
+								openBugs: sameMarkerHead ? 2 : 0,
+								finished: sameMarkerHead,
+							})
+							expect(
+								parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
+							).toEqual({ ...marker, runs: 2 })
+						})
+				)
+		test.effect('a partial run adds its own bug to the carried count', () =>
+			Effect.gen(function* () {
+				const fixture = setup()
+				const marker = {
+					...SUMMARY_MARKER,
+					head: fixture.head,
+					finished: true,
+					unthreadedBugs: 2,
+				}
+				fixture.fake.comments.push({
+					...summary(),
+					body: toMarkerComment('summary', marker),
+				})
+				expect(
+					yield* PublishService.use(publisher =>
+						publisher.publish({
+							...fixture.input,
+							command: { agentOnly: true },
+						})
+					).pipe(Effect.provide(fixture.publisher))
+				).toMatchObject({ verdict: 'needs fixes', openBugs: 3 })
+				expect(
+					parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
+				).toEqual({ ...marker, runs: 2 })
+				expect(fixture.fake.comments[0]?.body).toContain(
+					'2 bug(s) without a thread from the last full review'
+				)
+			})
+		)
+	}
+)
+
+layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
+	'PublishService fresh thread count',
+	test => {
+		for (const resolved of [false, true])
+			test.effect(
+				`a failed second read uses the first read with locally resolved=${resolved} and counts posted line and file bugs`,
+				() =>
+					Effect.gen(function* () {
+						const applySpy =
+							vi.fn<ThreadResolutionService['Service']['apply']>()
+						const fixture = setupOverlap(applySpy)
+						fixture.fake.threads.push(
+							reviewThread(
+								{
+									finding: bug({ fingerprint: 'old-bug', path: 'old.ts' }),
+									kind: 'bug',
+								},
+								{ id: 'rechecked' }
+							),
+							reviewThread(
+								{
+									finding: bug({ fingerprint: 'still-open', path: 'other.ts' }),
+									kind: 'bug',
+								},
+								{ id: 'retained' }
+							)
+						)
+						applySpy.mockImplementation(input =>
+							Effect.sync(() => {
+								expect(fixture.fake.threadReads).toEqual([17])
+								fixture.fake.failures.listThreads.push(error(503))
+								return resolved
+									? input.threads
+											.filter(thread => thread.id === 'rechecked')
+											.map(thread => ({
+												thread,
+												reason: 'The write is guarded.',
+											}))
+									: []
+							})
+						)
+						expect(
+							yield* PublishService.use(publisher =>
+								publisher.publish({
+									...fixture.input,
+									report: {
+										...fixture.input.report,
+										bugs: [bug(), bug({ line: 30, fingerprint: 'file-bug' })],
+									},
+								})
+							).pipe(Effect.provide(fixture.publisher))
+						).toMatchObject({
+							onLine: 1,
+							onFile: 1,
+							openBugs: resolved ? 3 : 4,
+							resolved: resolved ? 1 : 0,
+							verdict: 'needs fixes',
+						})
+						expect(fixture.fake.threadReads).toEqual([17, 17])
+						expect(fixture.fake.failures.listThreads).toEqual([])
+						expect(
+							fixture.fake.threads.map(thread => thread.subjectType)
+						).toEqual(['LINE', 'LINE', 'LINE', 'FILE'])
+						expect(fixture.fake.comments[0]?.body).toContain(
+							`${resolved ? 3 : 4} open bug thread(s)`
+						)
+					})
+			)
+		for (const change of ['posted', 'resolved'] as const)
+			test.effect(`counts a bug ${change} between thread reads`, () =>
+				Effect.gen(function* () {
+					const fixture = setup()
+					const thread = reviewThread()
+					fixture.fake.threadSnapshots.push(
+						change === 'resolved' ? [thread] : [],
+						[{ ...thread, isResolved: change === 'resolved' }]
+					)
+					expect(
+						yield* PublishService.use(publisher =>
+							publisher.publish({
+								...fixture.input,
+								report: { ...fixture.input.report, bugs: [] },
+							})
+						).pipe(Effect.provide(fixture.publisher))
+					).toMatchObject({
+						openBugs: change === 'posted' ? 1 : 0,
+						verdict: change === 'posted' ? 'needs fixes' : 'ready',
+						resolved: 0,
+						onLine: 0,
+						onFile: 0,
+					})
+					expect(fixture.fake.threadReads).toEqual([17, 17])
+					expect(fixture.fake.threadSnapshots).toEqual([])
+				})
+			)
+		test.effect(
+			'a concurrent thread with the planned fingerprint counts once after posting',
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup()
+					fixture.fake.threadSnapshots.push([], [reviewThread()])
+					expect(
+						yield* PublishService.use(publisher =>
+							publisher.publish(fixture.input)
+						).pipe(Effect.provide(fixture.publisher))
+					).toMatchObject({ onLine: 1, openBugs: 1, verdict: 'needs fixes' })
+					expect(fixture.fake.threadReads).toEqual([17, 17])
+					expect(
+						parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
+							?.unthreadedBugs
+					).toBeUndefined()
+				})
+		)
+		test.effect(
+			'counts this run line and file bugs once each alongside another run thread',
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup()
+					fixture.fake.threadSnapshots.push(
+						[],
+						[
+							reviewThread(),
+							reviewThread(
+								{
+									finding: bug({ line: 30, fingerprint: 'file-bug' }),
+									kind: 'bug',
+								},
+								{ id: 'file-thread', subjectType: 'FILE' }
+							),
+							reviewThread(
+								{
+									finding: bug({
+										path: 'other.ts',
+										fingerprint: 'concurrent-bug',
+									}),
+									kind: 'bug',
+								},
+								{ id: 'concurrent' }
+							),
+						]
+					)
+					expect(
+						yield* PublishService.use(publisher =>
+							publisher.publish({
+								...fixture.input,
+								report: {
+									...fixture.input.report,
+									bugs: [
+										bug(),
+										bug({
+											line: 30,
+											fingerprint: 'file-bug',
+											title: 'Missing guard corrupts storage',
+										}),
+									],
+								},
+							})
+						).pipe(Effect.provide(fixture.publisher))
+					).toMatchObject({
+						onLine: 1,
+						onFile: 1,
+						openBugs: 3,
+						verdict: 'needs fixes',
+					})
+					expect(
+						fixture.fake.threads.map(thread => thread.subjectType)
+					).toEqual(['LINE', 'FILE'])
+					expect(fixture.fake.threadReads).toEqual([17, 17])
 				})
 		)
 	}
