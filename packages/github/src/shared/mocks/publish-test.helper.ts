@@ -102,6 +102,8 @@ export function botThread(overrides: Partial<BotThread> = {}): BotThread {
 		latestCommentId: undefined,
 		latestAuthor: undefined,
 		latestMarked: true,
+		latestDigest: undefined,
+		closedAt: undefined,
 		...overrides,
 	}
 }

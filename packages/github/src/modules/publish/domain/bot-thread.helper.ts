@@ -1,4 +1,7 @@
+import { createHash } from 'node:crypto'
+import { commitShaSchema } from '@mng-review/domain'
 import type { ReviewReport } from '@mng-review/engine'
+import { Schema } from 'effect'
 import {
 	type BotIdentity,
 	isIdentity,
@@ -25,6 +28,12 @@ import type { MarkedRun } from './summary-marker.helper'
 const UNPROCESSABLE_STATUS = 422
 /** The bot's reply actions that close a thread for its counts. */
 const CLOSING_ACTIONS: ReadonlySet<string> = new Set(['resolved', 'accepted'])
+const isCommitSha = Schema.is(commitShaSchema)
+
+/** A digest of a comment's whole text: two reads of one comment differ in it once someone edited it. */
+export function toBodyDigest(body: string): string {
+	return createHash('sha256').update(body).digest('hex')
+}
 
 /**
  * True when an owned bot wrote the comment and nobody but that same bot edited it since. An edit
@@ -39,24 +48,33 @@ export function isBotComment(
 	return editor === null || isIdentity(editor, toBotIdentity(author.login))
 }
 
-/** True when the thread's latest comment is an owned bot's `resolved` or `accepted` reply. */
-function isClosedByBot(
+/**
+ * The head named by the thread's latest comment when that is an owned bot's `resolved` or `accepted`
+ * reply, or `undefined`. An answer whose marker names no full SHA closes the thread all the same.
+ */
+function getClosingCommit(
 	thread: Pick<ReviewThread, 'comments'>,
 	latest: ThreadComment | undefined,
 	owned: readonly BotIdentity[]
-): boolean {
-	return (
-		thread.comments.totalCount > 1 &&
-		latest !== undefined &&
-		isBotComment(latest, owned) &&
-		CLOSING_ACTIONS.has(parseReplyMarker(latest.body)?.action ?? '')
+): string | undefined {
+	if (
+		thread.comments.totalCount <= 1 ||
+		latest === undefined ||
+		!isBotComment(latest, owned)
 	)
+		return undefined
+	const marker = parseReplyMarker(latest.body)
+	if (!(marker && CLOSING_ACTIONS.has(marker.action))) return undefined
+	return marker.commit
 }
 
-/** What a thread keeps of its latest comment: id, author and whether it ends with a marker. */
+/** What a thread keeps of its latest comment: id, author, whether it ends with a marker, its digest. */
 function toLatestFields(
 	comment: ThreadComment
-): Pick<BotThread, 'latestCommentId' | 'latestAuthor' | 'latestMarked'> {
+): Pick<
+	BotThread,
+	'latestCommentId' | 'latestAuthor' | 'latestMarked' | 'latestDigest'
+> {
 	const { author } = comment
 	return {
 		latestCommentId: comment.databaseId ?? undefined,
@@ -64,6 +82,7 @@ function toLatestFields(
 			? { type: author.__typename, login: author.login }
 			: undefined,
 		latestMarked: hasBotMarker(comment.body),
+		latestDigest: toBodyDigest(comment.body),
 	}
 }
 
@@ -83,7 +102,8 @@ export function toBotThread(
 	if (!marker) return undefined
 	const onFile = thread.subjectType === 'FILE'
 	const [latest] = thread.latest?.nodes ?? []
-	const closedByBot = isClosedByBot(thread, latest, owned)
+	const closing = getClosingCommit(thread, latest, owned)
+	const closedByBot = closing !== undefined
 	return {
 		id: thread.id,
 		resolved: thread.isResolved || closedByBot,
@@ -96,6 +116,8 @@ export function toBotThread(
 		marker,
 		replies: Math.max(0, thread.comments.totalCount - 1),
 		...toLatestFields(latest ?? first),
+		closedAt:
+			closing !== undefined && isCommitSha(closing) ? closing : undefined,
 	}
 }
 

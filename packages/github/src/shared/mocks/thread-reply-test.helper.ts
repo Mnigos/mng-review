@@ -1,3 +1,4 @@
+import { toBodyDigest } from '../../modules/publish/domain/bot-thread.helper'
 import type { BotThread } from '../../modules/publish/domain/publish.types'
 import type {
 	DecidedThreadReply,
@@ -6,6 +7,9 @@ import type {
 } from '../../modules/publish/domain/thread-reply.schema'
 import type { ReviewThread } from '../../platform/github-api.schema'
 import { botThread, reviewThread } from './publish-test.helper'
+
+/** The shared reply's text, as the thread read and the prepared reply carry it. */
+const REPLY_BODY = 'fixed after the guard'
 
 /** An owned finding followed by a person's latest reply. */
 export function pendingReviewThread(
@@ -19,7 +23,7 @@ export function pendingReviewThread(
 			nodes: [
 				{
 					databaseId: 42,
-					body: 'fixed after the guard',
+					body: REPLY_BODY,
 					author: { __typename: 'User', login: 'contributor' },
 					editor: null,
 					originalCommit: null,
@@ -39,6 +43,7 @@ export function pendingBotThread(
 		latestAuthor: { type: 'User', login: 'contributor' },
 		latestCommentId: 42,
 		latestMarked: false,
+		latestDigest: toBodyDigest(REPLY_BODY),
 		...overrides,
 	})
 }
@@ -51,8 +56,9 @@ export function pendingReply(
 		threadId: 'thread',
 		fingerprint: botThread().marker.fingerprint,
 		commentId: 42,
+		digest: toBodyDigest(REPLY_BODY),
 		author: 'contributor',
-		body: 'fixed after the guard',
+		body: REPLY_BODY,
 		disputes: 0,
 		...overrides,
 	}
@@ -65,6 +71,6 @@ export function decidedReply(
 	decision: ThreadReplyDecision = SEEN,
 	overrides: Partial<DecidedThreadReply> = {}
 ): DecidedThreadReply {
-	const { threadId, fingerprint, commentId } = pendingReply()
-	return { threadId, fingerprint, commentId, decision, ...overrides }
+	const { threadId, fingerprint, commentId, digest } = pendingReply()
+	return { threadId, fingerprint, commentId, digest, decision, ...overrides }
 }

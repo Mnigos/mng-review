@@ -65,12 +65,15 @@ export const ThreadPlaceServiceLive = Layer.effect(
 
 		/**
 		 * True when a commit since the thread's touched the finding's lines (`git log -L`, so an undone
-		 * fix counts) or git cannot tell; false on the thread's own commit.
+		 * fix counts) or git cannot tell; false on that commit itself. A thread the bot's answer closed
+		 * counts from the head that answer names (`closedAt`), so an accepted finding is not posted
+		 * again for a change made before it was accepted.
 		 */
 		const hasPlaceChanged = Effect.fn('ThreadPlaceService.hasPlaceChanged')(
 			function* (thread: BotThread, path: string, line: number, head: string) {
-				if (!thread.commit) return true
-				if (thread.commit === head) return false
+				const since = thread.closedAt ?? thread.commit
+				if (!since) return true
+				if (since === head) return false
 				const text = yield* git.readFileAt(head, path).pipe(Effect.option)
 				if (text._tag === 'None' || text.value === undefined) return true
 				const lastLine = Math.max(
@@ -87,7 +90,7 @@ export const ThreadPlaceServiceLive = Layer.effect(
 						'--no-color',
 						`--format=${COMMIT_MARK}%H`,
 						`-L${start},${end}:${path}`,
-						`${thread.commit}..${head}`,
+						`${since}..${head}`,
 					])
 					.pipe(Effect.option)
 				if (result._tag === 'None' || result.value.exitCode !== 0) return true
