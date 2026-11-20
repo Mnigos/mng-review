@@ -111,13 +111,21 @@ describe('getPublishedFindings', () => {
 describe('getMatchingThreads', () => {
 	for (const kind of ['bug', 'unverified', 'nit'] as const)
 		for (const existing of ['bug', 'unverified', 'nit'] as const)
-			test(`${existing} thread coverage of ${kind}`, () => {
+			test(`${existing} thread coverage of ${kind} on the same line with different titles and fingerprints`, () => {
 				const thread = botThread()
 				const allowed =
 					kind === existing || (kind === 'unverified' && existing === 'bug')
 				expect(
 					getMatchingThreads({ finding: bug(), kind }, [
-						{ ...thread, marker: { ...thread.marker, kind: existing } },
+						{
+							...thread,
+							marker: {
+								...thread.marker,
+								kind: existing,
+								fingerprint: 'different',
+								title: 'Retry overwrites stored records',
+							},
+						},
 					])
 				).toHaveLength(allowed ? 1 : 0)
 			})
@@ -129,7 +137,7 @@ describe('getMatchingThreads', () => {
 		).toHaveLength(1)
 	})
 	test.each([false, true])(
-		'outdated thread matches only by fingerprint: same=%s',
+		'outdated thread on a nearby original line matches only by fingerprint: same=%s',
 		sameFingerprint => {
 			const thread = botThread()
 			expect(
@@ -145,6 +153,24 @@ describe('getMatchingThreads', () => {
 					},
 				])
 			).toHaveLength(sameFingerprint ? 1 : 0)
+		}
+	)
+	test.each([false, true])(
+		'outdated thread on the same original line with a reworded title matches only while open: resolved=%s',
+		resolved => {
+			const thread = botThread({ line: undefined, resolved })
+			expect(
+				getMatchingThreads({ finding: bug(), kind: 'bug' }, [
+					{
+						...thread,
+						marker: {
+							...thread.marker,
+							fingerprint: 'different',
+							title: 'Retry overwrites stored records',
+						},
+					},
+				])
+			).toHaveLength(resolved ? 0 : 1)
 		}
 	)
 	test.each([
@@ -178,10 +204,31 @@ describe('getMatchingThreads', () => {
 		},
 		{
 			path: 'src/store.ts',
-			distance: 0,
+			distance: 1,
 			onFile: false,
 			title: 'Unrelated parser crashes',
 			matches: false,
+		},
+		{
+			path: 'src/store.ts',
+			distance: 0,
+			onFile: false,
+			title: 'Unrelated parser crashes',
+			matches: true,
+		},
+		{
+			path: 'src/store.ts',
+			distance: 1,
+			onFile: false,
+			title: 'Retry overwrites stored records',
+			matches: false,
+		},
+		{
+			path: 'src/store.ts',
+			distance: 1,
+			onFile: false,
+			title: 'Duplicate write loses data',
+			matches: true,
 		},
 	])('matches nearby titles $path $distance $onFile $title', row => {
 		const thread = botThread({
@@ -219,7 +266,7 @@ describe('getMatchingThreads', () => {
 			Math.ceil(words.length * SAME_TITLE_OVERLAP) - 1,
 			Math.ceil(words.length * SAME_TITLE_OVERLAP),
 		]) {
-			const thread = botThread()
+			const thread = botThread({ resolved: true })
 			expect(
 				getMatchingThreads(
 					{ finding: bug({ title: words.join(' ') }), kind: 'bug' },
@@ -269,6 +316,62 @@ describe('isPullRequestFinding', () => {
 })
 
 describe('planPublish', () => {
+	test.each([false, true])(
+		'a reworded title on the same line is repeated only while the thread is open: resolved=%s',
+		resolved => {
+			const finding = bug({
+				title: 'Retry overwrites stored records',
+				fingerprint: 'reworded',
+			})
+			const thread = botThread({ resolved })
+			expect(getMatchingThreads({ finding, kind: 'bug' }, [thread])).toEqual(
+				resolved ? [] : [thread]
+			)
+			const plan = planPublish(
+				{
+					...selection(),
+					outcome: { bugs: [finding], nits: [], rejected: [] },
+				},
+				{
+					threads: [thread],
+					lines: new Map([[finding.path, new Set([finding.line])]]),
+					changedPlaces: new Set(),
+				}
+			)
+			expect(plan.repeated).toEqual(resolved ? [] : [{ finding, kind: 'bug' }])
+			expect(plan.threads).toEqual(
+				resolved ? [{ finding, kind: 'bug', place: 'line' }] : []
+			)
+			expect(plan.dismissed).toEqual([])
+		}
+	)
+	test('accepts the trade-off that two different findings on the same line both repeat one open thread', () => {
+		const findings = [
+			bug({ title: 'Retry overwrites stored records', fingerprint: 'retry' }),
+			bug({ title: 'Unrelated parser crashes', fingerprint: 'parser' }),
+		]
+		const thread = botThread()
+		for (const finding of findings)
+			expect(getMatchingThreads({ finding, kind: 'bug' }, [thread])).toEqual([
+				thread,
+			])
+		const plan = planPublish(
+			{
+				...selection(),
+				outcome: { bugs: findings, nits: [], rejected: [] },
+			},
+			{
+				threads: [thread],
+				lines: new Map([[bug().path, new Set([bug().line])]]),
+				changedPlaces: new Set(),
+			}
+		)
+		expect(plan.repeated).toEqual(
+			findings.map(finding => ({ finding, kind: 'bug' }))
+		)
+		expect(plan.threads).toEqual([])
+		expect(plan.dismissed).toEqual([])
+	})
 	test('moves only metadata summary nits into pull request entries', () => {
 		const metadata = bug({
 			kind: 'nit',
