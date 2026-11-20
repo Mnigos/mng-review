@@ -18,7 +18,7 @@ packages/
   domain/                  @mng-review/domain: Schema and pure logic
   engine/                  @mng-review/engine: Effect services
     src/platform/          config, llm, git
-    src/modules/           routing, review, validation, init, bench
+    src/modules/           routing, review, validation, converse, init, bench
   github/                  @mng-review/github: the GitHub API and publishing, used only by the action
     src/platform/          config and the bot identity, the REST and GraphQL client on effect/http
     src/modules/command/   the mention command grammar and who may run a command
@@ -64,7 +64,9 @@ One run of `mng-review --base <ref>` goes through these steps. Numbers match the
 
 Steps 2 to 8 run through `ReviewRunService` in `modules/review`, so the CLI, the benchmark and the workflow entry review a change the same way.
 
-Publish (6) runs in the workflow's publish mode through `packages/github`; converse (7) and learn (8) follow.
+Publish (6) runs in the workflow's publish mode through `packages/github`; learn (8) follows.
+
+Converse (7): `ReplyService` in `modules/converse` decides on an author's reply in one of the bot's threads. One fresh agent on a validator model, through `AgentLoopService` with the validator's read tools and `report_reply` as its finish tool, reads the claim; a `fixed` claim goes to `RecheckService` without the reply's text, and an `intentional` claim's evidence is checked in git. The decision itself is the pure `toReplyDecision` in `domain/src/converse`, with `getIntentionalLimit` and `toMemoryCandidate`. `makeReplyLayer` builds the service on the endpoint, like `makeValidatorLayer`. It reads no GitHub data: the workflow that finds the replies and applies the decisions is not wired in yet.
 
 ## GitHub workflows, shadow and publish mode
 

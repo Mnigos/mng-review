@@ -1,6 +1,7 @@
 import type { ModelSetting } from '@mng-review/domain'
 import type { Effect } from 'effect'
 import type { Prompt } from 'effect/ai'
+import type { ReportReplyTool } from '../../converse/application/report-reply.tool'
 import type { LoopBudget, SpentTokens } from '../domain/loop-budget.helper'
 import type { RepoToolName } from './repo.toolkit'
 import type { ReportFindingsTool } from './report-findings.tool'
@@ -10,6 +11,7 @@ import type { RepoScope } from './services/repo-tools.service'
 export type FinishToolName =
 	| typeof ReportFindingsTool.name
 	| typeof ReportVerdictTool.name
+	| typeof ReportReplyTool.name
 
 /** A problem with an answer, told back to the model. */
 export interface AnswerProblem {
