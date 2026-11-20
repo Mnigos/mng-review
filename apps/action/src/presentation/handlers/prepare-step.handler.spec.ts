@@ -3,6 +3,7 @@ import {
 	GitHubApiError,
 	GitHubConfig,
 	GitHubReadConfigLive,
+	MAX_REPLY_THREADS,
 } from '@mng-review/github'
 import { ConfigProvider, Effect, FileSystem, Layer } from 'effect'
 // oxlint-disable-next-line no-restricted-imports -- The test brief requires these existing unexported GitHub fixtures.
@@ -344,4 +345,142 @@ layer(FileSystemLayer)('prepare owner waiting', test => {
 				expect(fixture.api.writes).toEqual([])
 			})
 	)
+})
+
+layer(FileSystemLayer)('prepare converse target', test => {
+	for (const scenario of [
+		'moved',
+		'new base',
+		'skip label',
+		'draft',
+		'closed',
+		'fork',
+		'no reply',
+	] as const)
+		test.effect(`converse preparation handles ${scenario}`, () =>
+			Effect.gen(function* () {
+				const fixture = stepFixture()
+				const pr = fixture.api.command.pullRequest
+				fixture.api.command.pullRequest = {
+					...pr,
+					state: scenario === 'closed' ? 'closed' : 'open',
+					draft: scenario === 'draft',
+					labels: [
+						{ name: fixture.rules.config.skip.labels[0] ?? 'skip-review' },
+					],
+					base: {
+						...pr.base,
+						sha: scenario === 'new base' ? 'd'.repeat(40) : fixture.base,
+					},
+					head: {
+						...pr.head,
+						sha: scenario === 'moved' ? 'c'.repeat(40) : fixture.head,
+						repo: {
+							full_name:
+								scenario === 'fork' ? 'example/fork' : pr.base.repo.full_name,
+						},
+					},
+				}
+				fixture.api.command.role = 'write'
+				if (scenario !== 'no reply')
+					fixture.api.threads.push(pendingReviewThread())
+				fixture.api.comments.push(
+					appSummary(
+						{
+							...SUMMARY_MARKER,
+							head: fixture.base,
+							runs: fixture.rules.config.limits.max_runs_per_pr,
+							manualRuns: fixture.rules.config.commands.max_runs,
+						},
+						{ author: { __typename: 'Bot', login: 'github-actions' } }
+					)
+				)
+				yield* runPrepareStep.pipe(
+					Effect.provide(
+						PrepareRunServiceLive.pipe(Layer.provide(fixture.rulesLayer))
+					),
+					Effect.provide(fixture.publisherLayer),
+					Effect.provide(
+						fixture.envLayer({
+							GITHUB_EVENT_NAME: 'schedule',
+							MNG_REVIEW_TRIGGER: 'converse',
+							MNG_REVIEW_TARGET_PR: '17',
+							MNG_REVIEW_TARGET_BASE: fixture.base,
+							MNG_REVIEW_TARGET_HEAD: fixture.head,
+						})
+					)
+				)
+				const fs = yield* FileSystem.FileSystem
+				const prepared = yield* parsePreparedRun(
+					yield* fs.readFileString(fixture.paths.prepared)
+				)
+				expect(prepared.status).toBe(
+					scenario === 'skip label' ? 'ready' : 'skipped'
+				)
+				if (scenario === 'new base')
+					expect(prepared).toMatchObject({
+						status: 'skipped',
+						reason:
+							'the pull request has a new base since the schedule listed it; the next run reads it again',
+					})
+				if (prepared.status === 'ready') {
+					expect(prepared.replies).toEqual([pendingReply()])
+					expect(prepared.prior?.runs).toBe(
+						fixture.rules.config.limits.max_runs_per_pr
+					)
+				}
+				expect(yield* fs.readFileString(fixture.paths.output)).toBe(
+					`ready=${scenario === 'skip label'}\n`
+				)
+				expect(fixture.api.reads).toContain('getPullRequest:17')
+				expect(fixture.api.writes).toEqual([])
+			})
+		)
+	for (const rotation of [0, 1])
+		test.effect(
+			`uses schedule run number ${rotation} to rotate pending threads`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = stepFixture()
+					const pr = fixture.api.command.pullRequest
+					fixture.api.command.pullRequest = {
+						...pr,
+						base: { ...pr.base, sha: fixture.base },
+						head: { ...pr.head, sha: fixture.head },
+					}
+					fixture.api.command.role = 'write'
+					fixture.api.threads.push(
+						...Array.from({ length: MAX_REPLY_THREADS + 1 }, (_, index) =>
+							pendingReviewThread({ id: `thread-${index}` })
+						)
+					)
+					yield* runPrepareStep.pipe(
+						Effect.provide(
+							PrepareRunServiceLive.pipe(Layer.provide(fixture.rulesLayer))
+						),
+						Effect.provide(fixture.publisherLayer),
+						Effect.provide(
+							fixture.envLayer({
+								GITHUB_EVENT_NAME: 'schedule',
+								MNG_REVIEW_TRIGGER: 'converse',
+								MNG_REVIEW_TARGET_PR: '17',
+								MNG_REVIEW_TARGET_BASE: fixture.base,
+								MNG_REVIEW_TARGET_HEAD: fixture.head,
+								...(rotation ? { GITHUB_RUN_NUMBER: String(rotation) } : {}),
+							})
+						)
+					)
+					const prepared = yield* parsePreparedRun(
+						yield* (yield* FileSystem.FileSystem).readFileString(
+							fixture.paths.prepared
+						)
+					)
+					expect(prepared.status).toBe('ready')
+					if (prepared.status !== 'ready') return
+					expect(prepared.replies).toHaveLength(MAX_REPLY_THREADS)
+					expect(prepared.replies?.[0]?.threadId).toBe(
+						`thread-${rotation === 0 ? 0 : MAX_REPLY_THREADS}`
+					)
+				})
+		)
 })
