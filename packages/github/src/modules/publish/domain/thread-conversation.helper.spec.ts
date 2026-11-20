@@ -13,7 +13,7 @@ import {
 	pendingReviewThread,
 } from '../../../shared/mocks/thread-reply-test.helper'
 import { toMarkerComment } from '../presentation/thread-comment.formatter'
-import { toBotThread } from './bot-thread.helper'
+import { toBodyDigest, toBotThread } from './bot-thread.helper'
 import { MARKER_VERSION } from './publish.constants'
 import {
 	countDisputes,
@@ -168,6 +168,15 @@ describe('toReplyItems', () => {
 })
 
 describe('getApplicableReplies', () => {
+	test('drops an edited reply even when its comment id and fingerprint match', () => {
+		const decision = decidedReply()
+		const thread = pendingBotThread({
+			latestDigest: toBodyDigest('edited reply'),
+		})
+		expect(thread.latestCommentId).toBe(decision.commentId)
+		expect(thread.marker.fingerprint).toBe(decision.fingerprint)
+		expect(getApplicableReplies([decision], [thread])).toEqual([])
+	})
 	test('keeps a current decision once', () => {
 		expect(
 			getApplicableReplies(
@@ -186,6 +195,24 @@ describe('getApplicableReplies', () => {
 })
 
 describe('toDecidedReplies', () => {
+	test('carries each whole-body digest into its decision without the reply text', () => {
+		const reply = pendingReply({
+			body: 'fixed',
+			digest: toBodyDigest('fixed with text beyond the cutoff'),
+		})
+		const pairs = toReplyItems([reply], [pendingBotThread({ commit: SHA })])
+		expect(
+			toDecidedReplies(pairs, [
+				{
+					finding: bug(),
+					base: SHA,
+					reply: reply.body,
+					disputes: 0,
+					decision: { action: 'seen' },
+				},
+			])
+		).toEqual([decidedReply(undefined, { digest: reply.digest })])
+	})
 	test('omits errored engine results while preserving the positional binding', () => {
 		const pairs = toReplyItems(
 			[pendingReply(), pendingReply({ threadId: 'second', commentId: 43 })],

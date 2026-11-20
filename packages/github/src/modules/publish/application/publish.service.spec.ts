@@ -48,7 +48,10 @@ import {
 	parseFindingMarker,
 	parseReplyMarker,
 } from '../domain/publish-marker.parser'
-import { SHORT_SHA_LENGTH } from '../domain/publish.constants'
+import {
+	SHORT_SHA_LENGTH,
+	THREAD_PLACE_LINES,
+} from '../domain/publish.constants'
 import { PublishIncompleteError } from '../domain/publish.errors'
 import { toMarkerComment } from '../presentation/thread-comment.formatter'
 import { PublishService, PublishServiceLive } from './publish.service'
@@ -2572,6 +2575,87 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 	'PublishService author replies',
 	test => {
+		for (const action of ['resolved', 'accepted', 'recheck'] as const)
+			for (const refused of [false, true])
+				test.effect(
+					`${action} dismisses a finding changed since its thread commit, resolution refused=${refused}`,
+					() =>
+						Effect.gen(function* () {
+							const fixture = setup()
+							const thread =
+								action === 'recheck' ? reviewThread() : pendingReviewThread()
+							fixture.fake.threads.push({
+								...thread,
+								comments: {
+									...thread.comments,
+									nodes: thread.comments.nodes.map(comment => ({
+										...comment,
+										originalCommit: { oid: fixture.base },
+									})),
+								},
+							})
+							expect(
+								fixture.repo.git(
+									'log',
+									'--format=%H',
+									`-L${bug().line - THREAD_PLACE_LINES},${bug().line + THREAD_PLACE_LINES}:${bug().path}`,
+									`${fixture.base}..${fixture.head}`
+								)
+							).toContain(fixture.head)
+							if (refused) fixture.fake.failures.resolve.push(error(403))
+							const closing =
+								action === 'recheck'
+									? {
+											recheck: {
+												checked: 1,
+												proposals: [
+													{
+														threadId: thread.id,
+														fingerprint: bug().fingerprint,
+														reason: 'The write is guarded.',
+													},
+												],
+												tokens: {},
+											},
+										}
+									: {
+											replies: {
+												tokens: {},
+												decisions: [
+													decidedReply(
+														action === 'accepted'
+															? {
+																	action,
+																	reason: 'The guard is intentional.',
+																	memory: 'Keep the guard.',
+																	evidence: ['src/store.ts:10'],
+																}
+															: { action, reason: 'The guard fixes it.' }
+													),
+												],
+											},
+										}
+							expect(
+								yield* PublishService.use(service =>
+									service.publish({ ...fixture.input, ...closing })
+								).pipe(Effect.provide(fixture.publisher))
+							).toMatchObject({
+								dismissed: 1,
+								repeated: 0,
+								onLine: 0,
+								onFile: 0,
+								inSummary: 0,
+								unposted: 0,
+								openBugs: 0,
+								verdict: 'ready',
+							})
+							expect(fixture.fake.writes.map(write => write.method)).toEqual([
+								'reply',
+								'resolve',
+								'create',
+							])
+						})
+				)
 		test.effect(
 			'needs-owner writes one answer without extending the summary marker',
 			() =>

@@ -68,6 +68,46 @@ const TEXTS = {
 } as const
 
 layer(TOKEN_MODE_OWNED)('ThreadReplyService collect', test => {
+	test.effect(
+		'edits beyond the body cutoff change the digest while the prepared body stays the same',
+		() =>
+			Effect.gen(function* () {
+				const { fake } = setup()
+				const service = yield* ThreadReplyService.pipe(
+					Effect.provide(ThreadReplyServiceLive.pipe(Layer.provide(fake.api)))
+				)
+				const prefix = 'x'.repeat(MAX_REPLY_CHARS)
+				const collect = (suffix: string) => {
+					fake.threadComments.set('thread', [
+						threadReply({
+							databaseId: 42,
+							body: prefix + suffix,
+							author: { __typename: 'User', login: 'contributor' },
+						}),
+					])
+					return service.collect({
+						pullNumber: 17,
+						threads: [pendingBotThread()],
+						rotation: 0,
+					})
+				}
+				const before = yield* collect('before')
+				const after = yield* collect('after')
+				expect(before).toEqual([
+					pendingReply({
+						body: prefix,
+						digest: toBodyDigest(`${prefix}before`),
+					}),
+				])
+				expect(after).toEqual([
+					pendingReply({
+						body: prefix,
+						digest: toBodyDigest(`${prefix}after`),
+					}),
+				])
+				expect(before[0]?.digest).not.toBe(after[0]?.digest)
+			})
+	)
 	for (const role of ['read', 'triage', 'write', 'maintain', 'admin'])
 		test.effect(`only writers count: ${role}`, () =>
 			Effect.gen(function* () {
@@ -204,6 +244,155 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService collect', test => {
 })
 
 layer(TOKEN_MODE_OWNED)('ThreadReplyService apply', test => {
+	for (const role of ['read', 'triage'])
+		test.effect(
+			`a forged decision naming a ${role} author's comment writes nothing`,
+			() =>
+				Effect.gen(function* () {
+					const { fake } = setup()
+					fake.command.role = role
+					expect(
+						yield* ThreadReplyService.use(service =>
+							service.apply({
+								links: LINKS,
+								decisions: [
+									decidedReply({ action: 'resolved', reason: 'guarded' }),
+								],
+								threads: [pendingBotThread()],
+							})
+						).pipe(
+							Effect.provide(
+								ThreadReplyServiceLive.pipe(Layer.provide(fake.api))
+							)
+						)
+					).toEqual([])
+					expect(fake.reads).toEqual(['getCollaboratorRole:contributor'])
+					expect(fake.writes).toEqual([])
+				})
+		)
+	test.effect(
+		'an author who loses write access after collect is not answered',
+		() =>
+			Effect.gen(function* () {
+				const { fake } = setup()
+				const service = yield* ThreadReplyService.pipe(
+					Effect.provide(ThreadReplyServiceLive.pipe(Layer.provide(fake.api)))
+				)
+				const replies = yield* service.collect({
+					pullNumber: 17,
+					threads: [pendingBotThread()],
+					rotation: 0,
+				})
+				expect(replies).toEqual([pendingReply()])
+				fake.command.role = 'read'
+				expect(
+					yield* service.apply({
+						links: LINKS,
+						decisions: [decidedReply()],
+						threads: [pendingBotThread()],
+					})
+				).toEqual([])
+				expect(
+					fake.reads.filter(read => read.startsWith('getCollaboratorRole:'))
+				).toEqual([
+					'getCollaboratorRole:contributor',
+					'getCollaboratorRole:contributor',
+				])
+				expect(fake.writes).toEqual([])
+			})
+	)
+	test.effect(
+		'a failed author lookup drops only that decision and still answers a writer',
+		() =>
+			Effect.gen(function* () {
+				const { fake } = setup()
+				fake.failures.getCollaboratorRole.push(apiError())
+				const answered = yield* ThreadReplyService.use(service =>
+					service.apply({
+						links: LINKS,
+						decisions: [
+							decidedReply(),
+							decidedReply(undefined, { threadId: 'second' }),
+						],
+						threads: [
+							pendingBotThread(),
+							pendingBotThread({
+								id: 'second',
+								latestAuthor: { type: 'User', login: 'writer' },
+							}),
+						],
+					})
+				).pipe(
+					Effect.provide(ThreadReplyServiceLive.pipe(Layer.provide(fake.api)))
+				)
+				expect(answered.map(entry => entry.thread.id)).toEqual(['second'])
+				expect(fake.reads).toEqual([
+					'getCollaboratorRole:contributor',
+					'getCollaboratorRole:writer',
+				])
+				expect(fake.writes).toEqual([
+					expect.objectContaining({ method: 'reply', id: 'second' }),
+				])
+			})
+	)
+	test.effect(
+		'two applicable decisions deduplicate author lookups case-insensitively',
+		() =>
+			Effect.gen(function* () {
+				const { fake } = setup()
+				expect(
+					yield* ThreadReplyService.use(service =>
+						service.apply({
+							links: LINKS,
+							decisions: [
+								decidedReply(),
+								decidedReply(undefined, { threadId: 'second' }),
+							],
+							threads: [
+								pendingBotThread(),
+								pendingBotThread({
+									id: 'second',
+									latestAuthor: { type: 'User', login: 'CONTRIBUTOR' },
+								}),
+							],
+						})
+					).pipe(
+						Effect.provide(ThreadReplyServiceLive.pipe(Layer.provide(fake.api)))
+					)
+				).toHaveLength(2)
+				expect(fake.reads).toEqual(['getCollaboratorRole:contributor'])
+				expect(fake.writes.map(write => write.method)).toEqual([
+					'reply',
+					'reply',
+				])
+			})
+	)
+	test.effect(
+		'an edited latest reply with the same comment id is not answered or looked up',
+		() =>
+			Effect.gen(function* () {
+				const { fake } = setup()
+				expect(
+					yield* ThreadReplyService.use(service =>
+						service.apply({
+							links: LINKS,
+							decisions: [decidedReply()],
+							threads: [
+								pendingBotThread({
+									latestDigest: toBodyDigest(
+										'intentional because the caller guards it'
+									),
+								}),
+							],
+						})
+					).pipe(
+						Effect.provide(ThreadReplyServiceLive.pipe(Layer.provide(fake.api)))
+					)
+				).toEqual([])
+				expect(fake.reads).toEqual([])
+				expect(fake.writes).toEqual([])
+			})
+	)
 	for (const decision of DECISIONS)
 		test.effect(
 			`${decision.action} writes its text and the answered comment marker`,
