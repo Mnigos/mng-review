@@ -1,13 +1,21 @@
 import { layer } from '@effect/vitest'
+import { ConfigError } from '@mng-review/domain'
+import { RulesService } from '@mng-review/engine'
 import {
 	PublishService,
 	GitHubApiError,
 	StatusReportService,
 } from '@mng-review/github'
 import { Effect, Layer } from 'effect'
+import { parseOutcomeFile } from '../infrastructure/outcome-file.parser'
+import type {
+	OutcomeBinding,
+	OutcomeFile,
+} from '../infrastructure/outcome-file.schema'
+import { outcomeFile as boundOutcomeFile } from '../shared/mocks/outcome-file.helper'
 import { reviewReport, RULES } from '../shared/mocks/review-report.helper'
 import { PublishRunService, PublishRunServiceLive } from './publish-run.service'
-import type { ShadowOutcome, PullRequestEvent } from './shadow-run.types'
+import type { PullRequestEvent } from './shadow-run.types'
 
 const EVENT = {
 	number: 17,
@@ -15,7 +23,27 @@ const EVENT = {
 	headSha: 'head',
 	pr: { labels: [], draft: false, fork: false, trigger: 'auto' },
 } as const satisfies PullRequestEvent
-const CONTEXT = { engineCommit: 'engine' } as const
+const CONTEXT = {
+	engineCommit: 'engine',
+	pullNumber: EVENT.number,
+	head: EVENT.headSha,
+} as const
+const BINDING = {
+	repository: 'example/project',
+	runId: '1',
+	runAttempt: '1',
+	engineCommit: null,
+	pullNumber: EVENT.number,
+	baseSha: EVENT.baseSha,
+	headSha: EVENT.headSha,
+} as const satisfies OutcomeBinding
+
+/** An outcome file bound to the fixture's pull request. */
+function outcomeFile(
+	fields: Omit<OutcomeFile, 'version' | 'binding'>
+): OutcomeFile {
+	return { version: 1, binding: BINDING, ...fields }
+}
 const PUBLISHED = {
 	verdict: 'needs fixes',
 	openBugs: 1,
@@ -31,7 +59,7 @@ const PUBLISHED = {
 } as const
 
 /** Publisher test layer records which outcome path is taken and can fail either write. */
-function setup(fail = false) {
+function setup(fail = false, rulesError?: ConfigError) {
 	const publishSpy = vi.fn(() =>
 		fail
 			? Effect.fail(
@@ -52,22 +80,34 @@ function setup(fail = false) {
 	)
 	const reportSpy = vi.fn(() => Effect.succeed({ checks: 1, status: true }))
 	const reportOfflineSpy = vi.fn(() => Effect.succeed(true))
+	const loadSpy = vi.fn(() =>
+		rulesError ? Effect.fail(rulesError) : Effect.succeed(RULES)
+	)
 	const service = PublishRunServiceLive.pipe(
 		Layer.provide(
-			Layer.merge(
+			Layer.mergeAll(
+				Layer.succeed(RulesService, { load: loadSpy }),
 				Layer.succeed(StatusReportService, {
 					report: reportSpy,
 					reportOffline: reportOfflineSpy,
 				}),
 				Layer.succeed(PublishService, {
 					readPrior: () => Effect.succeed(undefined),
+					readThreads: () => Effect.succeed([]),
 					publish: publishSpy,
 					publishStatus: publishStatusSpy,
 				})
 			)
 		)
 	)
-	return { service, publishSpy, publishStatusSpy, reportSpy, reportOfflineSpy }
+	return {
+		service,
+		loadSpy,
+		publishSpy,
+		publishStatusSpy,
+		reportSpy,
+		reportOfflineSpy,
+	}
 }
 
 layer(Layer.empty)('PublishRunService', test => {
@@ -79,10 +119,7 @@ layer(Layer.empty)('PublishRunService', test => {
 			)
 			const report = reviewReport()
 			expect(
-				yield* service.run(
-					{ status: 'reviewed', event: EVENT, report, rules: RULES },
-					CONTEXT
-				)
+				yield* service.run(outcomeFile({ status: 'reviewed', report }), CONTEXT)
 			).toEqual({
 				status: 'published',
 				result: PUBLISHED,
@@ -90,12 +127,12 @@ layer(Layer.empty)('PublishRunService', test => {
 			})
 			expect(fixture.publishSpy).toHaveBeenCalledExactlyOnceWith({
 				pullNumber: EVENT.number,
-				pr: EVENT.pr,
 				report,
 				rules: RULES,
 				head: EVENT.headSha,
 				engineCommit: CONTEXT.engineCommit,
 			})
+			expect(fixture.loadSpy).toHaveBeenCalledExactlyOnceWith(EVENT.baseSha)
 			expect(fixture.publishStatusSpy).not.toHaveBeenCalled()
 			expect(fixture.reportSpy).toHaveBeenCalledExactlyOnceWith({
 				head: EVENT.headSha,
@@ -116,7 +153,7 @@ layer(Layer.empty)('PublishRunService', test => {
 				)
 				expect(
 					yield* service.run(
-						{ status: 'offline', event: EVENT, reason: 'no endpoint' },
+						outcomeFile({ status: 'offline', reason: 'no endpoint' }),
 						CONTEXT
 					)
 				).toEqual({
@@ -146,10 +183,10 @@ layer(Layer.empty)('PublishRunService', test => {
 					const service = yield* PublishRunService.pipe(
 						Effect.provide(fixture.service)
 					)
-					const outcome: ShadowOutcome =
+					const outcome =
 						status === 'reviewed'
-							? { status, report: reviewReport(), rules: RULES, event: EVENT }
-							: { status, reason: 'offline', event: EVENT }
+							? outcomeFile({ status, report: reviewReport() })
+							: outcomeFile({ status, reason: 'offline' })
 					const published = yield* service.run(outcome, CONTEXT)
 					expect(published.status).toBe('failed')
 					if (published.status === 'failed')
@@ -157,10 +194,14 @@ layer(Layer.empty)('PublishRunService', test => {
 				})
 		)
 	for (const outcome of [
-		{ status: 'skipped', reason: 'skip' },
-		{ status: 'invalid-config', source: '.mng/review.yml', reason: 'invalid' },
-		{ status: 'failed', event: EVENT, reason: 'git failure' },
-	] as const satisfies readonly ShadowOutcome[])
+		outcomeFile({ status: 'skipped', reason: 'skip' }),
+		outcomeFile({
+			status: 'invalid-config',
+			source: '.mng/review.yml',
+			reason: 'invalid',
+		}),
+		outcomeFile({ status: 'failed', reason: 'git failure' }),
+	])
 		test.effect(`${outcome.status} writes nothing`, () =>
 			Effect.gen(function* () {
 				const fixture = setup()
@@ -198,12 +239,7 @@ layer(Layer.empty)('PublishRunService', test => {
 
 					expect(
 						yield* service.run(
-							{
-								status: 'reviewed',
-								event: EVENT,
-								rules: RULES,
-								report: reviewed,
-							},
+							outcomeFile({ status: 'reviewed', report: reviewed }),
 							CONTEXT
 						)
 					).toMatchObject({
@@ -226,4 +262,95 @@ layer(Layer.empty)('PublishRunService', test => {
 					}
 				})
 		)
+})
+
+layer(Layer.empty)('PublishRunService decoded outcomes', test => {
+	test.effect(
+		'publishes the decoded report with proposals and freshly loaded rules without a model layer',
+		() =>
+			Effect.gen(function* () {
+				const fixture = setup()
+				const file = boundOutcomeFile()
+				const recheck = {
+					checked: 1,
+					rejected: [
+						{
+							threadId: 'thread',
+							fingerprint: 'fingerprint',
+							reason: 'The write is guarded.',
+						},
+					],
+					tokens: {
+						validator: {
+							calls: 1,
+							inputTokens: 3,
+							cachedInputTokens: 0,
+							outputTokens: 2,
+							reasoningTokens: 0,
+							totalTokens: 5,
+						},
+					},
+				} as const
+				const decoded = yield* parseOutcomeFile(
+					JSON.stringify({
+						...file,
+						recheck,
+						rules: { config: { skip: true } },
+					})
+				)
+				const context = {
+					engineCommit: file.binding.engineCommit ?? undefined,
+					pullNumber: file.binding.pullNumber,
+					head: file.binding.headSha,
+				}
+				expect(
+					yield* PublishRunService.use(service =>
+						service.run(decoded, context)
+					).pipe(Effect.provide(fixture.service))
+				).toEqual({
+					status: 'published',
+					result: PUBLISHED,
+					checks: { checks: 1, status: true },
+				})
+				expect(fixture.loadSpy).toHaveBeenCalledExactlyOnceWith(
+					file.binding.baseSha
+				)
+				expect(fixture.publishSpy).toHaveBeenCalledExactlyOnceWith({
+					...context,
+					report: decoded.report,
+					rules: RULES,
+					recheck: {
+						checked: recheck.checked,
+						proposals: recheck.rejected,
+						tokens: recheck.tokens,
+					},
+				})
+			})
+	)
+	test.effect(
+		'a rules load failure publishes nothing and reports the source',
+		() =>
+			Effect.gen(function* () {
+				const fixture = setup(
+					false,
+					new ConfigError({
+						source: '.mng/review.yml',
+						reason: 'Invalid rules.',
+					})
+				)
+				expect(
+					yield* PublishRunService.use(service =>
+						service.run(boundOutcomeFile(), CONTEXT)
+					).pipe(Effect.provide(fixture.service))
+				).toEqual({
+					status: 'failed',
+					reason:
+						'the rules at the base commit: .mng/review.yml: Invalid rules.',
+				})
+				expect(fixture.publishSpy).not.toHaveBeenCalled()
+				expect(fixture.publishStatusSpy).not.toHaveBeenCalled()
+				expect(fixture.reportSpy).not.toHaveBeenCalled()
+				expect(fixture.reportOfflineSpy).not.toHaveBeenCalled()
+			})
+	)
 })

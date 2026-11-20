@@ -2,7 +2,6 @@ import { layer } from '@effect/vitest'
 import type { Validation } from '@mng-review/domain'
 import { RecheckService, type RecheckRequest } from '@mng-review/engine'
 import { Effect, Layer } from 'effect'
-import { GitHubApiError } from '../../../platform/github.errors'
 import {
 	cleanupRepos,
 	createRepo,
@@ -13,18 +12,9 @@ import { HOSTILE_TEXT } from '../../../shared/mocks/hostile-text.helper'
 import {
 	botThread,
 	reviewThread,
-	LINKS,
 	RULES,
 } from '../../../shared/mocks/publish-test.helper'
-import { escapeMarkdown } from '../../../utils/markdown.util'
-import { toBotThread } from '../domain/bot-thread.helper'
-import { parseReplyMarker } from '../domain/publish-marker.parser'
-import {
-	MAX_RECHECKS,
-	SHORT_SHA_LENGTH,
-	MARKER_VERSION,
-} from '../domain/publish.constants'
-import { formatResolvedReply } from '../presentation/thread-comment.formatter'
+import { MAX_RECHECKS } from '../domain/publish.constants'
 import {
 	ThreadRecheckService,
 	ThreadRecheckServiceLive,
@@ -77,18 +67,16 @@ function setup(validation: Validation['status'] = 'rejected') {
 	const service = ThreadRecheckServiceLive.pipe(
 		Layer.provide(
 			Layer.mergeAll(
-				api.api,
 				gitLayer(repo.root),
 				Layer.succeed(RecheckService, { recheck: recheckSpy })
 			)
 		)
 	)
 	const input = {
-		pullNumber: 17,
 		rotation: 0,
 		pr: { labels: [], draft: false, fork: false, trigger: 'auto' as const },
 		rules: RULES,
-		links: { ...LINKS, head },
+		head,
 		published: [],
 		threads: [botThread({ commit: base })],
 	}
@@ -119,9 +107,9 @@ layer(Layer.empty, { excludeTestServices: true })(
 					]
 					expect(
 						yield* ThreadRecheckService.use(service =>
-							service.recheck({ ...fixture.input, threads })
+							service.propose({ ...fixture.input, threads })
 						).pipe(Effect.provide(fixture.service))
-					).toEqual({ checked: MAX_RECHECKS, resolved: [], tokens: TOKENS })
+					).toEqual({ checked: MAX_RECHECKS, rejected: [], tokens: TOKENS })
 					const request = fixture.recheckSpy.mock.calls[0]?.[0]
 					expect(request).toMatchObject({
 						rules: RULES,
@@ -139,36 +127,23 @@ layer(Layer.empty, { excludeTestServices: true })(
 					expect(fixture.api.writes).toEqual([])
 				})
 		)
-		test.effect(
-			'a rejected thread is replied to before it is resolved, with an escaped reason and decodable marker',
-			() =>
-				Effect.gen(function* () {
-					const fixture = setup()
-					const result = yield* ThreadRecheckService.use(service =>
-						service.recheck(fixture.input)
+		test.effect('a rejected thread is proposed and nothing is written', () =>
+			Effect.gen(function* () {
+				const fixture = setup()
+				expect(
+					yield* ThreadRecheckService.use(service =>
+						service.propose(fixture.input)
 					).pipe(Effect.provide(fixture.service))
-					expect(result).toEqual({
-						checked: 1,
-						resolved: [
-							{ thread: fixture.input.threads[0], reason: HOSTILE_TEXT },
-						],
-						tokens: TOKENS,
-					})
-					const body = formatResolvedReply(HOSTILE_TEXT, fixture.input.links)
-					expect(fixture.api.writes).toEqual([
-						{ method: 'reply', id: 'thread', body },
-						{ method: 'resolve', id: 'thread' },
-					])
-					expect(body).toContain(
-						`at \`${fixture.head.slice(0, SHORT_SHA_LENGTH)}\``
-					)
-					expect(body).toContain(escapeMarkdown(HOSTILE_TEXT))
-					expect(parseReplyMarker(body)).toEqual({
-						v: MARKER_VERSION,
-						action: 'resolved',
-						commit: fixture.head,
-					})
+				).toEqual({
+					checked: 1,
+					rejected: [
+						{ thread: fixture.input.threads[0], reason: HOSTILE_TEXT },
+					],
+					tokens: TOKENS,
 				})
+				expect(fixture.api.threadReads).toEqual([])
+				expect(fixture.api.writes).toEqual([])
+			})
 		)
 		for (const status of ['confirmed', 'unverified', 'unvalidated'] as const)
 			test.effect(`${status} leaves the thread open`, () =>
@@ -176,53 +151,11 @@ layer(Layer.empty, { excludeTestServices: true })(
 					const fixture = setup(status)
 					expect(
 						yield* ThreadRecheckService.use(service =>
-							service.recheck(fixture.input)
+							service.propose(fixture.input)
 						).pipe(Effect.provide(fixture.service))
-					).toEqual({ checked: 1, resolved: [], tokens: TOKENS })
+					).toEqual({ checked: 1, rejected: [], tokens: TOKENS })
 					expect(fixture.api.writes).toEqual([])
 				})
-			)
-		for (const failureAt of ['reply', 'resolve'] as const)
-			test.effect(
-				`a failed ${failureAt} counts a resolution only when the reply was posted`,
-				() =>
-					Effect.gen(function* () {
-						const fixture = setup()
-						fixture.api.failures[failureAt].push(
-							new GitHubApiError({
-								operation: failureAt,
-								reason: 'denied',
-								status: 403,
-							})
-						)
-						expect(
-							yield* ThreadRecheckService.use(service =>
-								service.recheck(fixture.input)
-							).pipe(Effect.provide(fixture.service))
-						).toEqual({
-							checked: 1,
-							resolved:
-								failureAt === 'reply'
-									? []
-									: [
-											{
-												thread: fixture.input.threads[0],
-												reason: HOSTILE_TEXT,
-											},
-										],
-							tokens: TOKENS,
-						})
-						expect(fixture.api.writes.map(write => write.method)).toEqual(
-							failureAt === 'reply' ? ['reply'] : ['reply', 'resolve']
-						)
-						expect(fixture.api.threads[0]?.isResolved).toBe(false)
-						expect(fixture.api.threads.map(toBotThread)).toMatchObject([
-							{
-								resolved: failureAt === 'resolve',
-								closedByBot: failureAt === 'resolve',
-							},
-						])
-					})
 			)
 		test.effect(
 			'no changed candidates means no validator and no token replacement',
@@ -231,14 +164,14 @@ layer(Layer.empty, { excludeTestServices: true })(
 					const fixture = setup()
 					expect(
 						yield* ThreadRecheckService.use(service =>
-							service.recheck({
+							service.propose({
 								...fixture.input,
 								threads: [
 									botThread({ path: 'src/unchanged.ts', commit: fixture.base }),
 								],
 							})
 						).pipe(Effect.provide(fixture.service))
-					).toEqual({ checked: 0, resolved: [], tokens: undefined })
+					).toEqual({ checked: 0, rejected: [], tokens: undefined })
 					expect(fixture.recheckSpy).not.toHaveBeenCalled()
 				})
 		)
@@ -246,81 +179,8 @@ layer(Layer.empty, { excludeTestServices: true })(
 )
 
 layer(Layer.empty, { excludeTestServices: true })(
-	'ThreadRecheckService fresh state and rotation',
+	'ThreadRecheckService rotation',
 	test => {
-		for (const change of [
-			'reply',
-			'resolved',
-			'gone',
-			'edited',
-			'foreign',
-			'read-failed',
-		] as const)
-			test.effect(
-				`a rejected thread with ${change} at the second read is left alone`,
-				() =>
-					Effect.gen(function* () {
-						const fixture = setup()
-						fixture.recheckSpy.mockImplementationOnce(request =>
-							Effect.sync(() => {
-								const [thread] = fixture.api.threads
-								if (!thread) return { results: [], tokens: TOKENS }
-								if (change === 'gone') fixture.api.threads.splice(0)
-								else if (change === 'read-failed')
-									fixture.api.failures.listThreads.push(
-										new GitHubApiError({
-											operation: 'threads',
-											reason: 'denied',
-											status: 403,
-										})
-									)
-								else
-									fixture.api.threads[0] = {
-										...thread,
-										isResolved: change === 'resolved',
-										comments: {
-											...thread.comments,
-											totalCount: change === 'reply' ? 2 : 1,
-											nodes: thread.comments.nodes.map(comment => ({
-												...comment,
-												...(change === 'edited'
-													? {
-															editor: {
-																__typename: 'User',
-																login: 'contributor',
-															},
-														}
-													: {}),
-												...(change === 'foreign'
-													? {
-															author: {
-																__typename: 'User',
-																login: 'contributor',
-															},
-														}
-													: {}),
-											})),
-										},
-									}
-								return {
-									results: request.items.map(item => ({
-										...item,
-										validation: toValidation('rejected'),
-									})),
-									tokens: TOKENS,
-								}
-							})
-						)
-						expect(
-							yield* ThreadRecheckService.use(service =>
-								service.recheck(fixture.input)
-							).pipe(Effect.provide(fixture.service))
-						).toEqual({ checked: 1, resolved: [], tokens: TOKENS })
-						expect(fixture.recheckSpy).toHaveBeenCalledOnce()
-						expect(fixture.api.threadReads).toEqual([17])
-						expect(fixture.api.writes).toEqual([])
-					})
-			)
 		test.effect('a later run rotates the capped validator batch', () =>
 			Effect.gen(function* () {
 				const fixture = setup('confirmed')
@@ -334,8 +194,8 @@ layer(Layer.empty, { excludeTestServices: true })(
 				const service = yield* ThreadRecheckService.pipe(
 					Effect.provide(fixture.service)
 				)
-				yield* service.recheck({ ...fixture.input, threads, rotation: 0 })
-				yield* service.recheck({ ...fixture.input, threads, rotation: 1 })
+				yield* service.propose({ ...fixture.input, threads, rotation: 0 })
+				yield* service.propose({ ...fixture.input, threads, rotation: 1 })
 				expect(
 					fixture.recheckSpy.mock.calls.map(([request]) =>
 						request.items.map(item => item.finding.title)
@@ -350,6 +210,29 @@ layer(Layer.empty, { excludeTestServices: true })(
 				expect(fixture.api.threadReads).toEqual([])
 				expect(fixture.api.writes).toEqual([])
 			})
+		)
+	}
+)
+
+layer(Layer.empty, { excludeTestServices: true })(
+	'ThreadRecheckService failures',
+	test => {
+		test.effect(
+			'a validator with no results proposes nothing without a GitHub layer',
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup()
+					fixture.recheckSpy.mockImplementation(() =>
+						Effect.succeed({ results: [], tokens: TOKENS })
+					)
+					expect(
+						yield* ThreadRecheckService.use(service =>
+							service.propose(fixture.input)
+						).pipe(Effect.provide(fixture.service))
+					).toEqual({ checked: 1, rejected: [], tokens: TOKENS })
+					expect(fixture.api.threadReads).toEqual([])
+					expect(fixture.api.writes).toEqual([])
+				})
 		)
 	}
 )

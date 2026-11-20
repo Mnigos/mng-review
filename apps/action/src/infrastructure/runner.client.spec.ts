@@ -6,9 +6,12 @@ import { layer } from '@effect/vitest'
 import { REDACTED } from '@mng-review/engine'
 import { ConfigProvider, Effect, FileSystem, Layer, Schema } from 'effect'
 import { TestConsole } from 'effect/testing'
+import { toOutcomeText } from '../application/outcome-file.helper'
 import { formatResult } from '../presentation/result.formatter'
+import { outcomeFile } from '../shared/mocks/outcome-file.helper'
 import { eventPayload } from '../shared/mocks/pull-request-event.helper'
 import { reviewReport, RULES } from '../shared/mocks/review-report.helper'
+import { parseOutcomeFile } from './outcome-file.parser'
 import { parsePullRequestEvent } from './pull-request-event.parser'
 import {
 	maskEndpoint,
@@ -17,6 +20,7 @@ import {
 	repoDirConfig,
 	runnerEnvironmentConfig,
 	writeResult,
+	writeOutcome,
 	writeSummary,
 } from './runner.client'
 
@@ -438,6 +442,7 @@ layer(RunnerLayer)('runner client', test => {
 					summaryPath: undefined,
 					engineCommit: undefined,
 					resultPath: undefined,
+					outcomePath: undefined,
 					repository: undefined,
 					runId: undefined,
 					runAttempt: undefined,
@@ -494,4 +499,70 @@ layer(Layer.empty)('modeConfig', test => {
 				).toBe(mode)
 			})
 		)
+})
+
+layer(RunnerLayer)('runner outcome file', test => {
+	test.effect(
+		'trims MNG_REVIEW_OUTCOME_PATH and reads it independently of resultPath',
+		() =>
+			Effect.gen(function* () {
+				expect(
+					yield* runnerEnvironmentConfig.pipe(
+						Effect.provide(
+							ConfigProvider.layer(
+								ConfigProvider.fromEnvRecord({
+									MNG_REVIEW_OUTCOME_PATH: ' /fixture/outcome.json ',
+								})
+							)
+						)
+					)
+				).toMatchObject({
+					outcomePath: '/fixture/outcome.json',
+					resultPath: undefined,
+				})
+			})
+	)
+	for (const path of ['', '  \t\n '])
+		test.effect(
+			`treats blank outcome path ${JSON.stringify(path)} as unset`,
+			() =>
+				Effect.gen(function* () {
+					expect(
+						yield* runnerEnvironmentConfig.pipe(
+							Effect.provide(
+								ConfigProvider.layer(
+									ConfigProvider.fromEnvRecord({
+										MNG_REVIEW_OUTCOME_PATH: path,
+									})
+								)
+							)
+						)
+					).toHaveProperty('outcomePath', undefined)
+				})
+		)
+	test.effect(
+		'writes a serialized outcome to the configured path and replaces existing content',
+		() =>
+			Effect.gen(function* () {
+				const fs = yield* FileSystem.FileSystem
+				const path = join(tempDirectory(), 'outcome.json')
+				const file = outcomeFile()
+				const text = toOutcomeText(file, [])
+				yield* fs.writeFileString(path, 'old outcome')
+				yield* writeOutcome(path, text)
+				expect(yield* fs.readFileString(path)).toBe(text)
+				expect(yield* parseOutcomeFile(yield* fs.readFileString(path))).toEqual(
+					file
+				)
+			})
+	)
+	test.effect('an absent outcome path writes and logs nothing', () =>
+		Effect.gen(function* () {
+			const fs = yield* FileSystem.FileSystem
+			const writeFileStringSpy = vi.spyOn(fs, 'writeFileString')
+			for (const path of [undefined, '']) yield* writeOutcome(path, '{}')
+			expect(writeFileStringSpy).not.toHaveBeenCalled()
+			expect(yield* TestConsole.logLines).toEqual([])
+		}).pipe(Effect.provide(Layer.fresh(TestConsole.layer)))
+	)
 })
