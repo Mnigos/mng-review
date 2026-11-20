@@ -4,6 +4,7 @@ import { Effect, Layer, Redacted } from 'effect'
 import { GITHUB_ACTIONS_IDENTITY } from '../../../platform/bot-identity.helper'
 import { GitHubConfig } from '../../../platform/github.config'
 import { GitHubApiError } from '../../../platform/github.errors'
+import { provideOwnedIdentities } from '../../../platform/owned-identities.context'
 import { agent } from '../../../shared/mocks/domain-test.helper'
 import {
 	cleanupRepos,
@@ -13,6 +14,8 @@ import {
 import { githubApiFake } from '../../../shared/mocks/github-api-fake.helper'
 import { githubStatusFake } from '../../../shared/mocks/github-status-fake.helper'
 import {
+	APP_IDENTITY,
+	APP_MODE_OWNED,
 	bug,
 	botThread,
 	botClosedReviewThread,
@@ -45,14 +48,17 @@ import {
 } from './thread-resolution.service'
 
 /** Real git history with a finding on a changed head line and a recording API. */
-function setup(apply?: ThreadResolutionService['Service']['apply']) {
+function setup(
+	apply?: ThreadResolutionService['Service']['apply'],
+	identity = GITHUB_ACTIONS_IDENTITY
+) {
 	const repo = createRepo()
 	const original = `${Array.from({ length: 40 }, (_, index) => `line ${index + 1}`).join('\n')}\n`
 	repo.write(bug().path, original)
 	const base = repo.commit()
 	repo.write(bug().path, original.replace('line 10\n', 'changed 10\n'))
 	const head = repo.commit()
-	const fake = githubApiFake()
+	const fake = githubApiFake(identity)
 	const dependencies = Layer.mergeAll(
 		fake.api,
 		apply
@@ -65,7 +71,7 @@ function setup(apply?: ThreadResolutionService['Service']['apply']) {
 			owner: 'example',
 			name: 'project',
 			token: Redacted.make('fixture'),
-			identity: GITHUB_ACTIONS_IDENTITY,
+			identity,
 		})
 	)
 	const publisher = PublishServiceLive.pipe(
@@ -1281,6 +1287,70 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 					).toEqual([botThread()])
 					expect(fixture.fake.threadReads).toEqual([17])
 					expect(fixture.fake.writes).toEqual([])
+				})
+		)
+	}
+)
+
+layer(APP_MODE_OWNED, { excludeTestServices: true })(
+	'PublishService app mode',
+	test => {
+		for (const trust of [true, false])
+			test.effect(
+				`an earlier open job-token thread is repeated with previous trust=${trust}`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = setup(undefined, APP_IDENTITY)
+						fixture.fake.threads.push(reviewThread())
+						const publisher = yield* PublishService.pipe(
+							Effect.provide(fixture.publisher)
+						)
+						expect(
+							yield* publisher
+								.publish(fixture.input)
+								.pipe(
+									provideOwnedIdentities(
+										APP_IDENTITY,
+										trust ? RULES.config.identity.previous : []
+									)
+								)
+						).toMatchObject({ repeated: trust ? 1 : 0, onLine: trust ? 0 : 1 })
+						expect(
+							fixture.fake.writes.filter(
+								write => write.method === 'review' || write.method === 'comment'
+							)
+						).toHaveLength(trust ? 0 : 1)
+					})
+			)
+		test.effect(
+			'an earlier resolved job-token thread dismisses the finding when its code is unchanged',
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup(undefined, APP_IDENTITY)
+					const thread = reviewThread(undefined, { isResolved: true })
+					fixture.fake.threads.push({
+						...thread,
+						comments: {
+							...thread.comments,
+							nodes: thread.comments.nodes.map(comment => ({
+								...comment,
+								originalCommit: { oid: fixture.head },
+							})),
+						},
+					})
+					const publisher = yield* PublishService.pipe(
+						Effect.provide(fixture.publisher)
+					)
+					expect(yield* publisher.publish(fixture.input)).toMatchObject({
+						dismissed: 1,
+						repeated: 0,
+						onLine: 0,
+					})
+					expect(
+						fixture.fake.writes.filter(
+							write => write.method === 'review' || write.method === 'comment'
+						)
+					).toEqual([])
 				})
 		)
 	}

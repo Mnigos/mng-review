@@ -1,11 +1,19 @@
 import { layer } from '@effect/vitest'
-import { Effect, Layer } from 'effect'
+import { Effect, Layer, Redacted } from 'effect'
 import { GITHUB_ACTIONS_IDENTITY } from '../../../platform/bot-identity.helper'
 import { GitHubApiService } from '../../../platform/github-api.service'
 import { GitHubApiError } from '../../../platform/github.errors'
 import { githubApiFake } from '../../../shared/mocks/github-api-fake.helper'
+import {
+	makeGitHubHttp,
+	getGitHubRequestBody,
+	GITHUB_SETTINGS,
+} from '../../../shared/mocks/github-http.helper'
 import { githubStatusFake } from '../../../shared/mocks/github-status-fake.helper'
 import {
+	APP_IDENTITY,
+	APP_MODE_OWNED,
+	appSummary,
 	reviewThread,
 	botClosedReviewThread,
 	bug,
@@ -500,4 +508,76 @@ layer(TOKEN_MODE_OWNED)('StatusSweepService summary marker', test => {
 				expect(api.writes).toEqual([])
 			})
 		)
+})
+
+layer(APP_MODE_OWNED)('StatusSweepService app mode', test => {
+	test.effect(
+		'finds the old job-token status, counts owned threads and summary, and writes with the app token',
+		() =>
+			Effect.gen(function* () {
+				const previous = {
+					id: 1,
+					state: 'failure',
+					description: 'stale',
+					context: 'MNG Review',
+					creator: { login: GITHUB_ACTIONS_IDENTITY.restLogin, type: 'Bot' },
+				}
+				const http = makeGitHubHttp(
+					request =>
+						Effect.succeed(
+							Response.json(
+								request.url.endsWith('/pulls')
+									? [{ number: 17, head: { sha: 'head' } }]
+									: request.method === 'POST'
+										? { id: 2 }
+										: [previous]
+							)
+						),
+					{
+						...GITHUB_SETTINGS,
+						identity: APP_IDENTITY,
+						token: Redacted.make('app-fixture'),
+					}
+				)
+				const api = githubApiFake(APP_IDENTITY)
+				api.threads.push(reviewThread())
+				api.comments.push(
+					appSummary(
+						{
+							...SUMMARY_MARKER,
+							head: 'head',
+							finished: true,
+							unthreadedBugs: 2,
+						},
+						{
+							author: {
+								__typename: 'Bot',
+								login: GITHUB_ACTIONS_IDENTITY.login,
+							},
+						}
+					)
+				)
+				expect(
+					yield* StatusSweepService.use(service => service.sweep()).pipe(
+						Effect.provide(
+							StatusSweepServiceLive.pipe(
+								Layer.provide(Layer.merge(http.statusLayer, api.api))
+							)
+						)
+					)
+				).toEqual({ checked: 1, updated: 1, failed: 0 })
+				const write = http.requests.find(request => request.method === 'POST')
+				expect(write?.url).toContain('/statuses/head')
+				expect(write?.headers.authorization).toBe('Bearer app-fixture')
+				expect(write?.body).toMatchObject({ _tag: 'Uint8Array' })
+				expect(getGitHubRequestBody(write)).toMatchObject({
+					state: 'failure',
+				})
+				expect(JSON.stringify(getGitHubRequestBody(write))).toContain(
+					'3 open bug'
+				)
+				expect(api.threadReads).toEqual([17])
+				expect(api.writes).toEqual([])
+			})
+	)
 })

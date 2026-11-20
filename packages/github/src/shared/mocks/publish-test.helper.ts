@@ -6,6 +6,7 @@ import {
 } from '@mng-review/domain'
 import { toEmptyReviewReport } from '@mng-review/engine'
 import { Layer } from 'effect'
+import type { SummaryMarker } from '../../modules/publish/domain/publish-marker.schema'
 import { MARKER_VERSION } from '../../modules/publish/domain/publish.constants'
 import type {
 	BotThread,
@@ -17,10 +18,15 @@ import {
 	toMarkerComment,
 	type BlobLinks,
 } from '../../modules/publish/presentation/thread-comment.formatter'
-import { GITHUB_ACTIONS_IDENTITY } from '../../platform/bot-identity.helper'
+import {
+	GITHUB_ACTIONS_IDENTITY,
+	toBotIdentity,
+	toOwnedIdentities,
+} from '../../platform/bot-identity.helper'
 import type {
 	ReviewThread,
 	ThreadComment,
+	PullRequestComment,
 } from '../../platform/github-api.schema'
 import { OwnedIdentities } from '../../platform/owned-identities.context'
 import { planInput } from '../../shared/mocks/domain-test.helper'
@@ -189,3 +195,31 @@ export const TOKEN_MODE_OWNED = Layer.succeed(OwnedIdentities, {
 	current: GITHUB_ACTIONS_IDENTITY,
 	identities: [GITHUB_ACTIONS_IDENTITY],
 })
+
+/** The public app used by identity-switch specs. */
+export const APP_IDENTITY = toBotIdentity('mng-review')
+/** App mode retains the preset's job-token identity. */
+export const APP_MODE_IDENTITIES = toOwnedIdentities(
+	APP_IDENTITY,
+	DEFAULT_PRESET.identity.previous
+)
+export const APP_MODE_OWNED = Layer.succeed(OwnedIdentities, {
+	current: APP_IDENTITY,
+	identities: APP_MODE_IDENTITIES,
+})
+
+/** An app-authored conversation summary, with independently selectable marker and trust fields. */
+export function appSummary(
+	marker: SummaryMarker = SUMMARY_MARKER,
+	overrides: Partial<PullRequestComment> = {}
+): PullRequestComment {
+	return {
+		id: 'app-summary',
+		databaseId: 100,
+		isMinimized: false,
+		body: toMarkerComment('summary', marker),
+		author: { __typename: 'Bot', login: APP_IDENTITY.login },
+		editor: null,
+		...overrides,
+	}
+}

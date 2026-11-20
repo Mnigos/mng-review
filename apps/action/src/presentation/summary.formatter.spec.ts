@@ -576,3 +576,29 @@ describe('sweep formatters', () => {
 		).toContain('2 pull request')
 	})
 })
+
+test.each(['none', 'minimized', 'deleted', 'kept'] as const)(
+	'publish log shows cleanup=%s',
+	cleanup => {
+		expect(
+			formatPublishLogLine({
+				status: 'published',
+				checks: { checks: 0, status: true },
+				result: {
+					verdict: 'ready',
+					openBugs: 0,
+					onLine: 0,
+					onFile: 0,
+					inSummary: 0,
+					unposted: 0,
+					repeated: 0,
+					dismissed: 0,
+					rechecked: 0,
+					resolved: 0,
+					run: 1,
+					cleanup,
+				},
+			})
+		).toContain(`earlier summaries: ${cleanup}`)
+	}
+)
