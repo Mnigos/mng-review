@@ -1,6 +1,11 @@
 import { layer } from '@effect/vitest'
 import { MAX_RECHECKS } from '@mng-review/github'
 import { Effect, Layer } from 'effect'
+// oxlint-disable-next-line no-restricted-imports -- The test brief requires shared GitHub reply fixtures.
+import {
+	ACCEPTED_DECISION,
+	decidedReply,
+} from '../../../../packages/github/src/shared/mocks/thread-reply-test.helper'
 import { outcomeFile } from '../shared/mocks/outcome-file.helper'
 import { parseOutcomeFile } from './outcome-file.parser'
 import { MAX_OUTCOME_BYTES } from './outcome-file.schema'
@@ -8,6 +13,55 @@ import { MAX_OUTCOME_BYTES } from './outcome-file.schema'
 afterEach(() => vi.restoreAllMocks())
 
 layer(Layer.empty)('parseOutcomeFile', test => {
+	test.effect('rejects an outcome accepted decision with empty evidence', () =>
+		Effect.gen(function* () {
+			const error = yield* parseOutcomeFile(
+				JSON.stringify({
+					...outcomeFile(),
+					replies: {
+						decided: [decidedReply({ ...ACCEPTED_DECISION, evidence: [] })],
+						tokens: {},
+					},
+				})
+			).pipe(Effect.flip)
+			expect(error._tag).toBe('OutcomeFileError')
+			expect(error.message).toContain('evidence')
+		})
+	)
+	test.effect(
+		'accepts an outcome accepted decision with one evidence entry',
+		() =>
+			Effect.gen(function* () {
+				const file = {
+					...outcomeFile(),
+					replies: { decided: [decidedReply(ACCEPTED_DECISION)], tokens: {} },
+				}
+				expect(yield* parseOutcomeFile(JSON.stringify(file))).toEqual(file)
+			})
+	)
+
+	test.effect('preserves the digest on an outcome reply decision', () =>
+		Effect.gen(function* () {
+			const file = {
+				...outcomeFile(),
+				replies: { decided: [decidedReply()], tokens: {} },
+			}
+			expect(yield* parseOutcomeFile(JSON.stringify(file))).toEqual(file)
+		})
+	)
+	test.effect('rejects an outcome reply decision without a digest', () =>
+		Effect.gen(function* () {
+			const { digest: _digest, ...decision } = decidedReply()
+			const error = yield* parseOutcomeFile(
+				JSON.stringify({
+					...outcomeFile(),
+					replies: { decided: [decision], tokens: {} },
+				})
+			).pipe(Effect.flip)
+			expect(error._tag).toBe('OutcomeFileError')
+			expect(error.message).toContain('digest')
+		})
+	)
 	test.effect('decodes a complete version-one outcome', () =>
 		Effect.gen(function* () {
 			const file = outcomeFile()

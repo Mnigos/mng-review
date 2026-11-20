@@ -6,6 +6,7 @@ import {
 	REPLY_TO_THREAD_MUTATION,
 	RESOLVE_THREAD_MUTATION,
 	REVIEW_THREADS_QUERY,
+	THREAD_COMMENTS_QUERY,
 } from './github-api.constants'
 import { collect, read } from './github-api.helper'
 import {
@@ -21,6 +22,8 @@ import {
 	type ReviewThread,
 	pullRequestSchema,
 	reviewThreadsAnswerSchema,
+	type ThreadComment,
+	threadCommentsAnswerSchema,
 } from './github-api.schema'
 import { makeGitHubHttp } from './github-http.client'
 import type { GitHubApiError } from './github.errors'
@@ -57,6 +60,10 @@ export class GitHubApiService extends Context.Service<
 		readonly listComments: (
 			pullNumber: number
 		) => Effect.Effect<readonly PullRequestComment[], GitHubApiError>
+		/** Every comment of one review thread by its GraphQL node id, oldest first. */
+		readonly listThreadComments: (
+			threadId: string
+		) => Effect.Effect<readonly ThreadComment[], GitHubApiError>
 		readonly createReview: (
 			pullNumber: number,
 			input: ReviewInput
@@ -155,6 +162,23 @@ export const GitHubApiServiceLive = Layer.effect(
 				0
 			)
 		})
+
+		const listThreadComments = Effect.fn('GitHubApiService.listThreadComments')(
+			function* (threadId: string) {
+				return yield* collect(
+					'listThreadComments',
+					cursor =>
+						query(
+							'listThreadComments',
+							THREAD_COMMENTS_QUERY,
+							{ id: threadId, cursor },
+							threadCommentsAnswerSchema
+						).pipe(Effect.map(answer => answer.data?.node?.comments)),
+					null,
+					0
+				)
+			}
+		)
 
 		const createReview = Effect.fn('GitHubApiService.createReview')(function* (
 			pullNumber: number,
@@ -315,6 +339,7 @@ export const GitHubApiServiceLive = Layer.effect(
 			resolveThread,
 			listReviewThreads,
 			listComments,
+			listThreadComments,
 			createReview,
 			createReviewComment,
 			createIssueComment,

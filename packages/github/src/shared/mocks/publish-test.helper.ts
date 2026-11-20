@@ -43,6 +43,14 @@ export const RULES = {
 	agents: [],
 	source: 'base',
 } as const
+/** `RULES` with `intentional` replies accepted up to `high`, the shared bug's severity. */
+export const ACCEPTING_RULES = {
+	...RULES,
+	config: {
+		...DEFAULT_PRESET,
+		disputes: { ...DEFAULT_PRESET.disputes, accept_intentional_up_to: 'high' },
+	},
+} as const
 
 /** A publishable bug with independently overridable placement and validation. */
 export function bug(overrides: Partial<KeptFinding> = {}): KeptFinding {
@@ -99,6 +107,11 @@ export function botThread(overrides: Partial<BotThread> = {}): BotThread {
 		commit: 'head',
 		marker: toFindingMarker({ finding: bug(), kind: 'bug' }, LINKS),
 		replies: 0,
+		latestCommentId: undefined,
+		latestAuthor: undefined,
+		latestMarked: true,
+		latestDigest: undefined,
+		closedAt: undefined,
 		...overrides,
 	}
 }

@@ -1,15 +1,16 @@
-import type { KeptFinding } from '@mng-review/domain'
+import type { KeptFinding, ReplyAction } from '@mng-review/domain'
 import type {
 	FindingMarker,
 	SummaryMarker,
 	ThreadKind,
 } from './publish-marker.schema'
+import type { ThreadReplyDecision } from './thread-reply.schema'
 
 /** One of the bot's review threads, found by its author and its marker. */
 export interface BotThread {
 	/** The GraphQL node id, used to resolve it. */
 	readonly id: string
-	/** Resolved on GitHub, or closed by the bot's own reply that the finding no longer holds. */
+	/** Resolved on GitHub, or closed by the bot's own `resolved` or `accepted` reply. */
 	readonly resolved: boolean
 	/** Closed by the bot's reply while GitHub still shows the thread open. */
 	readonly closedByBot: boolean
@@ -25,6 +26,25 @@ export interface BotThread {
 	readonly marker: FindingMarker
 	/** Comments after the bot's first one. */
 	readonly replies: number
+	/** The `databaseId` of the thread's latest comment. */
+	readonly latestCommentId: number | undefined
+	/** Who wrote the latest comment, `type` as GraphQL's `__typename`. */
+	readonly latestAuthor: ThreadAuthor | undefined
+	/** The latest comment ends with a marker of the bot's form; such a comment is never a reply. */
+	readonly latestMarked: boolean
+	/** A digest of the latest comment's text (`toBodyDigest`), so an edit after a decision shows. */
+	readonly latestDigest: string | undefined
+	/**
+	 * The head the bot's `resolved` or `accepted` reply names when that reply is the latest comment:
+	 * the baseline for whether the finding's code changed since the thread was closed.
+	 */
+	readonly closedAt: string | undefined
+}
+
+/** A comment's author as the thread read names it. */
+export interface ThreadAuthor {
+	readonly type: string
+	readonly login: string
 }
 
 /** A kept finding the run publishes, with the kind of thread it gets. */
@@ -106,3 +126,14 @@ export interface RenderedSummary {
 	readonly body: string
 	readonly marker: SummaryMarker
 }
+
+/** An author's reply the bot answered in this run, with its decision. */
+export interface AppliedReply {
+	readonly thread: BotThread
+	readonly decision: ThreadReplyDecision
+	/** The `databaseId` of the author's comment the answer names. */
+	readonly commentId: number
+}
+
+/** Answers a run wrote, by action. */
+export type AnswerCounts = Partial<Record<ReplyAction, number>>

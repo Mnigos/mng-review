@@ -7,6 +7,7 @@ import {
 	PublishServiceLive,
 	StatusReportServiceLive,
 	SummaryCommentServiceLive,
+	ThreadReplyServiceLive,
 	ThreadResolutionServiceLive,
 } from '@mng-review/github'
 import { ConfigProvider, Effect, Layer } from 'effect'
@@ -104,7 +105,10 @@ export function stepFixture(
 		toBotIdentity(appMode ? 'mng-review' : 'github-actions')
 	)
 	const status = githubStatusFake()
-	const publisherLayer = PublishServiceLive.pipe(
+	const publisherLayer = Layer.merge(
+		PublishServiceLive,
+		ThreadReplyServiceLive
+	).pipe(
 		Layer.provideMerge(SummaryCommentServiceLive),
 		Layer.provideMerge(
 			Layer.mergeAll(

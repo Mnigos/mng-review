@@ -62,15 +62,16 @@ export function toThreadFinding(thread: BotThread): Finding {
 }
 
 /**
- * The candidates starting at a batch that moves with every run, so with more than `MAX_RECHECKS`
+ * The candidates starting at a batch of `size` that moves with every run, so with more than `size`
  * of them every one is checked within a few runs instead of the same first batch each time.
  */
 export function getRotated<TItem>(
 	items: readonly TItem[],
-	rotation: number
+	rotation: number,
+	size: number = MAX_RECHECKS
 ): TItem[] {
-	if (items.length <= MAX_RECHECKS) return [...items]
-	const start = (rotation * MAX_RECHECKS) % items.length
+	if (items.length <= size) return [...items]
+	const start = (rotation * size) % items.length
 	return [...items.slice(start), ...items.slice(0, start)]
 }
 

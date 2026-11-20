@@ -4,9 +4,25 @@ import {
 	EndpointProbeService,
 	GitError,
 	ReviewRunService,
+	ReplyService,
+	ModelHealthService,
+	RepoToolsService,
+	makeReplyLayer,
+	TokenLedgerLive,
 } from '@mng-review/engine'
-import { ThreadRecheckService } from '@mng-review/github'
+import {
+	ReplyDecisionService,
+	ReplyDecisionServiceLive,
+	ThreadRecheckService,
+} from '@mng-review/github'
 import { Effect, FileSystem, Layer } from 'effect'
+import { HttpClient } from 'effect/http'
+// oxlint-disable-next-line no-restricted-imports -- The test brief requires shared GitHub reply fixtures.
+import {
+	decidedReply,
+	pendingReply,
+	pendingBotThread,
+} from '../../../../../packages/github/src/shared/mocks/thread-reply-test.helper'
 import { PrepareRunServiceLive } from '../../application/prepare-run.service'
 import {
 	ShadowRunService,
@@ -18,10 +34,20 @@ import { parsePullRequestEvent } from '../../infrastructure/pull-request-event.p
 import {
 	cleanupRepos,
 	FileSystemLayer,
+	gitLayer,
 } from '../../shared/mocks/git-test.helper'
 import { recheckProposals } from '../../shared/mocks/outcome-file.helper'
 import { stepFixture } from '../../shared/mocks/step-test.helper'
 import { runReviewStep } from './review-step.handler'
+
+vi.mock('@mng-review/engine', async importOriginal => {
+	const engine = await importOriginal<typeof import('@mng-review/engine')>()
+	return { ...engine, makeReplyLayer: vi.fn(engine.makeReplyLayer) }
+})
+
+const NO_REPLY_DECISIONS = Layer.succeed(ReplyDecisionService, {
+	decide: () => Effect.succeed(undefined),
+})
 
 afterEach(() => {
 	cleanupRepos()
@@ -49,7 +75,10 @@ layer(FileSystemLayer)(
 							yield* fs.readFileString(fixture.environment.GITHUB_EVENT_PATH)
 						)
 						const proposals = recheckProposals()
-						const threads = proposals.rejected.map(entry => entry.thread)
+						const threads = [
+							...proposals.rejected.map(entry => entry.thread),
+							pendingBotThread({ commit: fixture.base }),
+						]
 						const prepared: PreparedRun =
 							scenario === 'skipped'
 								? { status: 'skipped', reason: 'draft', event }
@@ -59,6 +88,11 @@ layer(FileSystemLayer)(
 											status: 'ready',
 											event,
 											threads,
+											replies: [
+												pendingReply({
+													body: 'PRIVATE_REPLY_BODY_FOR_PREPARED_FILE',
+												}),
+											],
 											prior: { runs: 2, head: fixture.base },
 										}
 						yield* fs.writeFileString(
@@ -104,6 +138,9 @@ layer(FileSystemLayer)(
 							)
 						)
 						const proposeSpy = vi.fn(() => Effect.succeed(proposals))
+						const decideSpy = vi.fn(() =>
+							Effect.succeed({ decided: [decidedReply()], tokens: {} })
+						)
 						const reviewLayer = ShadowRunServiceLive.pipe(
 							Layer.provide(PrepareRunServiceLive),
 							Layer.provide(
@@ -116,6 +153,9 @@ layer(FileSystemLayer)(
 						)
 						const completed = yield* runReviewStep.pipe(
 							Effect.provide(reviewLayer),
+							Effect.provide(
+								Layer.succeed(ReplyDecisionService, { decide: decideSpy })
+							),
 							Effect.provide(
 								Layer.succeed(ThreadRecheckService, { propose: proposeSpy })
 							),
@@ -149,6 +189,23 @@ layer(FileSystemLayer)(
 								headSha: fixture.head,
 							})
 							if (scenario === 'reviewed') {
+								expect(decideSpy).toHaveBeenCalledExactlyOnceWith(
+									expect.objectContaining({
+										threads,
+										replies: [
+											pendingReply({
+												body: 'PRIVATE_REPLY_BODY_FOR_PREPARED_FILE',
+											}),
+										],
+									})
+								)
+								expect(outcome.replies).toEqual({
+									decided: [decidedReply()],
+									tokens: {},
+								})
+								expect(
+									yield* fs.readFileString(fixture.paths.outcome)
+								).not.toContain('PRIVATE_REPLY_BODY_FOR_PREPARED_FILE')
 								expect(proposeSpy).toHaveBeenCalledExactlyOnceWith(
 									expect.objectContaining({
 										threads,
@@ -165,8 +222,13 @@ layer(FileSystemLayer)(
 										reason: entry.reason,
 									})),
 								})
-							} else expect(proposeSpy).not.toHaveBeenCalled()
+							} else {
+								expect(proposeSpy).not.toHaveBeenCalled()
+								expect(outcome.replies).toBeUndefined()
+							}
 						}
+						if (scenario !== 'reviewed')
+							expect(decideSpy).not.toHaveBeenCalled()
 						if (scenario === 'skipped') expect(probeSpy).not.toHaveBeenCalled()
 					})
 			)
@@ -203,6 +265,7 @@ layer(FileSystemLayer)(
 											Effect.succeed({ status: 'skipped', reason: 'unused' }),
 									})
 								),
+								Effect.provide(NO_REPLY_DECISIONS),
 								Effect.provide(
 									Layer.succeed(ThreadRecheckService, {
 										propose: () => Effect.die('unexpected proposal'),
@@ -252,6 +315,7 @@ layer(FileSystemLayer)(
 					expect(
 						yield* runReviewStep.pipe(
 							Effect.provide(reviewLayer),
+							Effect.provide(NO_REPLY_DECISIONS),
 							Effect.provide(
 								Layer.succeed(ThreadRecheckService, {
 									propose: () =>
@@ -330,6 +394,7 @@ layer(FileSystemLayer)('review command without GitHub services', test => {
 										)
 									)
 								),
+								Effect.provide(NO_REPLY_DECISIONS),
 								Effect.provide(
 									Layer.succeed(ThreadRecheckService, { propose: proposeSpy })
 								),
@@ -379,4 +444,133 @@ layer(FileSystemLayer)('review command without GitHub services', test => {
 							expect(fixture.api.writes).toEqual([])
 						})
 				)
+})
+
+layer(FileSystemLayer)('review reply decisions from the engine', test => {
+	for (const error of [
+		'model unavailable',
+		'git unavailable',
+		'budget exhausted',
+	])
+		test.effect(
+			`an errored seen reply stays out of the outcome: ${error}`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = stepFixture()
+					const fs = yield* FileSystem.FileSystem
+					const event = yield* parsePullRequestEvent(
+						yield* fs.readFileString(fixture.environment.GITHUB_EVENT_PATH)
+					)
+					const replies = [
+						pendingReply({ body: 'REPLY_BODY_FOR_RETRY' }),
+						pendingReply({
+							threadId: 'second',
+							commentId: 43,
+							body: 'REPLY_BODY_SEEN',
+						}),
+					]
+					const threads = [
+						pendingBotThread({ commit: fixture.base }),
+						pendingBotThread({
+							id: 'second',
+							commit: fixture.base,
+							latestCommentId: 43,
+						}),
+					]
+					yield* fs.writeFileString(
+						fixture.paths.prepared,
+						JSON.stringify({
+							status: 'ready',
+							event,
+							threads,
+							replies,
+						})
+					)
+					const decideSpy = vi.fn(
+						(request: Parameters<ReplyService['Service']['decide']>[0]) =>
+							Effect.succeed({
+								results: request.items.map((item, index) => ({
+									...item,
+									decision: { action: 'seen' as const },
+									...(index === 0 ? { error } : {}),
+								})),
+								tokens: {},
+							})
+					)
+					vi.mocked(makeReplyLayer).mockReturnValueOnce(
+						Layer.mergeAll(
+							Layer.succeed(ReplyService, { decide: decideSpy }),
+							Layer.mock(ModelHealthService, {}),
+							Layer.mock(RepoToolsService, {})
+						)
+					)
+					const httpSpy = vi.fn(() => Effect.die('unexpected HTTP request'))
+					yield* runReviewStep.pipe(
+						Effect.provide(
+							ShadowRunServiceLive.pipe(
+								Layer.provide(PrepareRunServiceLive),
+								Layer.provide(
+									Layer.mergeAll(
+										fixture.rulesLayer,
+										Layer.succeed(ReviewRunService, {
+											run: () => Effect.succeed(fixture.report),
+										}),
+										Layer.succeed(EndpointProbeService, {
+											probe: () =>
+												Effect.succeed({ status: 'online' as const }),
+										})
+									)
+								)
+							)
+						),
+						Effect.provide(
+							ReplyDecisionServiceLive.pipe(
+								Layer.provide(
+									Layer.mergeAll(
+										gitLayer(fixture.repo.root),
+										TokenLedgerLive,
+										Layer.succeed(
+											HttpClient.HttpClient,
+											HttpClient.make(httpSpy)
+										)
+									)
+								)
+							)
+						),
+						Effect.provide(
+							Layer.succeed(ThreadRecheckService, {
+								propose: () =>
+									Effect.succeed({ checked: 0, rejected: [], tokens: {} }),
+							})
+						),
+						Effect.provide(fixture.envLayer())
+					)
+					expect(decideSpy).toHaveBeenCalledExactlyOnceWith(
+						expect.objectContaining({
+							headRef: fixture.head,
+							mergeBase: fixture.base,
+							items: [
+								expect.objectContaining({
+									reply: replies[0]?.body,
+									base: fixture.base,
+								}),
+								expect.objectContaining({
+									reply: replies[1]?.body,
+									base: fixture.base,
+								}),
+							],
+						})
+					)
+					const text = yield* fs.readFileString(fixture.paths.outcome)
+					expect((yield* parseOutcomeFile(text)).replies).toEqual({
+						decided: [
+							decidedReply(undefined, { threadId: 'second', commentId: 43 }),
+						],
+						tokens: {},
+					})
+					for (const reply of replies) expect(text).not.toContain(reply.body)
+					expect(text).not.toContain(error)
+					expect(httpSpy).not.toHaveBeenCalled()
+				})
+		)
 })

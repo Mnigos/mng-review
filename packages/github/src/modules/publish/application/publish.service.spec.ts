@@ -2,10 +2,11 @@ import { layer } from '@effect/vitest'
 import { GitService } from '@mng-review/engine'
 import { Effect, Layer, Redacted } from 'effect'
 import { GITHUB_ACTIONS_IDENTITY } from '../../../platform/bot-identity.helper'
+import type { ReviewThread } from '../../../platform/github-api.schema'
 import { GitHubConfig } from '../../../platform/github.config'
 import { GitHubApiError } from '../../../platform/github.errors'
 import { provideOwnedIdentities } from '../../../platform/owned-identities.context'
-import { agent } from '../../../shared/mocks/domain-test.helper'
+import { agent, file } from '../../../shared/mocks/domain-test.helper'
 import {
 	cleanupRepos,
 	createRepo,
@@ -14,6 +15,7 @@ import {
 import { githubApiFake } from '../../../shared/mocks/github-api-fake.helper'
 import { githubStatusFake } from '../../../shared/mocks/github-status-fake.helper'
 import {
+	ACCEPTING_RULES,
 	APP_IDENTITY,
 	APP_MODE_OWNED,
 	bug,
@@ -23,9 +25,15 @@ import {
 	report,
 	RULES,
 	reviewThread,
+	threadReply,
 	SUMMARY_MARKER,
 	TOKEN_MODE_OWNED,
 } from '../../../shared/mocks/publish-test.helper'
+import {
+	ACCEPTED_DECISION,
+	decidedReply,
+	pendingReviewThread,
+} from '../../../shared/mocks/thread-reply-test.helper'
 import {
 	StatusReportService,
 	StatusReportServiceLive,
@@ -38,12 +46,18 @@ import {
 	toCommitStatus,
 	UNFINISHED_NOTE,
 } from '../../status/domain/status.helper'
+import { toBodyDigest } from '../domain/bot-thread.helper'
 import {
 	parseSummaryMarker,
 	parseFindingMarker,
+	parseReplyMarker,
 } from '../domain/publish-marker.parser'
-import { SHORT_SHA_LENGTH } from '../domain/publish.constants'
+import {
+	SHORT_SHA_LENGTH,
+	THREAD_PLACE_LINES,
+} from '../domain/publish.constants'
 import { PublishIncompleteError } from '../domain/publish.errors'
+import type { ThreadReplyDecision } from '../domain/thread-reply.schema'
 import { toMarkerComment } from '../presentation/thread-comment.formatter'
 import { PublishService, PublishServiceLive } from './publish.service'
 import {
@@ -55,15 +69,23 @@ import {
 	ThreadResolutionServiceLive,
 } from './thread-resolution.service'
 
+/** `ACCEPTED_DECISION` citing a line the pull request did not change, so publishing's check passes. */
+const ACCEPTED_ON_KEPT_LINE = {
+	...ACCEPTED_DECISION,
+	evidence: ['src/store.ts:12'],
+} as const satisfies ThreadReplyDecision
+
 /** Real git history with a finding on a changed head line and a recording API. */
 function setup(
 	apply?: ThreadResolutionService['Service']['apply'],
-	identity = GITHUB_ACTIONS_IDENTITY
+	identity = GITHUB_ACTIONS_IDENTITY,
+	basePath = bug().path
 ) {
 	const repo = createRepo()
 	const original = `${Array.from({ length: 40 }, (_, index) => `line ${index + 1}`).join('\n')}\n`
-	repo.write(bug().path, original)
+	repo.write(basePath, original)
 	const base = repo.commit()
+	if (basePath !== bug().path) repo.git('mv', basePath, bug().path)
 	repo.write(bug().path, original.replace('line 10\n', 'changed 10\n'))
 	const head = repo.commit()
 	const fake = githubApiFake(identity)
@@ -1340,7 +1362,15 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 						yield* PublishService.use(publisher =>
 							publisher.readThreads(17)
 						).pipe(Effect.provide(fixture.publisher))
-					).toEqual([botThread()])
+					).toEqual([
+						botThread({
+							latestCommentId: 1,
+							latestAuthor: { type: 'Bot', login: 'github-actions' },
+							latestDigest: toBodyDigest(
+								reviewThread().comments.nodes[0]?.body ?? ''
+							),
+						}),
+					])
 					expect(fixture.fake.threadReads).toEqual([17])
 					expect(fixture.fake.writes).toEqual([])
 				})
@@ -1413,6 +1443,20 @@ layer(APP_MODE_OWNED, { excludeTestServices: true })(
 )
 
 /** Runs the supplied resolution fake between the first thread read and the summary write. */
+/** The thread with every comment on `commit`, so publishing's git checks read it there. */
+function atCommit(thread: ReviewThread, commit: string): ReviewThread {
+	return {
+		...thread,
+		comments: {
+			...thread.comments,
+			nodes: thread.comments.nodes.map(comment => ({
+				...comment,
+				originalCommit: { oid: commit },
+			})),
+		},
+	}
+}
+
 function setupOverlap(apply: ThreadResolutionService['Service']['apply']) {
 	const fixture = setup(apply)
 	return {
@@ -2552,5 +2596,701 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 					expect(fixture.fake.threadReads).toEqual([17, 17])
 				})
 		)
+	}
+)
+
+layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
+	'PublishService author replies',
+	test => {
+		for (const touched of [false, true])
+			test.effect(
+				`resolved applies only after the finding file was touched: ${touched}`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = setup()
+						const commit = touched ? fixture.base : fixture.head
+						fixture.repo.write('unrelated.ts', 'another change\n')
+						const head = fixture.repo.commit()
+						fixture.fake.command.pullRequest = {
+							...fixture.fake.command.pullRequest,
+							head: { ...fixture.fake.command.pullRequest.head, sha: head },
+						}
+						fixture.fake.threads.push(atCommit(pendingReviewThread(), commit))
+						expect(
+							yield* PublishService.use(service =>
+								service.publish({
+									...fixture.input,
+									head,
+									replies: {
+										base: fixture.base,
+										tokens: {},
+										decisions: [
+											decidedReply({
+												action: 'resolved',
+												reason: 'The guard fixes it.',
+											}),
+										],
+									},
+								})
+							).pipe(Effect.provide(fixture.publisher))
+						).toMatchObject({
+							answered: touched ? { resolved: 1 } : {},
+							openBugs: touched ? 0 : 1,
+							verdict: touched ? 'ready' : 'needs fixes',
+						})
+						expect(
+							fixture.fake.writes
+								.filter(
+									write =>
+										write.method === 'reply' || write.method === 'resolve'
+								)
+								.map(write => write.method)
+						).toEqual(touched ? ['reply', 'resolve'] : [])
+						expect(
+							fixture.fake.threads.find(thread => thread.id === 'thread')
+								?.isResolved
+						).toBe(touched)
+					})
+			)
+		for (const mixed of [false, true])
+			test.effect(
+				`accepted applies with only valid citations in its answer, mixed=${mixed}`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = setup()
+						fixture.fake.threads.push(pendingReviewThread())
+						const evidence = mixed
+							? [
+									'src/store.ts:10',
+									'src/store.ts:12',
+									'missing.ts:1',
+									'src/store.ts:41',
+									'src/store.ts:20',
+								]
+							: ['src/store.ts:12']
+						expect(
+							yield* PublishService.use(service =>
+								service.publish({
+									...fixture.input,
+									rules: ACCEPTING_RULES,
+									replies: {
+										base: fixture.base,
+										tokens: {},
+										decisions: [
+											decidedReply({ ...ACCEPTED_DECISION, evidence }),
+										],
+									},
+								})
+							).pipe(Effect.provide(fixture.publisher))
+						).toMatchObject({
+							answered: { accepted: 1 },
+							openBugs: 0,
+							verdict: 'ready',
+						})
+						const answer = fixture.fake.writes.find(
+							write => write.method === 'reply'
+						)
+						expect(answer?.method).toBe('reply')
+						if (answer?.method !== 'reply') return
+						expect(answer.body).toContain('`src/store.ts:12`')
+						if (mixed) expect(answer.body).toContain('`src/store.ts:20`')
+						for (const invalid of [
+							'src/store.ts:10',
+							'missing.ts:1',
+							'src/store.ts:41',
+						])
+							expect(answer.body).not.toContain(invalid)
+						expect(parseReplyMarker(answer.body)).toMatchObject({
+							action: 'accepted',
+							commit: fixture.head,
+							reply: 42,
+						})
+						expect(
+							fixture.fake.writes
+								.filter(
+									write =>
+										write.method === 'reply' || write.method === 'resolve'
+								)
+								.map(write => write.method)
+						).toEqual(['reply', 'resolve'])
+						expect(
+							fixture.fake.threads.find(thread => thread.id === 'thread')
+								?.isResolved
+						).toBe(true)
+					})
+			)
+		test.effect(
+			'accepted with only a line added by the pull request leaves the thread open',
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup()
+					fixture.fake.threads.push(pendingReviewThread())
+					expect(
+						yield* PublishService.use(service =>
+							service.publish({
+								...fixture.input,
+								rules: ACCEPTING_RULES,
+								replies: {
+									base: fixture.base,
+									tokens: {},
+									decisions: [decidedReply(ACCEPTED_DECISION)],
+								},
+							})
+						).pipe(Effect.provide(fixture.publisher))
+					).toMatchObject({ answered: {}, openBugs: 1, verdict: 'needs fixes' })
+					expect(
+						fixture.fake.writes.filter(
+							write => write.method === 'reply' || write.method === 'resolve'
+						)
+					).toEqual([])
+					expect(
+						fixture.fake.threads.find(thread => thread.id === 'thread')
+							?.isResolved
+					).toBe(false)
+				})
+		)
+
+		for (const scenario of [
+			{
+				name: 'critical severity from the bot marker',
+				severity: 'critical',
+				config: {
+					...ACCEPTING_RULES.config,
+					disputes: {
+						...ACCEPTING_RULES.config.disputes,
+						accept_intentional_up_to: 'critical',
+					},
+				},
+			},
+			{
+				name: 'a file under the base rules risk_paths',
+				severity: 'high',
+				config: { ...ACCEPTING_RULES.config, risk_paths: ['src/**'] },
+			},
+			{
+				name: 'severity above the base rules limit',
+				severity: 'high',
+				config: RULES.config,
+			},
+		] as const)
+			test.effect(`accepted drops ${scenario.name} through publishing`, () =>
+				Effect.gen(function* () {
+					const fixture = setup()
+					fixture.fake.threads.push(
+						pendingReviewThread({
+							comments: {
+								...reviewThread({
+									finding: bug({ severity: scenario.severity }),
+									kind: 'bug',
+								}).comments,
+								totalCount: 2,
+							},
+						})
+					)
+					expect(
+						yield* PublishService.use(service =>
+							service.publish({
+								...fixture.input,
+								rules: { ...ACCEPTING_RULES, config: scenario.config },
+								replies: {
+									base: fixture.base,
+									tokens: {},
+									decisions: [decidedReply(ACCEPTED_ON_KEPT_LINE)],
+								},
+							})
+						).pipe(Effect.provide(fixture.publisher))
+					).toMatchObject({
+						answered: {},
+						openBugs: 1,
+						verdict: 'needs fixes',
+					})
+					expect(
+						fixture.fake.writes.filter(
+							write => write.method === 'reply' || write.method === 'resolve'
+						)
+					).toEqual([])
+				})
+			)
+		test.effect(
+			'accepted within the base rules limit replies and resolves through publishing',
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup()
+					fixture.fake.threads.push(
+						pendingReviewThread({
+							comments: {
+								...reviewThread({
+									finding: bug({ severity: 'high' }),
+									kind: 'bug',
+								}).comments,
+								totalCount: 2,
+							},
+						})
+					)
+					expect(
+						yield* PublishService.use(service =>
+							service.publish({
+								...fixture.input,
+								rules: ACCEPTING_RULES,
+								replies: {
+									base: fixture.base,
+									tokens: {},
+									decisions: [decidedReply(ACCEPTED_ON_KEPT_LINE)],
+								},
+							})
+						).pipe(Effect.provide(fixture.publisher))
+					).toMatchObject({
+						answered: { accepted: 1 },
+						openBugs: 0,
+						verdict: 'ready',
+					})
+					expect(
+						fixture.fake.writes.filter(
+							write => write.method === 'reply' || write.method === 'resolve'
+						)
+					).toEqual([
+						expect.objectContaining({ method: 'reply', id: 'thread' }),
+						{ method: 'resolve', id: 'thread' },
+					])
+				})
+		)
+		test.effect(
+			'a reply edited after publishing reads the thread is left for a later run',
+			() =>
+				Effect.gen(function* () {
+					const fixture = setupOverlap(() =>
+						Effect.sync(() => {
+							expect(fixture.fake.threadReads).toEqual([17])
+							fixture.fake.threadComments.set('thread', [
+								threadReply({
+									databaseId: 42,
+									body: 'The guard still needs work.',
+									author: { __typename: 'User', login: 'contributor' },
+								}),
+							])
+							return []
+						})
+					)
+					fixture.fake.threads.push(pendingReviewThread())
+					expect(
+						yield* PublishService.use(service =>
+							service.publish({
+								...fixture.input,
+								rules: ACCEPTING_RULES,
+								replies: {
+									base: fixture.base,
+									tokens: {},
+									decisions: [decidedReply(ACCEPTED_ON_KEPT_LINE)],
+								},
+							})
+						).pipe(Effect.provide(fixture.publisher))
+					).toMatchObject({
+						answered: {},
+						openBugs: 1,
+						verdict: 'needs fixes',
+					})
+					expect(fixture.fake.reads).toContain('listThreadComments:thread')
+					expect(
+						fixture.fake.writes.filter(
+							write => write.method === 'reply' || write.method === 'resolve'
+						)
+					).toEqual([])
+					expect(fixture.fake.threads[0]?.isResolved).toBe(false)
+				})
+		)
+
+		for (const forged of ['rename', 'omitted'] as const)
+			test.effect(
+				`accepted on a real risk path is dropped when the outcome claims ${forged}`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = setup()
+						fixture.fake.threads.push(pendingReviewThread())
+						expect(
+							fixture.repo.git(
+								'diff',
+								'--name-status',
+								fixture.base,
+								fixture.head
+							)
+						).toBe(`M\t${bug().path}`)
+						expect(
+							yield* PublishService.use(service =>
+								service.publish({
+									...fixture.input,
+									rules: {
+										...ACCEPTING_RULES,
+										config: {
+											...ACCEPTING_RULES.config,
+											risk_paths: ['src/**'],
+										},
+									},
+									report: {
+										...fixture.input.report,
+										planReport: {
+											...fixture.input.report.planReport,
+											change: {
+												...fixture.input.report.planReport.change,
+												files:
+													forged === 'rename'
+														? [
+																file('lib/store.ts', {
+																	status: 'renamed',
+																	oldPath: bug().path,
+																}),
+															]
+														: [],
+											},
+										},
+									},
+									replies: {
+										base: fixture.base,
+										tokens: {},
+										decisions: [decidedReply(ACCEPTED_DECISION)],
+									},
+								})
+							).pipe(Effect.provide(fixture.publisher))
+						).toMatchObject({ answered: {}, openBugs: 1 })
+						expect(
+							fixture.fake.writes.filter(
+								write => write.method === 'reply' || write.method === 'resolve'
+							)
+						).toEqual([])
+					})
+			)
+		test.effect(
+			'accepted is dropped for a real rename out of risk_paths that the outcome hides',
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup(
+						undefined,
+						GITHUB_ACTIONS_IDENTITY,
+						'src/risk/store.ts'
+					)
+					fixture.fake.threads.push(pendingReviewThread())
+					expect(
+						(yield* GitService.use(git =>
+							git.readChange(fixture.base, fixture.head)
+						).pipe(Effect.provide(gitLayer(fixture.repo.root)))).files
+					).toMatchObject([
+						{
+							path: bug().path,
+							status: 'renamed',
+							oldPath: 'src/risk/store.ts',
+						},
+					])
+					expect(fixture.input.report.planReport.change.files).toMatchObject([
+						{ path: bug().path, status: 'modified' },
+					])
+					expect(
+						yield* PublishService.use(service =>
+							service.publish({
+								...fixture.input,
+								rules: {
+									...ACCEPTING_RULES,
+									config: {
+										...ACCEPTING_RULES.config,
+										risk_paths: ['src/risk/**'],
+									},
+								},
+								replies: {
+									base: fixture.base,
+									tokens: {},
+									decisions: [decidedReply(ACCEPTED_DECISION)],
+								},
+							})
+						).pipe(Effect.provide(fixture.publisher))
+					).toMatchObject({ answered: {}, openBugs: 1 })
+					expect(
+						fixture.fake.writes.filter(
+							write => write.method === 'reply' || write.method === 'resolve'
+						)
+					).toEqual([])
+				})
+		)
+		test.effect(
+			'a forged rename from risk_paths cannot block accepted on a real unrestricted file',
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup()
+					fixture.fake.threads.push(pendingReviewThread())
+					expect(
+						fixture.repo.git(
+							'diff',
+							'--name-status',
+							fixture.base,
+							fixture.head
+						)
+					).toBe(`M\t${bug().path}`)
+					expect(
+						yield* PublishService.use(service =>
+							service.publish({
+								...fixture.input,
+								rules: {
+									...ACCEPTING_RULES,
+									config: {
+										...ACCEPTING_RULES.config,
+										risk_paths: ['src/risk/**'],
+									},
+								},
+								report: {
+									...fixture.input.report,
+									planReport: {
+										...fixture.input.report.planReport,
+										change: {
+											...fixture.input.report.planReport.change,
+											files: [
+												file(bug().path, {
+													status: 'renamed',
+													oldPath: 'src/risk/store.ts',
+												}),
+											],
+										},
+									},
+								},
+								replies: {
+									base: fixture.base,
+									tokens: {},
+									decisions: [decidedReply(ACCEPTED_ON_KEPT_LINE)],
+								},
+							})
+						).pipe(Effect.provide(fixture.publisher))
+					).toMatchObject({
+						answered: { accepted: 1 },
+						openBugs: 0,
+						verdict: 'ready',
+					})
+					expect(
+						fixture.fake.writes
+							.filter(
+								write => write.method === 'reply' || write.method === 'resolve'
+							)
+							.map(write => write.method)
+					).toEqual(['reply', 'resolve'])
+				})
+		)
+		test.effect(
+			'a missing bound base drops accepted while resolved still replies and resolves',
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup()
+					fixture.fake.threads.push(
+						pendingReviewThread(),
+						atCommit(
+							pendingReviewThread({ id: 'resolved-thread' }),
+							fixture.base
+						)
+					)
+					expect(
+						yield* PublishService.use(service =>
+							service.publish({
+								...fixture.input,
+								rules: ACCEPTING_RULES,
+								replies: {
+									base: '0'.repeat(40),
+									tokens: {},
+									decisions: [
+										decidedReply(ACCEPTED_DECISION),
+										decidedReply(
+											{ action: 'resolved', reason: 'The guard fixes it.' },
+											{ threadId: 'resolved-thread' }
+										),
+									],
+								},
+							})
+						).pipe(Effect.provide(fixture.publisher))
+					).toMatchObject({ answered: { resolved: 1 } })
+					expect(
+						fixture.fake.writes.filter(write => write.method === 'reply')
+					).toMatchObject([{ id: 'resolved-thread' }])
+					expect(
+						fixture.fake.writes.filter(write => write.method === 'resolve')
+					).toEqual([{ method: 'resolve', id: 'resolved-thread' }])
+				})
+		)
+
+		for (const action of ['resolved', 'accepted', 'recheck'] as const)
+			for (const refused of [false, true])
+				test.effect(
+					`${action} dismisses a finding changed since its thread commit, resolution refused=${refused}`,
+					() =>
+						Effect.gen(function* () {
+							const fixture = setup()
+							const thread =
+								action === 'recheck' ? reviewThread() : pendingReviewThread()
+							fixture.fake.threads.push({
+								...thread,
+								comments: {
+									...thread.comments,
+									nodes: thread.comments.nodes.map(comment => ({
+										...comment,
+										originalCommit: { oid: fixture.base },
+									})),
+								},
+							})
+							expect(
+								fixture.repo.git(
+									'log',
+									'--format=%H',
+									`-L${bug().line - THREAD_PLACE_LINES},${bug().line + THREAD_PLACE_LINES}:${bug().path}`,
+									`${fixture.base}..${fixture.head}`
+								)
+							).toContain(fixture.head)
+							if (refused) fixture.fake.failures.resolve.push(error(403))
+							const closing =
+								action === 'recheck'
+									? {
+											recheck: {
+												checked: 1,
+												proposals: [
+													{
+														threadId: thread.id,
+														fingerprint: bug().fingerprint,
+														reason: 'The write is guarded.',
+													},
+												],
+												tokens: {},
+											},
+										}
+									: {
+											replies: {
+												tokens: {},
+												base: fixture.base,
+												decisions: [
+													decidedReply(
+														action === 'accepted'
+															? {
+																	action,
+																	reason: 'The guard is intentional.',
+																	memory: 'Keep the guard.',
+																	evidence: ['src/store.ts:12'],
+																}
+															: { action, reason: 'The guard fixes it.' }
+													),
+												],
+											},
+										}
+							expect(
+								yield* PublishService.use(service =>
+									service.publish({
+										...fixture.input,
+										rules: ACCEPTING_RULES,
+										...closing,
+									})
+								).pipe(Effect.provide(fixture.publisher))
+							).toMatchObject({
+								dismissed: 1,
+								repeated: 0,
+								onLine: 0,
+								onFile: 0,
+								inSummary: 0,
+								unposted: 0,
+								openBugs: 0,
+								verdict: 'ready',
+							})
+							expect(fixture.fake.writes.map(write => write.method)).toEqual([
+								'reply',
+								'resolve',
+								'create',
+							])
+						})
+				)
+		test.effect(
+			'needs-owner writes one answer without extending the summary marker',
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup()
+					fixture.fake.threads.push(pendingReviewThread())
+					yield* PublishService.use(service =>
+						service.publish({
+							...fixture.input,
+							replies: {
+								tokens: {},
+								base: fixture.base,
+								decisions: [
+									decidedReply({
+										action: 'needs-owner',
+										reason: 'The disagreement remains.',
+									}),
+								],
+							},
+						})
+					).pipe(Effect.provide(fixture.publisher))
+					expect(fixture.fake.writes.map(write => write.method)).toEqual([
+						'reply',
+						'create',
+					])
+					const answer = fixture.fake.writes.find(
+						write => write.method === 'reply'
+					)
+					expect(answer?.method).toBe('reply')
+					if (answer?.method !== 'reply') return
+					expect(answer.body).toContain(
+						'This goes to the owner: The disagreement remains.'
+					)
+					expect(parseReplyMarker(answer.body)).toEqual({
+						v: SUMMARY_MARKER.v,
+						action: 'needs-owner',
+						commit: fixture.head,
+						reply: 42,
+					})
+					expect(
+						JSON.parse(
+							/<!-- mng-review:summary (.*) -->$/u.exec(
+								fixture.fake.comments[0]?.body ?? ''
+							)?.[1] ?? '{}'
+						)
+					).toEqual({
+						v: SUMMARY_MARKER.v,
+						runs: 1,
+						finished: true,
+						head: fixture.head,
+					})
+				})
+		)
+		for (const action of ['resolved', 'accepted'] as const)
+			test.effect(
+				`${action} closes the thread before the verdict even if GitHub refuses resolution`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = setup()
+						fixture.fake.threads.push(
+							atCommit(
+								pendingReviewThread(),
+								action === 'resolved' ? fixture.base : fixture.head
+							)
+						)
+						fixture.fake.failures.resolve.push(error(403))
+						const decision =
+							action === 'accepted'
+								? {
+										action,
+										reason: 'The guard is intentional.',
+										memory: 'Keep the guard.',
+										evidence: ['src/store.ts:12'],
+									}
+								: { action, reason: 'The guard fixes it.' }
+						const published = yield* PublishService.use(service =>
+							service.publish({
+								...fixture.input,
+								rules: ACCEPTING_RULES,
+								replies: {
+									tokens: {},
+									base: fixture.base,
+									decisions: [decidedReply(decision)],
+								},
+							})
+						).pipe(Effect.provide(fixture.publisher))
+						expect(published).toMatchObject({
+							verdict: 'ready',
+							openBugs: 0,
+							answered: { [action]: 1 },
+						})
+						expect(fixture.fake.writes).toContainEqual({
+							method: 'resolve',
+							id: 'thread',
+						})
+					})
+			)
 	}
 )

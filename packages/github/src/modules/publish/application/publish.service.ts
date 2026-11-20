@@ -1,4 +1,3 @@
-import { GitService, type ReviewReport, SAFE_DIFF } from '@mng-review/engine'
 import { Context, Effect, Layer } from 'effect'
 import { GitHubApiService } from '../../../platform/github-api.service'
 import { GitHubConfig } from '../../../platform/github.config'
@@ -12,31 +11,22 @@ import {
 	isRefused,
 	toBotThread,
 } from '../domain/bot-thread.helper'
-import { createCommentableLinesFold } from '../domain/diff-hunk.parser'
 import type { SummaryMarker } from '../domain/publish-marker.schema'
 import {
 	countOpenBugs,
 	countUnthreadedBugs,
-	getMatchingThreads,
-	getPublishedFindings,
 	planPublish,
 } from '../domain/publish-plan.helper'
-import {
-	SHORT_SHA_LENGTH,
-	THREAD_PLACE_LINES,
-} from '../domain/publish.constants'
+import { SHORT_SHA_LENGTH } from '../domain/publish.constants'
 import { PublishIncompleteError } from '../domain/publish.errors'
-import type {
-	BotThread,
-	CommentableLines,
-	PlannedThread,
-} from '../domain/publish.types'
+import type { BotThread, PlannedThread } from '../domain/publish.types'
 import {
 	getCarriedBugs,
 	type MarkedRun,
 	type MarkerUpdate,
 	toNextSummaryMarker,
 } from '../domain/summary-marker.helper'
+import { toAnswerCounts } from '../domain/thread-conversation.helper'
 import {
 	formatSummaryComment,
 	toSummaryWithMarker,
@@ -46,13 +36,22 @@ import {
 	toBlobLinks,
 } from '../presentation/thread-comment.formatter'
 import type { PublishInput, PublishResult } from './publish.service.types'
+import { ReplyCheckService, ReplyCheckServiceLive } from './reply-check.service'
 import { SummaryCommentService } from './summary-comment.service'
+import {
+	ThreadPlaceService,
+	ThreadPlaceServiceLive,
+} from './thread-place.service'
+import {
+	ThreadReplyService,
+	ThreadReplyServiceLive,
+} from './thread-reply.service'
 import { ThreadResolutionService } from './thread-resolution.service'
 
-/** Git reads that run at once when checking resolved threads. */
-const GIT_CONCURRENCY = 4
-/** Marks each commit line of `git log -L`, so commits are counted without parsing patches. */
-const COMMIT_MARK = 'mng-review-commit:'
+/** Answers that close a thread for the bot's counts; publishing checks them against git first. */
+const CLOSING_ACTIONS: ReadonlySet<string> = new Set(['resolved', 'accepted'])
+/** Answers checked against the change read from git: the owner's limit and the evidence. */
+const LIMITED_ACTIONS: ReadonlySet<string> = new Set(['accepted'])
 
 /** A run as the marker judges it, and whether its pull request moved to another head meanwhile. */
 interface CheckedRun extends MarkedRun {
@@ -65,7 +64,9 @@ interface CheckedRun extends MarkedRun {
  * sticky summary through `SummaryCommentService`. A finding that already has an open thread of an
  * owned identity, or only resolved ones whose code did not change, is not posted again. A comment
  * the bot wrote but someone else edited no longer counts as the bot's. A summary write that fails
- * after threads were posted fails with `PublishIncompleteError`.
+ * after threads were posted fails with `PublishIncompleteError`. Before planning it applies the
+ * re-check's proposals and the review's reply decisions that pass its own git check
+ * (`ReplyCheckService`, then `ThreadReplyService`), so a thread they close counts as resolved.
  */
 export class PublishService extends Context.Service<
 	PublishService,
@@ -88,10 +89,12 @@ export const PublishServiceLive = Layer.effect(
 	PublishService,
 	Effect.gen(function* () {
 		const api = yield* GitHubApiService
-		const git = yield* GitService
 		const config = yield* GitHubConfig
 		const resolution = yield* ThreadResolutionService
 		const summaries = yield* SummaryCommentService
+		const places = yield* ThreadPlaceService
+		const conversation = yield* ThreadReplyService
+		const replyChecks = yield* ReplyCheckService
 
 		const readThreads = Effect.fn('PublishService.readThreads')(function* (
 			pullNumber: number
@@ -101,88 +104,6 @@ export const PublishServiceLive = Layer.effect(
 				thread => toBotThread(thread, identities) ?? []
 			)
 		})
-
-		/** Head lines of the diff that take an inline comment, and every changed file still there. */
-		const readCommentableLines = Effect.fn(
-			'PublishService.readCommentableLines'
-		)(function* (report: ReviewReport, head: string) {
-			const { change } = report.planReport
-			const result = yield* git
-				.foldLines(
-					['diff', ...SAFE_DIFF, '-U3', change.mergeBase, head],
-					createCommentableLinesFold()
-				)
-				.pipe(Effect.option)
-			const lines = new Map<string, ReadonlySet<number>>(
-				result._tag === 'Some' && result.value.exitCode === 0
-					? result.value.state.lines
-					: []
-			)
-			for (const file of change.files)
-				if (file.status !== 'deleted' && !lines.has(file.path))
-					lines.set(file.path, new Set())
-			return lines satisfies CommentableLines
-		})
-
-		/**
-		 * True when a commit since the thread's touched the finding's lines (`git log -L`, so an undone
-		 * fix counts) or git cannot tell; false on the thread's own commit.
-		 */
-		const hasPlaceChanged = Effect.fn('PublishService.hasPlaceChanged')(
-			function* (thread: BotThread, path: string, line: number, head: string) {
-				if (!thread.commit) return true
-				if (thread.commit === head) return false
-				const text = yield* git.readFileAt(head, path).pipe(Effect.option)
-				if (text._tag === 'None' || text.value === undefined) return true
-				const lastLine = Math.max(
-					1,
-					text.value.replace(/\n$/u, '').split('\n').length
-				)
-				const start = Math.min(lastLine, Math.max(1, line - THREAD_PLACE_LINES))
-				const end = Math.min(lastLine, line + THREAD_PLACE_LINES)
-				const result = yield* git
-					.exec([
-						'log',
-						'--no-ext-diff',
-						'--no-textconv',
-						'--no-color',
-						`--format=${COMMIT_MARK}%H`,
-						`-L${start},${end}:${path}`,
-						`${thread.commit}..${head}`,
-					])
-					.pipe(Effect.option)
-				if (result._tag === 'None' || result.value.exitCode !== 0) return true
-				return result.value.stdout.includes(COMMIT_MARK)
-			}
-		)
-
-		/** Ids of the resolved threads that cover a finding of this run and whose code changed. */
-		const getChangedPlaces = Effect.fn('PublishService.getChangedPlaces')(
-			function* (input: PublishInput, threads: readonly BotThread[]) {
-				const published = getPublishedFindings({
-					outcome: input.report,
-					config: input.rules.config,
-					agents: new Map(input.rules.agents.map(agent => [agent.name, agent])),
-				})
-				const checks = published.flatMap(entry =>
-					getMatchingThreads(entry, threads)
-						.filter(thread => thread.resolved)
-						.map(thread => ({ thread, finding: entry.finding }))
-				)
-				const changed = yield* Effect.filter(
-					checks,
-					check =>
-						hasPlaceChanged(
-							check.thread,
-							check.finding.path,
-							check.finding.line,
-							input.head
-						),
-					{ concurrency: GIT_CONCURRENCY }
-				)
-				return new Set(changed.map(check => check.thread.id))
-			}
-		)
 
 		/** One thread through its fallbacks, line, file, summary; only a 422 moves it on. */
 		const postSingle = Effect.fn('PublishService.postSingle')(function* (
@@ -311,12 +232,42 @@ export const PublishServiceLive = Layer.effect(
 						threads: found,
 					})
 				: []
-			const resolvedIds = new Set(resolved.map(entry => entry.thread.id))
+			const { replies } = input
+			const change = replies?.decisions.some(entry =>
+				LIMITED_ACTIONS.has(entry.decision.action)
+			)
+				? yield* places.readChange(replies.base, input.head)
+				: undefined
+			const decisions = replies
+				? yield* replyChecks.check({
+						decisions: replies.decisions,
+						threads: found,
+						head: input.head,
+						change,
+					})
+				: []
+			const answered = yield* conversation.apply({
+				links,
+				decisions,
+				threads: found,
+				config: input.rules.config,
+				change,
+			})
+			const resolvedIds = new Set([
+				...resolved.map(entry => entry.thread.id),
+				...answered
+					.filter(entry => CLOSING_ACTIONS.has(entry.decision.action))
+					.map(entry => entry.thread.id),
+			])
 			const threads = found.map(thread =>
 				resolvedIds.has(thread.id) ? { ...thread, resolved: true } : thread
 			)
-			const lines = yield* readCommentableLines(report, input.head)
-			const changedPlaces = yield* getChangedPlaces(input, threads)
+			const lines = yield* places.readCommentableLines(report, input.head)
+			// A thread this run closed was judged at this head, so its finding is dismissed, not posted.
+			const changedPlaces = yield* places.getChangedPlaces(
+				input,
+				threads.filter(thread => !resolvedIds.has(thread.id))
+			)
 			const planned = planPublish(
 				{ outcome: report, config: input.rules.config, agents },
 				{ threads, lines, changedPlaces }
@@ -365,7 +316,9 @@ export const PublishServiceLive = Layer.effect(
 						maxRuns: input.rules.config.limits.max_runs_per_pr,
 						links,
 						resolved,
-						tokens: input.recheck?.tokens ?? report.tokens,
+						answered,
+						tokens:
+							input.replies?.tokens ?? input.recheck?.tokens ?? report.tokens,
 					})
 					return { body, marker }
 				})
@@ -384,6 +337,7 @@ export const PublishServiceLive = Layer.effect(
 				dismissed: plan.dismissed.length,
 				rechecked: input.recheck?.checked ?? 0,
 				resolved: resolved.length,
+				answered: toAnswerCounts(answered),
 				run: written.marker.runs,
 				finished,
 				cleanup: written.cleanup,
@@ -392,4 +346,12 @@ export const PublishServiceLive = Layer.effect(
 
 		return { publish, readThreads }
 	})
+).pipe(
+	Layer.provide(
+		Layer.mergeAll(
+			ThreadPlaceServiceLive,
+			ThreadReplyServiceLive,
+			ReplyCheckServiceLive
+		)
+	)
 )

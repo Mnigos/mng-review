@@ -7,3 +7,7 @@ export const SHORT_SHA_LENGTH = 8
 export const THREAD_PLACE_LINES = 6
 /** Open threads the bot checks again in one run, most recently changed first; the rest wait for the next run. */
 export const MAX_RECHECKS = 8
+/** Threads with an author's reply the bot answers in one run; the rest wait, rotated like the re-check. */
+export const MAX_REPLY_THREADS = 8
+/** Characters of an author's reply the classifier reads. */
+export const MAX_REPLY_CHARS = 4000

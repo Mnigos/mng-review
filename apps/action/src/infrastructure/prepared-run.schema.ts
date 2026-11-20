@@ -1,5 +1,5 @@
 import { commitShaSchema, countSchema, DEPTHS } from '@mng-review/domain'
-import { botThreadSchema } from '@mng-review/github'
+import { botThreadSchema, pendingReplySchema } from '@mng-review/github'
 import { Schema } from 'effect'
 
 /** What the engine is told about the pull request, as the prepare step parsed it from the event. */
@@ -34,6 +34,7 @@ const readySchema = Schema.Struct({
 		})
 	),
 	threads: Schema.Array(botThreadSchema),
+	replies: Schema.optionalKey(Schema.Array(pendingReplySchema)),
 })
 
 const skippedSchema = Schema.Struct({

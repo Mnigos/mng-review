@@ -42,6 +42,18 @@ export const REVIEW_THREADS_QUERY = `query($owner: String!, $name: String!, $num
   }
 }`
 
+/** The comments of one review thread, oldest first, with their author and last editor. */
+export const THREAD_COMMENTS_QUERY = `query($id: ID!, $cursor: String) {
+  node(id: $id) {
+    ... on PullRequestReviewThread {
+      comments(first: ${PAGE_SIZE}, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes { databaseId body author { __typename login } editor { __typename login } originalCommit { oid } }
+      }
+    }
+  }
+}`
+
 /** The pull request's conversation comments with their author, last editor and whether they are hidden, oldest first. */
 export const PULL_REQUEST_COMMENTS_QUERY = `query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
   repository(owner: $owner, name: $name) {

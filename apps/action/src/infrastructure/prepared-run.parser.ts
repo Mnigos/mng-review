@@ -18,6 +18,10 @@ function toThread(thread: BotThreadFile): BotThread {
 		line: thread.line,
 		originalLine: thread.originalLine,
 		commit: thread.commit,
+		latestCommentId: thread.latestCommentId,
+		latestAuthor: thread.latestAuthor,
+		latestDigest: thread.latestDigest,
+		closedAt: thread.closedAt,
 	}
 }
 
