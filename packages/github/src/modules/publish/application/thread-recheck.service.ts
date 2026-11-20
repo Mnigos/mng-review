@@ -6,8 +6,6 @@ import {
 	type TokensByModel,
 } from '@mng-review/engine'
 import { Context, Effect, Layer } from 'effect'
-import { GitHubApiService } from '../../../platform/github-api.service'
-import { toBotThread } from '../domain/bot-thread.helper'
 import { MAX_RECHECKS } from '../domain/publish.constants'
 import type {
 	BotThread,
@@ -19,28 +17,25 @@ import {
 	getRotated,
 	toThreadFinding,
 } from '../domain/thread-recheck.helper'
-import {
-	type BlobLinks,
-	formatResolvedReply,
-} from '../presentation/thread-comment.formatter'
 
-/** What the re-check needs: the pull request, its head, the rules and this run's findings. */
+/** What the re-check needs: the pull request, its head, the rules, the bot's threads and this run's findings. */
 export interface ThreadRecheckInput {
-	readonly pullNumber: number
 	/** Shifts which candidates this run checks when there are more than `MAX_RECHECKS`: the run count. */
 	readonly rotation: number
 	readonly pr: PullRequestInfo
 	readonly rules: Rules
-	readonly links: BlobLinks
+	readonly head: string
+	/** The bot's threads, read before the check. */
 	readonly threads: readonly BotThread[]
 	readonly published: readonly PublishedFinding[]
 }
 
-/** What the re-check did. */
-export interface ThreadRecheckResult {
-	readonly resolved: readonly ResolvedThread[]
+/** What the re-check found; nothing is written yet. */
+export interface ThreadRecheckProposals {
 	/** Threads the validator checked again. */
 	readonly checked: number
+	/** Threads whose finding the validator rejected at the head, with its reason. */
+	readonly rejected: readonly ResolvedThread[]
 	/** The job's tokens after the check, when it ran. */
 	readonly tokens: TokensByModel | undefined
 }
@@ -48,24 +43,23 @@ export interface ThreadRecheckResult {
 /**
  * Checks the bot's open threads again whose file changed since their commit, with the validator
  * over the change from that commit to the head, at most `MAX_RECHECKS` per run, a different batch
- * each run when there are more. A thread whose
- * finding the validator rejects gets a one-line reply with the head and the reason and is
- * resolved. Threads with a reply, nits, and findings this run found again are left alone. A git
- * or GitHub failure leaves a thread open; the re-check never fails the run.
+ * each run when there are more. Threads with a reply, nits, and findings this run found again are
+ * left alone. It only proposes: the threads it rejects are resolved by publishing
+ * (`ThreadResolutionService`), which checks them again in its own read. A git failure leaves a
+ * thread out; the re-check never fails the run.
  */
 export class ThreadRecheckService extends Context.Service<
 	ThreadRecheckService,
 	{
-		readonly recheck: (
+		readonly propose: (
 			input: ThreadRecheckInput
-		) => Effect.Effect<ThreadRecheckResult>
+		) => Effect.Effect<ThreadRecheckProposals>
 	}
 >()('mng-review/ThreadRecheckService') {}
 
 export const ThreadRecheckServiceLive = Layer.effect(
 	ThreadRecheckService,
 	Effect.gen(function* () {
-		const api = yield* GitHubApiService
 		const git = yield* GitService
 		const rechecker = yield* RecheckService
 
@@ -89,60 +83,10 @@ export const ThreadRecheckServiceLive = Layer.effect(
 			}
 		)
 
-		/**
-		 * The rejected threads that are still the bot's, open and without a reply now; the
-		 * validator took a while, and a thread someone answered or edited meanwhile is left alone.
-		 * A failed read keeps none.
-		 */
-		const getUnchanged = Effect.fn('ThreadRecheckService.getUnchanged')(
-			function* (pullNumber: number, rejected: readonly ResolvedThread[]) {
-				if (rejected.length === 0) return []
-				const fresh = yield* api
-					.listReviewThreads(pullNumber)
-					.pipe(Effect.option)
-				if (fresh._tag === 'None') return []
-				const now = new Map(
-					fresh.value.flatMap(thread => {
-						const bot = toBotThread(thread)
-						return bot ? [[bot.id, bot] as const] : []
-					})
-				)
-				return rejected.filter(entry => {
-					const current = now.get(entry.thread.id)
-					return (
-						current !== undefined && !current.resolved && current.replies === 0
-					)
-				})
-			}
-		)
-
-		/**
-		 * Replies with the reason, which closes the thread for the bot's counts, then tries to resolve
-		 * it on GitHub, which needs `contents: write` the job usually lacks. A failed reply leaves the
-		 * thread untouched.
-		 */
-		const resolve = Effect.fn('ThreadRecheckService.resolve')(function* (
-			resolved: ResolvedThread,
-			links: BlobLinks
-		) {
-			return yield* api
-				.replyToThread(
-					resolved.thread.id,
-					formatResolvedReply(resolved.reason, links)
-				)
-				.pipe(
-					Effect.tap(() =>
-						api.resolveThread(resolved.thread.id).pipe(Effect.ignore)
-					),
-					Effect.as([resolved]),
-					Effect.orElseSucceed(() => [])
-				)
-		})
-
-		const recheck = Effect.fn('ThreadRecheckService.recheck')(function* (
+		const propose = Effect.fn('ThreadRecheckService.propose')(function* (
 			input: ThreadRecheckInput
 		) {
-			const { head } = input.links
+			const { head } = input
 			const candidates = yield* Effect.filter(
 				getRecheckCandidates(input.threads, input.published, head),
 				thread => hasFileChanged(thread, head),
@@ -153,7 +97,11 @@ export const ThreadRecheckServiceLive = Layer.effect(
 				MAX_RECHECKS
 			)
 			if (checked.length === 0)
-				return { resolved: [], checked: 0, tokens: undefined }
+				return {
+					checked: 0,
+					rejected: [],
+					tokens: undefined,
+				} satisfies ThreadRecheckProposals
 			const pairs = checked.map(thread => ({
 				thread,
 				item: { finding: toThreadFinding(thread), base: thread.commit ?? head },
@@ -170,19 +118,13 @@ export const ThreadRecheckServiceLive = Layer.effect(
 					? [{ thread: pair.thread, reason: result.validation.reason }]
 					: []
 			})
-			const unchanged = yield* getUnchanged(input.pullNumber, rejected)
-			const resolved = yield* Effect.forEach(
-				unchanged,
-				entry => resolve(entry, input.links),
-				{ concurrency: 1 }
-			)
 			return {
-				resolved: resolved.flat(),
 				checked: checked.length,
+				rejected,
 				tokens: report.tokens,
-			}
+			} satisfies ThreadRecheckProposals
 		})
 
-		return { recheck }
+		return { propose }
 	})
 )

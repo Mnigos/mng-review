@@ -1,5 +1,5 @@
-import type { PullRequestInfo } from '@mng-review/domain'
-import type { ReviewReport, Rules } from '@mng-review/engine'
+import type { ReviewReport, Rules, TokensByModel } from '@mng-review/engine'
+import type { RecheckProposal } from '../domain/publish.types'
 import type { Verdict } from '../presentation/summary-comment.formatter'
 
 /** The pull request and commits a publish call is about. */
@@ -14,8 +14,16 @@ export interface PublishTarget {
 export interface PublishInput extends PublishTarget {
 	readonly report: ReviewReport
 	readonly rules: Rules
-	/** What the engine was told about the pull request; the re-check's validators get it too. */
-	readonly pr: PullRequestInfo
+	/** Set when the re-check ran: threads it checked, the ones it proposes to resolve, the tokens. */
+	readonly recheck?: PublishRecheck
+}
+
+/** What the re-check of the bot's threads left for publishing to apply. */
+export interface PublishRecheck {
+	readonly checked: number
+	readonly proposals: readonly RecheckProposal[]
+	/** The job's tokens after the re-check; the summary shows them instead of the review's. */
+	readonly tokens: TokensByModel
 }
 
 /** A run that did not review, shown in the sticky summary only when there is none yet. */

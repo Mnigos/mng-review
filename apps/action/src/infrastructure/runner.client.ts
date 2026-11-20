@@ -14,6 +14,8 @@ export interface RunnerEnvironment {
 	readonly engineCommit: string | undefined
 	/** `MNG_REVIEW_RESULT_PATH`, where the result file goes; unset, no file is written. */
 	readonly resultPath: string | undefined
+	/** `MNG_REVIEW_OUTCOME_PATH`, where publish mode writes the outcome file; unset, none is written. */
+	readonly outcomePath: string | undefined
 	/** `GITHUB_REPOSITORY`, `owner/name` of the caller. */
 	readonly repository: string | undefined
 	readonly runId: string | undefined
@@ -49,6 +51,7 @@ export const runnerEnvironmentConfig = Config.all({
 	summaryPath: Config.option(Config.String('GITHUB_STEP_SUMMARY')),
 	engineCommit: Config.option(Config.String('MNG_REVIEW_ENGINE_COMMIT')),
 	resultPath: Config.option(Config.String('MNG_REVIEW_RESULT_PATH')),
+	outcomePath: Config.option(Config.String('MNG_REVIEW_OUTCOME_PATH')),
 	repository: Config.option(Config.String('GITHUB_REPOSITORY')),
 	runId: Config.option(Config.String('GITHUB_RUN_ID')),
 	runAttempt: Config.option(Config.String('GITHUB_RUN_ATTEMPT')),
@@ -59,6 +62,8 @@ export const runnerEnvironmentConfig = Config.all({
 		summaryPath: Option.getOrUndefined(settings.summaryPath),
 		engineCommit: Option.getOrUndefined(settings.engineCommit)?.trim(),
 		resultPath: Option.getOrUndefined(settings.resultPath)?.trim() || undefined,
+		outcomePath:
+			Option.getOrUndefined(settings.outcomePath)?.trim() || undefined,
 		repository: Option.getOrUndefined(settings.repository)?.trim(),
 		runId: Option.getOrUndefined(settings.runId)?.trim(),
 		runAttempt: Option.getOrUndefined(settings.runAttempt)?.trim(),
@@ -136,6 +141,18 @@ export const writeSummary = Effect.fn('runner.writeSummary')(function* (
 
 /** Writes the result file; outside a workflow, with no path, nothing is written. */
 export const writeResult = Effect.fn('runner.writeResult')(function* (
+	path: string | undefined,
+	json: string
+) {
+	if (!path) return yield* Effect.void
+	const fs = yield* FileSystem.FileSystem
+	return yield* fs.writeFileString(path, json)
+})
+
+/**
+ * Writes the outcome file, already redacted by `toOutcomeText`; with no path, nothing is written.
+ */
+export const writeOutcome = Effect.fn('runner.writeOutcome')(function* (
 	path: string | undefined,
 	json: string
 ) {

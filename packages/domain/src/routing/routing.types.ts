@@ -1,4 +1,5 @@
 import type {
+	DEPTHS,
 	MECHANICAL_CONDITIONS,
 	RISK_CATEGORIES,
 	RISK_LEVELS,
@@ -21,7 +22,7 @@ export interface PullRequestInfo {
 }
 
 export type Risk = (typeof RISK_LEVELS)[number]
-export type Depth = 'quick' | 'balanced' | 'deep'
+export type Depth = (typeof DEPTHS)[number]
 
 /** The depth of a run and the rule that decided it. */
 export interface DepthDecision {

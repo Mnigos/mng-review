@@ -67,3 +67,14 @@ export interface ResolvedThread {
 	readonly thread: BotThread
 	readonly reason: string
 }
+
+/**
+ * A thread the re-check proposes to resolve, named by its node id and its marker's fingerprint;
+ * publishing applies it only when its own fresh read still shows that thread open and unanswered.
+ */
+export interface RecheckProposal {
+	readonly threadId: string
+	readonly fingerprint: string
+	/** The validator's reason, shown escaped in the reply. */
+	readonly reason: string
+}
