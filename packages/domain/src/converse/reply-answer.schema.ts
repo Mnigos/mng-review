@@ -1,14 +1,30 @@
 import { Effect, Schema, SchemaGetter, SchemaTransformation } from 'effect'
 import { evidenceSchema } from '../validation/verdict.schema'
-import { REPLY_CLAIMS } from './reply.constants'
+import { toCutLine } from './reply-text.helper'
+import { REPLY_CLAIMS, REPLY_REASON_MAX_CHARS } from './reply.constants'
 
-/** An optional text a model may also send as `null`. */
-const optionalTextSchema = Schema.optionalKey(Schema.NullOr(Schema.Trim))
+/**
+ * An optional sentence a model may also send as `null`, on one line and cut to
+ * `REPLY_REASON_MAX_CHARS`, since a reply can show it.
+ */
+const optionalTextSchema = Schema.optionalKey(
+	Schema.NullOr(
+		Schema.String.pipe(
+			Schema.decodeTo(Schema.String, {
+				decode: SchemaGetter.transform(text =>
+					toCutLine(text, REPLY_REASON_MAX_CHARS)
+				),
+				encode: SchemaGetter.transform(text => text),
+			})
+		)
+	)
+)
 
 /**
  * The model's answer about one reply: the claim it read, whether an `intentional` reason holds,
  * its one-sentence restatement, the failed premise and `path:line` evidence. The claim is trimmed
- * and read without case; a missing or `null` `holds` decodes as not holding.
+ * and read without case; a missing or `null` `holds` decodes as not holding; `reason` and
+ * `failed_premise` are cut to `REPLY_REASON_MAX_CHARS`.
  */
 export const replyAnswerSchema = Schema.Struct({
 	claim: Schema.Trim.pipe(

@@ -40,6 +40,8 @@ export type ReplyDecision =
 			readonly reason: string
 			/** One line for `.mng/MEMORY.md`, trusted only once a person merges it. */
 			readonly memory: string
+			/** The evidence entries that passed the engine's check, as the model wrote them. */
+			readonly evidence: readonly string[]
 	  }
 	| { readonly action: 'still-found'; readonly reason: string }
 	| { readonly action: 'disputed'; readonly reason: string }

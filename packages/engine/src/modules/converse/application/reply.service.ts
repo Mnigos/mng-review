@@ -1,22 +1,20 @@
 import {
 	type EvidenceRef,
-	formatSchemaIssue,
 	getIntentionalLimit,
 	getLineCount,
 	getValidatorChoices,
 	isEvidenceInCode,
 	parseAddedRanges,
 	parseEvidenceRef,
+	parseLsTree,
 	type PullRequestInfo,
 	type ReplyClaim,
 	type ReplyDecision,
 	type ReplyItem,
-	replyAnswerSchema,
-	toReplyClaim,
 	toReplyDecision,
 	type Validation,
 } from '@mng-review/domain'
-import { Context, Effect, Layer, Option, Schema } from 'effect'
+import { Context, Effect, Layer, Option, Ref } from 'effect'
 import type { Rules } from '../../../platform/config/rules.service'
 import { SAFE_DIFF } from '../../../platform/git/git.constants'
 import { GitError } from '../../../platform/git/git.errors'
@@ -30,6 +28,7 @@ import {
 	ReadFileTool,
 	VALIDATOR_REPO_TOOLS,
 } from '../../review/application/repo.toolkit'
+import { ReportReplyTool } from '../../review/application/report-reply.tool'
 import { AgentLoopService } from '../../review/application/services/agent-loop.service'
 import { ModelHealthService } from '../../review/application/services/model-health.service'
 import {
@@ -37,20 +36,28 @@ import {
 	RepoToolsService,
 } from '../../review/application/services/repo-tools.service'
 import { RecheckService } from '../../validation/application/recheck.service'
+import {
+	type Classified,
+	isFinal,
+	parseReplyAnswer,
+	toCauseMessage,
+	toFileWindow,
+	toReportedFinding,
+} from '../domain/reply-attempt.helper'
+import {
+	BINARY_DIFF,
+	MAX_EVIDENCE_CHECKED,
+	MAX_FILE_CHARS,
+	MAX_REPLY_CHARS,
+	NO_MODEL_LEFT,
+	REPLY_SOURCE,
+	SYMLINK_MODE,
+} from '../domain/reply.constants'
+import { getReadKeys, isRangeRead } from './reply-read.helper'
 import { REPLY_PROMPT } from './reply.prompt'
-import { ReportReplyTool } from './report-reply.tool'
 
 /** Attempts per reply before it counts as unclear. */
 export const REPLY_ATTEMPTS = 2
-/** Evidence entries the engine checks per reply; the rest are ignored. */
-const MAX_EVIDENCE_CHECKED = 10
-/** Characters of the finding's file the classifier gets in its first message. */
-const MAX_FILE_CHARS = 20_000
-/** Lines before and after the finding's line the classifier gets in its first message. */
-const FILE_WINDOW_LINES = 80
-const NO_MODEL_LEFT = 'no validator model left'
-/** The classifiers' line in the run's tokens by source. */
-const REPLY_SOURCE = 'reply'
 
 /** Replies in the bot's threads of one pull request, to decide on at one head. */
 export interface ReplyRequest {
@@ -74,30 +81,6 @@ export interface ReplyReport {
 	readonly results: readonly DecidedReply[]
 	/** Tokens the whole job spent so far, these decisions included. */
 	readonly tokens: TokensByModel
-}
-
-/** Reads a `report_reply` answer; the schema's reasons go back to the model. */
-function parseReplyAnswer(answer: unknown) {
-	return Schema.decodeUnknownEffect(replyAnswerSchema)(answer).pipe(
-		Effect.map(toReplyClaim),
-		Effect.mapError(error => ({ message: formatSchemaIssue(error.issue) }))
-	)
-}
-
-/** The `read_file` range around a finding's line. */
-function toFileWindow(line: number): string {
-	return `${Math.max(1, line - FILE_WINDOW_LINES)}-${line + FILE_WINDOW_LINES}`
-}
-
-/** Why a classifier attempt gave no claim: a loop or model failure, or no model left. */
-interface AttemptFailure {
-	readonly _tag?: string
-	readonly message: string
-}
-
-/** True when a failure must not be tried again: no model left or the run's tokens spent. */
-function isFinal(error: AttemptFailure): boolean {
-	return error.message === NO_MODEL_LEFT || error._tag === 'TokenBudgetError'
 }
 
 /**
@@ -130,38 +113,49 @@ export const ReplyServiceLive = Layer.effect(
 			scope: RepoScope
 		) {
 			const { finding } = item
-			const file = yield* repoTools.call(scope, ReadFileTool.name, {
-				ref: 'head',
-				path: finding.path,
-				range: toFileWindow(finding.line),
-			})
-			const reported = {
-				path: finding.path,
-				line: finding.line,
-				severity: finding.severity,
-				title: finding.title,
-				trigger: finding.trigger,
-				impact: finding.impact,
-				evidence: finding.evidence,
+			const call = {
+				name: ReadFileTool.name,
+				params: {
+					ref: 'head',
+					path: finding.path,
+					range: toFileWindow(finding.line),
+				},
 			}
-			return [
-				fenceData('The finding:', JSON.stringify(reported, null, 2)),
+			const file = truncateText(
+				yield* repoTools.call(scope, call.name, call.params),
+				MAX_FILE_CHARS
+			)
+			const user = [
+				fenceData(
+					'The finding:',
+					JSON.stringify(toReportedFinding(finding), null, 2)
+				),
 				fenceData(
 					`${finding.path} at head, lines around the finding (read more with read_file):`,
-					truncateText(file, MAX_FILE_CHARS)
+					file
 				),
-				fenceData("The author's reply, a claim to test:", item.reply),
+				fenceData(
+					"The author's reply, a claim to test:",
+					truncateText(item.reply, MAX_REPLY_CHARS)
+				),
 			].join('\n\n')
+			return { user, window: getReadKeys(call, file) }
 		})
 
-		/** One classifier conversation on the first validator model still available. */
+		/**
+		 * One classifier conversation on the first validator model still available, with the lines
+		 * it was shown: the first message's window and its repository calls' outputs.
+		 */
 		const attempt = (
 			item: ReplyItem,
 			scope: RepoScope,
 			request: ReplyRequest,
-			user: string
+			message: Effect.Success<ReturnType<typeof toUserMessage>>
 		) =>
 			Effect.gen(function* () {
+				const reads = yield* Ref.make<ReadonlySet<string>>(
+					new Set(message.window)
+				)
 				const dropped = yield* health.dropped
 				const model = getValidatorChoices(
 					item.finding,
@@ -171,14 +165,24 @@ export const ReplyServiceLive = Layer.effect(
 				const { value } = yield* loop.run({
 					model,
 					system: REPLY_PROMPT,
-					user,
+					user: message.user,
 					scope,
 					tools: VALIDATOR_REPO_TOOLS,
 					finish: ReportReplyTool.name,
 					parse: parseReplyAnswer,
 					source: REPLY_SOURCE,
+					onToolOutputs: outputs =>
+						Ref.update(reads, keys => {
+							const shown = outputs.flatMap(entry =>
+								getReadKeys(entry.call, entry.output)
+							)
+							return new Set([...keys, ...shown])
+						}),
 				})
-				return value
+				return {
+					claim: value,
+					reads: yield* Ref.get(reads),
+				} satisfies Classified
 			})
 
 		const classify = Effect.fn('ReplyService.classify')(function* (
@@ -186,8 +190,8 @@ export const ReplyServiceLive = Layer.effect(
 			scope: RepoScope,
 			request: ReplyRequest
 		) {
-			const user = yield* toUserMessage(item, scope)
-			return yield* attempt(item, scope, request, user).pipe(
+			const message = yield* toUserMessage(item, scope)
+			return yield* attempt(item, scope, request, message).pipe(
 				Effect.retry({
 					times: REPLY_ATTEMPTS - 1,
 					while: error => !isFinal(error),
@@ -233,10 +237,39 @@ export const ReplyServiceLive = Layer.effect(
 			return report.results[0]?.validation
 		})
 
-		/** True when the entry points at code that exists and that the pull request did not add. */
+		/** The head's tree entry for a path, for its mode. */
+		const readHeadEntry = Effect.fn('ReplyService.readHeadEntry')(function* (
+			change: RepoScope['change'],
+			path: string
+		) {
+			const args = [
+				'ls-tree',
+				'-z',
+				'--full-tree',
+				change.head.commit,
+				'--',
+				path,
+			]
+			const result = yield* git.exec(args)
+			if (result.exitCode !== 0)
+				return yield* new GitError({
+					args,
+					exitCode: result.exitCode,
+					stderr: result.stderr,
+				})
+			return parseLsTree(result.stdout).find(entry => entry.name === path)
+		})
+
+		/**
+		 * True when the classifier was shown every cited line and they are code that exists and that
+		 * the pull request did not add. A symlink at the head, a file whose text holds a NUL, and a
+		 * diff git prints as binary (a binary file or one marked `-diff`, which shows no added lines)
+		 * never pass.
+		 */
 		const isInCode = Effect.fn('ReplyService.isInCode')(function* (
 			ref: EvidenceRef,
-			scope: RepoScope
+			scope: RepoScope,
+			reads: ReadonlySet<string>
 		) {
 			const { change } = scope
 			const args = [
@@ -248,13 +281,14 @@ export const ReplyServiceLive = Layer.effect(
 				'--',
 				ref.path,
 			]
-			const [head, base, diff] = yield* Effect.all(
+			const [entry, head, base, diff] = yield* Effect.all(
 				[
+					readHeadEntry(change, ref.path),
 					git.readFileAt(change.head.commit, ref.path),
 					git.readFileAt(change.mergeBase, ref.path),
 					git.exec(args),
 				],
-				{ concurrency: 3 }
+				{ concurrency: 4 }
 			)
 			if (diff.exitCode !== 0)
 				return yield* new GitError({
@@ -262,6 +296,11 @@ export const ReplyServiceLive = Layer.effect(
 					exitCode: diff.exitCode,
 					stderr: diff.stderr,
 				})
+			if (entry?.mode === SYMLINK_MODE || BINARY_DIFF.test(diff.stdout))
+				return false
+			if ((head ?? base)?.includes('\0')) return false
+			if (!isRangeRead(reads, head === undefined ? 'base' : 'head', ref))
+				return false
 			return isEvidenceInCode(ref, {
 				headLines: head === undefined ? undefined : getLineCount(head),
 				baseLines: base === undefined ? undefined : getLineCount(base),
@@ -269,14 +308,16 @@ export const ReplyServiceLive = Layer.effect(
 			})
 		})
 
-		/** True when at least one evidence entry passes; entries that are not `path:line` never do. */
-		const hasCheckedEvidence = (claim: ReplyClaim, scope: RepoScope) =>
-			Effect.findFirst(
-				claim.evidence
-					.slice(0, MAX_EVIDENCE_CHECKED)
-					.flatMap(entry => parseEvidenceRef(entry) ?? []),
-				ref => isInCode(ref, scope)
-			).pipe(Effect.map(Option.isSome))
+		/** The evidence entries that pass `isInCode`; entries that are not `path:line` never do. */
+		const getCheckedEvidence = (
+			claim: ReplyClaim,
+			scope: RepoScope,
+			reads: ReadonlySet<string>
+		) =>
+			Effect.filter(claim.evidence.slice(0, MAX_EVIDENCE_CHECKED), entry => {
+				const ref = parseEvidenceRef(entry)
+				return ref ? isInCode(ref, scope, reads) : Effect.succeed(false)
+			})
 
 		const decideItem = (
 			item: ReplyItem,
@@ -285,7 +326,7 @@ export const ReplyServiceLive = Layer.effect(
 		) =>
 			Effect.gen(function* () {
 				const { config } = request.rules
-				const claim = yield* classify(item, scope, request)
+				const { claim, reads } = yield* classify(item, scope, request)
 				const limit = getIntentionalLimit(item.finding, config, scope.change)
 				const fixed = claim.claim === 'fixed'
 				const commitSince =
@@ -296,27 +337,27 @@ export const ReplyServiceLive = Layer.effect(
 				// An unvalidated re-check is a model or budget failure, not an answer about the code.
 				if (validation?.status === 'unvalidated')
 					return yield* Effect.fail({ message: validation.error })
-				const evidenceChecked =
-					claim.claim === 'intentional' &&
-					limit === 'ok' &&
-					claim.holds === true &&
-					(yield* hasCheckedEvidence(claim, scope))
+				const checkedEvidence =
+					claim.claim === 'intentional' && limit === 'ok' && claim.holds
+						? yield* getCheckedEvidence(claim, scope, reads)
+						: []
 				const decision = toReplyDecision({
 					item,
 					claim,
 					config,
 					limit,
-					evidenceChecked,
+					checkedEvidence,
 					commitSince,
 					...(validation ? { recheck: validation } : {}),
 				})
 				return { ...item, decision } satisfies DecidedReply
 			}).pipe(
-				Effect.catch(error =>
+				// A defect in git or parsing leaves only this reply seen, never the whole run.
+				Effect.catchCause(cause =>
 					Effect.succeed<DecidedReply>({
 						...item,
 						decision: { action: 'seen' },
-						error: error.message,
+						error: toCauseMessage(cause),
 					})
 				)
 			)

@@ -14,3 +14,5 @@ export const REPLY_ACTIONS = [
 ] as const
 /** Characters of the model's reason a memory candidate keeps. */
 export const MEMORY_REASON_MAX_CHARS = 160
+/** Characters of any reason a reply decision or the model's answer keeps. */
+export const REPLY_REASON_MAX_CHARS = 300

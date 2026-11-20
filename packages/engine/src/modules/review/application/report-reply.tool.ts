@@ -19,7 +19,8 @@ export const ReportReplyTool = Tool.make('report_reply', {
 		),
 		reason: Schema.optionalKey(
 			Schema.String.annotate({
-				description: "The author's reason restated in one sentence.",
+				description:
+					"The author's reason restated in one sentence, at most 300 characters.",
 			})
 		),
 		failed_premise: Schema.optionalKey(
