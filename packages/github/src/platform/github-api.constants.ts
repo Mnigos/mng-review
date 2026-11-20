@@ -32,13 +32,13 @@ export const REVIEW_THREADS_QUERY = `query($owner: String!, $name: String!, $num
   }
 }`
 
-/** The pull request's conversation comments with their author and last editor, oldest first. */
+/** The pull request's conversation comments with their author, last editor and whether they are hidden, oldest first. */
 export const PULL_REQUEST_COMMENTS_QUERY = `query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       comments(first: ${PAGE_SIZE}, after: $cursor) {
         pageInfo { hasNextPage endCursor }
-        nodes { databaseId body author { __typename login } editor { __typename login } }
+        nodes { id databaseId isMinimized body author { __typename login } editor { __typename login } }
       }
     }
   }
@@ -48,6 +48,13 @@ export const PULL_REQUEST_COMMENTS_QUERY = `query($owner: String!, $name: String
 export const REPLY_TO_THREAD_MUTATION = `mutation($thread: ID!, $body: String!) {
   addPullRequestReviewThreadReply(input: { pullRequestReviewThreadId: $thread, body: $body }) {
     comment { databaseId }
+  }
+}`
+
+/** Hides a comment as outdated; it stays readable behind a fold. */
+export const MINIMIZE_COMMENT_MUTATION = `mutation($id: ID!) {
+  minimizeComment(input: { subjectId: $id, classifier: OUTDATED }) {
+    minimizedComment { isMinimized }
   }
 }`
 

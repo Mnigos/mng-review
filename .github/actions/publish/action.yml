@@ -10,8 +10,23 @@ inputs:
     description: The commit of MNG Review that runs.
     required: true
   token:
-    description: The job token with pull requests, checks and statuses write.
-    required: true
+    description: >-
+      The job token with pull requests, checks and statuses write; empty in app mode, where the
+      entry gets the app token instead.
+    required: false
+    default: ''
+  app-slug:
+    description: Slug of the GitHub App the bot posts as; empty for github-actions[bot].
+    required: false
+    default: ''
+  app-token:
+    description: The installation token minted in this job; app mode only.
+    required: false
+    default: ''
+  app-token-slug:
+    description: The slug of the app the token was minted for, checked against app-slug.
+    required: false
+    default: ''
 
 runs:
   using: composite
@@ -52,6 +67,9 @@ runs:
         MNG_REVIEW_REPO_DIR: ${{ github.workspace }}/repo
         MNG_REVIEW_OUTCOME_PATH: ${{ runner.temp }}/mng-review-outcome/outcome.json
         MNG_REVIEW_RESULT_PATH: ${{ runner.temp }}/mng-review-result/result.json
+        MNG_REVIEW_APP_SLUG: ${{ inputs.app-slug }}
+        MNG_REVIEW_APP_TOKEN: ${{ inputs.app-token }}
+        MNG_REVIEW_MINTED_APP_SLUG: ${{ inputs.app-token-slug }}
         GITHUB_TOKEN: ${{ inputs.token }}
       run: bun --no-env-file apps/action/src/main.ts
 

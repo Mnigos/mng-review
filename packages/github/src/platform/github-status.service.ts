@@ -1,5 +1,6 @@
 import { Context, Effect, Layer, Schema } from 'effect'
 import { HttpClientRequest } from 'effect/http'
+import { isOwnedCreator } from './bot-identity.helper'
 import { MAX_PAGES, PAGE_SIZE } from './github-api.constants'
 import { read } from './github-api.helper'
 import {
@@ -11,10 +12,9 @@ import {
 } from './github-api.schema'
 import { makeGitHubHttp } from './github-http.client'
 import type { GitHubApiError } from './github.errors'
+import { OwnedIdentities } from './owned-identities.context'
 
 export const STATUS_CONTEXT = 'MNG Review'
-/** The login REST gives the job token's bot. */
-export const BOT_REST_LOGIN = 'github-actions[bot]'
 export const COMMIT_STATES = ['success', 'failure', 'error', 'pending'] as const
 export type CommitState = (typeof COMMIT_STATES)[number]
 export const CHECK_CONCLUSIONS = ['success', 'neutral'] as const
@@ -46,10 +46,14 @@ export class GitHubStatusService extends Context.Service<
 		readonly setStatus: (
 			input: CommitStatusInput
 		) => Effect.Effect<void, GitHubApiError>
-		/** The newest `MNG Review` status the bot set on the commit, if any. */
+		/** The newest `MNG Review` status an owned bot identity set on the commit, if any. */
 		readonly getStatus: (
 			sha: string
-		) => Effect.Effect<CommitStatus | undefined, GitHubApiError>
+		) => Effect.Effect<
+			CommitStatus | undefined,
+			GitHubApiError,
+			OwnedIdentities
+		>
 		readonly listOpenPullRequests: () => Effect.Effect<
 			readonly OpenPullRequest[],
 			GitHubApiError
@@ -102,6 +106,7 @@ export const GitHubStatusServiceLive = Layer.effect(
 		const getStatus = Effect.fn('GitHubStatusService.getStatus')(function* (
 			sha: string
 		) {
+			const { identities } = yield* OwnedIdentities
 			const statuses = yield* read(
 				sendJson(
 					'getStatus',
@@ -114,8 +119,7 @@ export const GitHubStatusServiceLive = Layer.effect(
 			return statuses.find(
 				status =>
 					status.context === STATUS_CONTEXT &&
-					status.creator?.login === BOT_REST_LOGIN &&
-					status.creator.type === 'Bot'
+					isOwnedCreator(status.creator, identities)
 			)
 		})
 

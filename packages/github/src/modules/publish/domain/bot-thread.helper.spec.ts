@@ -1,3 +1,4 @@
+import { GITHUB_ACTIONS_IDENTITY } from '../../../platform/bot-identity.helper'
 import type { ThreadComment } from '../../../platform/github-api.schema'
 import { GitHubApiError } from '../../../platform/github.errors'
 import {
@@ -14,14 +15,16 @@ import {
 	toBotThread,
 } from './bot-thread.helper'
 import { countOpenBugs, planPublish } from './publish-plan.helper'
-import { BOT_LOGIN } from './publish.constants'
 import { getRecheckCandidates } from './thread-recheck.helper'
+
+/** Token mode with the preset's `identity.previous`. */
+const OWNED = [GITHUB_ACTIONS_IDENTITY]
 
 describe('bot thread ownership', () => {
 	test.each([
 		{ author: null, editor: null, owned: false },
 		{
-			author: { __typename: 'User', login: BOT_LOGIN },
+			author: { __typename: 'User', login: GITHUB_ACTIONS_IDENTITY.login },
 			editor: null,
 			owned: false,
 		},
@@ -31,65 +34,72 @@ describe('bot thread ownership', () => {
 			owned: false,
 		},
 		{
-			author: { __typename: 'Bot', login: BOT_LOGIN },
+			author: { __typename: 'Bot', login: GITHUB_ACTIONS_IDENTITY.login },
 			editor: null,
 			owned: true,
 		},
 		{
-			author: { __typename: 'Bot', login: BOT_LOGIN },
-			editor: { __typename: 'Bot', login: BOT_LOGIN },
+			author: { __typename: 'Bot', login: GITHUB_ACTIONS_IDENTITY.login },
+			editor: { __typename: 'Bot', login: GITHUB_ACTIONS_IDENTITY.login },
 			owned: true,
 		},
 		{
-			author: { __typename: 'Bot', login: BOT_LOGIN },
+			author: { __typename: 'Bot', login: GITHUB_ACTIONS_IDENTITY.login },
 			editor: { __typename: 'User', login: 'contributor' },
 			owned: false,
 		},
 		{
-			author: { __typename: 'Bot', login: BOT_LOGIN },
-			editor: { __typename: 'User', login: BOT_LOGIN },
+			author: { __typename: 'Bot', login: GITHUB_ACTIONS_IDENTITY.login },
+			editor: { __typename: 'User', login: GITHUB_ACTIONS_IDENTITY.login },
 			owned: false,
 		},
 		{
-			author: { __typename: 'Bot', login: BOT_LOGIN },
+			author: { __typename: 'Bot', login: GITHUB_ACTIONS_IDENTITY.login },
 			editor: { __typename: 'Bot', login: 'other-bot' },
 			owned: false,
 		},
 	])('requires bot identity and trusted editor $author $editor', row => {
-		expect(isBotComment(row)).toBe(row.owned)
+		expect(isBotComment(row, OWNED)).toBe(row.owned)
 		const thread = reviewThread()
 		expect(
-			toBotThread({
-				...thread,
-				comments: {
-					...thread.comments,
-					nodes: thread.comments.nodes.map(comment => ({
-						...comment,
-						author: row.author,
-						editor: row.editor,
-					})),
+			toBotThread(
+				{
+					...thread,
+					comments: {
+						...thread.comments,
+						nodes: thread.comments.nodes.map(comment => ({
+							...comment,
+							author: row.author,
+							editor: row.editor,
+						})),
+					},
 				},
-			}) !== undefined
+				OWNED
+			) !== undefined
 		).toBe(row.owned)
 	})
 	test('ignores empty and unmarked threads', () => {
 		expect(
 			toBotThread(
-				reviewThread(undefined, { comments: { totalCount: 0, nodes: [] } })
+				reviewThread(undefined, { comments: { totalCount: 0, nodes: [] } }),
+				OWNED
 			)
 		).toBeUndefined()
 		const thread = reviewThread()
 		expect(
-			toBotThread({
-				...thread,
-				comments: {
-					...thread.comments,
-					nodes: thread.comments.nodes.map(comment => ({
-						...comment,
-						body: 'No marker',
-					})),
+			toBotThread(
+				{
+					...thread,
+					comments: {
+						...thread.comments,
+						nodes: thread.comments.nodes.map(comment => ({
+							...comment,
+							body: 'No marker',
+						})),
+					},
 				},
-			})
+				OWNED
+			)
 		).toBeUndefined()
 	})
 	test('file subjects use marker line and count replies', () => {
@@ -99,10 +109,13 @@ describe('bot thread ownership', () => {
 			originalLine: 888,
 		})
 		expect(
-			toBotThread({
-				...thread,
-				comments: { ...thread.comments, totalCount: 4 },
-			})
+			toBotThread(
+				{
+					...thread,
+					comments: { ...thread.comments, totalCount: 4 },
+				},
+				OWNED
+			)
 		).toMatchObject({
 			onFile: true,
 			line: undefined,
@@ -112,7 +125,10 @@ describe('bot thread ownership', () => {
 	})
 	test('line subjects fall back to marker original line when outdated', () => {
 		expect(
-			toBotThread(reviewThread(undefined, { line: null, originalLine: null }))
+			toBotThread(
+				reviewThread(undefined, { line: null, originalLine: null }),
+				OWNED
+			)
 		).toMatchObject({ onFile: false, line: undefined, originalLine: 10 })
 	})
 })
@@ -211,7 +227,9 @@ describe('bot closing replies', () => {
 	test.each([false, true])(
 		'GitHub resolved=%s takes precedence over bot closure',
 		isResolved => {
-			expect(toBotThread(botClosedReviewThread({ isResolved }))).toMatchObject({
+			expect(
+				toBotThread(botClosedReviewThread({ isResolved }), OWNED)
+			).toMatchObject({
 				resolved: true,
 				closedByBot: !isResolved,
 				replies: 1,
@@ -226,7 +244,7 @@ describe('bot closing replies', () => {
 			comments: { ...reviewThread().comments, totalCount: 1 },
 		},
 	])('$label leaves a GitHub-open thread open', overrides => {
-		expect(toBotThread(botClosedReviewThread(overrides))).toMatchObject({
+		expect(toBotThread(botClosedReviewThread(overrides), OWNED)).toMatchObject({
 			resolved: false,
 			closedByBot: false,
 		})
@@ -239,7 +257,7 @@ describe('bot closing replies', () => {
 		},
 		{
 			label: 'human using the bot login',
-			author: { __typename: 'User', login: BOT_LOGIN },
+			author: { __typename: 'User', login: GITHUB_ACTIONS_IDENTITY.login },
 		},
 		{ label: 'another bot', author: { __typename: 'Bot', login: 'other-bot' } },
 		{ label: 'deleted author', author: null },
@@ -254,7 +272,7 @@ describe('bot closing replies', () => {
 		},
 		{
 			label: 'human editor using bot login',
-			editor: { __typename: 'User', login: BOT_LOGIN },
+			editor: { __typename: 'User', login: GITHUB_ACTIONS_IDENTITY.login },
 		},
 		{
 			label: 'another bot edited reply',
@@ -263,7 +281,8 @@ describe('bot closing replies', () => {
 	] satisfies ReplyCase[])('$label does not close a thread', overrides => {
 		expect(
 			toBotThread(
-				botClosedReviewThread({ latest: { nodes: [threadReply(overrides)] } })
+				botClosedReviewThread({ latest: { nodes: [threadReply(overrides)] } }),
+				OWNED
 			)
 		).toMatchObject({ resolved: false, closedByBot: false })
 	})
@@ -274,16 +293,22 @@ describe('bot closing replies', () => {
 				botClosedReviewThread({
 					latest: {
 						nodes: [
-							threadReply({ editor: { __typename: 'Bot', login: BOT_LOGIN } }),
+							threadReply({
+								editor: {
+									__typename: 'Bot',
+									login: GITHUB_ACTIONS_IDENTITY.login,
+								},
+							}),
 						],
 					},
-				})
+				}),
+				OWNED
 			)
 		).toMatchObject({ resolved: true, closedByBot: true })
 	})
 
 	test('a bot-closed bug contributes no open bugs, permits a ready verdict and is not a recheck candidate', () => {
-		const thread = toBotThread(botClosedReviewThread())
+		const thread = toBotThread(botClosedReviewThread(), OWNED)
 		expect(thread).toBeDefined()
 		if (!thread) return
 		const review = { ...report(), bugs: [] }

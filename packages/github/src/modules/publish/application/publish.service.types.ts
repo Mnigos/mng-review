@@ -1,5 +1,5 @@
 import type { ReviewReport, Rules, TokensByModel } from '@mng-review/engine'
-import type { RecheckProposal } from '../domain/publish.types'
+import type { RecheckProposal, SummaryCleanup } from '../domain/publish.types'
 import type { Verdict } from '../presentation/summary-comment.formatter'
 
 /** The pull request and commits a publish call is about. */
@@ -47,4 +47,6 @@ export interface PublishResult {
 	readonly rechecked: number
 	readonly resolved: number
 	readonly run: number
+	/** What became of summaries of other owned identities: hidden, deleted, or kept when GitHub refused both. */
+	readonly cleanup: SummaryCleanup
 }

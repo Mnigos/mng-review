@@ -19,7 +19,11 @@ import {
 	runnerEnvironmentConfig,
 	writeSummary,
 } from '../../infrastructure/runner.client'
-import { ActionExit, FAILED_EXIT_CODE } from '../action-exit.errors'
+import {
+	ActionExit,
+	FAILED_EXIT_CODE,
+	INVALID_CONFIG_EXIT_CODE,
+} from '../action-exit.errors'
 import {
 	formatPublishLogLine,
 	formatPublishSummary,
@@ -97,4 +101,21 @@ export const runPublishStep = Effect.gen(function* () {
 		service.run(trusted.file, trusted.context)
 	)
 	return yield* finishPublish(report, env)
+})
+
+/** A domain `ConfigError` (a token or app setting, the rules) or one of Effect's own config errors. */
+interface ConfigFailure {
+	readonly message: string
+}
+
+/**
+ * A token or app setting that breaks the rules of `GitHubWriteConfigLive`: nothing is posted, and
+ * the step ends with exit 2 before any request.
+ */
+export const failPublishConfig = Effect.fn('publishStep.failConfig')(function* (
+	error: ConfigFailure
+) {
+	const env = yield* runnerEnvironmentConfig
+	yield* finishPublish({ status: 'failed', reason: error.message }, env)
+	return yield* new ActionExit({ code: INVALID_CONFIG_EXIT_CODE })
 })

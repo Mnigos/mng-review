@@ -14,6 +14,10 @@ export const MEMORY_PATH = '.mng/MEMORY.md'
 export const DEFAULT_PRESET_NAME = 'mng:default'
 /** `models.validator` value that validates a finding on a reviewer model that did not report it. */
 export const CROSS_VALIDATOR = 'cross'
+/** The slug of the bot the job token posts as, `github-actions[bot]` in REST. */
+export const GITHUB_ACTIONS_SLUG = 'github-actions'
+/** A GitHub App slug or a bot login without `[bot]`: letters, digits and inner hyphens, at most 39. */
+export const BOT_SLUG_PATTERN = /^[a-z\d](?:[a-z\d-]{0,37}[a-z\d])?$/iu
 
 /** The `mng:default` preset: every key of `review.yml` has its default here (`docs/spec.md`). */
 export const DEFAULT_PRESET = {
@@ -53,6 +57,7 @@ export const DEFAULT_PRESET = {
 		agents: { model: 'gpt-6.1-sol', effort: 'high' },
 		validator: CROSS_VALIDATOR,
 	},
+	identity: { previous: [GITHUB_ACTIONS_SLUG] },
 } as const satisfies ReviewConfig
 
 /** Presets `extends` may name. */

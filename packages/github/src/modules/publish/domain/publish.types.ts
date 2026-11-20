@@ -1,5 +1,9 @@
 import type { KeptFinding } from '@mng-review/domain'
-import type { FindingMarker, ThreadKind } from './publish-marker.schema'
+import type {
+	FindingMarker,
+	SummaryMarker,
+	ThreadKind,
+} from './publish-marker.schema'
 
 /** One of the bot's review threads, found by its author and its marker. */
 export interface BotThread {
@@ -78,3 +82,17 @@ export interface RecheckProposal {
 	/** The validator's reason, shown escaped in the reply. */
 	readonly reason: string
 }
+
+/** A sticky summary as read: who wrote it and the marker it ends with. */
+export interface SummaryComment {
+	readonly id: number
+	/** The GraphQL node id, which hiding it takes. */
+	readonly nodeId: string
+	readonly marker: SummaryMarker
+	readonly body: string
+	/** Written by the identity the token posts as; only such a summary is ever edited. */
+	readonly mine: boolean
+}
+
+/** What happened to summaries of other owned identities after a write. */
+export type SummaryCleanup = 'none' | 'minimized' | 'deleted' | 'kept'

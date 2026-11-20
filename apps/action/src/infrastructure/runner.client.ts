@@ -1,5 +1,6 @@
 import { ConfigError } from '@mng-review/domain'
 import { LLM_KEY_VARIABLE, LLM_URL_VARIABLE } from '@mng-review/engine'
+import { APP_TOKEN_VARIABLE } from '@mng-review/github'
 import { Config, Console, Effect, FileSystem, Option, Redacted } from 'effect'
 import type { PreparedRun } from '../application/shadow-run.types'
 import { OutcomeFileError } from './outcome-file.errors'
@@ -125,6 +126,21 @@ export const maskEndpoint = Effect.fn('runner.maskEndpoint')(function* () {
 	const values = toMaskedValues(url, key)
 	for (const value of values) yield* Console.log(`::add-mask::${value}`)
 	return values
+})
+
+/**
+ * Registers the app token with `::add-mask::` once more; the token action masks it already, and a
+ * second mask costs nothing. An unset or blank token is skipped.
+ */
+export const maskAppToken = Effect.fn('runner.maskAppToken')(function* () {
+	const token = yield* Config.option(Config.Redacted(APP_TOKEN_VARIABLE)).pipe(
+		Effect.orElseSucceed(() => Option.none())
+	)
+	const value = Option.match(token, {
+		onNone: () => '',
+		onSome: Redacted.value,
+	})
+	if (value.trim() !== '') yield* Console.log(`::add-mask::${value.trim()}`)
 })
 
 /** The event payload as text; a missing path or an unreadable file fails naming `GITHUB_EVENT_PATH`. */

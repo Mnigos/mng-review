@@ -169,7 +169,7 @@ Each run shows two jobs. `MNG Review (review)` holds the endpoint secrets and a 
 
 `review.yml` never gets write access, whatever the caller grants. On every run the bot checks its open threads again whose file changed and replies in the ones the validator no longer finds, which closes them for the bot (GitHub lets the job token resolve a thread only with `contents: write`, which the workflow does not ask for, so you resolve it on GitHub), writes a check run per agent, and sets the commit status `MNG Review`: `failure` while bug threads of the bot are open, `success` when none are, `error` when the run did not finish. Require that status in branch protection to gate merges on it. After `limits.max_runs_per_pr` runs, pushes are no longer reviewed. Declared agents with `input: incremental` review only what changed since the last finished run; the main reviewer always sees the whole change. ADRs 0007 and 0008 record the rules.
 
-To count threads resolved by hand without waiting for the next push, run the status sweep on a schedule. It runs no model and needs no secret:
+To count threads resolved by hand without waiting for the next push, run the status sweep on a schedule. It runs no model and needs no endpoint secret:
 
 ```yaml
 # .github/workflows/mng-review-sweep.yml
@@ -190,6 +190,61 @@ jobs:
       pull-requests: read
       statuses: write
 ```
+
+### Posting as a GitHub App
+
+By default the bot is `github-actions[bot]`. To post threads, replies, the summary, check runs and the status as your own app instead:
+
+1. Create a GitHub App with no webhook and no events. Give it read and write on pull requests, checks and commit statuses, and read on metadata.
+2. Install it on the repositories that run the review, choosing them one by one.
+3. Store its client id and a private key as the repository secrets `MNG_REVIEW_APP_CLIENT_ID` and `MNG_REVIEW_APP_PRIVATE_KEY`.
+4. Reserve the user login that matches the app's slug, for example by creating an empty organization with that name. A mention of the handle then can never reach someone else's account, and a mention of an organization notifies nobody.
+
+Then pass the slug and the two secrets to both callers:
+
+```yaml
+jobs:
+  review:
+    uses: Mnigos/mng-review/.github/workflows/review-publish.yml@<commit-sha>
+    permissions:
+      contents: read
+      pull-requests: write
+      checks: write
+      statuses: write
+    with:
+      app-slug: your-app-slug
+    secrets:
+      llm-url: ${{ secrets.MNG_REVIEW_LLM_URL }}
+      llm-key: ${{ secrets.MNG_REVIEW_LLM_KEY }}
+      app-client-id: ${{ secrets.MNG_REVIEW_APP_CLIENT_ID }}
+      app-private-key: ${{ secrets.MNG_REVIEW_APP_PRIVATE_KEY }}
+```
+
+```yaml
+jobs:
+  sweep:
+    uses: Mnigos/mng-review/.github/workflows/status-sweep.yml@<commit-sha>
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: write
+    with:
+      app-slug: your-app-slug
+    secrets:
+      app-client-id: ${{ secrets.MNG_REVIEW_APP_CLIENT_ID }}
+      app-private-key: ${{ secrets.MNG_REVIEW_APP_PRIVATE_KEY }}
+```
+
+Without `app-slug` and the two secrets the callers work as above. Setting only some of the three fails the job before it writes anything. Only the publish and sweep jobs read the key, and each mints a token for the calling repository with the permissions it needs, which GitHub revokes when the job ends. The review job, which calls the model, never holds the key.
+
+Switching keeps one set of threads and one visible summary. The app answers in the threads `github-actions[bot]` opened, carries the run count over into a new summary and hides the old one, or deletes it when GitHub refuses to hide it. `identity.previous` in `.mng/review.yml` lists the bots whose earlier comments still count; it defaults to `[github-actions]`, and a repository that goes back to the job token sets it to `[your-app-slug]`.
+
+Before you switch:
+
+- A required `MNG Review` check bound to GitHub Actions blocks every pull request once the app sets the status. Set its source to any source before the switch and to the app after it.
+- Comments, statuses and check runs the app makes start the repository's other workflows, which writes with `GITHUB_TOKEN` never did. Check workflows that listen to `issue_comment`, `status` or `check_run`.
+- Set `identity.previous: []` once the pull requests opened before the switch are closed. On a pull request that is still open, the bot then posts the findings of the old threads again, and an old summary stays visible next to the new one.
+- Pass the two app secrets by name as above. Never use `secrets: inherit`, which would hand the review job the key as well.
 
 ### Exit codes
 

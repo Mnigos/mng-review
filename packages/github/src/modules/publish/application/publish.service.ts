@@ -3,17 +3,15 @@ import { Context, Effect, Layer } from 'effect'
 import { GitHubApiService } from '../../../platform/github-api.service'
 import { GitHubConfig } from '../../../platform/github.config'
 import type { GitHubApiError } from '../../../platform/github.errors'
+import { OwnedIdentities } from '../../../platform/owned-identities.context'
 import { toCodeSpan } from '../../../utils/markdown.util'
 import {
 	getVerdict,
-	isBotComment,
 	isFinished,
 	isRefused,
 	toBotThread,
 } from '../domain/bot-thread.helper'
 import { createCommentableLinesFold } from '../domain/diff-hunk.parser'
-import { parseSummaryMarker } from '../domain/publish-marker.parser'
-import type { SummaryMarker } from '../domain/publish-marker.schema'
 import {
 	countOpenBugs,
 	countUnthreadedBugs,
@@ -22,7 +20,6 @@ import {
 	planPublish,
 } from '../domain/publish-plan.helper'
 import {
-	MARKER_VERSION,
 	SHORT_SHA_LENGTH,
 	THREAD_PLACE_LINES,
 } from '../domain/publish.constants'
@@ -32,53 +29,37 @@ import type {
 	PlannedThread,
 } from '../domain/publish.types'
 import { toNextSummaryMarker } from '../domain/summary-marker.helper'
-import {
-	formatStatusComment,
-	formatSummaryComment,
-	toUnfinishedSummary,
-} from '../presentation/summary-comment.formatter'
+import { formatSummaryComment } from '../presentation/summary-comment.formatter'
 import {
 	formatThreadComment,
 	toBlobLinks,
 } from '../presentation/thread-comment.formatter'
-import type {
-	PublishInput,
-	PublishResult,
-	StatusInput,
-} from './publish.service.types'
+import type { PublishInput, PublishResult } from './publish.service.types'
+import { SummaryCommentService } from './summary-comment.service'
 import { ThreadResolutionService } from './thread-resolution.service'
 
 /** Git reads that run at once when checking resolved threads. */
 const GIT_CONCURRENCY = 4
-const NOT_FOUND_STATUS = 404
 /** Marks each commit line of `git log -L`, so commits are counted without parsing patches. */
 const COMMIT_MARK = 'mng-review-commit:'
 
 /**
- * Posts a run's findings on its pull request as the job token's bot: one inline thread per new
+ * Posts a run's findings on its pull request as the token's bot: one inline thread per new
  * finding, in one `COMMENT` review, a file comment when the line is outside the diff, and the
- * sticky summary, edited in place. A finding that already has an open thread of the bot, or only
- * resolved ones whose code did not change, is not posted again. A comment the bot wrote but
- * someone else edited no longer counts as the bot's. A status summary is written only when none
- * exists; `publishStatus` answers `false` when it kept one.
+ * sticky summary through `SummaryCommentService`. A finding that already has an open thread of an
+ * owned identity, or only resolved ones whose code did not change, is not posted again. A comment
+ * the bot wrote but someone else edited no longer counts as the bot's.
  */
 export class PublishService extends Context.Service<
 	PublishService,
 	{
 		readonly publish: (
 			input: PublishInput
-		) => Effect.Effect<PublishResult, GitHubApiError>
-		readonly publishStatus: (
-			input: StatusInput
-		) => Effect.Effect<boolean, GitHubApiError>
-		/** The bot's review threads, found by author and marker; comments someone else edited do not count. */
+		) => Effect.Effect<PublishResult, GitHubApiError, OwnedIdentities>
+		/** The bot's review threads, found by an owned author and marker; comments someone else edited do not count. */
 		readonly readThreads: (
 			pullNumber: number
-		) => Effect.Effect<readonly BotThread[], GitHubApiError>
-		/** The sticky summary's marker: how many runs reviewed the pull request and the last head. */
-		readonly readPrior: (
-			pullNumber: number
-		) => Effect.Effect<SummaryMarker | undefined, GitHubApiError>
+		) => Effect.Effect<readonly BotThread[], GitHubApiError, OwnedIdentities>
 	}
 >()('mng-review/PublishService') {}
 
@@ -89,44 +70,14 @@ export const PublishServiceLive = Layer.effect(
 		const git = yield* GitService
 		const config = yield* GitHubConfig
 		const resolution = yield* ThreadResolutionService
-
-		/** The bot's sticky summary: its oldest unedited comment that ends with a summary marker. */
-		const readSummary = Effect.fn('PublishService.readSummary')(function* (
-			pullNumber: number
-		) {
-			const comments = yield* api.listComments(pullNumber)
-			return comments.flatMap(comment => {
-				if (comment.databaseId === null || !isBotComment(comment)) return []
-				const marker = parseSummaryMarker(comment.body)
-				return marker
-					? [{ id: comment.databaseId, marker, body: comment.body }]
-					: []
-			})[0]
-		})
+		const summaries = yield* SummaryCommentService
 
 		const readThreads = Effect.fn('PublishService.readThreads')(function* (
 			pullNumber: number
 		) {
+			const { identities } = yield* OwnedIdentities
 			return (yield* api.listReviewThreads(pullNumber)).flatMap(
-				thread => toBotThread(thread) ?? []
-			)
-		})
-
-		/** Edits the summary, or creates it when there is none or it was deleted since it was read. */
-		const writeSummary = Effect.fn('PublishService.writeSummary')(function* (
-			pullNumber: number,
-			existing: number | undefined,
-			body: string
-		) {
-			const create = api
-				.createIssueComment(pullNumber, body)
-				.pipe(Effect.asVoid)
-			if (existing === undefined) return yield* create
-			return yield* api.updateIssueComment(existing, body).pipe(
-				Effect.catchIf(
-					error => error.status === NOT_FOUND_STATUS,
-					() => create
-				)
+				thread => toBotThread(thread, identities) ?? []
 			)
 		})
 
@@ -303,7 +254,6 @@ export const PublishServiceLive = Layer.effect(
 			const { report, pullNumber } = input
 			const links = toBlobLinks(config, input)
 			const found = yield* readThreads(pullNumber)
-			const summary = yield* readSummary(pullNumber)
 			const agents = new Map(
 				input.rules.agents.map(agent => [agent.name, agent])
 			)
@@ -327,16 +277,14 @@ export const PublishServiceLive = Layer.effect(
 			const posted = yield* postThreads(input, planned.threads)
 			const plan = { ...planned, threads: posted }
 			const openBugs = countOpenBugs(plan, threads)
-			const marker = toNextSummaryMarker(summary?.marker, {
-				head: input.head,
-				finished: isFinished(report),
-				unthreadedBugs: countUnthreadedBugs(plan),
-			})
 			const verdict = getVerdict(report, openBugs)
-			yield* writeSummary(
-				pullNumber,
-				summary?.id,
-				formatSummaryComment({
+			const written = yield* summaries.write(pullNumber, current => {
+				const marker = toNextSummaryMarker(current?.marker, {
+					head: input.head,
+					finished: isFinished(report),
+					unthreadedBugs: countUnthreadedBugs(plan),
+				})
+				const body = formatSummaryComment({
 					report,
 					plan,
 					verdict,
@@ -347,7 +295,8 @@ export const PublishServiceLive = Layer.effect(
 					resolved,
 					tokens: input.recheck?.tokens ?? report.tokens,
 				})
-			)
+				return { body, marker }
+			})
 			const count = (place: PlannedThread['place']) =>
 				posted.filter(thread => thread.place === place).length
 			return {
@@ -361,38 +310,11 @@ export const PublishServiceLive = Layer.effect(
 				dismissed: plan.dismissed.length,
 				rechecked: input.recheck?.checked ?? 0,
 				resolved: resolved.length,
-				run: marker.runs,
+				run: written.marker.runs,
+				cleanup: written.cleanup,
 			} satisfies PublishResult
 		})
 
-		const publishStatus = Effect.fn('PublishService.publishStatus')(function* (
-			input: StatusInput
-		) {
-			const summary = yield* readSummary(input.pullNumber)
-			if (summary) {
-				yield* api.updateIssueComment(
-					summary.id,
-					toUnfinishedSummary(summary.body, summary.marker)
-				)
-				return false
-			}
-			yield* api.createIssueComment(
-				input.pullNumber,
-				formatStatusComment(
-					input.status,
-					{ v: MARKER_VERSION, runs: 0, finished: false },
-					toBlobLinks(config, input)
-				)
-			)
-			return true
-		})
-
-		const readPrior = Effect.fn('PublishService.readPrior')(function* (
-			pullNumber: number
-		) {
-			return (yield* readSummary(pullNumber))?.marker
-		})
-
-		return { publish, publishStatus, readThreads, readPrior }
+		return { publish, readThreads }
 	})
 )

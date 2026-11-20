@@ -1,5 +1,6 @@
 import { Schema, SchemaGetter } from 'effect'
 import {
+	BOT_SLUG_PATTERN,
 	CROSS_VALIDATOR,
 	DEFAULT_PRESET_NAME,
 	DEPTH_SETTINGS,
@@ -21,6 +22,10 @@ export type DepthSetting = typeof depthSettingSchema.Type
 export const nameListSchema = Schema.Array(Schema.NonEmptyString)
 export const countSchema = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))
 export const positiveIntSchema = Schema.Int.check(Schema.isGreaterThan(0))
+/** A bot account as GraphQL names it: an app slug, never with `[bot]`. */
+export const botSlugSchema = Schema.String.check(
+	Schema.isPattern(BOT_SLUG_PATTERN)
+)
 
 export const modelSettingSchema = Schema.Struct({
 	model: Schema.NonEmptyString,
@@ -129,5 +134,7 @@ export const reviewConfigSchema = Schema.Struct({
 			modelSettingSchema,
 		]),
 	}),
+	/** Bot accounts whose earlier comments still count as the bot's, besides the one posting now. */
+	identity: Schema.Struct({ previous: Schema.Array(botSlugSchema) }),
 })
 export type ReviewConfig = typeof reviewConfigSchema.Type

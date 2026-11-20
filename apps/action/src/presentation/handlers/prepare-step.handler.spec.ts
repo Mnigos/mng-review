@@ -2,7 +2,7 @@ import { layer } from '@effect/vitest'
 import {
 	GitHubApiError,
 	GitHubConfig,
-	GitHubConfigLive,
+	GitHubReadConfigLive,
 } from '@mng-review/github'
 import { ConfigProvider, Effect, FileSystem, Layer } from 'effect'
 // oxlint-disable-next-line no-restricted-imports -- The test brief requires these existing unexported GitHub fixtures.
@@ -122,7 +122,7 @@ layer(Layer.empty)('prepare configuration', test => {
 			Effect.gen(function* () {
 				expect(
 					yield* GitHubConfig.pipe(
-						Effect.provide(GitHubConfigLive),
+						Effect.provide(GitHubReadConfigLive),
 						Effect.provide(
 							ConfigProvider.layer(
 								ConfigProvider.fromEnvRecord({

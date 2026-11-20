@@ -25,14 +25,17 @@ export interface ShadowRunInput {
 	readonly readEvent: Effect.Effect<string, ConfigError>
 	/**
 	 * The prepare step only: the earlier runs on the pull request, read before any model call, for
-	 * `limits.max_runs_per_pr` and incremental input. Unset or `undefined`: no earlier run is known.
+	 * `limits.max_runs_per_pr` and incremental input. The rules at the base commit name the bot
+	 * identities whose summary counts. Unset or `undefined`: no earlier run is known.
 	 */
 	readonly readPrior?: (
-		event: PullRequestEvent
+		event: PullRequestEvent,
+		rules: Rules
 	) => Effect.Effect<PriorRun | undefined>
 	/** The prepare step only: the bot's threads, read once the run goes on. Unset: none. */
 	readonly readThreads?: (
-		event: PullRequestEvent
+		event: PullRequestEvent,
+		rules: Rules
 	) => Effect.Effect<readonly BotThread[]>
 }
 

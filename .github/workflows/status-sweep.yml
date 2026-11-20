@@ -1,6 +1,8 @@
 # Reusable status sweep: refreshes the MNG Review commit status of open pull requests whose head
 # already carries it, from the bot's open bug threads, so a thread resolved by hand counts. It runs
-# no model and needs no endpoint; the caller runs it on a schedule. See README.md.
+# no model and needs no endpoint; the caller runs it on a schedule. With app-slug and the app's two
+# secrets it writes as the app. The rules, identity.previous included, come from the default
+# branch. See README.md.
 name: MNG Review status sweep
 
 on:
@@ -14,6 +16,17 @@ on:
         description: Job timeout in minutes.
         type: number
         default: 10
+      app-slug:
+        description: Slug of the GitHub App the bot posts as. Empty posts as github-actions[bot].
+        type: string
+        default: ''
+    secrets:
+      app-client-id:
+        description: Client id of the GitHub App, needed when app-slug is set.
+        required: false
+      app-private-key:
+        description: Private key of the GitHub App, needed when app-slug is set.
+        required: false
 
 permissions:
   contents: read
@@ -37,6 +50,15 @@ jobs:
           echo "::error::job.workflow_repository and job.workflow_sha are not available on this GitHub; MNG Review cannot check out its own code."
           exit 1
 
+      # The default branch, only for .mng/review.yml; credentials are not left in .git/config.
+      - name: Check out the default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: repo
+          fetch-depth: 1
+          persist-credentials: false
+
       - name: Check out MNG Review
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -44,6 +66,34 @@ jobs:
           ref: ${{ job.workflow_sha }}
           path: .mng-review-engine
           persist-credentials: false
+
+      # All three app settings, or none: anything else fails here, before any write.
+      - name: Check the app credentials
+        env:
+          APP_SLUG: ${{ inputs.app-slug }}
+          HAS_CLIENT_ID: ${{ secrets.app-client-id != '' }}
+          HAS_PRIVATE_KEY: ${{ secrets.app-private-key != '' }}
+        run: |
+          if [ -n "$APP_SLUG" ]; then
+            if [ "$HAS_CLIENT_ID" != true ] || [ "$HAS_PRIVATE_KEY" != true ]; then
+              echo "::error::app-slug is set, so app-client-id and app-private-key are required."
+              exit 1
+            fi
+          elif [ "$HAS_CLIENT_ID" = true ] || [ "$HAS_PRIVATE_KEY" = true ]; then
+            echo "::error::app-client-id or app-private-key is set without app-slug."
+            exit 1
+          fi
+
+      # The calling repository only and the listed permissions only; revoked when the job ends.
+      - name: Mint the app token
+        id: app
+        if: inputs.app-slug != ''
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.app-client-id }}
+          private-key: ${{ secrets.app-private-key }}
+          permission-statuses: write
+          permission-pull-requests: read
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
@@ -60,5 +110,9 @@ jobs:
         env:
           MNG_REVIEW_MODE: sweep
           MNG_REVIEW_ENGINE_COMMIT: ${{ job.workflow_sha }}
-          GITHUB_TOKEN: ${{ github.token }}
+          MNG_REVIEW_REPO_DIR: ${{ github.workspace }}/repo
+          MNG_REVIEW_APP_SLUG: ${{ inputs.app-slug }}
+          MNG_REVIEW_APP_TOKEN: ${{ steps.app.outputs.token }}
+          MNG_REVIEW_MINTED_APP_SLUG: ${{ steps.app.outputs.app-slug }}
+          GITHUB_TOKEN: ${{ inputs.app-slug == '' && github.token || '' }}
         run: bun --no-env-file apps/action/src/main.ts

@@ -43,6 +43,7 @@ const SPEC_DEFAULTS = {
 		agents: { model: 'gpt-6.1-sol', effort: 'high' },
 		validator: 'cross',
 	},
+	identity: { previous: ['github-actions'] },
 } as const satisfies ReviewConfig
 
 layer(Layer.empty)('parseReviewConfig', test => {

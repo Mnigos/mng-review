@@ -1,9 +1,10 @@
 import { join } from 'node:path'
 import { RulesService } from '@mng-review/engine'
 import {
-	GitHubConfigLive,
+	GitHubWriteConfigLive,
 	PublishServiceLive,
 	StatusReportServiceLive,
+	SummaryCommentServiceLive,
 	ThreadResolutionServiceLive,
 } from '@mng-review/github'
 import { ConfigProvider, Effect, Layer } from 'effect'
@@ -92,11 +93,12 @@ export function stepFixture() {
 	const api = githubApiFake()
 	const status = githubStatusFake()
 	const publisherLayer = PublishServiceLive.pipe(
-		Layer.provide(
+		Layer.provideMerge(SummaryCommentServiceLive),
+		Layer.provideMerge(
 			Layer.mergeAll(
 				api.api,
 				ThreadResolutionServiceLive.pipe(Layer.provide(api.api)),
-				GitHubConfigLive.pipe(
+				GitHubWriteConfigLive.pipe(
 					Layer.provide(envLayer({ GITHUB_TOKEN: 'fixture-token' }))
 				),
 				gitLayer(repo.root)
