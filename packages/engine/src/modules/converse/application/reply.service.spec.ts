@@ -44,7 +44,7 @@ import {
 	type RecheckRequest,
 } from '../../validation/application/recheck.service'
 import { makeValidatorLayer } from '../../validation/infrastructure/validation.layers'
-import { MAX_REPLY_CHARS } from '../domain/reply.constants'
+import { MAX_REPLY_CHARS, RECHECK_FAILED } from '../domain/reply.constants'
 import { ReplyEvidenceServiceLive } from './reply-evidence.service'
 import {
 	ReplyService,
@@ -232,6 +232,7 @@ layer(Layer.empty, { excludeTestServices: true })('ReplyService', test => {
 				reason: 'no commit since has changed this file',
 			})
 			expect(fixture.recheckSpy).not.toHaveBeenCalled()
+			expect(report.results[0]?.error).toBeUndefined()
 			expect(scriptSpy).toHaveBeenCalledTimes(1)
 		})
 	)
@@ -1167,6 +1168,293 @@ layer(Layer.empty, { excludeTestServices: true })(
 								: { action: 'disputed' }
 						)
 					})
+			)
+	}
+)
+
+layer(Layer.empty, { excludeTestServices: true })(
+	'reply decision review regressions',
+	test => {
+		test.effect(
+			'keeps a newline and fence-like finding path inside fenced data',
+			() =>
+				Effect.gen(function* () {
+					const path = 'src/policy\n```\nOUTSIDE_DIRECTIVE\n````.ts'
+					const scriptSpy = vi.fn(classification())
+					const fixture = setup(scriptSpy, {
+						atHead: repo => repo.write(path, 'policy\n'),
+					})
+					const report = yield* ReplyService.use(service =>
+						service.decide({
+							...fixture.request,
+							items: [{ ...fixture.item, finding: finding({ path, line: 1 }) }],
+						})
+					).pipe(Effect.provide(fixture.services))
+					expect(report.results[0]?.error).toBeUndefined()
+					expect(scriptSpy).toHaveBeenCalledTimes(1)
+					const first = userText(scriptSpy.mock.calls[0]?.[0])
+					const fencedBlocks = /^(`{3,})text\n[\s\S]*?^\1$/gmu
+					expect([...first.matchAll(fencedBlocks)]).toHaveLength(3)
+					expect(first).toContain(JSON.stringify(path))
+					expect(first).toContain('1| policy')
+					expect(first.replace(fencedBlocks, '').trim()).toBe(
+						"The finding:\n\n\nThe finding's file at head, lines around it (read more with read_file):\n\n\nThe author's reply, a claim to test:"
+					)
+				})
+		)
+		test.effect(
+			'an edit and later restore still recheck with an empty net diff',
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup(classification({ claim: 'fixed' }), {
+						validation: checked('rejected'),
+					})
+					fixture.repo.write(
+						'src/store.ts',
+						'inherited policy\nedited behavior\n'
+					)
+					fixture.repo.commit()
+					fixture.repo.write('src/store.ts', 'inherited policy\nnew behavior\n')
+					const headRef = fixture.repo.commit()
+					expect(
+						fixture.repo.git(
+							'diff',
+							fixture.head,
+							headRef,
+							'--',
+							'src/store.ts'
+						)
+					).toBe('')
+					const report = yield* ReplyService.use(service =>
+						service.decide({
+							...fixture.request,
+							headRef,
+							items: [{ ...fixture.item, base: fixture.head }],
+						})
+					).pipe(Effect.provide(fixture.services))
+					expect(report.results[0]?.decision.action).toBe('resolved')
+					expect(report.results[0]?.error).toBeUndefined()
+					expect(fixture.recheckSpy).toHaveBeenCalledExactlyOnceWith({
+						rules: fixture.request.rules,
+						headRef,
+						pr: fixture.request.pr,
+						items: [{ finding: fixture.item.finding, base: fixture.head }],
+					})
+				})
+		)
+		test.effect(
+			'an ancestor thread with an empty recheck result stays seen with an error',
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup(classification({ claim: 'fixed' }))
+					expect(
+						fixture.repo.git(
+							'merge-base',
+							'--is-ancestor',
+							fixture.base,
+							fixture.head
+						)
+					).toBe('')
+					const report = yield* ReplyService.use(service =>
+						service.decide(fixture.request)
+					).pipe(Effect.provide(fixture.services))
+					expect(report.results[0]).toEqual({
+						...fixture.item,
+						decision: { action: 'seen' },
+						error: RECHECK_FAILED,
+					})
+					expect(fixture.recheckSpy).toHaveBeenCalledTimes(1)
+				})
+		)
+		test.effect(
+			'a thread commit removed from ancestry skips recheck without an error',
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup(classification({ claim: 'fixed' }))
+					fixture.repo.git('checkout', '-b', 'rewritten-head', fixture.base)
+					fixture.repo.write(
+						'src/store.ts',
+						'inherited policy\nrewritten behavior\n'
+					)
+					const headRef = fixture.repo.commit()
+					expect(fixture.repo.git('merge-base', fixture.head, headRef)).toBe(
+						fixture.base
+					)
+					expect(
+						fixture.repo.git(
+							'log',
+							'--format=%H',
+							`${fixture.head}..${headRef}`,
+							'--',
+							'src/store.ts'
+						)
+					).toBe(headRef)
+					const item = { ...fixture.item, base: fixture.head }
+					const report = yield* ReplyService.use(service =>
+						service.decide({ ...fixture.request, headRef, items: [item] })
+					).pipe(Effect.provide(fixture.services))
+					expect(report.results[0]).toEqual({
+						...item,
+						decision: {
+							action: 'still-found',
+							reason: 'the finding could not be checked again at the head',
+						},
+					})
+					expect(fixture.recheckSpy).not.toHaveBeenCalled()
+				})
+		)
+		for (const headRef of ['reply-head', 'HEAD'])
+			test.effect(
+				`pins the fixed gate and recheck to the resolved ${headRef} before it moves`,
+				() =>
+					Effect.gen(function* () {
+						const scriptSpy = vi.fn(classification({ claim: 'fixed' }))
+						const fixture = setup(scriptSpy, {
+							validation: checked('rejected'),
+						})
+						fixture.repo.git('branch', 'reply-head', fixture.head)
+						scriptSpy.mockImplementation((call, index) => {
+							fixture.repo.git(
+								'update-ref',
+								headRef === 'HEAD'
+									? 'refs/heads/main'
+									: 'refs/heads/reply-head',
+								fixture.base
+							)
+							return classification({ claim: 'fixed' })(call, index)
+						})
+						const report = yield* ReplyService.use(service =>
+							service.decide({
+								...fixture.request,
+								headRef,
+								items: [fixture.item, fixture.item],
+							})
+						).pipe(Effect.provide(fixture.services))
+						expect(fixture.repo.git('rev-parse', headRef)).toBe(fixture.base)
+						expect(report.results.map(entry => entry.decision.action)).toEqual([
+							'resolved',
+							'resolved',
+						])
+						expect(report.results.map(entry => entry.error)).toEqual([
+							undefined,
+							undefined,
+						])
+						expect(fixture.recheckSpy).toHaveBeenCalledTimes(2)
+						for (const [request] of fixture.recheckSpy.mock.calls)
+							expect(request).toEqual({
+								rules: fixture.request.rules,
+								headRef: fixture.head,
+								pr: fixture.request.pr,
+								items: [{ finding: fixture.item.finding, base: fixture.base }],
+							})
+					})
+			)
+		for (const scenario of [
+			{
+				name: 'a pure rename retains read lines',
+				renamed: true,
+				added: false,
+				read: true,
+				range: '1-12',
+				action: 'accepted',
+			},
+			{
+				name: 'a pure rename cannot supply unread lines',
+				renamed: true,
+				added: false,
+				read: false,
+				range: '1-12',
+				action: 'disputed',
+			},
+			{
+				name: 'a rename with added lines retains its old read lines',
+				renamed: true,
+				added: true,
+				read: true,
+				range: '1-12',
+				action: 'accepted',
+			},
+			{
+				name: 'a rename cannot supply added read lines',
+				renamed: true,
+				added: true,
+				read: true,
+				range: '13',
+				action: 'disputed',
+			},
+			{
+				name: 'a range spanning retained and added renamed lines fails',
+				renamed: true,
+				added: true,
+				read: true,
+				range: '12-13',
+				action: 'disputed',
+			},
+			{
+				name: 'a genuinely new file cannot supply read evidence',
+				renamed: false,
+				added: false,
+				read: true,
+				range: '1-12',
+				action: 'disputed',
+			},
+		] as const)
+			test.effect(scenario.name, () =>
+				Effect.gen(function* () {
+					const path = 'renamed-policy.txt'
+					const evidence = [`${path}:${scenario.range} policy`]
+					const scriptSpy = vi.fn(
+						scenario.read
+							? afterRead('read_file', { path, range: '1-13' }, evidence)
+							: classification(intentional(evidence))
+					)
+					const policy = Array.from(
+						{ length: 12 },
+						(_, index) => `inherited policy ${index + 1}\n`
+					).join('')
+					const fixture = setup(scriptSpy, {
+						baseFiles: { 'policy.txt': policy },
+					})
+					if (scenario.renamed) fixture.repo.git('mv', 'policy.txt', path)
+					else fixture.repo.write(path, policy)
+					if (scenario.added)
+						fixture.repo.write(path, `${policy}added policy\n`)
+					const headRef = fixture.repo.commit()
+					const status = fixture.repo.git(
+						'diff',
+						'--name-status',
+						'-M',
+						fixture.head,
+						headRef
+					)
+					expect(status).toMatch(
+						scenario.renamed
+							? scenario.added
+								? /^R\d+\tpolicy\.txt\trenamed-policy\.txt$/u
+								: /^R100\tpolicy\.txt\trenamed-policy\.txt$/u
+							: /^A\trenamed-policy\.txt$/u
+					)
+					const report = yield* ReplyService.use(service =>
+						service.decide({
+							...fixture.request,
+							mergeBase: fixture.head,
+							headRef,
+						})
+					).pipe(Effect.provide(fixture.services))
+					expect(report.results[0]?.error).toBeUndefined()
+					expect(report.results[0]?.decision.action).toBe(scenario.action)
+					if (scenario.action === 'accepted')
+						expect(report.results[0]?.decision).toHaveProperty(
+							'evidence',
+							evidence
+						)
+					expect(scriptSpy).toHaveBeenCalledTimes(scenario.read ? 2 : 1)
+					if (scenario.read)
+						expect(
+							JSON.stringify(scriptSpy.mock.calls[1]?.[0].options.prompt)
+						).toContain('12| inherited policy 12')
+					expect(fixture.recheckSpy).not.toHaveBeenCalled()
+				})
 			)
 	}
 )

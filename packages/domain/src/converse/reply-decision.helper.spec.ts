@@ -446,3 +446,44 @@ describe('memory candidate render syntax', () => {
 		}
 	)
 })
+
+describe('memory candidate hex words and emphasis', () => {
+	test('splits the reported hex run in both the path and reason', () => {
+		expect(
+			toMemoryCandidate({ path: 'src/dead3047f4f.ts' }, 'dead3047f4f')
+		).toBe('src/dead30 47f4f.ts: dead30 47f4f')
+	})
+	test.each([7, 11, 12, 13, 40, 41, 64, 127])(
+		'leaves no whole hex word of seven or more characters from a %s-character run',
+		length => {
+			const word = 'aB09cD'.repeat(Math.ceil(length / 6)).slice(0, length)
+			const memory = toMemoryCandidate({ path: `src/${word}.ts` }, word)
+			expect(memory).not.toMatch(/\b[0-9a-f]{7,}\b/iu)
+			expect(memory.replaceAll(' ', '')).toBe(`src/${word}.ts:${word}`)
+		}
+	)
+	test.each([
+		'a',
+		'ab',
+		'abc',
+		'abcd',
+		'abcde',
+		'abcdef',
+		'xdeadbeef',
+		'deadbeefx',
+	])('preserves %j in both the path and reason', text => {
+		expect(toMemoryCandidate({ path: `src/${text}.ts` }, text)).toBe(
+			`src/${text}.ts: ${text}`
+		)
+	})
+	test('drops underscore and asterisk emphasis from both the path and reason', () => {
+		const memory = toMemoryCandidate(
+			{ path: 'src/_policy_*name*.ts' },
+			'_inherited_ **policy** uses stable_units'
+		)
+		expect(memory).toBe(
+			'src/ policy name .ts: inherited policy uses stable units'
+		)
+		expect(memory).not.toMatch(/[_*]/u)
+	})
+})
