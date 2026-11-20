@@ -389,6 +389,36 @@ describe('reply decision output bounds', () => {
 
 describe('memory candidate render syntax', () => {
 	test.each([
+		['GH-12', 'GH 12'],
+		['gh-12', 'gh 12'],
+		['GHSA-abcd-1234', 'GHSA abcd-1234'],
+		['ghsa-abcd-1234', 'ghsa abcd-1234'],
+		['123abcd', '123a bcd'],
+		['ABCDEF1', 'ABCD EF1'],
+		[
+			'0123456789abcdef0123456789abcdef01234567',
+			'0123 456789abcdef0123456789abcdef01234567',
+		],
+		['deadbeef', 'dead beef'],
+		['123abcd deadbeef', '123a bcd dead beef'],
+		[
+			'0123456789abcdef0123456789abcdef012345678',
+			'0123456789abcdef0123456789abcdef012345678',
+		],
+		['abc123', 'abc123'],
+		['abcdefg', 'abcdefg'],
+		['src/auth.ts line 12', 'src/auth.ts line 12'],
+		['xdeadbeef', 'xdeadbeef'],
+		['deadbeef_note', 'deadbeef_note'],
+	] as const)(
+		'normalizes GitHub references in %j in both the path and reason',
+		(text, expected) => {
+			expect(toMemoryCandidate({ path: `src/${text}/policy.ts` }, text)).toBe(
+				`src/${expected}/policy.ts: ${expected}`
+			)
+		}
+	)
+	test.each([
 		'[x](https://e.com)',
 		'![a](b.png)',
 		'https://e.com/x',
