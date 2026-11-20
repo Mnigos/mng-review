@@ -1,16 +1,17 @@
 # The steps the entry workflows share once the base commit, the head objects and MNG Review are
 # checked out: install, prepare (publish and command mode), join the tailnet, review, upload the
-# result and, in publish and command mode, the outcome for the publish job. Only review.yml and the
-# review jobs of review-publish.yml and review-command.yml use it, from the engine checkout at the
-# workflow's own commit.
+# result and, in publish, command and converse mode, the outcome for the publish job. Only
+# review.yml and the review jobs of review-publish.yml, review-command.yml and review-converse.yml
+# use it, from the engine checkout at the workflow's own commit.
 name: MNG Review steps
 description: Installs MNG Review from this checkout, reviews the caller's change and uploads the result.
 
 inputs:
   mode:
     description: >-
-      shadow, publish (a pull request event) or command (a run an authorized command asked for,
-      whose pull request the target inputs name).
+      shadow, publish (a pull request event), command (a run an authorized command asked for,
+      whose pull request the target inputs name) or converse (the reply schedule: answers the
+      replies on the pull request the target inputs name and reviews nothing).
     required: true
   engine-commit:
     description: The commit of MNG Review that runs.
@@ -28,15 +29,15 @@ inputs:
     required: false
     default: ''
   target-pr:
-    description: Command mode only, the pull request number from the authorize job.
+    description: Command and converse mode, the pull request number from the authorize or find job.
     required: false
     default: ''
   target-base:
-    description: Command mode only, the base commit the authorize job checked.
+    description: Command and converse mode, the base commit the authorize or find job checked.
     required: false
     default: ''
   target-head:
-    description: Command mode only, the head commit the authorize job checked.
+    description: Command and converse mode, the head commit the authorize or find job checked.
     required: false
     default: ''
   command-depth:
@@ -47,6 +48,14 @@ inputs:
     description: Command mode only, the declared agent the command named, or empty.
     required: false
     default: ''
+  outcome-name:
+    description: Name of the outcome artifact; each pull request of the reply schedule has its own.
+    required: false
+    default: mng-review-outcome
+  result-name:
+    description: Name of the result artifact; each pull request of the reply schedule has its own.
+    required: false
+    default: mng-review-result
   llm-url:
     description: Base URL of the OpenAI-compatible endpoint.
     required: true
@@ -89,9 +98,9 @@ runs:
       working-directory: ${{ github.action_path }}/../../..
       run: bun install --frozen-lockfile --production --ignore-scripts
 
-    # Publish and command mode: the checks before the probe and the GitHub reads, with the read
-    # token and no endpoint variable; it writes the prepared file and `ready`. A command run reads
-    # its pull request again instead of the event, which is the comment's.
+    # Publish, command and converse mode: the checks before the probe and the GitHub reads, with the read
+    # token and no endpoint variable; it writes the prepared file and `ready`. A command or converse
+    # run reads its pull request again instead of the event.
     - name: Prepare
       id: prepare
       if: inputs.mode != 'shadow'
@@ -103,7 +112,7 @@ runs:
         MNG_REVIEW_REPO_DIR: ${{ github.workspace }}/repo
         MNG_REVIEW_PREPARED_PATH: ${{ runner.temp }}/mng-review/prepared.json
         MNG_REVIEW_APP_SLUG: ${{ inputs.app-slug }}
-        MNG_REVIEW_TRIGGER: ${{ inputs.mode == 'command' && 'command' || 'push' }}
+        MNG_REVIEW_TRIGGER: ${{ (inputs.mode == 'command' || inputs.mode == 'converse') && inputs.mode || 'push' }}
         MNG_REVIEW_TARGET_PR: ${{ inputs.target-pr }}
         MNG_REVIEW_TARGET_BASE: ${{ inputs.target-base }}
         MNG_REVIEW_TARGET_HEAD: ${{ inputs.target-head }}
@@ -149,7 +158,7 @@ runs:
         MNG_REVIEW_PREPARED_PATH: ${{ runner.temp }}/mng-review/prepared.json
         MNG_REVIEW_OUTCOME_PATH: ${{ runner.temp }}/mng-review-outcome/outcome.json
         MNG_REVIEW_MODE: ${{ inputs.mode == 'shadow' && 'shadow' || 'review' }}
-        MNG_REVIEW_TRIGGER: ${{ inputs.mode == 'command' && 'command' || 'push' }}
+        MNG_REVIEW_TRIGGER: ${{ (inputs.mode == 'command' || inputs.mode == 'converse') && inputs.mode || 'push' }}
         MNG_REVIEW_TARGET_PR: ${{ inputs.target-pr }}
         MNG_REVIEW_TARGET_BASE: ${{ inputs.target-base }}
         MNG_REVIEW_TARGET_HEAD: ${{ inputs.target-head }}
@@ -167,7 +176,7 @@ runs:
       if: ${{ !cancelled() }}
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
-        name: mng-review-result
+        name: ${{ inputs.result-name }}
         path: ${{ runner.temp }}/mng-review-result/result.json
         retention-days: 14
         if-no-files-found: warn
@@ -178,7 +187,7 @@ runs:
       if: steps.review.outputs.publish == 'true'
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
-        name: mng-review-outcome
+        name: ${{ inputs.outcome-name }}
         path: ${{ runner.temp }}/mng-review-outcome/outcome.json
         retention-days: 1
         if-no-files-found: error

@@ -33,9 +33,9 @@ export const VERDICTS = [
 export type Verdict = (typeof VERDICTS)[number]
 const TOKENS_PER_K = 1000
 /** Entries a list shows before it says how many more there are. */
-const MAX_LIST_ITEMS = 25
+export const MAX_LIST_ITEMS = 25
 /** Entries a list shows when the full summary is too long. */
-const SHORT_LIST_ITEMS = 3
+export const SHORT_LIST_ITEMS = 3
 /** Characters of a title, place or reason a summary list line keeps. */
 const MAX_TEXT_CHARS = 300
 /**
@@ -191,10 +191,7 @@ function toFindingLines(input: SummaryInput, limit: number): string[] {
 					'',
 					`${plan.repeated.length} finding(s) already have a thread and were not posted again.`,
 				]),
-		...toSection(
-			`Waiting for the owner (${waiting.length}):`,
-			toCapped(waiting, limit, toThreadLine)
-		),
+		...toWaitingSection(waiting, limit),
 		...toSection(
 			`Closed by this run, no longer found at the head (${input.resolved.length}):`,
 			toCapped(
@@ -233,6 +230,17 @@ function toFindingLines(input: SummaryInput, limit: number): string[] {
 			)
 		),
 	]
+}
+
+/** The threads that wait for the owner as a titled section, left out when none waits. */
+export function toWaitingSection(
+	waiting: readonly BotThread[],
+	limit: number
+): string[] {
+	return toSection(
+		`Waiting for the owner (${waiting.length}):`,
+		toCapped(waiting, limit, toThreadLine)
+	)
 }
 
 /** One of the bot's threads as a list line: its place and title. */

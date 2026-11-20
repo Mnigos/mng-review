@@ -16,6 +16,7 @@ export const OUTCOME_VERSION = 1
 export const MAX_OUTCOME_BYTES = 4 * 1024 * 1024
 export const OUTCOME_STATUSES = [
 	'reviewed',
+	'replied',
 	'offline',
 	'skipped',
 	'invalid-config',
@@ -92,6 +93,12 @@ export const outcomeFileSchema = Schema.Struct({
 			file.status !== 'reviewed' ||
 			file.report !== undefined ||
 			'a reviewed outcome needs its report'
+	),
+	Schema.makeFilter(
+		file =>
+			file.status !== 'replied' ||
+			(file.replies !== undefined && file.binding.trigger === 'converse') ||
+			'a replied outcome needs its decisions and the converse trigger'
 	)
 )
 export type OutcomeFile = typeof outcomeFileSchema.Type

@@ -1,14 +1,17 @@
 import { join } from 'node:path'
+import type { ReviewConfig } from '@mng-review/domain'
 import { RulesService } from '@mng-review/engine'
 import {
-	GitHubWriteConfigLive,
 	GitHubReadConfigLive,
-	toBotIdentity,
+	GitHubWriteConfigLive,
 	PublishServiceLive,
+	ReplyFindServiceLive,
+	ReplyPublishServiceLive,
 	StatusReportServiceLive,
 	SummaryCommentServiceLive,
 	ThreadReplyServiceLive,
 	ThreadResolutionServiceLive,
+	toBotIdentity,
 } from '@mng-review/github'
 import { ConfigProvider, Effect, Layer } from 'effect'
 // oxlint-disable-next-line no-restricted-imports -- The test brief requires these existing unexported GitHub fixtures.
@@ -30,7 +33,8 @@ export function stepFixture(
 	previous: readonly string[] = RULES.config.identity.previous,
 	appMode = false,
 	readOnly = false,
-	allow: readonly string[] = RULES.config.commands.allow
+	allow: readonly string[] = RULES.config.commands.allow,
+	disputes: ReviewConfig['disputes'] = RULES.config.disputes
 ) {
 	const repo = createRepo()
 	repo.write('src/items/store.ts', 'first\nold value\nlast\n')
@@ -97,6 +101,7 @@ export function stepFixture(
 			...RULES.config,
 			identity: { previous },
 			commands: { ...RULES.config.commands, allow },
+			disputes,
 		},
 	}
 	const loads: (string | undefined)[] = []
@@ -110,9 +115,11 @@ export function stepFixture(
 		toBotIdentity(appMode ? 'mng-review' : 'github-actions')
 	)
 	const status = githubStatusFake()
-	const publisherLayer = Layer.merge(
+	const publisherLayer = Layer.mergeAll(
 		PublishServiceLive,
-		ThreadReplyServiceLive
+		ThreadReplyServiceLive,
+		ReplyPublishServiceLive.pipe(Layer.provide(status.layer)),
+		ReplyFindServiceLive.pipe(Layer.provide(status.layer))
 	).pipe(
 		Layer.provideMerge(SummaryCommentServiceLive),
 		Layer.provideMerge(

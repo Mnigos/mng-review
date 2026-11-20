@@ -299,3 +299,171 @@ describe('mention command workflow boundaries', () => {
 		}
 	})
 })
+
+describe('reply schedule workflow boundaries', () => {
+	const workflow = readWorkflow('workflows/review-converse.yml')
+	test('find has no secret, model configuration or write permission and reads default-branch rules', () => {
+		const find = getJob(workflow, 'find')
+		expect(find).not.toMatch(/\bsecrets\s*[.[]/u)
+		expect(find).not.toMatch(
+			/llm-|app-private-key|app-client-id|create-github-app-token/u
+		)
+		expect(find).not.toMatch(/^\s+[\w-]+:\s*write\s*$/mu)
+		expect(find).toContain('MNG_REVIEW_MODE: find')
+		expect(find).toContain('ref: ${{ github.event.repository.default_branch }}')
+		expect(find).toContain(
+			'MNG_REVIEW_MAX_PULL_REQUESTS: ${{ inputs.max-pull-requests }}'
+		)
+		expect(find).toContain('pulls: ${{ steps.find.outputs.pulls }}')
+	})
+	for (const job of ['find', 'review', 'publish'])
+		test(`${job} references only its own secrets`, () => {
+			const block = getJob(workflow, job)
+			const secrets = [...block.matchAll(/secrets\.([\w-]+)/gu)]
+				.map(match => match[1] ?? '')
+				.toSorted((a, b) => a.localeCompare(b))
+			expect([...new Set(secrets)]).toEqual(
+				job === 'review'
+					? [
+							'llm-key',
+							'llm-url',
+							'tailscale-oauth-client-id',
+							'tailscale-oauth-secret',
+						]
+					: job === 'publish'
+						? ['app-client-id', 'app-private-key']
+						: []
+			)
+			if (job !== 'review') expect(block).not.toContain('llm-')
+			if (job !== 'publish')
+				expect(block).not.toMatch(/app-client-id|app-private-key/u)
+		})
+	test('publish mints only pull requests write, statuses write and contents read', () => {
+		const publish = getJob(workflow, 'publish')
+		const mint = publish
+			.split(/^ {6}- /mu)
+			.find(step => step.includes('uses: actions/create-github-app-token@'))
+		expect(mint).toBeDefined()
+		expect(
+			mint
+				?.match(/^\s+permission-[\w-]+:\s*\w+/gmu)
+				?.map(line => line.trim())
+				.toSorted()
+		).toEqual([
+			'permission-contents: read',
+			'permission-pull-requests: write',
+			'permission-statuses: write',
+		])
+		expect(mint).not.toMatch(/^\s*(?:owner|repositories|skip-token-revoke):/mu)
+		expect(publish).not.toMatch(/checks:\s*write|permission-checks/u)
+	})
+	for (const job of ['review', 'publish'])
+		test(`${job} serializes a per-pull matrix with its own artifacts and trusted targets`, () => {
+			const block = getJob(workflow, job)
+			expect(block).toContain('pull: ${{ fromJSON(needs.find.outputs.pulls) }}')
+			expect(block).toContain('max-parallel: 1')
+			expect(block).toContain('fail-fast: false')
+			expect(block).toContain(
+				'outcome-name: mng-review-outcome-${{ matrix.pull.number }}'
+			)
+			expect(block).toContain(
+				'result-name: mng-review-result-${{ matrix.pull.number }}'
+			)
+			expect(block).toContain('target-pr: ${{ matrix.pull.number }}')
+			expect(block).toContain('target-base: ${{ matrix.pull.base }}')
+			expect(block).toContain('target-head: ${{ matrix.pull.head }}')
+			expect(block).toContain(
+				job === 'review' ? 'mode: converse' : 'trigger: converse'
+			)
+		})
+	test('the publish action tolerates a missing outcome only for converse', () => {
+		const action = readWorkflow('actions/publish/action.yml')
+		const download =
+			/^ {4}- name: Download the outcome\n[\s\S]*?(?=^ {4}- name:|$(?![\s\S]))/mu.exec(
+				action
+			)?.[0]
+		expect(download).toContain(
+			"continue-on-error: ${{ inputs.trigger == 'converse' }}"
+		)
+		expect(download).toContain('name: ${{ inputs.outcome-name }}')
+	})
+	for (const action of ['review', 'publish'])
+		test(`${action} takes custom artifact names while preserving the defaults`, () => {
+			const text = readWorkflow(`actions/${action}/action.yml`)
+			expect(text).toMatch(
+				/outcome-name:\n[\s\S]*?default: mng-review-outcome\n/u
+			)
+			expect(text).toMatch(
+				/result-name:\n[\s\S]*?default: mng-review-result\n/u
+			)
+			expect(text).toContain('name: ${{ inputs.result-name }}')
+			expect(text).toContain('name: ${{ inputs.outcome-name }}')
+		})
+	test('shadow keeps its workflow, mode and result artifact name without an outcome artifact override', () => {
+		const shadow = getJob(readWorkflow('workflows/review.yml'), 'review')
+		expect(shadow).toContain('name: MNG Review (shadow)')
+		expect(shadow).toContain('mode: shadow')
+		expect(shadow).toContain(
+			'uses: ./.mng-review-engine/.github/actions/review'
+		)
+		expect(shadow).not.toMatch(
+			/outcome-name:|result-name:|MNG_REVIEW_TRIGGER|converse/u
+		)
+		const action = readWorkflow('actions/review/action.yml')
+		expect(action).toContain("if: inputs.mode != 'shadow'")
+		expect(action).toContain(
+			"MNG_REVIEW_MODE: ${{ inputs.mode == 'shadow' && 'shadow' || 'review' }}"
+		)
+		expect(action).toContain(
+			'MNG_REVIEW_RESULT_PATH: ${{ runner.temp }}/mng-review-result/result.json'
+		)
+		expect(action).toContain("if: steps.review.outputs.publish == 'true'")
+	})
+})
+
+describe('reply schedule outcome probe', () => {
+	test('checks for the outcome before reading pull request history', () => {
+		const publish = getJob(
+			readWorkflow('workflows/review-converse.yml'),
+			'publish'
+		)
+		const steps = publish.split(/^ {6}- /mu)
+		const probe = steps.find(step =>
+			step.startsWith('name: Look for the outcome\n')
+		)
+		expect(probe).toBeDefined()
+		expect(probe).toContain('id: outcome')
+		expect(probe).toContain('continue-on-error: true')
+		expect(probe).toMatch(/uses: actions\/download-artifact@[a-f\d]{40}/u)
+		expect(probe).toContain(
+			'name: mng-review-outcome-${{ matrix.pull.number }}'
+		)
+		const checkout = steps.find(step =>
+			step.startsWith('name: Check out the base commit\n')
+		)
+		const fetch = steps.find(step =>
+			step.startsWith('name: Fetch the head commit\n')
+		)
+		for (const step of [checkout, fetch]) {
+			expect(step).toBeDefined()
+			expect(step).toContain("if: steps.outcome.outcome == 'success'")
+		}
+		expect(publish.indexOf('name: Look for the outcome')).toBeLessThan(
+			publish.indexOf('name: Check out the base commit')
+		)
+		expect(publish.indexOf('name: Check out the base commit')).toBeLessThan(
+			publish.indexOf('name: Fetch the head commit')
+		)
+	})
+	for (const workflow of ['review-publish', 'review-command'])
+		test(`${workflow} still fetches history without a converse outcome probe`, () => {
+			const publish = getJob(
+				readWorkflow(`workflows/${workflow}.yml`),
+				'publish'
+			)
+			expect(publish).not.toContain('Look for the outcome')
+			expect(publish).not.toContain('steps.outcome.outcome')
+			expect(publish).toContain('name: Check out the base commit')
+			expect(publish).toContain('name: Fetch the head commit')
+		})
+})

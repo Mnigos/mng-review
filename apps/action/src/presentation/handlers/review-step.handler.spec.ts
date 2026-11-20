@@ -23,6 +23,10 @@ import {
 	pendingReply,
 	pendingBotThread,
 } from '../../../../../packages/github/src/shared/mocks/thread-reply-test.helper'
+import {
+	ConverseRunService,
+	ConverseRunServiceLive,
+} from '../../application/converse-run.service'
 import { PrepareRunServiceLive } from '../../application/prepare-run.service'
 import {
 	ShadowRunService,
@@ -47,6 +51,10 @@ vi.mock('@mng-review/engine', async importOriginal => {
 
 const NO_REPLY_DECISIONS = Layer.succeed(ReplyDecisionService, {
 	decide: () => Effect.succeed(undefined),
+})
+/** A push or command run never takes the reply schedule's review. */
+const NO_CONVERSE = Layer.succeed(ConverseRunService, {
+	review: () => Effect.die('a push or command run never answers alone'),
 })
 
 afterEach(() => {
@@ -152,6 +160,7 @@ layer(FileSystemLayer)(
 							)
 						)
 						const completed = yield* runReviewStep.pipe(
+							Effect.provide(NO_CONVERSE),
 							Effect.provide(reviewLayer),
 							Effect.provide(
 								Layer.succeed(ReplyDecisionService, { decide: decideSpy })
@@ -258,6 +267,7 @@ layer(FileSystemLayer)(
 						})
 						expect(
 							yield* runReviewStep.pipe(
+								Effect.provide(NO_CONVERSE),
 								Effect.provide(
 									Layer.succeed(ShadowRunService, {
 										review: reviewSpy,
@@ -314,6 +324,7 @@ layer(FileSystemLayer)(
 					)
 					expect(
 						yield* runReviewStep.pipe(
+							Effect.provide(NO_CONVERSE),
 							Effect.provide(reviewLayer),
 							Effect.provide(NO_REPLY_DECISIONS),
 							Effect.provide(
@@ -382,6 +393,7 @@ layer(FileSystemLayer)('review command without GitHub services', test => {
 								Effect.succeed({ checked: 0, rejected: [], tokens: {} })
 							)
 							yield* runReviewStep.pipe(
+								Effect.provide(NO_CONVERSE),
 								Effect.provide(
 									ShadowRunServiceLive.pipe(
 										Layer.provide(PrepareRunServiceLive),
@@ -506,6 +518,7 @@ layer(FileSystemLayer)('review reply decisions from the engine', test => {
 					)
 					const httpSpy = vi.fn(() => Effect.die('unexpected HTTP request'))
 					yield* runReviewStep.pipe(
+						Effect.provide(NO_CONVERSE),
 						Effect.provide(
 							ShadowRunServiceLive.pipe(
 								Layer.provide(PrepareRunServiceLive),
@@ -571,6 +584,121 @@ layer(FileSystemLayer)('review reply decisions from the engine', test => {
 					for (const reply of replies) expect(text).not.toContain(reply.body)
 					expect(text).not.toContain(error)
 					expect(httpSpy).not.toHaveBeenCalled()
+				})
+		)
+})
+
+layer(FileSystemLayer)('review converse without GitHub or a finder', test => {
+	for (const scenario of ['replied', 'offline', 'no decision'] as const)
+		test.effect(
+			`${scenario} runs only reply decisions and writes a converse outcome`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = stepFixture()
+					const fs = yield* FileSystem.FileSystem
+					const event = yield* parsePullRequestEvent(
+						yield* fs.readFileString(fixture.environment.GITHUB_EVENT_PATH)
+					)
+					const threads = [pendingBotThread({ commit: fixture.base })]
+					const replies = [pendingReply()]
+					yield* fs.writeFileString(
+						fixture.paths.prepared,
+						JSON.stringify({ status: 'ready', event, threads, replies })
+					)
+					const decisions = {
+						decided:
+							scenario === 'no decision'
+								? []
+								: [
+										decidedReply({
+											action: 'needs-owner',
+											reason: 'An owner must decide.',
+										}),
+									],
+						tokens: {},
+					}
+					const decideSpy = vi.fn(() => Effect.succeed(decisions))
+					const probeSpy = vi.fn(() =>
+						Effect.succeed(
+							scenario === 'offline'
+								? { status: 'offline' as const, reason: 'unavailable' }
+								: { status: 'online' as const }
+						)
+					)
+					const reviewSpy = vi.fn(() => Effect.die('unexpected finder'))
+					const runSpy = vi.fn(() => Effect.die('unexpected full review'))
+					const proposeSpy = vi.fn(() =>
+						Effect.die('unexpected validator re-check')
+					)
+					yield* runReviewStep.pipe(
+						Effect.provide(
+							ConverseRunServiceLive.pipe(
+								Layer.provide(
+									Layer.mergeAll(
+										fixture.rulesLayer,
+										gitLayer(fixture.repo.root),
+										Layer.succeed(EndpointProbeService, { probe: probeSpy }),
+										Layer.succeed(ReplyDecisionService, { decide: decideSpy })
+									)
+								)
+							)
+						),
+						Effect.provide(
+							Layer.succeed(ShadowRunService, {
+								review: reviewSpy,
+								run: runSpy,
+							})
+						),
+						Effect.provide(
+							Layer.succeed(ReplyDecisionService, { decide: decideSpy })
+						),
+						Effect.provide(
+							Layer.succeed(ThreadRecheckService, { propose: proposeSpy })
+						),
+						Effect.provide(
+							fixture.envLayer({
+								GITHUB_EVENT_NAME: 'schedule',
+								MNG_REVIEW_TRIGGER: 'converse',
+							})
+						)
+					)
+					expect(probeSpy).toHaveBeenCalledOnce()
+					expect(reviewSpy).not.toHaveBeenCalled()
+					expect(runSpy).not.toHaveBeenCalled()
+					expect(proposeSpy).not.toHaveBeenCalled()
+					expect(yield* fs.readFileString(fixture.paths.output)).toBe(
+						`publish=${scenario === 'replied'}\n`
+					)
+					const outcome = yield* parseOutcomeFile(
+						yield* fs.readFileString(fixture.paths.outcome)
+					)
+					expect(outcome.binding).toMatchObject({
+						trigger: 'converse',
+						baseSha: fixture.base,
+						headSha: fixture.head,
+					})
+					expect(outcome.status).toBe(
+						scenario === 'no decision' ? 'skipped' : scenario
+					)
+					expect(outcome.report).toBeUndefined()
+					expect(outcome.recheck).toBeUndefined()
+					if (scenario === 'offline') {
+						expect(decideSpy).not.toHaveBeenCalled()
+						expect(outcome.replies).toBeUndefined()
+					} else {
+						expect(decideSpy).toHaveBeenCalledExactlyOnceWith({
+							rules: fixture.rules,
+							pr: event.pr,
+							head: fixture.head,
+							mergeBase: fixture.base,
+							threads,
+							replies,
+						})
+						if (scenario === 'replied')
+							expect(outcome.replies).toEqual(decisions)
+					}
+					expect(fixture.api.reads).toEqual([])
+					expect(fixture.api.writes).toEqual([])
 				})
 		)
 })

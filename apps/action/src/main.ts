@@ -19,6 +19,8 @@ import {
 	GitHubWriteConfigLive,
 	PublishServiceLive,
 	ReplyDecisionServiceLive,
+	ReplyFindServiceLive,
+	ReplyPublishServiceLive,
 	StatusReportServiceLive,
 	StatusSweepServiceLive,
 	SummaryCommentServiceLive,
@@ -28,6 +30,7 @@ import {
 } from '@mng-review/github'
 import { Clock, Console, Effect, Layer } from 'effect'
 import { FetchHttpClient } from 'effect/http'
+import { ConverseRunServiceLive } from './application/converse-run.service'
 import { PrepareRunServiceLive } from './application/prepare-run.service'
 import { PublishRunServiceLive } from './application/publish-run.service'
 import { ShadowRunServiceLive } from './application/shadow-run.service'
@@ -50,9 +53,14 @@ import {
 	denyAuthorizeConfig,
 	runAuthorizeStep,
 } from './presentation/handlers/authorize-step.handler'
+import {
+	failFindConfig,
+	runFindStep,
+} from './presentation/handlers/find-step.handler'
 import { runPrepareStep } from './presentation/handlers/prepare-step.handler'
 import {
 	failPublishConfig,
+	publishMissingOutcome,
 	runPublishStep,
 } from './presentation/handlers/publish-step.handler'
 import {
@@ -99,7 +107,8 @@ const toPublisherLive = (config: Layer.Layer<GitHubConfig, ConfigError>) =>
 	Layer.mergeAll(
 		PublishServiceLive,
 		StatusReportServiceLive,
-		ThreadReplyServiceLive
+		ThreadReplyServiceLive,
+		ReplyPublishServiceLive
 	).pipe(
 		Layer.provideMerge(SummaryCommentServiceLive),
 		Layer.provide(ThreadResolutionServiceLive),
@@ -116,14 +125,25 @@ const ReviewSessionLive = ShadowRunServiceLive.pipe(
 	Layer.provideMerge(TokenLedgerLive)
 )
 
-/** The review step also proposes the re-check and decides on replies over the model; no GitHub. */
-const ReviewLive = Layer.mergeAll(
-	ThreadRecheckServiceLive.pipe(Layer.provide(RecheckServiceLive)),
-	ReplyDecisionServiceLive
-).pipe(Layer.provideMerge(ReviewSessionLive))
+/**
+ * The review step also proposes the re-check and decides on replies over the model, and for the
+ * reply schedule only decides; no GitHub.
+ */
+const ReviewLive = ConverseRunServiceLive.pipe(
+	Layer.provideMerge(
+		Layer.mergeAll(
+			ThreadRecheckServiceLive.pipe(Layer.provide(RecheckServiceLive)),
+			ReplyDecisionServiceLive
+		)
+	),
+	Layer.provideMerge(ReviewSessionLive)
+)
 
 /** The prepare step: the checks and the GitHub reads over the read token; no endpoint, no model. */
-const PrepareLive = PrepareRunServiceLive.pipe(
+const PrepareLive = Layer.mergeAll(
+	PrepareRunServiceLive,
+	ReplyFindServiceLive
+).pipe(
 	Layer.provideMerge(toPublisherLive(GitHubReadConfigLive)),
 	Layer.provideMerge(RulesLive)
 )
@@ -148,6 +168,13 @@ const ReserveLive = PrepareRunServiceLive.pipe(
 	Layer.provideMerge(RulesLive)
 )
 
+/** The find step: the reply reads over the read token and the default branch's rules; no model. */
+const FindLive = ReplyFindServiceLive.pipe(
+	Layer.provideMerge(SummaryCommentServiceLive),
+	Layer.provideMerge(toGitHubLive(GitHubReadConfigLive)),
+	Layer.provideMerge(RulesLive)
+)
+
 /** The status sweep over the write token, with the rules of the default branch checkout. */
 const SweepLive = StatusSweepServiceLive.pipe(
 	Layer.provideMerge(toGitHubLive(GitHubWriteConfigLive)),
@@ -163,7 +190,7 @@ const runInvalidMode = Effect.gen(function* () {
 		status: 'invalid-config',
 		source: MODE_VARIABLE,
 		reason:
-			'must be shadow, prepare, review, publish, sweep, authorize or reserve',
+			'must be shadow, prepare, review, publish, sweep, authorize, reserve or find',
 	}
 	yield* Console.log(formatLogLine(invalid))
 	yield* writeSummary(
@@ -203,13 +230,21 @@ const runAction = Effect.gen(function* () {
 			Effect.andThen(runReserveStep.pipe(Effect.provide(ReserveLive))),
 			Effect.catchTag('ConfigError', failReserveConfig)
 		)
+	if (mode.value === 'find')
+		return yield* runFindStep.pipe(
+			Effect.provide(FindLive),
+			Effect.catchTag('ConfigError', failFindConfig)
+		)
 	if (mode.value === 'prepare')
 		return yield* runPrepareStep.pipe(Effect.provide(PrepareLive))
 	if (mode.value === 'review')
 		return yield* runReviewStep.pipe(Effect.provide(ReviewLive))
 	if (mode.value === 'publish')
 		return yield* maskAppToken().pipe(
-			Effect.andThen(runPublishStep.pipe(Effect.provide(PublishLive))),
+			Effect.andThen(publishMissingOutcome),
+			Effect.flatMap(done =>
+				done ? Effect.void : runPublishStep.pipe(Effect.provide(PublishLive))
+			),
 			Effect.catchTag('ConfigError', failPublishConfig)
 		)
 	return yield* runShadowStep.pipe(Effect.provide(ReviewSessionLive))

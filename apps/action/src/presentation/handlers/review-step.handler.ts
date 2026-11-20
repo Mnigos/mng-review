@@ -6,6 +6,7 @@ import {
 	type ThreadRecheckProposals,
 } from '@mng-review/github'
 import { Clock, Console, Effect, FileSystem } from 'effect'
+import { ConverseRunService } from '../../application/converse-run.service'
 import {
 	getBindingMismatch,
 	isPublishable,
@@ -201,7 +202,7 @@ interface OutcomeContext {
 /**
  * The review step of publish mode's review job: every model call and nothing on GitHub. It reads
  * the prepared file, reviews, proposes the re-check over the prepared threads, decides on the
- * authors' replies the prepare step read, writes the checked
+ * authors' replies the prepare step read (a reply schedule run only decides), writes the checked
  * outcome file, the job summary, the result file and the step output `publish`. A prepared file
  * that cannot be read or decoded is an invalid configuration naming `MNG_REVIEW_PREPARED_PATH`. An
  * outcome to post whose file fails its own parse or binding check is not written, and the step
@@ -224,9 +225,12 @@ export const runReviewStep = Effect.gen(function* () {
 	const trigger = yield* triggerConfig
 	const onlyAgent =
 		trigger === 'command' ? (yield* commandTargetConfig).agent : undefined
-	const outcome = yield* ShadowRunService.use(service =>
-		service.review(prepared, onlyAgent ? { onlyAgent } : {})
-	)
+	const outcome =
+		trigger === 'converse'
+			? yield* ConverseRunService.use(service => service.review(prepared))
+			: yield* ShadowRunService.use(service =>
+					service.review(prepared, onlyAgent ? { onlyAgent } : {})
+				)
 	const reviewed =
 		outcome.status === 'reviewed' && !outcome.report.planReport.plan.skippedRun
 			? outcome
@@ -234,9 +238,12 @@ export const runReviewStep = Effect.gen(function* () {
 	const recheck = reviewed
 		? yield* proposeRecheck(reviewed, prepared)
 		: undefined
-	const replies = reviewed
-		? yield* decideReplies(reviewed, prepared)
-		: undefined
+	const replies =
+		outcome.status === 'replied'
+			? outcome.replies
+			: reviewed
+				? yield* decideReplies(reviewed, prepared)
+				: undefined
 	const refused = yield* writeCheckedOutcome(outcome, {
 		env: { ...env, trigger },
 		recheck,

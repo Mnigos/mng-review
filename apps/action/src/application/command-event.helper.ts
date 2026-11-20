@@ -53,3 +53,21 @@ export function toCommandEvent(
 		},
 	}
 }
+
+/**
+ * Why the reply schedule no longer answers on a pull request it listed, read again in a later job:
+ * it closed, became a draft or a fork, or moved to another head or base, which the next tick reads
+ * again.
+ */
+export function getConverseMismatch(
+	pr: PullRequest,
+	target: Pick<CommandTarget, 'base' | 'head'>
+): string | undefined {
+	if (pr.state === 'open' && pr.draft === true)
+		return 'the pull request is a draft; replies are answered once it is ready'
+	if (pr.state === 'open' && pr.head.sha !== target.head)
+		return 'the pull request has a new head since the schedule listed it; the next run reads it again'
+	if (pr.state === 'open' && pr.base.sha !== target.base)
+		return 'the pull request has a new base since the schedule listed it; the next run reads it again'
+	return getCommandStateMismatch(pr)
+}

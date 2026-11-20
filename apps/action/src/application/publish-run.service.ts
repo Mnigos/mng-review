@@ -5,6 +5,8 @@ import {
 	provideOwnedIdentities,
 	type PublishResult,
 	PublishService,
+	type ReplyPublishResult,
+	ReplyPublishService,
 	type StatusReportResult,
 	StatusReportService,
 	SummaryCommentService,
@@ -31,6 +33,8 @@ export interface PublishContext {
 	readonly event: Pick<PullRequestEvent, 'action' | 'pr'>
 	/** Set for a command run, from the job's trusted context; never from the outcome file. */
 	readonly command?: CommandRun
+	/** A reply schedule run, from the job's trusted trigger: only a replied outcome publishes. */
+	readonly converse?: boolean
 }
 
 /** What publishing did with an outcome. */
@@ -47,6 +51,10 @@ export type PublishReport =
 			/** `false` when an existing summary comment was kept as it was. */
 			readonly posted: boolean
 	  }
+	| {
+			readonly status: 'replied'
+			readonly result: ReplyPublishResult
+	  }
 	| { readonly status: 'not-published'; readonly reason: string }
 	| { readonly status: 'failed'; readonly reason: string }
 
@@ -54,7 +62,8 @@ export type PublishReport =
  * Publishes a parsed outcome file on its pull request: a reviewed run gets threads, the sticky
  * summary, a check run per agent and the `MNG Review` commit status, also when no finder had to
  * run (the re-check's proposals and the status still matter); an offline endpoint gets the
- * summary when there is none and an `error` status. The rules name the bot identities whose
+ * summary when there is none and an `error` status; a reply schedule run gets its answers
+ * (`ReplyPublishService`) and nothing else. The rules name the bot identities whose
  * earlier threads and summary count. A skip, an invalid configuration or a git failure posts nothing; the job summary and the job's exit code report them. The rules are
  * loaded again from the binding's base commit, never taken from the file, and no model is
  * called. A GitHub or rules failure never fails the job: the report says what happened. When the
@@ -76,14 +85,52 @@ export const PublishRunServiceLive = Layer.effect(
 		const publisher = yield* PublishService
 		const summaries = yield* SummaryCommentService
 		const statuses = yield* StatusReportService
+		const replyPublisher = yield* ReplyPublishService
 		const rulesService = yield* RulesService
 		const { identity } = yield* GitHubConfig
+
+		/**
+		 * A reply schedule run: the decisions only, with no `skip` rule or run limit, since a reply
+		 * on a pull request with a skip label is still the author's question.
+		 */
+		const publishReplies = Effect.fn('PublishRunService.publishReplies')(
+			function* (outcome: OutcomeFile, context: PublishContext) {
+				if (
+					!context.converse ||
+					outcome.status !== 'replied' ||
+					!outcome.replies
+				)
+					return {
+						status: 'not-published',
+						reason: `the run ended ${outcome.status}`,
+					} satisfies PublishReport
+				const rules = yield* rulesService.load(outcome.binding.baseSha)
+				const result = yield* replyPublisher
+					.publish({
+						pullNumber: context.pullNumber,
+						head: context.head,
+						engineCommit: context.engineCommit,
+						rules,
+						replies: {
+							decisions: outcome.replies.decided,
+							base: outcome.binding.baseSha,
+							tokens: outcome.replies.tokens,
+						},
+					})
+					.pipe(
+						provideOwnedIdentities(identity, rules.config.identity.previous)
+					)
+				return { status: 'replied', result } satisfies PublishReport
+			}
+		)
 
 		const publish = Effect.fn('PublishRunService.publish')(function* (
 			outcome: OutcomeFile,
 			context: PublishContext
 		) {
 			const { report, recheck, replies } = outcome
+			if (context.converse || outcome.status === 'replied')
+				return yield* publishReplies(outcome, context)
 			if (outcome.status !== 'reviewed' && outcome.status !== 'offline')
 				return {
 					status: 'not-published',
