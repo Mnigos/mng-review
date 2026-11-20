@@ -23,6 +23,7 @@ import {
 	SHORT_SHA_LENGTH,
 	THREAD_PLACE_LINES,
 } from '../domain/publish.constants'
+import { PublishIncompleteError } from '../domain/publish.errors'
 import type {
 	BotThread,
 	CommentableLines,
@@ -48,14 +49,19 @@ const COMMIT_MARK = 'mng-review-commit:'
  * finding, in one `COMMENT` review, a file comment when the line is outside the diff, and the
  * sticky summary through `SummaryCommentService`. A finding that already has an open thread of an
  * owned identity, or only resolved ones whose code did not change, is not posted again. A comment
- * the bot wrote but someone else edited no longer counts as the bot's.
+ * the bot wrote but someone else edited no longer counts as the bot's. A summary write that fails
+ * after threads were posted fails with `PublishIncompleteError`.
  */
 export class PublishService extends Context.Service<
 	PublishService,
 	{
 		readonly publish: (
 			input: PublishInput
-		) => Effect.Effect<PublishResult, GitHubApiError, OwnedIdentities>
+		) => Effect.Effect<
+			PublishResult,
+			GitHubApiError | PublishIncompleteError,
+			OwnedIdentities
+		>
 		/** The bot's review threads, found by an owned author and marker; comments someone else edited do not count. */
 		readonly readThreads: (
 			pullNumber: number
@@ -278,25 +284,27 @@ export const PublishServiceLive = Layer.effect(
 			const plan = { ...planned, threads: posted }
 			const openBugs = countOpenBugs(plan, threads)
 			const verdict = getVerdict(report, openBugs)
-			const written = yield* summaries.write(pullNumber, current => {
-				const marker = toNextSummaryMarker(current?.marker, {
-					head: input.head,
-					finished: isFinished(report),
-					unthreadedBugs: countUnthreadedBugs(plan),
+			const written = yield* summaries
+				.write(pullNumber, current => {
+					const marker = toNextSummaryMarker(current?.marker, {
+						head: input.head,
+						finished: isFinished(report),
+						unthreadedBugs: countUnthreadedBugs(plan),
+					})
+					const body = formatSummaryComment({
+						report,
+						plan,
+						verdict,
+						openBugs,
+						marker,
+						maxRuns: input.rules.config.limits.max_runs_per_pr,
+						links,
+						resolved,
+						tokens: input.recheck?.tokens ?? report.tokens,
+					})
+					return { body, marker }
 				})
-				const body = formatSummaryComment({
-					report,
-					plan,
-					verdict,
-					openBugs,
-					marker,
-					maxRuns: input.rules.config.limits.max_runs_per_pr,
-					links,
-					resolved,
-					tokens: input.recheck?.tokens ?? report.tokens,
-				})
-				return { body, marker }
-			})
+				.pipe(Effect.mapError(error => new PublishIncompleteError({ error })))
 			const count = (place: PlannedThread['place']) =>
 				posted.filter(thread => thread.place === place).length
 			return {

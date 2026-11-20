@@ -56,7 +56,8 @@ interface CreatedSummary {
 
 /**
  * What a create left: the summaries read after it, this run's comment when it is among them, and
- * the create's error when it got no answer.
+ * the create's error when it got no answer. With an error, `own` is only a comment with this run's
+ * body, which another writer may have posted too.
  */
 interface CreateAttempt {
 	readonly summaries: readonly SummaryComment[]
@@ -150,8 +151,9 @@ export const SummaryCommentServiceLive = Layer.effect(
 		/**
 		 * After a create: the current identity's oldest summary is the one kept. When it is not this
 		 * run's comment, it is edited over its own marker, and the cleanup deletes this run's. When
-		 * that edit fails, this run's comment is deleted and the write fails, so the next run starts
-		 * from one summary. A create with no answer and no summary found fails with its error.
+		 * that edit fails, the write fails; this run's comment is deleted first only when the create
+		 * answered with its id, since a body match may be another writer's comment. A create with no
+		 * answer and no summary found fails with its error.
 		 */
 		const settle = Effect.fn('SummaryCommentService.settle')(function* (
 			render: SummaryRender,
@@ -170,15 +172,17 @@ export const SummaryCommentServiceLive = Layer.effect(
 					summaries,
 					created: false,
 				} satisfies CreatedSummary
-			if (own !== undefined) yield* Effect.ignore(remove(own))
+			if (own !== undefined && !failure) yield* Effect.ignore(remove(own))
 			return yield* updated.failure
 		})
 
 		/**
 		 * Creates the summary, then reads again and settles on the identity's oldest. A create with
 		 * no answer or a 5xx is checked by that read: the newest summary of the current identity that
-		 * was not in `before` and has this run's body is this run's own create. `gone` is a summary
-		 * GitHub just answered 404 for, never picked again.
+		 * was not in `before` and has this run's body is taken as this run's own create. When the read
+		 * after a create fails, the write fails without creating again, since it cannot tell whether
+		 * another writer created one meanwhile. `gone` is a summary GitHub just answered 404 for,
+		 * never picked again.
 		 */
 		const create = Effect.fn('SummaryCommentService.create')(function* (
 			pullNumber: number,
@@ -211,15 +215,8 @@ export const SummaryCommentServiceLive = Layer.effect(
 					failure: created.failure,
 				})
 			}
-			const after = yield* Effect.result(listLive)
-			if (Result.isFailure(after))
-				return {
-					rendered,
-					summaries: before,
-					created: true,
-				} satisfies CreatedSummary
 			return yield* settle(render, rendered, {
-				summaries: after.success,
+				summaries: yield* listLive,
 				own: created.success,
 				failure: undefined,
 			})

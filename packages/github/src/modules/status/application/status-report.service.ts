@@ -28,7 +28,8 @@ export interface StatusReportResult {
 /**
  * Writes one finished check run per agent that ran (`success` when every run of it finished clean,
  * `neutral` otherwise, never blocking) and the `MNG Review` commit status from the verdict, or
- * `error` when the reviewer was offline. A failed write is counted out, never fatal.
+ * `error` when the reviewer was offline or publishing failed part way. A failed write is counted
+ * out, never fatal.
  */
 export class StatusReportService extends Context.Service<
 	StatusReportService,
@@ -38,6 +39,11 @@ export class StatusReportService extends Context.Service<
 		) => Effect.Effect<StatusReportResult>
 		/** Sets `error` on a head the review could not run on; `false` when the write failed. */
 		readonly reportOffline: (head: string) => Effect.Effect<boolean>
+		/**
+		 * Sets `error` on a head whose publish failed after it may have posted threads, so an earlier
+		 * `success` does not stay; `false` when the write failed.
+		 */
+		readonly reportUnfinished: (head: string) => Effect.Effect<boolean>
 	}
 >()('mng-review/StatusReportService') {}
 
@@ -102,21 +108,28 @@ export const StatusReportServiceLive = Layer.effect(
 			}
 		})
 
+		/** Sets `error` with `description`; a failed write is `false`, never fatal. */
+		const setError = (head: string, description: string) =>
+			github.setStatus({ sha: head, state: 'error', description }).pipe(
+				Effect.as(true),
+				Effect.orElseSucceed(() => false)
+			)
+
 		const reportOffline = Effect.fn('StatusReportService.reportOffline')(
 			function* (head: string) {
-				return yield* github
-					.setStatus({
-						sha: head,
-						state: 'error',
-						description: `the reviewer was offline; ${UNFINISHED_NOTE}`,
-					})
-					.pipe(
-						Effect.as(true),
-						Effect.orElseSucceed(() => false)
-					)
+				return yield* setError(
+					head,
+					`the reviewer was offline; ${UNFINISHED_NOTE}`
+				)
 			}
 		)
 
-		return { report, reportOffline }
+		const reportUnfinished = Effect.fn('StatusReportService.reportUnfinished')(
+			function* (head: string) {
+				return yield* setError(head, `publishing failed; ${UNFINISHED_NOTE}`)
+			}
+		)
+
+		return { report, reportOffline, reportUnfinished }
 	})
 )

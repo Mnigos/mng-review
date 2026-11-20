@@ -104,12 +104,17 @@ describe('app credentials stay in writing jobs', () => {
 				'permission-pull-requests: write',
 				'permission-checks: write',
 				'permission-statuses: write',
+				'permission-contents: read',
 			],
 		],
 		[
 			'workflows/status-sweep.yml',
 			'sweep',
-			['permission-statuses: write', 'permission-pull-requests: read'],
+			[
+				'permission-statuses: write',
+				'permission-pull-requests: read',
+				'permission-contents: read',
+			],
 		],
 	] as const) {
 		test(`${job} mints a pinned, scoped, revoked app token after validating credentials`, () => {

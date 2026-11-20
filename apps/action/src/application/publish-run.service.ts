@@ -51,7 +51,8 @@ export type PublishReport =
  * summary when there is none and an `error` status. The rules name the bot identities whose
  * earlier threads and summary count. A skip, an invalid configuration or a git failure posts nothing; the job summary and the job's exit code report them. The rules are
  * loaded again from the binding's base commit, never taken from the file, and no model is
- * called. A GitHub or rules failure never fails the job: the report says what happened.
+ * called. A GitHub or rules failure never fails the job: the report says what happened. When the
+ * summary write fails after threads may have been posted, the status is set to `error` first.
  */
 export class PublishRunService extends Context.Service<
 	PublishRunService,
@@ -122,7 +123,12 @@ export const PublishRunServiceLive = Layer.effect(
 								}
 							: {}),
 					})
-					.pipe(owned)
+					.pipe(
+						owned,
+						Effect.tapErrorTag('PublishIncompleteError', () =>
+							statuses.reportUnfinished(context.head)
+						)
+					)
 				const checks = yield* statuses.report({
 					head: context.head,
 					report: placed,
@@ -157,6 +163,11 @@ export const PublishRunServiceLive = Layer.effect(
 			return yield* publish(outcome, context).pipe(
 				Effect.catchTags({
 					GitHubApiError: error =>
+						Effect.succeed({
+							status: 'failed',
+							reason: error.message,
+						} satisfies PublishReport),
+					PublishIncompleteError: error =>
 						Effect.succeed({
 							status: 'failed',
 							reason: error.message,
