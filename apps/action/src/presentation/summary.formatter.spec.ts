@@ -514,6 +514,7 @@ test.each(['published', 'failed', 'status-only', 'not-published'] as const)(
 						checks: { checks: 2, status: true },
 						result: {
 							verdict: 'ready',
+							event: 'COMMENT',
 							openBugs: 0,
 							onLine: 1,
 							onFile: 2,
@@ -592,6 +593,7 @@ test.each(['none', 'minimized', 'deleted', 'kept'] as const)(
 				checks: { checks: 0, status: true },
 				result: {
 					verdict: 'ready',
+					event: 'COMMENT',
 					openBugs: 0,
 					onLine: 0,
 					onFile: 0,
@@ -621,6 +623,7 @@ test.each(['added', 'removed', 'failed', 'none'] as const)(
 			checks: { checks: 0, status: true },
 			result: {
 				verdict: 'needs owner',
+				event: 'REQUEST_CHANGES',
 				openBugs: 0,
 				onLine: 0,
 				onFile: 0,

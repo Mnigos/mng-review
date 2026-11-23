@@ -48,7 +48,7 @@ export const DEFAULT_PRESET = {
 	},
 	commands: { allow: [], max_runs: 3 },
 	disputes: { accept_intentional_up_to: 'medium', max_rounds: 1 },
-	verdict: { blocking_severity: 'medium', mode: 'preview', never_approve: [] },
+	verdict: { blocking_severity: 'medium', mode: 'approve', never_approve: [] },
 	models: {
 		router: { model: 'gpt-6-luna', effort: 'low' },
 		reviewer: [

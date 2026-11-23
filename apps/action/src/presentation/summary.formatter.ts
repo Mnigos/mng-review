@@ -277,10 +277,10 @@ function toPublishText(report: PublishReport): string {
 			: 'marked the existing summary unfinished; the reviewer was offline'
 	if (report.status === 'replied') {
 		const { result } = report
-		return `answered replies on run ${result.run}: ${toAnswerText(result.answered)}; verdict ${result.verdict}, ${result.openBugs} open bug thread(s); ${result.waiting} thread(s) wait for the owner, label ${result.label}; status ${result.status ? 'set' : 'not set'}`
+		return `answered replies on run ${result.run}: ${toAnswerText(result.answered)}; verdict ${result.verdict}, review ${result.event}, ${result.openBugs} open bug thread(s); ${result.waiting} thread(s) wait for the owner, label ${result.label}; status ${result.status ? 'set' : 'not set'}`
 	}
 	const { result, checks } = report
-	return `posted run ${result.run}: verdict ${result.verdict}, ${result.openBugs} open bug thread(s); new threads: ${result.onLine} on lines, ${result.onFile} on files, ${result.inSummary} in the summary, ${result.unposted} not posted; ${result.repeated} already had a thread, ${result.dismissed} found again under resolved threads; ${result.resolved} of ${result.rechecked} rechecked thread(s) resolved; ${checks.checks} check run(s), status ${checks.status ? 'set' : 'not set'}; earlier summaries: ${result.cleanup}; replies answered: ${toAnswerText(result.answered)}; ${result.waiting} thread(s) wait for the owner, label ${result.label}`
+	return `posted run ${result.run}: verdict ${result.verdict}, review ${result.event}, ${result.openBugs} open bug thread(s); new threads: ${result.onLine} on lines, ${result.onFile} on files, ${result.inSummary} in the summary, ${result.unposted} not posted; ${result.repeated} already had a thread, ${result.dismissed} found again under resolved threads; ${result.resolved} of ${result.rechecked} rechecked thread(s) resolved; ${checks.checks} check run(s), status ${checks.status ? 'set' : 'not set'}; earlier summaries: ${result.cleanup}; replies answered: ${toAnswerText(result.answered)}; ${result.waiting} thread(s) wait for the owner, label ${result.label}`
 }
 
 /** The engine's commit in a sentence. */

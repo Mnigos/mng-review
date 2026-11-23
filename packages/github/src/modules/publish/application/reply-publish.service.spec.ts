@@ -240,6 +240,14 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 				() =>
 					Effect.gen(function* () {
 						const fixture = setup()
+						fixture.fake.reviews.splice(
+							0,
+							1,
+							summaryReview(
+								{ ...SUMMARY_MARKER, head: fixture.head, finished: true },
+								{ state: 'CHANGES_REQUESTED' }
+							)
+						)
 						fixture.fake.command.role = 'write'
 						fixture.fake.threads.push(threadAtCommit(fixture.base))
 						const error = new GitHubApiError({

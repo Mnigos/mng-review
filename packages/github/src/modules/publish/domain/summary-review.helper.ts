@@ -1,11 +1,13 @@
 import {
 	type BotIdentity,
 	isIdentity,
+	isOwnedBot,
 } from '../../../platform/bot-identity.helper'
 import type {
 	PullRequestReview,
 	ReviewState,
 } from '../../../platform/github-api.schema'
+import type { ReviewEvent } from '../../../platform/github-review.service'
 import { isBotComment } from './bot-thread.helper'
 import { parseSummaryMarker } from './publish-marker.parser'
 import type { SummaryComment, SummaryReview } from './publish.types'
@@ -53,17 +55,41 @@ export function getPriorSummary(
 /**
  * The review a write edits instead of posting a new one: the newest summary review, when the
  * current identity wrote it, it is not hidden, its state is the one the run would post, and the
- * run posts no new thread. Otherwise the run posts a new review.
+ * run posts no new thread. With no state (an offline run) any state of it is kept. Otherwise the
+ * run posts a new review.
  */
 export function getEditableReview(
 	reviews: readonly SummaryReview[],
-	state: ReviewState,
+	state: ReviewState | undefined,
 	fresh: boolean
 ): SummaryReview | undefined {
 	const latest = reviews.at(-1)
-	if (fresh || !latest?.mine || latest.minimized || latest.state !== state)
-		return undefined
+	if (fresh || !latest?.mine || latest.minimized) return undefined
+	if (state !== undefined && latest.state !== state) return undefined
 	return latest
+}
+
+/**
+ * The ids of the owned reviews whose `CHANGES_REQUESTED` would outlive their findings once the run's review
+ * is written: after a `COMMENT`, every one; after an `APPROVE`, those of other owned identities,
+ * since the approval replaces the current identity's own. None after a change request or when
+ * the run kept the state.
+ */
+export function getStaleChangeRequests(
+	reviews: readonly PullRequestReview[],
+	owned: readonly BotIdentity[],
+	current: BotIdentity,
+	event: ReviewEvent | undefined
+): readonly number[] {
+	if (event !== 'COMMENT' && event !== 'APPROVE') return []
+	return reviews.flatMap(review =>
+		review.state === 'CHANGES_REQUESTED' &&
+		review.databaseId !== null &&
+		isOwnedBot(review.author, owned) &&
+		(event === 'COMMENT' || !isIdentity(review.author, current))
+			? [review.databaseId]
+			: []
+	)
 }
 
 /**

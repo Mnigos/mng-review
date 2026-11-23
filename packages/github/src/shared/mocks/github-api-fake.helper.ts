@@ -19,42 +19,10 @@ import {
 import {
 	GitHubReviewService,
 	REVIEW_STATE_BY_EVENT,
-	type ReviewInput,
 } from '../../platform/github-review.service'
 import type { GitHubApiError } from '../../platform/github.errors'
 import { getBasePermission } from './collaborator-role.helper'
-
-export type ApiWrite =
-	| {
-			readonly method: 'review'
-			readonly pullNumber: number
-			readonly input: ReviewInput
-	  }
-	| {
-			readonly method: 'comment'
-			readonly pullNumber: number
-			readonly input: ReviewCommentInput
-	  }
-	| {
-			readonly method: 'create'
-			readonly pullNumber: number
-			readonly body: string
-	  }
-	| { readonly method: 'update'; readonly id: number; readonly body: string }
-	| {
-			readonly method: 'updateReview'
-			readonly id: number
-			readonly body: string
-	  }
-	| { readonly method: 'delete'; readonly id: number }
-	| { readonly method: 'minimize'; readonly id: string }
-	| { readonly method: 'reply'; readonly id: string; readonly body: string }
-	| { readonly method: 'resolve'; readonly id: string }
-	| {
-			readonly method: 'label' | 'unlabel'
-			readonly pullNumber: number
-			readonly name: string
-	  }
+import type { ApiWrite } from './github-api-fake.types'
 
 /** An open same-repository pull request with full commits, as a command run reads it again. */
 export const COMMAND_PULL_REQUEST = {
@@ -117,6 +85,7 @@ export function githubApiFake(
 		create: [] as GitHubApiError[],
 		update: [] as GitHubApiError[],
 		updateReview: [] as GitHubApiError[],
+		dismissReview: [] as GitHubApiError[],
 		listReviews: [] as GitHubApiError[],
 		delete: [] as GitHubApiError[],
 		minimize: [] as GitHubApiError[],
@@ -357,6 +326,16 @@ export function githubApiFake(
 				})
 				if (error) return yield* error
 				return id
+			}),
+		dismissReview: (_pullNumber, id, body) =>
+			Effect.gen(function* () {
+				writes.push({ method: 'dismissReview', id, body })
+				const error = failures.dismissReview.shift()
+				if (error) return yield* error
+				const index = reviews.findIndex(review => review.databaseId === id)
+				const existing = reviews[index]
+				if (existing) reviews[index] = { ...existing, state: 'DISMISSED' }
+				return undefined
 			}),
 		updateReview: (_pullNumber, id, body) =>
 			Effect.gen(function* () {

@@ -1,6 +1,7 @@
 import type { Rules } from '@mng-review/engine'
 import { Context, Effect, Layer } from 'effect'
 import { GitHubApiService } from '../../../platform/github-api.service'
+import type { ReviewEvent } from '../../../platform/github-review.service'
 import { GitHubStatusService } from '../../../platform/github-status.service'
 import { GitHubConfig } from '../../../platform/github.config'
 import type { GitHubApiError } from '../../../platform/github.errors'
@@ -13,6 +14,7 @@ import {
 } from '../domain/bot-thread.helper'
 import type { SummaryMarker } from '../domain/publish-marker.schema'
 import type { AnswerCounts, LabelOutcome } from '../domain/publish.types'
+import { canApprove, getReviewEvent } from '../domain/review-event.helper'
 import { toRepliedMarker } from '../domain/summary-marker.helper'
 import {
 	toAnswerCounts,
@@ -50,6 +52,8 @@ export interface ReplyPublishInput extends PublishTarget {
 /** What a reply-only run did. */
 export interface ReplyPublishResult {
 	readonly verdict: Verdict
+	/** The state of the summary review after the run. */
+	readonly event: ReviewEvent
 	readonly openBugs: number
 	readonly answered: AnswerCounts
 	/** Threads that wait for the owner after the run. */
@@ -152,7 +156,7 @@ export const ReplyPublishServiceLive = Layer.effect(
 			const links = toBlobLinks(config, input)
 			const first = yield* readAll(pullNumber)
 			const found = first.threads
-			const { identities } = yield* OwnedIdentities
+			const { current, identities } = yield* OwnedIdentities
 			// A failed whole-thread read leaves the latest comments the read brought for this run.
 			const sentBefore = yield* conversation
 				.getSentToOwner(first.raw)
@@ -217,20 +221,33 @@ export const ReplyPublishServiceLive = Layer.effect(
 			const threadBugs = latest.filter(
 				thread => !thread.resolved && thread.marker.kind === 'bug'
 			).length
+			// Open threads that never block still keep a reply-only run from approving.
+			const concerns = latest.filter(
+				thread => !thread.resolved && thread.marker.kind !== 'bug'
+			).length
+			const approve = canApprove(input.rules.config, current)
 			const written = yield* summaries
 				.write(pullNumber, {
 					head: input.head,
-					render: current => {
-						const marker = toRepliedMarker(current?.marker, update)
-						const body = formatRepliedSummary(current, {
-							...toStanding(marker, input.head, threadBugs),
+					render: prior => {
+						const marker = toRepliedMarker(prior?.marker, update)
+						const judged = toStanding(marker, input.head, threadBugs)
+						const body = formatRepliedSummary(prior, {
+							...judged,
 							waiting: latest.filter(thread =>
 								marker.needsOwner?.includes(thread.id)
 							),
 							marker,
 							links,
 						})
-						return { body, marker }
+						const event = getReviewEvent({
+							kind: 'reply',
+							verdict: judged.verdict,
+							partial: false,
+							findings: concerns,
+							approve,
+						})
+						return { body, marker, event }
 					},
 				})
 				.pipe(
@@ -266,6 +283,7 @@ export const ReplyPublishServiceLive = Layer.effect(
 			)
 			return {
 				verdict: standing.verdict,
+				event: written.event ?? 'COMMENT',
 				openBugs: standing.openBugs,
 				answered: toAnswerCounts(answered),
 				waiting: owner,

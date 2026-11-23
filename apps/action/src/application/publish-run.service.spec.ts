@@ -63,6 +63,7 @@ function outcomeFile(
 }
 const PUBLISHED = {
 	verdict: 'needs fixes',
+	event: 'REQUEST_CHANGES',
 	openBugs: 1,
 	onLine: 1,
 	onFile: 0,

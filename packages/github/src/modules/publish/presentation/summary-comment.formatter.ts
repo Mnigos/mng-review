@@ -284,12 +284,12 @@ function toTokenLine(tokens: TokensByModel): string {
 	return `Tokens: ${entries.map(([model, entry]) => `${escapeMarkdown(model)} ${toThousands(entry.totalTokens)}`).join(' · ')}`
 }
 
-/** The footer: head, engine and the rule that the bot only comments. */
+/** The footer: the reviewed head and the engine commit. */
 function toFooter(links: BlobLinks): string {
 	const engine = links.engineCommit
 		? `engine ${toCodeSpan(links.engineCommit.slice(0, SHORT_SHA_LENGTH))}`
 		: 'engine unknown'
-	return `<sub>Head ${toCodeSpan(links.head.slice(0, SHORT_SHA_LENGTH))} · ${engine} · comments only, never an approval</sub>`
+	return `<sub>Head ${toCodeSpan(links.head.slice(0, SHORT_SHA_LENGTH))} · ${engine}</sub>`
 }
 
 /** How much of the summary to show. */

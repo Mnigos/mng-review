@@ -34,7 +34,7 @@ const SPEC_DEFAULTS = {
 	},
 	commands: DEFAULT_PRESET.commands,
 	disputes: { accept_intentional_up_to: 'medium', max_rounds: 1 },
-	verdict: { blocking_severity: 'medium', mode: 'preview', never_approve: [] },
+	verdict: { blocking_severity: 'medium', mode: 'approve', never_approve: [] },
 	models: {
 		router: { model: 'gpt-6-luna', effort: 'low' },
 		reviewer: [

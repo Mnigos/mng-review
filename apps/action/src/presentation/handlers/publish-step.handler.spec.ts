@@ -822,7 +822,7 @@ layer(FileSystemLayer)('publish converse', test => {
 							})
 						)
 					)
-					const updated = fixture.api.reviews[0]?.body ?? ''
+					const updated = fixture.api.reviews.at(-1)?.body ?? ''
 					expect(parseSummaryMarker(updated)).toEqual({
 						...marker,
 						...(action === 'needs-owner' ? { needsOwner: ['thread'] } : {}),
@@ -833,10 +833,15 @@ layer(FileSystemLayer)('publish converse', test => {
 					expect(updated).toContain('run 4 of 6')
 					expect(updated).toContain('Keep the model report and evidence.')
 					expect(
-						fixture.api.writes.filter(write =>
-							['review', 'comment'].includes(write.method)
-						)
+						fixture.api.writes.filter(write => write.method === 'comment')
 					).toEqual([])
+					expect(
+						fixture.api.writes.filter(write => write.method === 'review')
+					).toMatchObject(
+						action === 'needs-owner'
+							? [{ input: { event: 'REQUEST_CHANGES', comments: [] } }]
+							: []
+					)
 					expect(
 						fixture.api.writes.filter(write => write.method === 'reply')
 					).toHaveLength(1)

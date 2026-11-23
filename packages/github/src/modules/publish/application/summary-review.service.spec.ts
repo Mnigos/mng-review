@@ -33,8 +33,8 @@ import { toMarkerComment } from '../presentation/thread-comment.formatter'
 import {
 	SummaryReviewService,
 	SummaryReviewServiceLive,
-	type SummaryDraft,
 } from './summary-review.service'
+import type { SummaryDraft } from './summary-review.service.types'
 
 const TARGET = { pullNumber: 17, head: 'head', engineCommit: 'engine' } as const
 const RESERVE = { ...TARGET, maxRuns: 5, handle: 'review-bot' } as const
@@ -53,6 +53,7 @@ function draft(overrides: Partial<SummaryDraft> = {}): SummaryDraft {
 			return {
 				marker,
 				body: `${inline ? 'Review' : 'Not in the diff'}\n${toMarkerComment('summary', marker)}`,
+				event: 'COMMENT',
 			}
 		},
 		...overrides,
@@ -133,6 +134,7 @@ layer(TOKEN_MODE_OWNED)('SummaryReviewService', test => {
 				expect(fixture.fake.writes.map(write => write.method)).toEqual([
 					'review',
 					'minimize',
+					...(state === 'CHANGES_REQUESTED' ? ['dismissReview'] : []),
 				])
 			})
 		)

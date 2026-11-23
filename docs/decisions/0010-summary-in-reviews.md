@@ -1,6 +1,6 @@
 # ADR 0010: The summary is the body of the bot's review
 
-**Status:** Proposed
+**Status:** Proposed; ADR 0011 gives the review the verdict's state
 **Date:** 2026-11-23
 
 ## Context
@@ -24,7 +24,7 @@ Publish mode (ADR 0007) wrote a sticky summary as a conversation comment and, be
 
 - A clean push that changes nothing edits the review in place and sends no notification; a push with new threads notifies once.
 - Each new review hides the previous one, so the result reports `minimized` on most runs that post.
-- Reviews of the token's identity count in GitHub's per-author review list; they are always `COMMENT`, so they never change a pull request's review decision.
+- Reviews of the token's identity count in GitHub's per-author review list; they are always `COMMENT`, so they never change a pull request's review decision; ADR 0011 gives the state the verdict.
 - A pull request opened before the change keeps its old sticky comment hidden, not deleted, unless GitHub refuses to hide it.
 - A pull request with more than 2,000 reviews fails the read, as every other paged read does.
 
