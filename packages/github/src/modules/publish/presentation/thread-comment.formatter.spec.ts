@@ -1,4 +1,7 @@
-import { HOSTILE_TEXT } from '../../../shared/mocks/hostile-text.helper'
+import {
+	HOSTILE_TEXT,
+	toTextOutsideCode,
+} from '../../../shared/mocks/hostile-text.helper'
 import { bug, LINKS } from '../../../shared/mocks/publish-test.helper'
 import { escapeMarkdown } from '../../../utils/markdown.util'
 import {
@@ -9,12 +12,16 @@ import {
 	formatThreadComment,
 	formatResolvedReply,
 	MAX_COMMENT_CHARS,
-	toFindingDetailLines,
 	toFindingMarker,
 	toMarkerComment,
 } from './thread-comment.formatter'
 
-import { MARKER_VERSION, SHORT_SHA_LENGTH } from '../domain/publish.constants'
+import {
+	MARKER_VERSION,
+	SEVERITY_MARKERS,
+	SHORT_SHA_LENGTH,
+} from '../domain/publish.constants'
+import { toFindingBodyLines } from './finding-body.formatter'
 
 describe('formatThreadComment', () => {
 	test.each(['title', 'trigger', 'impact', 'suggestion'] as const)(
@@ -25,10 +32,14 @@ describe('formatThreadComment', () => {
 				LINKS,
 				true
 			)
-			const visible = text.split('<!--')[0] ?? ''
+			const visible = toTextOutsideCode(text.split('<!--')[0] ?? '')
 			expect(visible).toContain(escapeMarkdown(HOSTILE_TEXT))
 			expect(visible).not.toMatch(/(?<!\\)<img/u)
-			expect(visible).not.toContain('</details>')
+			expect(
+				visible
+					.split('\n')
+					.filter(line => line.includes('</details>') && line !== '</details>')
+			).toEqual([])
 			expect(visible).not.toContain('-->')
 			expect(visible).not.toContain('\u202E')
 		}
@@ -71,12 +82,12 @@ describe('formatThreadComment', () => {
 		} as const
 		const marker = toFindingMarker(published, LINKS)
 		const markerComment = toMarkerComment('finding', marker)
-		const heading = `**High** · ${published.finding.title}`
+		const heading = `${SEVERITY_MARKERS.high} **High** · ${published.finding.title}`
 		expect(
 			[
 				heading,
 				'',
-				...toFindingDetailLines(published.finding, LINKS, false),
+				...toFindingBodyLines(published.finding, LINKS, 'line'),
 				'',
 				markerComment,
 			].join('\n').length
@@ -114,9 +125,9 @@ describe('formatThreadComment', () => {
 			LINKS,
 			true
 		)
-		const visible = text.split('<!--')[0] ?? ''
+		const visible = toTextOutsideCode(text.split('<!--')[0] ?? '')
 		expect(visible.split(escapeMarkdown(HOSTILE_TEXT))).toHaveLength(5)
-		expect(visible).toContain('Not blocking:')
+		expect(visible).toContain('<summary>Why it does not block</summary>')
 		expect(visible).not.toContain('\u202E')
 	})
 	test('marker escapes HTML delimiters and ampersands, then decodes back exactly', () => {
@@ -178,7 +189,7 @@ describe('formatThreadComment', () => {
 						: '**Unverified, high**'
 			)
 			expect(text).toContain(`Line ${bug().line} is outside`)
-			expect(text).toContain('Fix: Use a unique key.')
+			expect(text).toContain('**Fix:** Use a unique key.')
 			expect(text).not.toContain('```suggestion')
 		}
 	)

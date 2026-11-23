@@ -26,7 +26,6 @@ import type {
 import { getApproval } from '../domain/review-event.helper'
 import {
 	getCarriedBugs,
-	type MarkedRun,
 	type MarkerUpdate,
 	toNextSummaryMarker,
 } from '../domain/summary-marker.helper'
@@ -42,7 +41,11 @@ import {
 	formatThreadComment,
 	toBlobLinks,
 } from '../presentation/thread-comment.formatter'
-import type { PublishInput, PublishResult } from './publish.service.types'
+import type {
+	CheckedRun,
+	PublishInput,
+	PublishResult,
+} from './publish.service.types'
 import { ReplyCheckService, ReplyCheckServiceLive } from './reply-check.service'
 import { SummaryReviewService } from './summary-review.service'
 import {
@@ -63,15 +66,6 @@ const LIMITED_ACTIONS: ReadonlySet<string> = new Set([
 	'accepted',
 	'needs-owner',
 ])
-
-/**
- * A run as the marker judges it, whether its pull request moved to another head meanwhile (or
- * could not be read again), and whether the token's identity opened it.
- */
-interface CheckedRun extends MarkedRun {
-	readonly moved: boolean
-	readonly authored: boolean
-}
 
 /** A line thread moved into the summary after GitHub refused the review's inline comments. */
 function toSummaryPlace(thread: PlannedThread): PlannedThread {
@@ -227,10 +221,11 @@ export const PublishServiceLive = Layer.effect(
 				input,
 				threads.filter(thread => !resolvedIds.has(thread.id))
 			)
-			const planned = planPublish(
+			const draft = planPublish(
 				{ outcome: report, config: input.rules.config, agents },
 				{ threads, lines, changedPlaces }
 			)
+			const planned = yield* places.keepCheckedEdits(draft, input.head)
 			const filed = yield* poster.postFiles(input, planned.threads)
 			const onLine = filed.filter(thread => thread.place === 'line')
 			const posting =

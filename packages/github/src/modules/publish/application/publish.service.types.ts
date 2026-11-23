@@ -7,6 +7,7 @@ import type {
 	RecheckProposal,
 	SummaryCleanup,
 } from '../domain/publish.types'
+import type { MarkedRun } from '../domain/summary-marker.helper'
 import type { DecidedThreadReply } from '../domain/thread-reply.schema'
 import type { Verdict } from '../presentation/summary-comment.formatter'
 
@@ -22,6 +23,15 @@ export interface PublishTarget {
 export interface CommandRun {
 	/** Set when the command named one agent: the run is not a full review. */
 	readonly agentOnly: boolean
+}
+
+/**
+ * A run as the marker judges it, whether its pull request moved to another head meanwhile (or
+ * could not be read again), and whether the token's identity opened it.
+ */
+export interface CheckedRun extends MarkedRun {
+	readonly moved: boolean
+	readonly authored: boolean
 }
 
 /** A reviewed run to publish on its pull request. */

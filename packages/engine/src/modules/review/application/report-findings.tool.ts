@@ -1,4 +1,10 @@
-import { SEVERITIES } from '@mng-review/domain'
+import {
+	MAX_FINDING_FIX_CHARS,
+	MAX_FINDING_IMPACT_CHARS,
+	MAX_FINDING_STEP_CHARS,
+	MAX_FINDING_TITLE_CHARS,
+	SEVERITIES,
+} from '@mng-review/domain'
 import { Schema } from 'effect'
 import { Tool } from 'effect/ai'
 
@@ -16,19 +22,19 @@ const findingParametersSchema = Schema.Struct({
 	}),
 	severity: Schema.Literals(SEVERITIES),
 	title: Schema.String.annotate({
-		description: 'One short sentence naming the problem.',
+		description: `One line naming what breaks, at most ${MAX_FINDING_TITLE_CHARS} characters.`,
 	}),
 	trigger: Schema.String.annotate({
-		description: 'The input or state that makes it happen.',
+		description: `The steps that make it happen, one short step per line, at most five, each at most ${MAX_FINDING_STEP_CHARS} characters.`,
 	}),
 	impact: Schema.String.annotate({
-		description: 'What goes wrong for users or data.',
+		description: `What goes wrong and for whom, two or three sentences, at most ${MAX_FINDING_IMPACT_CHARS} characters.`,
 	}),
 	evidence: Schema.Array(Schema.String).annotate({
 		description: '`path:line` notes.',
 	}),
 	suggestion: Schema.optionalKey(Schema.String).annotate({
-		description: 'A short, self-contained fix.',
+		description: `One sentence on what to change, at most ${MAX_FINDING_FIX_CHARS} characters.`,
 	}),
 })
 

@@ -9,6 +9,7 @@ import {
 	isNearDuplicate,
 	MEMORY_PATH,
 	type ReviewConfig,
+	toConfirmedEdit,
 	toValidation,
 	type Validation,
 	type Verdict,
@@ -159,6 +160,26 @@ export const ValidatorServiceLive = Layer.effect(
 			return head.size + base.size > 0
 		})
 
+		/**
+		 * The answer's fix when `toConfirmedEdit` accepts it against the finding's file at the head; a
+		 * git failure leaves it out, and the finding keeps its confirmation.
+		 */
+		const getConfirmedEdit = Effect.fn('ValidatorService.getConfirmedEdit')(
+			function* (verdict: Verdict, finding: Finding, scope: RepoScope) {
+				if (verdict.verdict !== 'confirm' || !verdict.edit) return undefined
+				const { commit } = scope.change.head
+				const headText = yield* git
+					.readFileAt(commit, finding.path)
+					.pipe(Effect.orElseSucceed(() => undefined))
+				return toConfirmedEdit({
+					verdict,
+					line: finding.line,
+					commit,
+					headText,
+				})
+			}
+		)
+
 		const toUserMessage = Effect.fn('ValidatorService.toUserMessage')(
 			function* (finding: Finding, context: ValidatorContext) {
 				const { scope, rules } = context
@@ -243,6 +264,7 @@ export const ValidatorServiceLive = Layer.effect(
 						...(context.budget ? { budget: context.budget } : {}),
 					})
 					.pipe(Effect.tapError(error => Ref.set(lastError, error)))
+				const edit = yield* getConfirmedEdit(value, finding, context.scope)
 				const validation = toValidation({
 					verdict: value,
 					reported: finding.severity,
@@ -250,6 +272,7 @@ export const ValidatorServiceLive = Layer.effect(
 					hasRepositoryEvidence:
 						value.verdict !== 'reject' ||
 						(yield* hasRepositoryEvidence(value, context)),
+					...(edit ? { edit } : {}),
 				})
 				return {
 					validation,

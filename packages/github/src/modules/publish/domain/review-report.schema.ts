@@ -93,6 +93,17 @@ const judgementFields = {
 	model: textSchema,
 	loweredBecause: Schema.optional(textSchema),
 	note: Schema.optional(textSchema),
+	/** A confirmed one-line fix the engine checked at `commit`; only a confirmation sets it. */
+	edit: Schema.optional(
+		Schema.Struct({
+			commit: commitShaSchema,
+			/** The head line the edit replaces; lines start at 1. */
+			line: countSchema.check(Schema.isGreaterThanOrEqualTo(1)),
+			/** That line's exact text at `commit`; publishing compares it with its own read. */
+			original: textSchema,
+			replacement: textSchema,
+		})
+	),
 } as const
 
 /** The three answers a finding's validation can hold: a judgement, unverified, or none. */

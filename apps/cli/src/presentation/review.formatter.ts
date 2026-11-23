@@ -68,7 +68,7 @@ function toBugLines(finding: KeptFinding): string[] {
 	return [
 		`  ${finding.severity.toUpperCase()}${was}  ${finding.path}:${finding.line}  ${finding.title}`,
 		`    agents: ${finding.agents.join(', ')}; models: ${finding.models.join(', ')}; fingerprint ${finding.fingerprint}`,
-		`    trigger: ${finding.trigger}`,
+		`    trigger: ${finding.trigger.replaceAll('\n', '\n      ')}`,
 		`    impact: ${finding.impact}`,
 		...finding.evidence.map(line => `    evidence: ${line}`),
 		...toValidationLines(finding),
@@ -81,7 +81,7 @@ function toNitLines(finding: KeptFinding): string[] {
 	const summary = finding.placement === 'summary' ? ' (summary)' : ''
 	return [
 		`  ${finding.path}:${finding.line}  ${finding.title} [${finding.agents.join(', ')}]${summary}`,
-		`    trigger: ${finding.trigger}`,
+		`    trigger: ${finding.trigger.replaceAll('\n', '\n      ')}`,
 		`    impact: ${finding.impact}`,
 		...finding.evidence.map(line => `    evidence: ${line}`),
 		...toSuggestionLines(finding),

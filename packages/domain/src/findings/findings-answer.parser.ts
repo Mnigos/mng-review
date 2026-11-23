@@ -1,5 +1,6 @@
 import { Effect, Option, Schema } from 'effect'
 import { normalizeRepoPath } from '../utils/repo-path.util'
+import { toWithinTextLimits } from './finding-text.helper'
 import { FindingsAnswerError } from './finding.errors'
 import { toFingerprint } from './finding.helper'
 import {
@@ -17,18 +18,22 @@ export interface ParsedFindings {
 	readonly dropped: number
 }
 
-/** Decodes one entry; `undefined` for a malformed entry or a path outside the repository. */
+/**
+ * Decodes one entry, its text cut to the limits (`toWithinTextLimits`); `undefined` for a
+ * malformed entry or a path outside the repository.
+ */
 function toReportedFinding(entry: unknown): ReportedFinding | undefined {
 	const finding = decodeReportedFinding(entry)
 	if (Option.isNone(finding)) return undefined
 	const path = normalizeRepoPath(finding.value.path)
 	if (path === undefined || path === '.') return undefined
-	return { ...finding.value, path }
+	return toWithinTextLimits({ ...finding.value, path })
 }
 
 /**
  * Reads a model's findings answer. Entries that do not fit the finding schema, and absolute or
- * traversing paths, are dropped and counted; an answer without a findings list fails.
+ * traversing paths, are dropped and counted; an answer without a findings list fails. Text over a
+ * limit is cut, never a reason to drop a finding or ask the model again.
  */
 export function parseFindingsAnswer(
 	answer: unknown

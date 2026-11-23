@@ -1,7 +1,7 @@
 import type { KeptFinding } from '@mng-review/domain'
 import type { AgentRunReport } from '@mng-review/engine'
 import { escapeMarkdown, toCodeSpan } from '../../../utils/markdown.util'
-import { toKindLabel } from '../../publish/presentation/thread-comment.formatter'
+import { toKindTag } from '../../publish/presentation/thread-comment.formatter'
 
 /** A check run's name for an agent: `MNG Review · <agent>`. */
 export function toCheckName(agent: string): string {
@@ -26,7 +26,7 @@ export function formatCheckSummary(findings: readonly KeptFinding[]): string {
 	return [
 		...findings.map(
 			finding =>
-				`- **${toKindLabel(finding.kind === 'nit' ? 'nit' : finding.validation?.status === 'unverified' ? 'unverified' : 'bug', finding.severity)}** ${toCodeSpan(`${finding.path}:${finding.line}`)} ${escapeMarkdown(finding.title)}`
+				`- ${toKindTag(finding.kind === 'nit' ? 'nit' : finding.validation?.status === 'unverified' ? 'unverified' : 'bug', finding.severity)} ${toCodeSpan(`${finding.path}:${finding.line}`)} ${escapeMarkdown(finding.title)}`
 		),
 		'',
 		'The threads and the summary comment on the pull request have the details.',

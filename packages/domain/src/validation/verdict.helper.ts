@@ -1,8 +1,13 @@
 import type { Severity } from '../config/review-config.schema'
 import { getSeverityRank } from '../findings/finding.helper'
 import { normalizeRepoPath } from '../utils/repo-path.util'
-import type { Judgement, Unverified } from './validation.types'
-import type { Verdict } from './verdict.schema'
+import { toWordCut } from '../utils/word-cut.util'
+import type { ConfirmedEdit, Judgement, Unverified } from './validation.types'
+import {
+	MAX_PREMISE_CHARS,
+	MAX_VERDICT_REASON_CHARS,
+	type Verdict,
+} from './verdict.schema'
 
 /** The path of a `path:line` evidence entry; the path may hold spaces, not colons. */
 const EVIDENCE_PATH = /^([^\s:](?:[^:]*[^\s:])?):\d+/u
@@ -17,6 +22,8 @@ export interface VerdictInput {
 	readonly model: string
 	/** At least one evidence entry names a file of this repository. */
 	readonly hasRepositoryEvidence: boolean
+	/** The answer's fix after `toConfirmedEdit` checked it; kept only on a confirmation. */
+	readonly edit?: ConfirmedEdit
 }
 
 /**
@@ -37,15 +44,20 @@ export function getEvidencePaths(evidence: readonly string[]): string[] {
  * below the reported one stands only with `lowered_because`; otherwise the reported severity is kept.
  * A rejection must cite a file of this repository; otherwise the finding is kept as unverified at
  * the reported severity, because a refutation the repository does not show may rest on the
- * validator's memory of a dependency. Each change is recorded in `note`.
+ * validator's memory of a dependency. Each change is recorded in `note`. The reason and the premise
+ * are cut at a word boundary to their limits, so a long answer never costs the verdict.
  */
 export function toValidation(input: VerdictInput): Judgement | Unverified {
 	const { verdict, reported, model } = input
 	const loweredBecause = verdict.lowered_because || undefined
 	const lowered = getSeverityRank(verdict.severity) < getSeverityRank(reported)
 	const unexplained = lowered && !loweredBecause
+	const premise = toWordCut(
+		verdict.premise || UNNAMED_PREMISE,
+		MAX_PREMISE_CHARS
+	)
 	const base = {
-		reason: verdict.reason,
+		reason: toWordCut(verdict.reason, MAX_VERDICT_REASON_CHARS),
 		evidence: verdict.evidence,
 		model,
 	}
@@ -54,7 +66,7 @@ export function toValidation(input: VerdictInput): Judgement | Unverified {
 			...base,
 			status: 'unverified',
 			severity: reported,
-			premise: verdict.premise || UNNAMED_PREMISE,
+			premise,
 			note: 'rejected without citing lines of this repository, so kept as unverified',
 		}
 	const severityFields = unexplained
@@ -71,11 +83,14 @@ export function toValidation(input: VerdictInput): Judgement | Unverified {
 			...base,
 			...severityFields,
 			status: 'unverified',
-			premise: verdict.premise || UNNAMED_PREMISE,
+			premise,
 		}
+	if (verdict.verdict === 'reject')
+		return { ...base, ...severityFields, status: 'rejected' }
 	return {
 		...base,
 		...severityFields,
-		status: verdict.verdict === 'confirm' ? 'confirmed' : 'rejected',
+		status: 'confirmed',
+		...(input.edit ? { edit: input.edit } : {}),
 	}
 }
