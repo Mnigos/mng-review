@@ -5,7 +5,7 @@ import { githubApiFake } from '../../shared/mocks/github-api-fake.helper'
 import { GITHUB_SETTINGS } from '../../shared/mocks/github-http.helper'
 import {
 	APP_IDENTITY,
-	appSummary,
+	summaryReview,
 	APP_MODE_OWNED,
 	bug,
 	LINKS,
@@ -13,9 +13,9 @@ import {
 	SUMMARY_MARKER,
 } from '../../shared/mocks/publish-test.helper'
 import {
-	SummaryCommentService,
-	SummaryCommentServiceLive,
-} from '../publish/application/summary-comment.service'
+	SummaryReviewService,
+	SummaryReviewServiceLive,
+} from '../publish/application/summary-review.service'
 import {
 	formatStatusComment,
 	formatSummaryComment,
@@ -114,9 +114,14 @@ layer(APP_MODE_OWNED)('reservation text', test => {
 				Effect.gen(function* () {
 					const fake = githubApiFake(APP_IDENTITY)
 					const body = formatStatusComment(text, SUMMARY_MARKER, LINKS)
-					fake.comments.push(appSummary(SUMMARY_MARKER, { body }))
+					fake.reviews.push(
+						summaryReview(SUMMARY_MARKER, {
+							body,
+							author: { __typename: 'Bot', login: APP_IDENTITY.login },
+						})
+					)
 					expect(
-						yield* SummaryCommentService.use(service =>
+						yield* SummaryReviewService.use(service =>
 							service.reserveManualRun({
 								pullNumber: 17,
 								head: LINKS.head,
@@ -126,7 +131,7 @@ layer(APP_MODE_OWNED)('reservation text', test => {
 							})
 						).pipe(
 							Effect.provide(
-								SummaryCommentServiceLive.pipe(
+								SummaryReviewServiceLive.pipe(
 									Layer.provide(
 										Layer.merge(
 											fake.api,
@@ -141,8 +146,11 @@ layer(APP_MODE_OWNED)('reservation text', test => {
 						)
 					).toBe(true)
 					expect(fake.writes).toHaveLength(1)
-					expect(fake.writes[0]).toMatchObject({ method: 'update', id: 100 })
-					expectNoLiveMention(fake.comments[0]?.body ?? '')
+					expect(fake.writes[0]).toMatchObject({
+						method: 'updateReview',
+						id: 101,
+					})
+					expectNoLiveMention(fake.reviews[0]?.body ?? '')
 				})
 		)
 
@@ -152,7 +160,7 @@ layer(APP_MODE_OWNED)('reservation text', test => {
 			Effect.gen(function* () {
 				const fake = githubApiFake(APP_IDENTITY)
 				expect(
-					yield* SummaryCommentService.use(service =>
+					yield* SummaryReviewService.use(service =>
 						service.reserveManualRun({
 							pullNumber: 17,
 							head: LINKS.head,
@@ -162,7 +170,7 @@ layer(APP_MODE_OWNED)('reservation text', test => {
 						})
 					).pipe(
 						Effect.provide(
-							SummaryCommentServiceLive.pipe(
+							SummaryReviewServiceLive.pipe(
 								Layer.provide(
 									Layer.merge(
 										fake.api,
@@ -176,9 +184,9 @@ layer(APP_MODE_OWNED)('reservation text', test => {
 						)
 					)
 				).toBe(true)
-				expect(fake.comments).toHaveLength(1)
-				expectNoLiveMention(fake.comments[0]?.body ?? '')
-				expect(fake.comments[0]?.body).toContain('`@mng-review`')
+				expect(fake.reviews).toHaveLength(1)
+				expectNoLiveMention(fake.reviews[0]?.body ?? '')
+				expect(fake.reviews[0]?.body).toContain('`@mng-review`')
 			})
 	)
 })

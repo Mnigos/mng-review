@@ -3,7 +3,7 @@ import {
 	getCommandHandle,
 	GitHubConfig,
 	provideOwnedIdentities,
-	SummaryCommentService,
+	SummaryReviewService,
 } from '@mng-review/github'
 import { Console, Effect } from 'effect'
 import type { ReserveDecision } from '../../application/command-run.types'
@@ -69,7 +69,7 @@ const reserve = Effect.fn('reserveStep.reserve')(function* (
 		return refuse(`no declared agent is named ${target.agent}`)
 	const { identity } = yield* GitHubConfig
 	const { max_runs: maxRuns } = rules.config.commands
-	const reserved = yield* SummaryCommentService.use(service =>
+	const reserved = yield* SummaryReviewService.use(service =>
 		service.reserveManualRun({
 			pullNumber: target.pullNumber,
 			head: target.head,

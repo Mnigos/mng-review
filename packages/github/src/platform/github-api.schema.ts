@@ -60,6 +60,29 @@ export const pullRequestCommentSchema = Schema.Struct({
 })
 export type PullRequestComment = typeof pullRequestCommentSchema.Type
 
+/** The states GitHub gives a submitted or pending pull request review. */
+export const REVIEW_STATES = [
+	'PENDING',
+	'COMMENTED',
+	'APPROVED',
+	'CHANGES_REQUESTED',
+	'DISMISSED',
+] as const
+
+/** A pull request review with its body, last editor and whether it is hidden. */
+export const pullRequestReviewSchema = Schema.Struct({
+	/** The GraphQL node id, which `minimizeComment` takes. */
+	id: Schema.String,
+	databaseId: Schema.NullOr(Schema.Number),
+	state: Schema.Literals(REVIEW_STATES),
+	isMinimized: Schema.Boolean,
+	body: Schema.String,
+	author: Schema.NullOr(commentAuthorSchema),
+	editor: commentEditorSchema,
+})
+export type PullRequestReview = typeof pullRequestReviewSchema.Type
+export type ReviewState = PullRequestReview['state']
+
 /** Where a GraphQL connection stops and whether more pages follow. */
 export const pageInfoSchema = Schema.Struct({
 	hasNextPage: Schema.Boolean,
@@ -149,6 +172,29 @@ export const pullRequestCommentsAnswerSchema = Schema.Struct({
 })
 export type PullRequestCommentsAnswer =
 	typeof pullRequestCommentsAnswerSchema.Type
+
+/** The answer to the pull request reviews query. */
+export const pullRequestReviewsAnswerSchema = Schema.Struct({
+	data: Schema.optionalKey(
+		Schema.NullOr(
+			Schema.Struct({
+				repository: Schema.NullOr(
+					Schema.Struct({
+						pullRequest: Schema.NullOr(
+							Schema.Struct({
+								reviews: Schema.Struct({
+									pageInfo: pageInfoSchema,
+									nodes: Schema.Array(Schema.NullOr(pullRequestReviewSchema)),
+								}),
+							})
+						),
+					})
+				),
+			})
+		)
+	),
+	errors: graphqlErrorsSchema,
+})
 
 /** The answer to a mutation: GitHub's errors, if any; the data is not needed. */
 export const mutationAnswerSchema = Schema.Struct({

@@ -22,7 +22,7 @@ import {
 } from '../../../shared/mocks/thread-reply-test.helper'
 import { MAX_REPLY_THREADS } from '../domain/publish.constants'
 import { ReplyFindService, ReplyFindServiceLive } from './reply-find.service'
-import { SummaryCommentServiceLive } from './summary-comment.service'
+import { SummaryReviewServiceLive } from './summary-review.service'
 
 /** A different reply on each pull request, with IDs independent of pull request order. */
 function setup(
@@ -49,7 +49,7 @@ function setup(
 		listOpenPullRequests: () => Effect.succeed(pulls),
 	})
 	const service = ReplyFindServiceLive.pipe(
-		Layer.provide(SummaryCommentServiceLive),
+		Layer.provide(SummaryReviewServiceLive),
 		Layer.provide(
 			Layer.mergeAll(
 				fake.api,

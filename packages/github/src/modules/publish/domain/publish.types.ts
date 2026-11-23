@@ -1,4 +1,5 @@
 import type { KeptFinding, ReplyAction } from '@mng-review/domain'
+import type { ReviewState } from '../../../platform/github-api.schema'
 import type {
 	FindingMarker,
 	SummaryMarker,
@@ -108,7 +109,7 @@ export interface RecheckProposal {
 	readonly reason: string
 }
 
-/** A sticky summary as read: who wrote it and the marker it ends with. */
+/** A summary as read, a review's body or an old sticky comment: who wrote it and its marker. */
 export interface SummaryComment {
 	readonly id: number
 	/** The GraphQL node id, which hiding it takes. */
@@ -119,10 +120,17 @@ export interface SummaryComment {
 	readonly mine: boolean
 }
 
+/** A review of an owned identity whose body ends with a summary marker. */
+export interface SummaryReview extends SummaryComment {
+	readonly state: ReviewState
+	/** Hidden as outdated or otherwise; its marker still counts. */
+	readonly minimized: boolean
+}
+
 /**
- * What the cleanup after a write left: another owned identity's summary hidden (`minimized`) or
- * deleted; `kept` when one could not be hidden or deleted, or a duplicate summary of the current
- * identity could not be deleted. A deleted duplicate counts as `none`.
+ * What the cleanup after a write left: an earlier review or an old sticky comment of an owned
+ * identity hidden (`minimized`), an old sticky comment deleted after GitHub refused to hide it,
+ * `kept` when one stayed visible, `none` when nothing was left to hide.
  */
 export type SummaryCleanup = 'none' | 'minimized' | 'deleted' | 'kept'
 

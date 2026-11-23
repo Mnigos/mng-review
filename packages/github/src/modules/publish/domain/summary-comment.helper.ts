@@ -56,28 +56,14 @@ export function getSummary(
 	return summaries.find(summary => summary.mine) ?? summaries[0]
 }
 
-/** The current identity's oldest summary, if it wrote one. */
-export function getOwnSummary(
-	summaries: readonly SummaryComment[]
-): SummaryComment | undefined {
-	return summaries.find(summary => summary.mine)
-}
-
 /**
- * The current identity's summaries after its oldest: duplicates two runs created at once. A write
- * deletes them, keeping the oldest.
+ * The current identity's sticky comments after its oldest: duplicates two runs created at once
+ * before the summary moved into reviews. The sweep leaves the status alone while they show.
  */
 export function getDuplicateSummaries(
 	summaries: readonly SummaryComment[]
 ): readonly SummaryComment[] {
 	return summaries.filter(summary => summary.mine).slice(1)
-}
-
-/** Summaries of other owned identities that are still visible; a write hides them. */
-export function getStaleSummaries(
-	summaries: readonly SummaryComment[]
-): readonly SummaryComment[] {
-	return summaries.filter(summary => !summary.mine)
 }
 
 /** The worst outcome of a cleanup: `kept` over `deleted` over `minimized`; `none` when nothing was stale. */
@@ -91,12 +77,16 @@ export function toSummaryCleanup(
 	)
 }
 
+/** A comment or a review as the waiting list reads it: author, last editor and body. */
+type ListedSummary = Pick<PullRequestComment, 'author' | 'editor' | 'body'>
+
 /**
- * The thread ids every summary of an owned identity lists as waiting for the owner, hidden ones
- * included: a writer may hide the bot's summary, but cannot write one, so a hidden list still holds.
+ * The thread ids every summary of an owned identity lists as waiting for the owner, reviews and old
+ * sticky comments, hidden ones included: a writer may hide the bot's summary, but cannot write one,
+ * so a hidden list still holds.
  */
 export function getListedWaiting(
-	comments: readonly PullRequestComment[],
+	comments: readonly ListedSummary[],
 	owned: readonly BotIdentity[]
 ): string[] {
 	const ids = comments.flatMap(comment =>

@@ -8,7 +8,7 @@ import {
 	ReplyFindServiceLive,
 	ReplyPublishServiceLive,
 	StatusReportServiceLive,
-	SummaryCommentServiceLive,
+	SummaryReviewServiceLive,
 	ThreadReplyServiceLive,
 	ThreadResolutionServiceLive,
 	toBotIdentity,
@@ -121,7 +121,7 @@ export function stepFixture(
 		ReplyPublishServiceLive.pipe(Layer.provide(status.layer)),
 		ReplyFindServiceLive.pipe(Layer.provide(status.layer))
 	).pipe(
-		Layer.provideMerge(SummaryCommentServiceLive),
+		Layer.provideMerge(SummaryReviewServiceLive),
 		Layer.provideMerge(
 			Layer.mergeAll(
 				api.api,

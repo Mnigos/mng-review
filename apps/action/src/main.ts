@@ -13,6 +13,7 @@ import {
 import {
 	CommandAuthorizeServiceLive,
 	GitHubApiServiceLive,
+	GitHubReviewServiceLive,
 	type GitHubConfig,
 	GitHubReadConfigLive,
 	GitHubStatusServiceLive,
@@ -23,7 +24,7 @@ import {
 	ReplyPublishServiceLive,
 	StatusReportServiceLive,
 	StatusSweepServiceLive,
-	SummaryCommentServiceLive,
+	SummaryReviewServiceLive,
 	ThreadRecheckServiceLive,
 	ThreadReplyServiceLive,
 	ThreadResolutionServiceLive,
@@ -94,15 +95,17 @@ const PlatformLive = Layer.mergeAll(
 const RulesLive = RulesServiceLive.pipe(Layer.provideMerge(GitServiceLive))
 
 /**
- * The GitHub API and status calls over one token: the read rules in prepare mode, the write rules
+ * The GitHub API, review and status calls over one token: the read rules in prepare mode, the write rules
  * in publish and sweep mode. Built only in those modes.
  */
 const toGitHubLive = (config: Layer.Layer<GitHubConfig, ConfigError>) =>
-	Layer.mergeAll(GitHubApiServiceLive, GitHubStatusServiceLive).pipe(
-		Layer.provideMerge(config)
-	)
+	Layer.mergeAll(
+		GitHubApiServiceLive,
+		GitHubReviewServiceLive,
+		GitHubStatusServiceLive
+	).pipe(Layer.provideMerge(config))
 
-/** Publishing, the sticky summary, thread resolution, replies and the status over one token. */
+/** Publishing, the summary review, thread resolution, replies and the status over one token. */
 const toPublisherLive = (config: Layer.Layer<GitHubConfig, ConfigError>) =>
 	Layer.mergeAll(
 		PublishServiceLive,
@@ -110,7 +113,7 @@ const toPublisherLive = (config: Layer.Layer<GitHubConfig, ConfigError>) =>
 		ThreadReplyServiceLive,
 		ReplyPublishServiceLive
 	).pipe(
-		Layer.provideMerge(SummaryCommentServiceLive),
+		Layer.provideMerge(SummaryReviewServiceLive),
 		Layer.provide(ThreadResolutionServiceLive),
 		Layer.provideMerge(toGitHubLive(config))
 	)
@@ -156,21 +159,21 @@ const PublishLive = PublishRunServiceLive.pipe(
 
 /** The authorize step: the comment checks over the read token and the default branch's rules. */
 const AuthorizeLive = CommandAuthorizeServiceLive.pipe(
-	Layer.provideMerge(SummaryCommentServiceLive),
+	Layer.provideMerge(SummaryReviewServiceLive),
 	Layer.provideMerge(toGitHubLive(GitHubReadConfigLive)),
 	Layer.provideMerge(RulesLive)
 )
 
 /** The reserve step: the gates at the base rules and the count, over the write token. */
 const ReserveLive = PrepareRunServiceLive.pipe(
-	Layer.provideMerge(SummaryCommentServiceLive),
+	Layer.provideMerge(SummaryReviewServiceLive),
 	Layer.provideMerge(toGitHubLive(GitHubWriteConfigLive)),
 	Layer.provideMerge(RulesLive)
 )
 
 /** The find step: the reply reads over the read token and the default branch's rules; no model. */
 const FindLive = ReplyFindServiceLive.pipe(
-	Layer.provideMerge(SummaryCommentServiceLive),
+	Layer.provideMerge(SummaryReviewServiceLive),
 	Layer.provideMerge(toGitHubLive(GitHubReadConfigLive)),
 	Layer.provideMerge(RulesLive)
 )

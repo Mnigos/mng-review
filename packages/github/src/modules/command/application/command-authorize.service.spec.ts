@@ -15,7 +15,7 @@ import {
 	appSummary,
 	SUMMARY_MARKER,
 } from '../../../shared/mocks/publish-test.helper'
-import { SummaryCommentServiceLive } from '../../publish/application/summary-comment.service'
+import { SummaryReviewServiceLive } from '../../publish/application/summary-review.service'
 import type { CommandComment, CommandHandles } from '../domain/command.types'
 import {
 	CommandAuthorizeService,
@@ -45,7 +45,7 @@ function harness() {
 		fake.api,
 		Layer.succeed(GitHubConfig, { ...GITHUB_SETTINGS, identity: APP_IDENTITY })
 	)
-	const summaries = SummaryCommentServiceLive.pipe(Layer.provide(dependencies))
+	const summaries = SummaryReviewServiceLive.pipe(Layer.provide(dependencies))
 	const services = CommandAuthorizeServiceLive.pipe(
 		Layer.provide(Layer.merge(fake.api, summaries))
 	)

@@ -31,9 +31,9 @@ import {
 	ownerReviewThread,
 } from '../../../shared/mocks/thread-reply-test.helper'
 import {
-	SummaryCommentService,
-	SummaryCommentServiceLive,
-} from '../../publish/application/summary-comment.service'
+	SummaryReviewService,
+	SummaryReviewServiceLive,
+} from '../../publish/application/summary-review.service'
 import { parseSummaryMarker } from '../../publish/domain/publish-marker.parser'
 import { toMarkerComment } from '../../publish/presentation/thread-comment.formatter'
 import { toCommitStatus, UNFINISHED_NOTE } from '../domain/status.helper'
@@ -68,7 +68,7 @@ layer(TOKEN_MODE_OWNED)('StatusSweepService', test => {
 					yield* StatusSweepService.use(service => service.sweep()).pipe(
 						Effect.provide(
 							StatusSweepServiceLive.pipe(
-								Layer.provide(Layer.merge(fake.layer, apiLayer))
+								Layer.provide(Layer.mergeAll(fake.layer, apiLayer, api.api))
 							)
 						)
 					)
@@ -338,9 +338,10 @@ layer(TOKEN_MODE_OWNED)('StatusSweepService summary marker', test => {
 		test.effect(`sweep counts unthreaded bugs for ${scenario.name}`, () =>
 			Effect.gen(function* () {
 				const api = githubApiFake()
-				api.comments.push({
+				api.reviews.push({
 					id: 'summary-node',
 					databaseId: 101,
+					state: 'COMMENTED',
 					isMinimized: false,
 					body: toMarkerComment('summary', {
 						...SUMMARY_MARKER,
@@ -393,9 +394,10 @@ layer(TOKEN_MODE_OWNED)('StatusSweepService summary marker', test => {
 				() =>
 					Effect.gen(function* () {
 						const api = githubApiFake()
-						api.comments.push({
+						api.reviews.push({
 							id: 'summary-node',
 							databaseId: 101,
+							state: 'COMMENTED',
 							isMinimized: false,
 							body: toMarkerComment('summary', { ...SUMMARY_MARKER, finished }),
 							author: {
@@ -625,7 +627,7 @@ layer(APP_MODE_OWNED)('StatusSweepService after an identity switch', test => {
 								status: 503,
 							})
 						)
-					const summaryLayer = SummaryCommentServiceLive.pipe(
+					const summaryLayer = SummaryReviewServiceLive.pipe(
 						Layer.provide(
 							Layer.merge(
 								api.api,
@@ -637,7 +639,7 @@ layer(APP_MODE_OWNED)('StatusSweepService after an identity switch', test => {
 						)
 					)
 					expect(
-						yield* SummaryCommentService.use(service =>
+						yield* SummaryReviewService.use(service =>
 							service.publishStatus({
 								pullNumber: 17,
 								head: 'new-head',
@@ -648,7 +650,7 @@ layer(APP_MODE_OWNED)('StatusSweepService after an identity switch', test => {
 					).toBe(true)
 					expect(
 						parseSummaryMarker(
-							api.comments.find(
+							api.reviews.find(
 								comment => comment.author?.login === APP_IDENTITY.login
 							)?.body ?? ''
 						)
@@ -678,7 +680,7 @@ layer(APP_MODE_OWNED)('StatusSweepService after an identity switch', test => {
 						'error'
 					)
 					expect(api.writes.map(write => write.method)).toEqual([
-						'create',
+						'review',
 						'minimize',
 					])
 					expect(

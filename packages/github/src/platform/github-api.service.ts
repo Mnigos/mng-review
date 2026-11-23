@@ -28,20 +28,6 @@ import {
 import { makeGitHubHttp } from './github-http.client'
 import type { GitHubApiError } from './github.errors'
 
-/** One inline comment of a review, on a line of the head side of the diff. */
-export interface InlineComment {
-	readonly path: string
-	readonly line: number
-	readonly body: string
-}
-
-/** A review the bot posts: always `COMMENT`, never an approval or a change request. */
-export interface ReviewInput {
-	readonly commitId: string
-	readonly body: string
-	readonly comments: readonly InlineComment[]
-}
-
 /** A single review comment: on a line, or on the whole file when `line` is unset. */
 export interface ReviewCommentInput {
 	readonly commitId: string
@@ -74,10 +60,6 @@ export class GitHubApiService extends Context.Service<
 			pullNumber: number,
 			name: string
 		) => Effect.Effect<void, GitHubApiError>
-		readonly createReview: (
-			pullNumber: number,
-			input: ReviewInput
-		) => Effect.Effect<number, GitHubApiError>
 		readonly createReviewComment: (
 			pullNumber: number,
 			input: ReviewCommentInput
@@ -212,30 +194,6 @@ export const GitHubApiServiceLive = Layer.effect(
 					`${repo}/issues/${pullNumber}/labels/${encodeURIComponent(name)}`
 				)
 			)
-		})
-
-		const createReview = Effect.fn('GitHubApiService.createReview')(function* (
-			pullNumber: number,
-			input: ReviewInput
-		) {
-			const created = yield* sendJson(
-				'createReview',
-				HttpClientRequest.post(`${repo}/pulls/${pullNumber}/reviews`).pipe(
-					HttpClientRequest.bodyJsonUnsafe({
-						commit_id: input.commitId,
-						event: 'COMMENT',
-						body: input.body,
-						comments: input.comments.map(comment => ({
-							path: comment.path,
-							line: comment.line,
-							side: 'RIGHT',
-							body: comment.body,
-						})),
-					})
-				),
-				createdSchema
-			)
-			return created.id
 		})
 
 		const createReviewComment = Effect.fn(
@@ -376,7 +334,6 @@ export const GitHubApiServiceLive = Layer.effect(
 			listThreadComments,
 			addLabel,
 			removeLabel,
-			createReview,
 			createReviewComment,
 			createIssueComment,
 			updateIssueComment,

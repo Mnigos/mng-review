@@ -27,6 +27,7 @@ import type {
 	ReviewThread,
 	ThreadComment,
 	PullRequestComment,
+	PullRequestReview,
 } from '../../platform/github-api.schema'
 import { OwnedIdentities } from '../../platform/owned-identities.context'
 import { planInput } from '../../shared/mocks/domain-test.helper'
@@ -233,6 +234,23 @@ export function appSummary(
 		isMinimized: false,
 		body: toMarkerComment('summary', marker),
 		author: { __typename: 'Bot', login: APP_IDENTITY.login },
+		editor: null,
+		...overrides,
+	}
+}
+
+/** A summary review with independently selectable state, author and marker. */
+export function summaryReview(
+	marker: SummaryMarker = SUMMARY_MARKER,
+	overrides: Partial<PullRequestReview> = {}
+): PullRequestReview {
+	return {
+		id: 'summary-review',
+		databaseId: 101,
+		state: 'COMMENTED',
+		isMinimized: false,
+		body: toMarkerComment('summary', marker),
+		author: { __typename: 'Bot', login: GITHUB_ACTIONS_IDENTITY.login },
 		editor: null,
 		...overrides,
 	}

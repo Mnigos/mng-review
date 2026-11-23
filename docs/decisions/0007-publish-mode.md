@@ -1,6 +1,6 @@
 # ADR 0007: Publish mode posts as the job token's bot, with comments only
 
-**Status:** Proposed
+**Status:** Proposed; ADR 0010 moves the sticky summary into the bot's review
 **Date:** 2026-11-19
 
 ## Context

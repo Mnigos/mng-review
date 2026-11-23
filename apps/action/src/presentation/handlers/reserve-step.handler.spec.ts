@@ -117,7 +117,11 @@ layer(FileSystemLayer)('reserve step', test => {
 					if (scenario === 'reserved') {
 						expect(fixture.api.writes).toHaveLength(1)
 						expect(
-							parseSummaryMarker(fixture.api.comments[0]?.body ?? '')
+							parseSummaryMarker(
+								fixture.api.reviews.at(-1)?.body ??
+									fixture.api.comments[0]?.body ??
+									''
+							)
 						).toMatchObject({ manualRuns: 1, runs: 0, finished: false })
 						expect(yield* fs.exists(fixture.paths.outcome)).toBe(false)
 						expect(yield* fs.exists(fixture.paths.prepared)).toBe(false)

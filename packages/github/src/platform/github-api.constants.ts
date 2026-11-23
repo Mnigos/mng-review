@@ -69,6 +69,18 @@ export const PULL_REQUEST_COMMENTS_QUERY = `query($owner: String!, $name: String
   }
 }`
 
+/** The pull request's reviews with their state, author, last editor and whether they are hidden, oldest first. */
+export const PULL_REQUEST_REVIEWS_QUERY = `query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviews(first: ${PAGE_SIZE}, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes { id databaseId state isMinimized body author { __typename login } editor { __typename login } }
+      }
+    }
+  }
+}`
+
 /** Replies in a review thread. */
 export const REPLY_TO_THREAD_MUTATION = `mutation($thread: ID!, $body: String!) {
   addPullRequestReviewThreadReply(input: { pullRequestReviewThreadId: $thread, body: $body }) {

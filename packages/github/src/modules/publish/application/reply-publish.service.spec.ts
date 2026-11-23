@@ -12,7 +12,7 @@ import { githubApiFake } from '../../../shared/mocks/github-api-fake.helper'
 import { githubStatusFake } from '../../../shared/mocks/github-status-fake.helper'
 import {
 	ACCEPTING_RULES,
-	appSummary,
+	summaryReview,
 	SUMMARY_MARKER,
 	RULES,
 	TOKEN_MODE_OWNED,
@@ -29,7 +29,7 @@ import {
 	ReplyPublishServiceLive,
 	type ReplyPublishInput,
 } from './reply-publish.service'
-import { SummaryCommentServiceLive } from './summary-comment.service'
+import { SummaryReviewServiceLive } from './summary-review.service'
 
 const RESOLVED = {
 	action: 'resolved',
@@ -61,14 +61,14 @@ function setup() {
 	const head = repo.commit()
 	const fake = githubApiFake()
 	const status = githubStatusFake()
-	fake.comments.push(
-		appSummary(
+	fake.reviews.push(
+		summaryReview(
 			{ ...SUMMARY_MARKER, head, finished: true },
 			{ author: { __typename: 'Bot', login: GITHUB_ACTIONS_IDENTITY.login } }
 		)
 	)
 	const publisher = ReplyPublishServiceLive.pipe(
-		Layer.provide(SummaryCommentServiceLive),
+		Layer.provide(SummaryReviewServiceLive),
 		Layer.provide(
 			Layer.mergeAll(
 				fake.api,
@@ -243,11 +243,11 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 						fixture.fake.command.role = 'write'
 						fixture.fake.threads.push(threadAtCommit(fixture.base))
 						const error = new GitHubApiError({
-							operation: 'update',
+							operation: 'updateReview',
 							reason: 'summary unavailable',
 							status: 503,
 						})
-						fixture.fake.failures.update.push(error)
+						fixture.fake.failures.updateReview.push(error)
 						expect(
 							yield* ReplyPublishService.use(service =>
 								service.publish({
@@ -280,7 +280,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 							])
 							expect(fixture.fake.writes.map(write => write.method)).toEqual([
 								'reply',
-								'update',
+								'updateReview',
 								'label',
 							])
 						} else expect(fixture.status.statuses).toEqual([])
