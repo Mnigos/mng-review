@@ -10,7 +10,7 @@ import {
 	PublishService,
 	ReplyPublishService,
 	StatusReportService,
-	SummaryCommentService,
+	SummaryReviewService,
 	type SummaryMarker,
 } from '@mng-review/github'
 import { Effect, Layer, Redacted } from 'effect'
@@ -134,8 +134,7 @@ function setup(
 					publish: () =>
 						Effect.die('a push or command run never answers alone'),
 				}),
-				Layer.succeed(SummaryCommentService, {
-					read: () => Effect.succeed(undefined),
+				Layer.succeed(SummaryReviewService, {
 					write: () => Effect.die('the run never writes the summary itself'),
 					readPrior: readPriorSpy,
 					publishStatus: publishStatusSpy,

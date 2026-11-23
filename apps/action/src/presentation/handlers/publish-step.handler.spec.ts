@@ -10,7 +10,7 @@ import { Effect, FileSystem } from 'effect'
 // oxlint-disable-next-line no-restricted-imports -- The test brief requires shared GitHub fixtures.
 import {
 	reviewThread,
-	appSummary,
+	summaryReview,
 	SUMMARY_MARKER,
 } from '../../../../../packages/github/src/shared/mocks/publish-test.helper'
 // oxlint-disable-next-line no-restricted-imports -- The test brief requires shared GitHub reply fixtures.
@@ -188,7 +188,7 @@ layer(FileSystemLayer, { excludeTestServices: true })(
 						const expectedStatuses = structuredClone(direct.status.statuses)
 						direct.api.writes.splice(0)
 						direct.api.threads.splice(0)
-						direct.api.comments.splice(0)
+						direct.api.reviews.splice(0)
 						direct.status.checks.splice(0)
 						direct.status.statuses.splice(0)
 						const fixture = direct
@@ -358,7 +358,7 @@ layer(FileSystemLayer, { excludeTestServices: true })(
 						expect(fixture.api.reads).toEqual(['getPullRequest:17'])
 						expect(fixture.api.writes).toEqual([])
 						expect(fixture.api.threads).toEqual([])
-						expect(fixture.api.comments).toEqual([])
+						expect(fixture.api.reviews).toEqual([])
 						expect(fixture.status.statuses).toEqual([])
 						expect(fixture.status.checks).toEqual([])
 						expect(fixture.loads).toEqual([])
@@ -426,8 +426,8 @@ layer(FileSystemLayer, { excludeTestServices: true })(
 							},
 						})
 						expect(fixture.api.threads.length).toBeGreaterThan(0)
-						expect(fixture.api.comments).toHaveLength(1)
-						expect(fixture.api.comments[0]?.body).toContain(
+						expect(fixture.api.reviews).toHaveLength(1)
+						expect(fixture.api.reviews[0]?.body).toContain(
 							'Verdict: needs fixes'
 						)
 						expect(fixture.status.statuses).toHaveLength(1)
@@ -587,9 +587,9 @@ layer(FileSystemLayer, { excludeTestServices: true })(
 							result: { verdict: 'incomplete', finished: false },
 						},
 					})
-					expect(fixture.api.comments).toHaveLength(1)
-					expect(fixture.api.comments[0]?.body).toContain('Verdict: incomplete')
-					expect(fixture.api.comments[0]?.body).not.toContain('Verdict: ready')
+					expect(fixture.api.reviews).toHaveLength(1)
+					expect(fixture.api.reviews[0]?.body).toContain('Verdict: incomplete')
+					expect(fixture.api.reviews[0]?.body).not.toContain('Verdict: ready')
 					expect(fixture.status.statuses).toHaveLength(1)
 					expect(fixture.status.statuses[0]).toHaveProperty('state', 'error')
 				})
@@ -628,7 +628,7 @@ layer(FileSystemLayer, { excludeTestServices: true })(
 						)
 					).toEqual([])
 					expect(
-						fixture.api.writes.some(write => write.method === 'create')
+						fixture.api.writes.some(write => write.method === 'review')
 					).toBeTruthy()
 				})
 		)
@@ -787,8 +787,8 @@ layer(FileSystemLayer)('publish converse', test => {
 						finished: true,
 					}
 					const body = `# MNG Review\n\n**Verdict: needs fixes** · risk normal (rules) · 1 open bug thread(s) · run 4 of 6\n\nKeep the model report and evidence.\n\n${toMarkerComment('summary', marker)}`
-					fixture.api.comments.push(
-						appSummary(marker, {
+					fixture.api.reviews.push(
+						summaryReview(marker, {
 							body,
 							author: { __typename: 'Bot', login: 'github-actions' },
 						})
@@ -822,7 +822,7 @@ layer(FileSystemLayer)('publish converse', test => {
 							})
 						)
 					)
-					const updated = fixture.api.comments[0]?.body ?? ''
+					const updated = fixture.api.reviews[0]?.body ?? ''
 					expect(parseSummaryMarker(updated)).toEqual({
 						...marker,
 						...(action === 'needs-owner' ? { needsOwner: ['thread'] } : {}),
@@ -834,7 +834,7 @@ layer(FileSystemLayer)('publish converse', test => {
 					expect(updated).toContain('Keep the model report and evidence.')
 					expect(
 						fixture.api.writes.filter(write =>
-							['review', 'comment', 'create'].includes(write.method)
+							['review', 'comment'].includes(write.method)
 						)
 					).toEqual([])
 					expect(
@@ -871,8 +871,8 @@ layer(FileSystemLayer)('publish converse', test => {
 					})
 				)
 				const marker = { ...SUMMARY_MARKER, runs: 4, head: fixture.head }
-				fixture.api.comments.push(
-					appSummary(marker, {
+				fixture.api.reviews.push(
+					summaryReview(marker, {
 						author: { __typename: 'Bot', login: 'github-actions' },
 					})
 				)
@@ -909,7 +909,7 @@ layer(FileSystemLayer)('publish converse', test => {
 				expect(
 					fixture.api.writes.filter(write => write.method === 'reply')
 				).toEqual([])
-				expect(parseSummaryMarker(fixture.api.comments[0]?.body ?? '')).toEqual(
+				expect(parseSummaryMarker(fixture.api.reviews[0]?.body ?? '')).toEqual(
 					marker
 				)
 			})
@@ -936,8 +936,8 @@ layer(FileSystemLayer)('publish converse', test => {
 						finished,
 						unthreadedBugs: 3,
 					}
-					fixture.api.comments.push(
-						appSummary(marker, {
+					fixture.api.reviews.push(
+						summaryReview(marker, {
 							author: { __typename: 'Bot', login: 'github-actions' },
 						})
 					)
@@ -962,7 +962,7 @@ layer(FileSystemLayer)('publish converse', test => {
 						)
 					)
 					expect(
-						parseSummaryMarker(fixture.api.comments[0]?.body ?? '')
+						parseSummaryMarker(fixture.api.reviews[0]?.body ?? '')
 					).toEqual(marker)
 					expect(fixture.status.checks).toEqual([])
 				})

@@ -9,7 +9,7 @@ import {
 	ReplyPublishService,
 	type StatusReportResult,
 	StatusReportService,
-	SummaryCommentService,
+	SummaryReviewService,
 	toTrustedPlacement,
 } from '@mng-review/github'
 import { Context, Effect, Layer } from 'effect'
@@ -48,7 +48,7 @@ export type PublishReport =
 	| {
 			readonly status: 'status-only'
 			readonly reason: string
-			/** `false` when an existing summary comment was kept as it was. */
+			/** `false` when an existing summary review was edited instead of a new one posted. */
 			readonly posted: boolean
 	  }
 	| {
@@ -59,8 +59,8 @@ export type PublishReport =
 	| { readonly status: 'failed'; readonly reason: string }
 
 /**
- * Publishes a parsed outcome file on its pull request: a reviewed run gets threads, the sticky
- * summary, a check run per agent and the `MNG Review` commit status, also when no finder had to
+ * Publishes a parsed outcome file on its pull request: a reviewed run gets threads, the summary
+ * review, a check run per agent and the `MNG Review` commit status, also when no finder had to
  * run (the re-check's proposals and the status still matter); an offline endpoint gets the
  * summary when there is none and an `error` status; a reply schedule run gets its answers
  * (`ReplyPublishService`) and nothing else. The rules name the bot identities whose
@@ -83,7 +83,7 @@ export const PublishRunServiceLive = Layer.effect(
 	PublishRunService,
 	Effect.gen(function* () {
 		const publisher = yield* PublishService
-		const summaries = yield* SummaryCommentService
+		const summaries = yield* SummaryReviewService
 		const statuses = yield* StatusReportService
 		const replyPublisher = yield* ReplyPublishService
 		const rulesService = yield* RulesService

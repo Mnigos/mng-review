@@ -35,24 +35,29 @@ export function toOfflineSummary(
 	}
 }
 
+/** The summary with one more manual run counted: its text and every other marker field stay. */
+export function toReservedSummary(current: SummaryComment): RenderedSummary {
+	const marker = {
+		...current.marker,
+		manualRuns: (current.marker.manualRuns ?? 0) + 1,
+	}
+	return { body: toSummaryWithMarker(current.body, marker), marker }
+}
+
 /**
- * The summary with one more manual run counted: an existing summary keeps its text and every other
- * marker field; with none, a status summary that names the handle the command mentioned in a code
- * span, so it notifies no one.
+ * A status summary for a manual run when the current identity has no summary review to count it
+ * in: one line naming the handle the command mentioned in a code span, so it notifies no one, over
+ * the carried marker with one more manual run; with no marker to carry, unfinished.
  */
-export function toReservedSummary(
-	current: SummaryComment | undefined,
+export function toReservedStatus(
+	previous: SummaryMarker | undefined,
 	handle: string,
 	links: BlobLinks
 ): RenderedSummary {
-	if (current) {
-		const marker = {
-			...current.marker,
-			manualRuns: (current.marker.manualRuns ?? 0) + 1,
-		}
-		return { body: toSummaryWithMarker(current.body, marker), marker }
+	const marker = {
+		...(previous ?? NO_RUN_MARKER),
+		manualRuns: (previous?.manualRuns ?? 0) + 1,
 	}
-	const marker = { ...NO_RUN_MARKER, manualRuns: 1 }
 	return {
 		body: formatStatusComment(
 			`A command to @${handle} started a manual review on this pull request.`,

@@ -3,7 +3,7 @@ import type { Rules } from '@mng-review/engine'
 import { Context, Effect, Layer, Schema } from 'effect'
 import { GitHubApiService } from '../../../platform/github-api.service'
 import { OwnedIdentities } from '../../../platform/owned-identities.context'
-import { SummaryCommentService } from '../../publish/application/summary-comment.service'
+import { SummaryReviewService } from '../../publish/application/summary-review.service'
 import { isOwnerAccess } from '../domain/command-access.helper'
 import { getCommandHandle } from '../domain/command-handle.helper'
 import type {
@@ -66,7 +66,7 @@ export const CommandAuthorizeServiceLive = Layer.effect(
 	CommandAuthorizeService,
 	Effect.gen(function* () {
 		const api = yield* GitHubApiService
-		const summaries = yield* SummaryCommentService
+		const summaries = yield* SummaryReviewService
 
 		/**
 		 * True when the commenter may start a review: the built-in `admin` role, never a custom one, or

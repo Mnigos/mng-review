@@ -542,13 +542,15 @@ test.each(['published', 'failed', 'status-only', 'not-published'] as const)(
 				'3 of 8 rechecked thread\\(s\\) resolved; 2 check run\\(s\\), status set'
 			)
 			expect(text).toContain(
-				'1 on lines, 2 on files, 3 in the summary comment, 4 not posted; 5 already had a thread, 7 found again under resolved threads'
+				'1 on lines, 2 on files, 3 in the summary, 4 not posted; 5 already had a thread, 7 found again under resolved threads'
 			)
 		}
 		if (status === 'failed' || status === 'not-published')
 			expect(text).toContain(escapeMarkdown(MALICIOUS))
 		if (status === 'status-only')
-			expect(text).toContain('kept the existing summary comment')
+			expect(text).toContain(
+				'marked the existing summary unfinished; the reviewer was offline'
+			)
 	}
 )
 

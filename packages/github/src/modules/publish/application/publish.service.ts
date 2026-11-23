@@ -17,7 +17,11 @@ import {
 	planPublish,
 } from '../domain/publish-plan.helper'
 import { PublishIncompleteError } from '../domain/publish.errors'
-import type { BotThread, PlannedThread } from '../domain/publish.types'
+import type {
+	BotThread,
+	PlannedThread,
+	PublishPlan,
+} from '../domain/publish.types'
 import {
 	getCarriedBugs,
 	type MarkedRun,
@@ -32,10 +36,13 @@ import {
 	formatSummaryComment,
 	toSummaryWithMarker,
 } from '../presentation/summary-comment.formatter'
-import { toBlobLinks } from '../presentation/thread-comment.formatter'
+import {
+	formatThreadComment,
+	toBlobLinks,
+} from '../presentation/thread-comment.formatter'
 import type { PublishInput, PublishResult } from './publish.service.types'
 import { ReplyCheckService, ReplyCheckServiceLive } from './reply-check.service'
-import { SummaryCommentService } from './summary-comment.service'
+import { SummaryReviewService } from './summary-review.service'
 import {
 	ThreadPlaceService,
 	ThreadPlaceServiceLive,
@@ -60,15 +67,19 @@ interface CheckedRun extends MarkedRun {
 	readonly moved: boolean
 }
 
+/** A line thread moved into the summary after GitHub refused the review's inline comments. */
+function toSummaryPlace(thread: PlannedThread): PlannedThread {
+	return thread.place === 'line' ? { ...thread, place: 'summary' } : thread
+}
+
 /**
- * Posts a run's findings on its pull request as the token's bot: one inline thread per new
- * finding, in one `COMMENT` review, a file comment when the line is outside the diff, and the
- * sticky summary through `SummaryCommentService`. A finding that already has an open thread of an
+ * Posts a run's findings on its pull request as the token's bot: a comment per finding whose line
+ * is outside the diff, then one review whose body is the summary and whose comments are the new
+ * inline threads, through `SummaryReviewService`. A finding that already has an open thread of an
  * owned identity, or only resolved ones whose code did not change, is not posted again. A comment
- * the bot wrote but someone else edited no longer counts as the bot's. A summary write that fails
- * after threads were posted fails with `PublishIncompleteError`. Threads go out through
- * `ThreadPostService`. Before planning it applies the
- * re-check's proposals and the review's reply decisions that pass its own git check
+ * the bot wrote but someone else edited no longer counts as the bot's. A review that fails after
+ * file comments may have been posted fails with `PublishIncompleteError`. Before planning it
+ * applies the re-check's proposals and the review's reply decisions that pass its own git check
  * (`ReplyCheckService`, then `ThreadReplyService`), so a thread they close counts as resolved; it
  * keeps the threads that wait for the owner in the summary marker, drops those an owner cleared,
  * and adds or removes the `needs-owner` label.
@@ -96,7 +107,7 @@ export const PublishServiceLive = Layer.effect(
 		const api = yield* GitHubApiService
 		const config = yield* GitHubConfig
 		const resolution = yield* ThreadResolutionService
-		const summaries = yield* SummaryCommentService
+		const summaries = yield* SummaryReviewService
 		const places = yield* ThreadPlaceService
 		const conversation = yield* ThreadReplyService
 		const replyChecks = yield* ReplyCheckService
@@ -218,17 +229,19 @@ export const PublishServiceLive = Layer.effect(
 				{ outcome: report, config: input.rules.config, agents },
 				{ threads, lines, changedPlaces }
 			)
-			const posted = yield* poster.postThreads(input, planned.threads)
-			const plan = { ...planned, threads: posted }
-			// Read again: a run alongside this one may have posted or closed bug threads meanwhile.
-			// The threads are posted, so a failed read keeps the first one.
+			const filed = yield* poster.postFiles(input, planned.threads)
+			const onLine = filed.filter(thread => thread.place === 'line')
+			const posting =
+				onLine.length > 0 || filed.some(thread => thread.place === 'file')
+			// Read again after the answers, so the ones this run sent to the owner are among them.
 			const second = yield* readAll(pullNumber).pipe(
 				Effect.orElseSucceed(() => first)
 			)
 			const latest = second.threads.map(thread =>
 				resolvedIds.has(thread.id) ? { ...thread, resolved: true } : thread
 			)
-			const threadBugs = countOpenBugs(plan, latest)
+			// Every new bug counts from the plan, wherever the review puts it.
+			const threadBugs = countOpenBugs(planned, latest)
 			const run = yield* checkRun(input)
 			// Answers this run or one alongside it sent to the owner wait, even if the summary write failed.
 			const all = [
@@ -245,14 +258,20 @@ export const PublishServiceLive = Layer.effect(
 				resolvers: toResolvers(second.raw),
 				allow: input.rules.config.commands.allow,
 			})
-			const update = {
-				head: run.head,
-				partial: run.partial,
-				finished: isFinished(report),
-				unthreadedBugs: countUnthreadedBugs(plan, latest),
-				waiting: { added: all.filter(id => !cleared.has(id)), cleared },
-			} satisfies MarkerUpdate
-			const standing = (marker: SummaryMarker) => {
+			/** The plan with its line threads inline, or in the summary when GitHub refused them. */
+			const toPlan = (inline: boolean): PublishPlan => ({
+				...planned,
+				threads: inline ? filed : filed.map(toSummaryPlace),
+			})
+			const toUpdate = (plan: PublishPlan) =>
+				({
+					head: run.head,
+					partial: run.partial,
+					finished: isFinished(report),
+					unthreadedBugs: countUnthreadedBugs(plan, latest),
+					waiting: { added: all.filter(id => !cleared.has(id)), cleared },
+				}) satisfies MarkerUpdate
+			const standing = (marker: SummaryMarker, update: MarkerUpdate) => {
 				const finished = isFullReview(report, marker, run)
 				const openBugs = threadBugs + getCarriedBugs(marker, update)
 				const owner = marker.needsOwner?.length ?? 0
@@ -263,31 +282,46 @@ export const PublishServiceLive = Layer.effect(
 				}
 			}
 			const written = yield* summaries
-				.write(pullNumber, current => {
-					const marker = toNextSummaryMarker(current?.marker, update)
-					// The summary describes the head; a run whose head moved only counts itself.
-					if (current && run.moved)
-						return { body: toSummaryWithMarker(current.body, marker), marker }
-					const body = formatSummaryComment({
-						report,
-						plan,
-						...standing(marker),
-						carriedBugs: getCarriedBugs(marker, update),
-						marker,
-						maxRuns: input.rules.config.limits.max_runs_per_pr,
-						links,
-						resolved,
-						answered,
-						waiting: latest.filter(thread =>
-							marker.needsOwner?.includes(thread.id)
-						),
-						tokens:
-							input.replies?.tokens ?? input.recheck?.tokens ?? report.tokens,
-					})
-					return { body, marker }
+				.write(pullNumber, {
+					head: input.head,
+					comments: onLine.map(thread => ({
+						path: thread.finding.path,
+						line: thread.finding.line,
+						body: formatThreadComment(thread, links, true),
+					})),
+					fresh: posting,
+					render: (current, inline) => {
+						const plan = toPlan(inline)
+						const update = toUpdate(plan)
+						const marker = toNextSummaryMarker(current?.marker, update)
+						// The summary describes the head; a run whose head moved and posts nothing only counts itself.
+						if (current && run.moved && !posting)
+							return { body: toSummaryWithMarker(current.body, marker), marker }
+						const body = formatSummaryComment({
+							report,
+							plan,
+							...standing(marker, update),
+							carriedBugs: getCarriedBugs(marker, update),
+							marker,
+							maxRuns: input.rules.config.limits.max_runs_per_pr,
+							links,
+							resolved,
+							answered,
+							waiting: latest.filter(thread =>
+								marker.needsOwner?.includes(thread.id)
+							),
+							tokens:
+								input.replies?.tokens ?? input.recheck?.tokens ?? report.tokens,
+						})
+						return { body, marker }
+					},
 				})
 				.pipe(Effect.mapError(error => new PublishIncompleteError({ error })))
-			const { finished, openBugs, verdict } = standing(written.marker)
+			const plan = toPlan(written.inline)
+			const { finished, openBugs, verdict } = standing(
+				written.marker,
+				toUpdate(plan)
+			)
 			const owner = written.marker.needsOwner?.length ?? 0
 			const label = yield* conversation.syncLabel(
 				pullNumber,
@@ -295,7 +329,7 @@ export const PublishServiceLive = Layer.effect(
 				owner
 			)
 			const count = (place: PlannedThread['place']) =>
-				posted.filter(thread => thread.place === place).length
+				plan.threads.filter(thread => thread.place === place).length
 			return {
 				verdict,
 				openBugs,

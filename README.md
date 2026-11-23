@@ -149,7 +149,7 @@ On a public repository anyone can read the job summary and download the artifact
 
 ### Publish mode
 
-`review-publish.yml` also comments on the pull request as `github-actions[bot]`: one thread per bug with its evidence, unverified findings marked as such, nits in the same review, and a summary comment with the verdict that is edited on every run. A finding already in an open thread is not posted twice. The bot only comments; it never approves or requests changes. It takes the same inputs and secrets as `review.yml`; grant the job `pull-requests`, `checks` and `statuses` write:
+`review-publish.yml` also reviews the pull request as `github-actions[bot]`: one review per run whose body is the summary with the verdict and whose comments are the new threads, one per bug with its evidence, unverified findings marked as such, and nits. A run that posts nothing new edits the body of the bot's last review instead, so it notifies no one, and each new review hides the bot's earlier ones as outdated. A finding already in an open thread is not posted twice. The bot only comments; it never approves or requests changes. It takes the same inputs and secrets as `review.yml`; grant the job `pull-requests`, `checks` and `statuses` write:
 
 ```yaml
 jobs:

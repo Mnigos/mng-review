@@ -8,15 +8,21 @@ import type {
 	IssueComment,
 	PullRequest,
 	PullRequestComment,
+	PullRequestReview,
 	ReviewThread,
 	ThreadComment,
 } from '../../platform/github-api.schema'
 import {
 	GitHubApiService,
-	type ReviewInput,
 	type ReviewCommentInput,
 } from '../../platform/github-api.service'
+import {
+	GitHubReviewService,
+	REVIEW_STATE_BY_EVENT,
+	type ReviewInput,
+} from '../../platform/github-review.service'
 import type { GitHubApiError } from '../../platform/github.errors'
+import { getBasePermission } from './collaborator-role.helper'
 
 export type ApiWrite =
 	| {
@@ -35,6 +41,11 @@ export type ApiWrite =
 			readonly body: string
 	  }
 	| { readonly method: 'update'; readonly id: number; readonly body: string }
+	| {
+			readonly method: 'updateReview'
+			readonly id: number
+			readonly body: string
+	  }
 	| { readonly method: 'delete'; readonly id: number }
 	| { readonly method: 'minimize'; readonly id: string }
 	| { readonly method: 'reply'; readonly id: string; readonly body: string }
@@ -74,24 +85,6 @@ export interface GitHubApiFakeOptions {
 	readonly storeFailedCreates?: boolean
 }
 
-/** The base permission GitHub reports for each built-in role. */
-const BUILT_IN_ROLE_PERMISSION = {
-	admin: 'admin',
-	maintain: 'write',
-	write: 'write',
-	triage: 'read',
-	read: 'read',
-} as const
-
-/** The base permission of a role: a built-in role's own, `read` for a custom role. */
-function getBasePermission(role: string): string {
-	return (
-		Object.entries(BUILT_IN_ROLE_PERMISSION).find(
-			([name]) => name === role
-		)?.[1] ?? 'read'
-	)
-}
-
 /** In-memory GitHub with call recording and explicit per-operation failures, never an HTTP client. */
 export function githubApiFake(
 	identity: BotIdentity = GITHUB_ACTIONS_IDENTITY,
@@ -100,6 +93,9 @@ export function githubApiFake(
 	const threads: ReviewThread[] = []
 	const threadSnapshots: ReviewThread[][] = []
 	const comments: PullRequestComment[] = []
+	const reviews: PullRequestReview[] = []
+	const reviewSnapshots: PullRequestReview[][] = []
+	const reviewReads: number[] = []
 	const writes: ApiWrite[] = []
 	const commentReads: number[] = []
 	const commentSnapshots: PullRequestComment[][] = []
@@ -120,6 +116,8 @@ export function githubApiFake(
 		comment: [] as GitHubApiError[],
 		create: [] as GitHubApiError[],
 		update: [] as GitHubApiError[],
+		updateReview: [] as GitHubApiError[],
+		listReviews: [] as GitHubApiError[],
 		delete: [] as GitHubApiError[],
 		minimize: [] as GitHubApiError[],
 		reply: [] as GitHubApiError[],
@@ -274,15 +272,6 @@ export function githubApiFake(
 					permission: command.permission ?? getBasePermission(command.role),
 				}
 			}),
-		createReview: (pullNumber, input) =>
-			Effect.gen(function* () {
-				writes.push({ method: 'review', pullNumber, input })
-				const error = failures.review.shift()
-				if (error) return yield* error
-				for (const comment of input.comments)
-					addThread({ ...comment, commitId: input.commitId })
-				return writes.length
-			}),
 		createReviewComment: (pullNumber, input) =>
 			Effect.gen(function* () {
 				writes.push({ method: 'comment', pullNumber, input })
@@ -325,6 +314,9 @@ export function githubApiFake(
 				const index = comments.findIndex(comment => comment.id === id)
 				const existing = comments[index]
 				if (existing) comments[index] = { ...existing, isMinimized: true }
+				const reviewIndex = reviews.findIndex(review => review.id === id)
+				const review = reviews[reviewIndex]
+				if (review) reviews[reviewIndex] = { ...review, isMinimized: true }
 				return undefined
 			}),
 		updateIssueComment: (id, body) =>
@@ -338,8 +330,50 @@ export function githubApiFake(
 				return undefined
 			}),
 	})
+	const reviewApi = Layer.succeed(GitHubReviewService, {
+		listReviews: pullNumber =>
+			Effect.gen(function* () {
+				reviewReads.push(pullNumber)
+				const error = failures.listReviews.shift()
+				if (error) return yield* error
+				return reviewSnapshots.shift() ?? [...reviews]
+			}),
+		createReview: (pullNumber, input) =>
+			Effect.gen(function* () {
+				writes.push({ method: 'review', pullNumber, input })
+				const error = failures.review.shift()
+				if (error && !options.storeFailedCreates) return yield* error
+				const id = writes.length
+				for (const comment of input.comments)
+					addThread({ ...comment, commitId: input.commitId })
+				reviews.push({
+					id: `review-${id}`,
+					databaseId: id,
+					state: REVIEW_STATE_BY_EVENT[input.event],
+					isMinimized: false,
+					body: input.body,
+					author,
+					editor: null,
+				})
+				if (error) return yield* error
+				return id
+			}),
+		updateReview: (_pullNumber, id, body) =>
+			Effect.gen(function* () {
+				writes.push({ method: 'updateReview', id, body })
+				const error = failures.updateReview.shift()
+				if (error) return yield* error
+				const index = reviews.findIndex(review => review.databaseId === id)
+				const existing = reviews[index]
+				if (existing) reviews[index] = { ...existing, body }
+				return undefined
+			}),
+	})
 	return {
-		api,
+		api: Layer.mergeAll(api, reviewApi),
+		reviews,
+		reviewSnapshots,
+		reviewReads,
 		threads,
 		comments,
 		writes,

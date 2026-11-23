@@ -23,7 +23,6 @@ import {
 	toSeverityLabel,
 } from './thread-comment.formatter'
 
-export const SUMMARY_HEADING = '## MNG Review'
 export const VERDICTS = [
 	'ready',
 	'needs fixes',
@@ -39,8 +38,8 @@ export const SHORT_LIST_ITEMS = 3
 /** Characters of a title, place or reason a summary list line keeps. */
 const MAX_TEXT_CHARS = 300
 /**
- * The longest summary body; GitHub refuses comments over 65,536 characters, and the margin keeps
- * the verdict and the marker in.
+ * The longest summary body; GitHub refuses review bodies and comments over 65,536 characters, and
+ * the margin keeps the verdict and the marker in.
  */
 export const MAX_SUMMARY_CHARS = 60_000
 /** The summary marker that ends a body; any other HTML comment in the body is kept. */
@@ -49,7 +48,7 @@ const SUMMARY_MARKER_AT_END = new RegExp(
 	'u'
 )
 
-/** What the sticky summary of a reviewed run shows. */
+/** What the summary of a reviewed run shows. */
 export interface SummaryInput {
 	readonly report: ReviewReport
 	readonly plan: PublishPlan
@@ -299,22 +298,34 @@ interface SummaryDepth {
 	readonly details: boolean
 }
 
-/** The summary with lists cut to the depth's limit; without details, only the verdict and the footer. */
+/** The agents that ran and the tokens per model, collapsed below the findings. */
+function toAgentDetails(input: SummaryInput): string[] {
+	return [
+		'',
+		'<details><summary>Agents and tokens</summary>',
+		'',
+		...toAgentRows(input.report),
+		'',
+		toTokenLine(input.tokens),
+		'',
+		'</details>',
+	]
+}
+
+/**
+ * The summary with lists cut to the depth's limit, the verdict line first and the new findings
+ * next; without details, only the verdict and the footer.
+ */
 function toSummaryBody(input: SummaryInput, depth: SummaryDepth): string {
 	const body = depth.details
 		? [
-				'',
-				...toAgentRows(input.report),
-				...toRunNotes(input.report, depth.limit),
 				...toFindingLines(input, depth.limit),
 				...toRejectedLines(input.report, depth.limit),
-				'',
-				toTokenLine(input.tokens),
+				...toRunNotes(input.report, depth.limit),
+				...toAgentDetails(input),
 			]
-		: ['', 'The details did not fit in one comment; the job summary has them.']
+		: ['', 'The details did not fit in one review; the job summary has them.']
 	return [
-		SUMMARY_HEADING,
-		'',
 		toVerdictLine(input),
 		...(input.carriedBugs
 			? [
@@ -331,10 +342,11 @@ function toSummaryBody(input: SummaryInput, depth: SummaryDepth): string {
 }
 
 /**
- * The sticky summary of a reviewed run: verdict, risk and why, run count, the agents with their
- * results and why they ran, the new threads and what stayed in the summary (findings without a
- * thread in full, collapsed), rejected findings collapsed, what did not finish, tokens per model,
- * and the hidden marker. Lists shrink until the body fits `MAX_SUMMARY_CHARS`.
+ * The summary of a reviewed run, the body of its review: verdict, risk and why, run count, the new
+ * threads and what stayed in the summary (findings without a thread in full, collapsed), rejected
+ * findings collapsed, what did not finish, then the agents with their results and why they ran and
+ * the tokens per model, collapsed, and the hidden marker. Lists shrink until the body fits
+ * `MAX_SUMMARY_CHARS`.
  */
 export function formatSummaryComment(input: SummaryInput): string {
 	const full = toSummaryBody(input, { limit: MAX_LIST_ITEMS, details: true })
@@ -347,15 +359,13 @@ export function formatSummaryComment(input: SummaryInput): string {
 	return toSummaryBody(input, { limit: 0, details: false })
 }
 
-/** The sticky summary when the run did not review and no summary exists yet. */
+/** The summary when the run did not review and no summary exists yet: one status line. */
 export function formatStatusComment(
 	status: string,
 	marker: SummaryMarker,
 	links: BlobLinks
 ): string {
 	return [
-		SUMMARY_HEADING,
-		'',
 		escapeMarkdown(status),
 		'',
 		toFooter(links),

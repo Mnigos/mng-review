@@ -10,7 +10,7 @@ import type { BotThread } from '../domain/publish.types'
 import { getPendingReply } from '../domain/thread-conversation.helper'
 import { getRotated } from '../domain/thread-recheck.helper'
 import type { PendingReply } from '../domain/thread-reply.schema'
-import { SummaryCommentService } from './summary-comment.service'
+import { SummaryReviewService } from './summary-review.service'
 import {
 	ThreadReplyService,
 	ThreadReplyServiceLive,
@@ -107,7 +107,7 @@ export const ReplyFindServiceLive = Layer.effect(
 	Effect.gen(function* () {
 		const api = yield* GitHubApiService
 		const github = yield* GitHubStatusService
-		const summaries = yield* SummaryCommentService
+		const summaries = yield* SummaryReviewService
 		const conversation = yield* ThreadReplyService
 
 		const readPending = Effect.fn('ReplyFindService.readPending')(function* (

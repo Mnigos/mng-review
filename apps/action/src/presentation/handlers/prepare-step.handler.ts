@@ -5,7 +5,7 @@ import {
 	provideOwnedIdentities,
 	PublishService,
 	ReplyFindService,
-	SummaryCommentService,
+	SummaryReviewService,
 	ThreadReplyService,
 	toLogText,
 } from '@mng-review/github'
@@ -68,7 +68,7 @@ export const runPrepareStep = Effect.gen(function* () {
 	const env = yield* runnerEnvironmentConfig
 	const fs = yield* FileSystem.FileSystem
 	const publisher = yield* PublishService
-	const summaries = yield* SummaryCommentService
+	const summaries = yield* SummaryReviewService
 	const conversation = yield* ThreadReplyService
 	const finder = yield* ReplyFindService
 	const { identity } = yield* GitHubConfig

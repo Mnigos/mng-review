@@ -12,6 +12,7 @@ import type {
 	ReviewThread,
 } from '../../platform/github-api.schema'
 import { GitHubApiServiceLive } from '../../platform/github-api.service'
+import { GitHubReviewServiceLive } from '../../platform/github-review.service'
 import { GitHubStatusServiceLive } from '../../platform/github-status.service'
 import { GitHubConfig } from '../../platform/github.config'
 
@@ -81,12 +82,13 @@ export function makeGitHubHttp(
 	)
 	return {
 		requests,
+		reviewLayer: GitHubReviewServiceLive.pipe(Layer.provide(dependencies)),
 		statusLayer: GitHubStatusServiceLive.pipe(Layer.provide(dependencies)),
 		layer: GitHubApiServiceLive.pipe(Layer.provide(dependencies)),
 	}
 }
 
-export type GitHubConnection = 'reviewThreads' | 'comments'
+export type GitHubConnection = 'reviewThreads' | 'comments' | 'reviews'
 
 /** Wraps a connection in GitHub's GraphQL response envelope. */
 export function toGitHubPage<TNode>(

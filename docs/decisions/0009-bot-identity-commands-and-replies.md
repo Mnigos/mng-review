@@ -1,6 +1,6 @@
 # ADR 0009: The bot may post as a GitHub App, a mention of it starts a review, and it answers replies in its threads
 
-**Status:** Proposed
+**Status:** Proposed; ADR 0010 moves the sticky summary into the bot's review
 **Date:** 2026-11-20
 
 ## Context

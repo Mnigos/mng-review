@@ -23,7 +23,7 @@ import { formatRepliedSummary } from '../presentation/summary-reply.formatter'
 import { toBlobLinks } from '../presentation/thread-comment.formatter'
 import type { PublishReplies, PublishTarget } from './publish.service.types'
 import { ReplyCheckService, ReplyCheckServiceLive } from './reply-check.service'
-import { SummaryCommentService } from './summary-comment.service'
+import { SummaryReviewService } from './summary-review.service'
 import {
 	ThreadPlaceService,
 	ThreadPlaceServiceLive,
@@ -90,9 +90,10 @@ function toStanding(marker: SummaryMarker, head: string, threadBugs: number) {
  * check of the closing ones (`ReplyCheckService`, then `ThreadReplyService.apply`, which
  * re-checks each reply's author and digest and lets `needs-owner` stand only past the limit or the
  * rounds), rebuilds the waiting list from every owned summary and the bot's `needs-owner` answers,
- * updates the summary's verdict and waiting list, the `needs-owner` label and the `MNG Review`
- * status. It posts no finding thread and no check run, and the summary's run count, head,
- * finished flag and unthreaded bugs stay as they were.
+ * updates the summary's verdict and waiting list (an edit of the bot's newest review, or a new
+ * review when that one cannot be edited), the `needs-owner` label and the `MNG Review` status. It
+ * posts no finding thread and no check run, and the summary's run count, head, finished flag and
+ * unthreaded bugs stay as they were.
  */
 export class ReplyPublishService extends Context.Service<
 	ReplyPublishService,
@@ -109,7 +110,7 @@ export const ReplyPublishServiceLive = Layer.effect(
 		const api = yield* GitHubApiService
 		const config = yield* GitHubConfig
 		const github = yield* GitHubStatusService
-		const summaries = yield* SummaryCommentService
+		const summaries = yield* SummaryReviewService
 		const conversation = yield* ThreadReplyService
 		const places = yield* ThreadPlaceService
 		const replyChecks = yield* ReplyCheckService
@@ -217,17 +218,20 @@ export const ReplyPublishServiceLive = Layer.effect(
 				thread => !thread.resolved && thread.marker.kind === 'bug'
 			).length
 			const written = yield* summaries
-				.write(pullNumber, current => {
-					const marker = toRepliedMarker(current?.marker, update)
-					const body = formatRepliedSummary(current, {
-						...toStanding(marker, input.head, threadBugs),
-						waiting: latest.filter(thread =>
-							marker.needsOwner?.includes(thread.id)
-						),
-						marker,
-						links,
-					})
-					return { body, marker }
+				.write(pullNumber, {
+					head: input.head,
+					render: current => {
+						const marker = toRepliedMarker(current?.marker, update)
+						const body = formatRepliedSummary(current, {
+							...toStanding(marker, input.head, threadBugs),
+							waiting: latest.filter(thread =>
+								marker.needsOwner?.includes(thread.id)
+							),
+							marker,
+							links,
+						})
+						return { body, marker }
+					},
 				})
 				.pipe(
 					Effect.tapError(() =>

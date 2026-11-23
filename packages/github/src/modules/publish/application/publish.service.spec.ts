@@ -59,18 +59,15 @@ import {
 	parseReplyMarker,
 	parseSummaryMarker,
 } from '../domain/publish-marker.parser'
-import {
-	SHORT_SHA_LENGTH,
-	THREAD_PLACE_LINES,
-} from '../domain/publish.constants'
+import { THREAD_PLACE_LINES } from '../domain/publish.constants'
 import { PublishIncompleteError } from '../domain/publish.errors'
 import type { ThreadReplyDecision } from '../domain/thread-reply.schema'
 import { toMarkerComment } from '../presentation/thread-comment.formatter'
 import { PublishService, PublishServiceLive } from './publish.service'
 import {
-	SummaryCommentService,
-	SummaryCommentServiceLive,
-} from './summary-comment.service'
+	SummaryReviewService,
+	SummaryReviewServiceLive,
+} from './summary-review.service'
 import {
 	ThreadResolutionService,
 	ThreadResolutionServiceLive,
@@ -116,7 +113,7 @@ function setup(
 		})
 	)
 	const publisher = PublishServiceLive.pipe(
-		Layer.provideMerge(SummaryCommentServiceLive),
+		Layer.provideMerge(SummaryReviewServiceLive),
 		Layer.provide(Layer.merge(dependencies, gitLayer(repo.root)))
 	)
 	const input = {
@@ -154,11 +151,17 @@ function summary() {
 	return {
 		id: 'summary-node',
 		databaseId: 101,
+		state: 'COMMENTED' as const,
 		isMinimized: false,
 		body: toMarkerComment('summary', SUMMARY_MARKER),
 		author: { __typename: 'Bot', login: GITHUB_ACTIONS_IDENTITY.login },
 		editor: null,
 	}
+}
+
+/** The body of the newest review, which holds the summary. */
+function reviewBody(fake: ReturnType<typeof githubApiFake>) {
+	return fake.reviews.at(-1)?.body
 }
 
 /** A write refusal or unknown write result. */
@@ -192,7 +195,6 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 					})
 					expect(fixture.fake.writes.map(call => call.method)).toEqual([
 						'review',
-						'create',
 					])
 					const [review] = fixture.fake.writes
 					expect(review).toMatchObject({
@@ -200,13 +202,14 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 						pullNumber: 17,
 						input: {
 							commitId: fixture.head,
-							body: `MNG Review: 1 new comment(s) on \`${fixture.head.slice(0, SHORT_SHA_LENGTH)}\`. The summary is in the conversation.`,
+							event: 'COMMENT',
+							body: reviewBody(fixture.fake),
 							comments: [{ path: bug().path, line: bug().line }],
 						},
 					})
-					expect(
-						parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')?.runs
-					).toBe(1)
+					expect(parseSummaryMarker(reviewBody(fixture.fake) ?? '')?.runs).toBe(
+						1
+					)
 					expect(yield* publisher.publish(fixture.input)).toMatchObject({
 						onLine: 0,
 						repeated: 1,
@@ -214,11 +217,11 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 					})
 					expect(fixture.fake.writes.map(call => call.method)).toEqual([
 						'review',
-						'create',
-						'update',
+
+						'updateReview',
 					])
 					expect(
-						parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
+						parseSummaryMarker(reviewBody(fixture.fake) ?? '')
 					).toMatchObject({ runs: 2, head: fixture.head, finished: true })
 				})
 		)
@@ -229,20 +232,23 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 					const fixture = setup()
 					const existing = summary()
 					const failure = error(403)
-					fixture.fake.comments.push(existing)
-					fixture.fake.failures.update.push(failure)
+					fixture.fake.reviews.push(existing)
+					fixture.fake.failures.review.push(failure)
 					const failed = yield* PublishService.use(service =>
-						service.publish(fixture.input)
+						service.publish({
+							...fixture.input,
+							report: { ...fixture.input.report, bugs: [bug({ line: 30 })] },
+						})
 					).pipe(Effect.provide(fixture.publisher), Effect.flip)
 					expect(failed).toBeInstanceOf(PublishIncompleteError)
 					expect(failed).toEqual(new PublishIncompleteError({ error: failure }))
 					expect(failed.message).toBe(failure.message)
 					expect(fixture.fake.writes.map(write => write.method)).toEqual([
+						'comment',
 						'review',
-						'update',
 					])
 					expect(fixture.fake.threads).toHaveLength(1)
-					expect(fixture.fake.comments).toEqual([existing])
+					expect(fixture.fake.reviews).toEqual([existing])
 				})
 		)
 		test.effect(
@@ -294,7 +300,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 			)
 		for (const refusals of [0, 1, 2])
 			test.effect(
-				`422 review falls back through ${refusals} single-comment refusals`,
+				`422 review falls back to the body with ${refusals} unrelated comment refusals queued`,
 				() =>
 					Effect.gen(function* () {
 						const fixture = setup()
@@ -302,73 +308,69 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 						fixture.fake.failures.comment.push(
 							...Array.from({ length: refusals }, () => error(422))
 						)
-						const publisher = yield* PublishService.pipe(
-							Effect.provide(fixture.publisher)
-						)
-						expect(yield* publisher.publish(fixture.input)).toMatchObject({
-							onLine: refusals === 0 ? 1 : 0,
-							onFile: refusals === 1 ? 1 : 0,
-							inSummary: refusals === 2 ? 1 : 0,
-							unposted: 0,
-						})
-						const singles = fixture.fake.writes.filter(
-							call => call.method === 'comment'
-						)
-						expect(singles.map(call => call.input.line)).toEqual(
-							refusals === 0 ? [bug().line] : [bug().line, undefined]
-						)
-						const marker = parseSummaryMarker(
-							fixture.fake.comments[0]?.body ?? ''
-						)
-						expect(marker).toMatchObject({ head: fixture.head, finished: true })
-						expect(marker?.unthreadedBugs).toBe(refusals === 2 ? 1 : undefined)
-						expect(fixture.fake.writes.at(-1)?.method).toBe('create')
-					})
-			)
-		for (const status of [500, 503, undefined])
-			test.effect(
-				`unknown review result ${status} leaves threads unposted and writes only the summary`,
-				() =>
-					Effect.gen(function* () {
-						const fixture = setup()
-						fixture.fake.failures.review.push(error(status))
-						const publisher = yield* PublishService.pipe(
-							Effect.provide(fixture.publisher)
-						)
-						expect(yield* publisher.publish(fixture.input)).toMatchObject({
-							unposted: 1,
-							onLine: 0,
-							onFile: 0,
-						})
-						expect(fixture.fake.writes.map(call => call.method)).toEqual([
+						expect(
+							yield* PublishService.use(service =>
+								service.publish(fixture.input)
+							).pipe(Effect.provide(fixture.publisher))
+						).toMatchObject({ onLine: 0, onFile: 0, inSummary: 1, unposted: 0 })
+						expect(fixture.fake.writes.map(write => write.method)).toEqual([
 							'review',
-							'create',
+							'review',
 						])
 						expect(
-							parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
+							fixture.fake.writes.filter(write => write.method === 'comment')
+						).toEqual([])
+						expect(fixture.fake.failures.comment).toHaveLength(refusals)
+						expect(
+							parseSummaryMarker(reviewBody(fixture.fake) ?? '')
 						).toMatchObject({
 							head: fixture.head,
 							finished: true,
 							unthreadedBugs: 1,
 						})
+						expect(reviewBody(fixture.fake)).toContain('Not in the diff (1):')
+					})
+			)
+		for (const status of [500, 503, undefined])
+			test.effect(
+				`unknown review result ${status} fails closed without a duplicate review`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = setup()
+						const failure = error(status)
+						fixture.fake.failures.review.push(failure)
+						expect(
+							yield* PublishService.use(service =>
+								service.publish(fixture.input)
+							).pipe(Effect.provide(fixture.publisher), Effect.flip)
+						).toEqual(new PublishIncompleteError({ error: failure }))
+						expect(fixture.fake.writes.map(write => write.method)).toEqual([
+							'review',
+						])
+						expect(fixture.fake.reviewReads).toEqual([17, 17, 17])
+						expect(fixture.fake.reviews).toEqual([])
+						expect(fixture.fake.threads).toEqual([])
 					})
 			)
 		test.effect('recreates a summary whose update returned 404', () =>
 			Effect.gen(function* () {
 				const fixture = setup()
-				fixture.fake.comments.push(summary())
-				fixture.fake.failures.update.push(error(404))
+				fixture.fake.reviews.push(summary())
+				fixture.fake.failures.updateReview.push(error(404))
 				const publisher = yield* PublishService.pipe(
 					Effect.provide(fixture.publisher)
 				)
-				yield* publisher.publish(fixture.input)
+				yield* publisher.publish({
+					...fixture.input,
+					report: { ...fixture.input.report, bugs: [] },
+				})
 				expect(fixture.fake.writes.map(call => call.method)).toEqual([
+					'updateReview',
 					'review',
-					'update',
-					'create',
+					'minimize',
 				])
-				expect(fixture.fake.writes[1]).toMatchObject({
-					method: 'update',
+				expect(fixture.fake.writes[0]).toMatchObject({
+					method: 'updateReview',
 					id: 101,
 				})
 			})
@@ -378,7 +380,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 			() =>
 				Effect.gen(function* () {
 					const fixture = setup()
-					const publisher = yield* SummaryCommentService.pipe(
+					const publisher = yield* SummaryReviewService.pipe(
 						Effect.provide(fixture.publisher)
 					)
 					const input = {
@@ -389,12 +391,14 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 					}
 					expect(yield* publisher.publishStatus(input)).toBe(true)
 					expect(fixture.fake.writes.map(call => call.method)).toEqual([
-						'create',
+						'review',
 					])
-					expect(
-						parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
-					).toEqual({ v: SUMMARY_MARKER.v, runs: 0, finished: false })
-					const originalBody = fixture.fake.comments[0]?.body
+					expect(parseSummaryMarker(reviewBody(fixture.fake) ?? '')).toEqual({
+						v: SUMMARY_MARKER.v,
+						runs: 0,
+						finished: false,
+					})
+					const originalBody = reviewBody(fixture.fake)
 					expect(
 						yield* publisher.publishStatus({
 							...input,
@@ -402,10 +406,10 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 						})
 					).toBe(false)
 					expect(fixture.fake.writes.map(call => call.method)).toEqual([
-						'create',
-						'update',
+						'review',
+						'updateReview',
 					])
-					expect(fixture.fake.comments[0]?.body).toBe(originalBody)
+					expect(reviewBody(fixture.fake)).toBe(originalBody)
 				})
 		)
 		for (const scenario of [
@@ -491,7 +495,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 					const publisher = yield* PublishService.pipe(
 						Effect.provide(
 							PublishServiceLive.pipe(
-								Layer.provide(SummaryCommentServiceLive),
+								Layer.provide(SummaryReviewServiceLive),
 								Layer.provide(
 									Layer.merge(
 										fixture.dependencies,
@@ -515,9 +519,9 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 						false
 					)
 					expect(fixture.fake.writes.map(call => call.method)).toEqual([
-						'create',
+						'review',
 					])
-					expect(fixture.fake.comments[0]?.body).toContain(
+					expect(reviewBody(fixture.fake)).toContain(
 						'Found again under threads resolved without a code change, not blocking (1):'
 					)
 				})
@@ -573,7 +577,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 							verdict: 'ready',
 						})
 						expect(fixture.fake.writes.map(call => call.method)).toEqual([
-							'create',
+							'review',
 						])
 					})
 			)
@@ -622,7 +626,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 							verdict: 'needs fixes',
 						})
 						expect(
-							parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
+							parseSummaryMarker(reviewBody(fixture.fake) ?? '')
 						).toMatchObject({
 							head: fixture.head,
 							finished: true,
@@ -684,7 +688,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 							})
 						).pipe(Effect.provide(fixture.publisher))
 					).toMatchObject({ inSummary: 1, openBugs: 0, verdict: 'ready' })
-					const body = fixture.fake.comments[0]?.body ?? ''
+					const body = reviewBody(fixture.fake) ?? ''
 					expect(body).toContain('About the pull request (1):')
 					expect(body).not.toContain('Nits not posted inline')
 					expect(body).not.toContain(`${finding.path}:${finding.line}`)
@@ -745,15 +749,13 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 							verdict: kind === 'bug' ? 'needs fixes' : 'ready',
 						})
 						expect(fixture.fake.writes.map(call => call.method)).toEqual([
-							'create',
+							'review',
 						])
 						expect(fixture.fake.threads).toEqual([])
-						expect(fixture.fake.comments[0]?.body).toContain(
+						expect(reviewBody(fixture.fake)).toContain(
 							'About the pull request (1):'
 						)
-						const marker = parseSummaryMarker(
-							fixture.fake.comments[0]?.body ?? ''
-						)
+						const marker = parseSummaryMarker(reviewBody(fixture.fake) ?? '')
 						expect(marker).toMatchObject({ head: fixture.head, finished: true })
 						expect(marker?.unthreadedBugs).toBe(kind === 'bug' ? 1 : undefined)
 					})
@@ -797,7 +799,6 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 					})
 					expect(fixture.fake.writes.map(call => call.method)).toEqual([
 						'review',
-						'create',
 					])
 					const review = fixture.fake.writes.find(
 						call => call.method === 'review'
@@ -812,14 +813,12 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 							?.fingerprint
 					).toBe(diff.fingerprint)
 					expect(fixture.fake.threads).toHaveLength(1)
-					expect(fixture.fake.comments[0]?.body).toContain(
+					expect(reviewBody(fixture.fake)).toContain(
 						'About the pull request (1):'
 					)
-					expect(fixture.fake.comments[0]?.body).toContain(
-						'Not in the diff (1):'
-					)
+					expect(reviewBody(fixture.fake)).toContain('Not in the diff (1):')
 					expect(
-						parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
+						parseSummaryMarker(reviewBody(fixture.fake) ?? '')
 					).toMatchObject({
 						head: fixture.head,
 						finished: true,
@@ -872,35 +871,38 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 		)
 		for (const status of [500, 503, undefined])
 			test.effect(
-				`review error ${status} records unposted threads without another thread write`,
+				`review error ${status} preserves an earlier file post and does not repost`,
 				() =>
 					Effect.gen(function* () {
 						const fixture = setup()
-						fixture.fake.failures.review.push(error(status))
-						const publisher = yield* PublishService.pipe(
-							Effect.provide(fixture.publisher)
-						)
-						expect(yield* publisher.publish(fixture.input)).toMatchObject({
-							unposted: 1,
-							onLine: 0,
-							onFile: 0,
-							inSummary: 0,
-						})
+						const failure = error(status)
+						fixture.fake.failures.review.push(failure)
 						expect(
-							fixture.fake.writes
-								.filter(
-									call => call.method === 'review' || call.method === 'comment'
-								)
-								.map(call => call.method)
-						).toEqual(['review'])
+							yield* PublishService.use(service =>
+								service.publish({
+									...fixture.input,
+									report: {
+										...fixture.input.report,
+										bugs: [bug(), bug({ line: 30, fingerprint: 'file-bug' })],
+									},
+								})
+							).pipe(Effect.provide(fixture.publisher), Effect.flip)
+						).toEqual(new PublishIncompleteError({ error: failure }))
+						expect(fixture.fake.writes.map(write => write.method)).toEqual([
+							'comment',
+							'review',
+						])
+						expect(
+							fixture.fake.threads.map(thread => thread.subjectType)
+						).toEqual(['FILE'])
 					})
 			)
 		test.effect(
-			'uses the oldest eligible bot summary and ignores human-edited markers',
+			'uses the newest eligible bot summary and ignores human-edited markers',
 			() =>
 				Effect.gen(function* () {
 					const fixture = setup()
-					fixture.fake.comments.push(
+					fixture.fake.reviews.push(
 						{
 							...summary(),
 							databaseId: 1,
@@ -928,12 +930,15 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 					const publisher = yield* PublishService.pipe(
 						Effect.provide(fixture.publisher)
 					)
-					yield* publisher.publish(fixture.input)
+					yield* publisher.publish({
+						...fixture.input,
+						report: { ...fixture.input.report, bugs: [] },
+					})
 					expect(
 						fixture.fake.writes
-							.filter(call => call.method === 'update')
+							.filter(call => call.method === 'updateReview')
 							.map(call => call.id)
-					).toEqual([3])
+					).toEqual([4])
 				})
 		)
 		test.effect(
@@ -945,8 +950,8 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 						...summary(),
 						body: `Verdict: ready\n${toMarkerComment('summary', { ...SUMMARY_MARKER, finished: true })}`,
 					}
-					fixture.fake.comments.push(existing)
-					const publisher = yield* SummaryCommentService.pipe(
+					fixture.fake.reviews.push(existing)
+					const publisher = yield* SummaryReviewService.pipe(
 						Effect.provide(fixture.publisher)
 					)
 					expect(
@@ -959,9 +964,9 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 					).toBe(false)
 					const body = `Verdict: ready\n${toMarkerComment('summary', { ...SUMMARY_MARKER, finished: false })}`
 					expect(fixture.fake.writes).toEqual([
-						{ method: 'update', id: existing.databaseId, body },
+						{ method: 'updateReview', id: existing.databaseId, body },
 					])
-					expect(fixture.fake.comments).toEqual([{ ...existing, body }])
+					expect(fixture.fake.reviews).toEqual([{ ...existing, body }])
 				})
 		)
 	}
@@ -988,7 +993,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 					expect(applySpy).not.toHaveBeenCalled()
 					expect(fixture.fake.threads[0]?.isResolved).toBe(false)
 					expect(fixture.fake.writes.map(write => write.method)).toEqual([
-						'create',
+						'review',
 					])
 				})
 		)
@@ -997,13 +1002,13 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 			() =>
 				Effect.gen(function* () {
 					const fixture = setup()
-					fixture.fake.comments.push({
+					fixture.fake.reviews.push({
 						...summary(),
 						body: `Verdict: ready\n${toMarkerComment('summary', { ...SUMMARY_MARKER, finished: true })}`,
 					})
 					fixture.fake.threads.push(botClosedReviewThread())
 					expect(
-						yield* SummaryCommentService.use(publisher =>
+						yield* SummaryReviewService.use(publisher =>
 							publisher.publishStatus({
 								pullNumber: 17,
 								head: fixture.head,
@@ -1035,9 +1040,10 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 					expect(status.statuses).toEqual([
 						{ sha: fixture.head, ...toCommitStatus('incomplete', 0, false) },
 					])
-					expect(
-						parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
-					).toEqual({ ...SUMMARY_MARKER, finished: false })
+					expect(parseSummaryMarker(reviewBody(fixture.fake) ?? '')).toEqual({
+						...SUMMARY_MARKER,
+						finished: false,
+					})
 				})
 		)
 		test.effect(
@@ -1046,11 +1052,11 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 				Effect.gen(function* () {
 					const fixture = setup()
 					const existing = summary()
-					fixture.fake.comments.push(existing)
+					fixture.fake.reviews.push(existing)
 					const failure = error(403)
-					fixture.fake.failures.update.push(failure)
+					fixture.fake.failures.updateReview.push(failure)
 					expect(
-						yield* SummaryCommentService.use(publisher =>
+						yield* SummaryReviewService.use(publisher =>
 							publisher.publishStatus({
 								pullNumber: 17,
 								head: fixture.head,
@@ -1060,9 +1066,9 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 						).pipe(Effect.provide(fixture.publisher), Effect.flip)
 					).toEqual(failure)
 					expect(fixture.fake.writes.map(write => write.method)).toEqual([
-						'update',
+						'updateReview',
 					])
-					expect(fixture.fake.comments).toEqual([existing])
+					expect(fixture.fake.reviews).toEqual([existing])
 				})
 		)
 
@@ -1118,7 +1124,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 							resolved: ran ? 1 : 0,
 							rechecked: ran ? 1 : 0,
 						})
-						const summaryBody = fixture.fake.comments[0]?.body ?? ''
+						const summaryBody = reviewBody(fixture.fake) ?? ''
 						if (ran) {
 							expect(summaryBody).toContain(
 								'Closed by this run, no longer found at the head (1)'
@@ -1149,7 +1155,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 						Effect.gen(function* () {
 							const fixture = setup()
 							if (prior !== 'absent')
-								fixture.fake.comments.push({
+								fixture.fake.reviews.push({
 									...summary(),
 									body: toMarkerComment('summary', {
 										v: SUMMARY_MARKER.v,
@@ -1184,7 +1190,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 							const publisher = yield* PublishService.pipe(
 								Effect.provide(fixture.publisher)
 							)
-							const summaries = yield* SummaryCommentService.pipe(
+							const summaries = yield* SummaryReviewService.pipe(
 								Effect.provide(fixture.publisher)
 							)
 							yield* publisher.publish({ ...fixture.input, report: reviewed })
@@ -1201,7 +1207,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 								...(expectedHead === undefined ? {} : { head: expectedHead }),
 							}
 							expect(
-								parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
+								parseSummaryMarker(reviewBody(fixture.fake) ?? '')
 							).toEqual(marker)
 							expect(
 								yield* summaries.readPrior(fixture.input.pullNumber)
@@ -1211,7 +1217,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 		test.effect('offline summary has no reviewed head and zero runs', () =>
 			Effect.gen(function* () {
 				const fixture = setup()
-				const publisher = yield* SummaryCommentService.pipe(
+				const publisher = yield* SummaryReviewService.pipe(
 					Effect.provide(fixture.publisher)
 				)
 				yield* publisher.publishStatus({
@@ -1220,9 +1226,11 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 					engineCommit: 'engine',
 					status: 'offline',
 				})
-				expect(
-					parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
-				).toEqual({ v: SUMMARY_MARKER.v, runs: 0, finished: false })
+				expect(parseSummaryMarker(reviewBody(fixture.fake) ?? '')).toEqual({
+					v: SUMMARY_MARKER.v,
+					runs: 0,
+					finished: false,
+				})
 				expect(yield* publisher.readPrior(17)).toEqual({
 					v: SUMMARY_MARKER.v,
 					runs: 0,
@@ -1288,9 +1296,9 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 					expect(fixture.fake.writes.map(write => write.method)).toEqual([
 						'reply',
 						'resolve',
-						'create',
+						'review',
 					])
-					const body = fixture.fake.comments[0]?.body ?? ''
+					const body = reviewBody(fixture.fake) ?? ''
 					expect(body).toContain(
 						'Closed by this run, no longer found at the head (1)'
 					)
@@ -1352,7 +1360,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 							})
 						).toMatchObject({ resolved: 0 })
 						expect(fixture.fake.writes.map(write => write.method)).toEqual([
-							'create',
+							'review',
 						])
 					})
 			)
@@ -1409,7 +1417,7 @@ layer(APP_MODE_OWNED, { excludeTestServices: true })(
 							fixture.fake.writes.filter(
 								write => write.method === 'review' || write.method === 'comment'
 							)
-						).toHaveLength(trust ? 0 : 1)
+						).toHaveLength(1)
 					})
 			)
 		test.effect(
@@ -1440,7 +1448,7 @@ layer(APP_MODE_OWNED, { excludeTestServices: true })(
 						fixture.fake.writes.filter(
 							write => write.method === 'review' || write.method === 'comment'
 						)
-					).toEqual([])
+					).toHaveLength(1)
 				})
 		)
 	}
@@ -1491,7 +1499,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 					Effect.gen(function* () {
 						const fixture = setup()
 						if (previous !== 'none')
-							fixture.fake.comments.push({
+							fixture.fake.reviews.push({
 								...summary(),
 								body: toMarkerComment('summary', {
 									...SUMMARY_MARKER,
@@ -1517,8 +1525,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 							openBugs: 0,
 						})
 						expect(
-							parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
-								?.manualRuns
+							parseSummaryMarker(reviewBody(fixture.fake) ?? '')?.manualRuns
 						).toBe(previous === 'none' ? undefined : 2)
 					})
 			)
@@ -1528,7 +1535,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 				() =>
 					Effect.gen(function* () {
 						const fixture = setup()
-						fixture.fake.comments.push({
+						fixture.fake.reviews.push({
 							...summary(),
 							body: toMarkerComment('summary', {
 								...SUMMARY_MARKER,
@@ -1546,7 +1553,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 								command: { agentOnly },
 							})
 							expect(
-								parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
+								parseSummaryMarker(reviewBody(fixture.fake) ?? '')
 							).toMatchObject({ runs, manualRuns: 3 })
 						}
 					})
@@ -1572,7 +1579,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 									vi.fn<ThreadResolutionService['Service']['apply']>()
 								const fixture = setupOverlap(applySpy)
 								if (previous !== 'none')
-									fixture.fake.comments.push({
+									fixture.fake.reviews.push({
 										...summary(),
 										body: toMarkerComment('summary', {
 											...SUMMARY_MARKER,
@@ -1595,9 +1602,9 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 								applySpy.mockImplementation(() =>
 									Effect.sync(() => {
 										expect(fixture.fake.reads).toEqual([])
-										fixture.fake.comments.splice(
+										fixture.fake.reviews.splice(
 											0,
-											fixture.fake.comments.length,
+											fixture.fake.reviews.length,
 											{
 												...summary(),
 												databaseId: 202,
@@ -1630,13 +1637,17 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 									verdict,
 									openBugs: hasBug ? 1 : 0,
 								})
-								const body = fixture.fake.comments[0]?.body ?? ''
+								const body = reviewBody(fixture.fake) ?? ''
 								expect(parseSummaryMarker(body)).toEqual({ ...fresh, runs: 8 })
 								expect(body).toContain(`**Verdict: ${verdict}**`)
 								expect(body).toContain('run 8 of')
 								expect(
-									fixture.fake.writes.filter(write => write.method === 'update')
-								).toEqual([{ method: 'update', id: 202, body }])
+									fixture.fake.writes.filter(
+										write => write.method === 'updateReview'
+									)
+								).toEqual(
+									hasBug ? [] : [{ method: 'updateReview', id: 202, body }]
+								)
 								expect(fixture.fake.reads).toEqual(['getPullRequest:17'])
 							})
 					)
@@ -1648,7 +1659,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 						const applySpy =
 							vi.fn<ThreadResolutionService['Service']['apply']>()
 						const fixture = setupOverlap(applySpy)
-						fixture.fake.comments.push(summary())
+						fixture.fake.reviews.push(summary())
 						fixture.fake.command.pullRequest = {
 							...fixture.fake.command.pullRequest,
 							head: {
@@ -1665,7 +1676,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 						}
 						applySpy.mockImplementation(() =>
 							Effect.sync(() => {
-								fixture.fake.comments.splice(0, 1, {
+								fixture.fake.reviews.splice(0, 1, {
 									...summary(),
 									body: `**Verdict: needs fixes**\nOther run details.\n\n${toMarkerComment('summary', fresh)}`,
 								})
@@ -1685,7 +1696,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 								})
 							).pipe(Effect.provide(fixture.publisher))
 						).toMatchObject({ run: 8, finished, verdict })
-						const body = fixture.fake.comments[0]?.body ?? ''
+						const body = reviewBody(fixture.fake) ?? ''
 						expect(parseSummaryMarker(body)).toEqual({
 							...fresh,
 							runs: 8,
@@ -1708,7 +1719,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 			() =>
 				Effect.gen(function* () {
 					const fixture = setup()
-					fixture.fake.comments.push({
+					fixture.fake.reviews.push({
 						...summary(),
 						body: `**Verdict: needs fixes**\nStale review details.\n\n${toMarkerComment(
 							'summary',
@@ -1729,17 +1740,15 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 							})
 						).pipe(Effect.provide(fixture.publisher))
 					).toMatchObject({ run: 5, finished: true, verdict: 'ready' })
-					expect(
-						parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
-					).toEqual({
+					expect(parseSummaryMarker(reviewBody(fixture.fake) ?? '')).toEqual({
 						...SUMMARY_MARKER,
 						runs: 5,
 						manualRuns: 2,
 						head: fixture.head,
 						finished: true,
 					})
-					expect(fixture.fake.comments[0]?.body).toContain('**Verdict: ready**')
-					expect(fixture.fake.comments[0]?.body).not.toContain(
+					expect(reviewBody(fixture.fake)).toContain('**Verdict: ready**')
+					expect(reviewBody(fixture.fake)).not.toContain(
 						'Stale review details.'
 					)
 					expect(fixture.fake.reads).toEqual(['getPullRequest:17'])
@@ -1770,7 +1779,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 							const visible =
 								'**Verdict: needs fixes**\nCurrent review on the newer head.\n\n'
 							if (previous !== 'none')
-								fixture.fake.comments.push({
+								fixture.fake.reviews.push({
 									...summary(),
 									body: visible + toMarkerComment('summary', prior),
 								})
@@ -1796,7 +1805,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 								finished,
 								verdict,
 							})
-							const body = fixture.fake.comments[0]?.body ?? ''
+							const body = reviewBody(fixture.fake) ?? ''
 							expect(parseSummaryMarker(body)).toEqual(
 								previous === 'none'
 									? { v: SUMMARY_MARKER.v, runs: 1, finished: false }
@@ -1820,7 +1829,8 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 							const applySpy =
 								vi.fn<ThreadResolutionService['Service']['apply']>()
 							const fixture = setupOverlap(applySpy)
-							fixture.fake.comments.push({
+							fixture.fake.threads.push(reviewThread())
+							fixture.fake.reviews.push({
 								...summary(),
 								body: `Stale visible review\n\n${toMarkerComment('summary', SUMMARY_MARKER)}`,
 							})
@@ -1835,7 +1845,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 								'**Verdict: ready**\nCurrent review details and current-head.\n\n'
 							applySpy.mockImplementation(() =>
 								Effect.sync(() => {
-									fixture.fake.comments.splice(0, 1, {
+									fixture.fake.reviews.splice(0, 1, {
 										...summary(),
 										databaseId: 202,
 										body: visible + toMarkerComment('summary', fresh),
@@ -1866,14 +1876,16 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 								verdict: 'needs fixes',
 								finished: false,
 							})
-							const body = fixture.fake.comments[0]?.body ?? ''
+							const body = reviewBody(fixture.fake) ?? ''
 							expect(parseSummaryMarker(body)).toEqual({ ...fresh, runs: 8 })
 							expect(body.replace(/<!-- mng-review:summary .* -->$/u, '')).toBe(
 								visible
 							)
 							expect(
-								fixture.fake.writes.filter(write => write.method === 'update')
-							).toEqual([{ method: 'update', id: 202, body }])
+								fixture.fake.writes.filter(
+									write => write.method === 'updateReview'
+								)
+							).toEqual([{ method: 'updateReview', id: 202, body }])
 						})
 				)
 		for (const agentOnly of [false, true])
@@ -1894,7 +1906,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 								const visible =
 									'**Verdict: needs fixes**\nPrevious review details.\n\n'
 								if (previous !== 'none')
-									fixture.fake.comments.push({
+									fixture.fake.reviews.push({
 										...summary(),
 										body: visible + toMarkerComment('summary', marker),
 									})
@@ -1918,7 +1930,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 									finished: false,
 									verdict: 'incomplete',
 								})
-								const body = fixture.fake.comments[0]?.body ?? ''
+								const body = reviewBody(fixture.fake) ?? ''
 								if (previous === 'none') {
 									expect(parseSummaryMarker(body)).toEqual({
 										v: SUMMARY_MARKER.v,
@@ -1936,7 +1948,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 									).toBe(visible)
 								}
 								expect(fixture.fake.writes.map(write => write.method)).toEqual([
-									previous === 'none' ? 'create' : 'update',
+									previous === 'none' ? 'review' : 'updateReview',
 								])
 								expect(fixture.fake.reads).toEqual(['getPullRequest:17'])
 							})
@@ -1965,16 +1977,14 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 							openBugs: 0,
 							finished: true,
 						})
-						expect(
-							parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
-						).toEqual({
+						expect(parseSummaryMarker(reviewBody(fixture.fake) ?? '')).toEqual({
 							v: SUMMARY_MARKER.v,
 							runs: 1,
 							head: fixture.head,
 							finished: true,
 						})
 						if (place === 'unposted')
-							fixture.fake.failures.review.push(error(503))
+							fixture.fake.failures.comment.push(error(503))
 						const published = yield* publisher.publish({
 							...fixture.input,
 							command: { agentOnly: true },
@@ -1983,6 +1993,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 								bugs: [
 									bug({
 										path: place === 'summary' ? 'outside-diff.ts' : bug().path,
+										line: place === 'unposted' ? 30 : bug().line,
 									}),
 								],
 							},
@@ -1994,9 +2005,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 							inSummary: place === 'summary' ? 1 : 0,
 							unposted: place === 'unposted' ? 1 : 0,
 						})
-						expect(
-							parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
-						).toEqual({
+						expect(parseSummaryMarker(reviewBody(fixture.fake) ?? '')).toEqual({
 							v: SUMMARY_MARKER.v,
 							runs: 2,
 							head: fixture.head,
@@ -2041,9 +2050,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 							openBugs: 0,
 							finished: true,
 						})
-						expect(
-							parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
-						).toEqual({
+						expect(parseSummaryMarker(reviewBody(fixture.fake) ?? '')).toEqual({
 							v: SUMMARY_MARKER.v,
 							runs: 3,
 							head: fixture.head,
@@ -2079,7 +2086,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 								inSummary: 2,
 							})
 							expect(
-								parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
+								parseSummaryMarker(reviewBody(fixture.fake) ?? '')
 							).toEqual({
 								v: SUMMARY_MARKER.v,
 								runs: 1,
@@ -2088,7 +2095,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 								unthreadedBugs: 2,
 							})
 							if (place === 'unposted')
-								fixture.fake.failures.review.push(error(503))
+								fixture.fake.failures.comment.push(error(503))
 							const reviewed = {
 								...fixture.input.report,
 								bugs:
@@ -2098,6 +2105,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 												bug({
 													path:
 														place === 'summary' ? 'outside-new.ts' : bug().path,
+													line: place === 'unposted' ? 30 : bug().line,
 													fingerprint: 'new-bug',
 												}),
 											],
@@ -2125,7 +2133,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 								unposted: place === 'unposted' ? 1 : 0,
 							})
 							expect(
-								parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
+								parseSummaryMarker(reviewBody(fixture.fake) ?? '')
 							).toEqual({
 								v: SUMMARY_MARKER.v,
 								runs: 2,
@@ -2133,7 +2141,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 								finished: false,
 								unthreadedBugs: openBugs,
 							})
-							expect(fixture.fake.comments[0]?.body).toContain(
+							expect(reviewBody(fixture.fake)).toContain(
 								'2 bug(s) without a thread from earlier runs on this head still count until a full review checks them again.'
 							)
 							expect(fixture.fake.threads).toEqual([])
@@ -2176,14 +2184,14 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 								finished: true,
 							})
 							expect(
-								parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
+								parseSummaryMarker(reviewBody(fixture.fake) ?? '')
 							).toEqual({
 								v: SUMMARY_MARKER.v,
 								runs: 3,
 								head: fixture.head,
 								finished: true,
 							})
-							expect(fixture.fake.comments[0]?.body).not.toContain(
+							expect(reviewBody(fixture.fake)).not.toContain(
 								'from earlier runs on this head still count'
 							)
 						})
@@ -2200,7 +2208,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 							finished: true,
 							unthreadedBugs: 2,
 						}
-						fixture.fake.comments.push({
+						fixture.fake.reviews.push({
 							...summary(),
 							body: toMarkerComment('summary', prior),
 						})
@@ -2227,9 +2235,11 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 							openBugs: sameHead ? 3 : 1,
 							finished: sameHead,
 						})
-						expect(
-							parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
-						).toEqual({ ...prior, runs: 2, unthreadedBugs: sameHead ? 3 : 2 })
+						expect(parseSummaryMarker(reviewBody(fixture.fake) ?? '')).toEqual({
+							...prior,
+							runs: 2,
+							unthreadedBugs: sameHead ? 3 : 2,
+						})
 						expect(fixture.fake.threads).toEqual([])
 					})
 			)
@@ -2241,7 +2251,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 					Effect.gen(function* () {
 						const fixture = setup()
 						if (place === 'unposted')
-							fixture.fake.failures.review.push(error(503))
+							fixture.fake.failures.comment.push(error(503))
 						const publisher = yield* PublishService.pipe(
 							Effect.provide(fixture.publisher)
 						)
@@ -2250,6 +2260,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 							bugs: [
 								bug({
 									path: place === 'summary' ? 'outside-diff.ts' : bug().path,
+									line: place === 'unposted' ? 30 : bug().line,
 								}),
 							],
 						}
@@ -2269,11 +2280,11 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 							finished: true,
 							unthreadedBugs: 1,
 						}
-						expect(
-							parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
-						).toEqual(marker)
+						expect(parseSummaryMarker(reviewBody(fixture.fake) ?? '')).toEqual(
+							marker
+						)
 						expect(fixture.fake.threads).toEqual([])
-						expect(fixture.fake.comments[0]?.body).not.toContain(
+						expect(reviewBody(fixture.fake)).not.toContain(
 							'from earlier runs on this head still count'
 						)
 						const clean = {
@@ -2290,10 +2301,11 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 							openBugs: 1,
 							finished: true,
 						})
-						expect(
-							parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
-						).toEqual({ ...marker, runs: 2 })
-						expect(fixture.fake.comments[0]?.body).toContain(
+						expect(parseSummaryMarker(reviewBody(fixture.fake) ?? '')).toEqual({
+							...marker,
+							runs: 2,
+						})
+						expect(reviewBody(fixture.fake)).toContain(
 							'1 bug(s) without a thread from earlier runs on this head still count until a full review checks them again.'
 						)
 						expect(yield* publisher.publish(clean)).toMatchObject({
@@ -2301,15 +2313,13 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 							openBugs: 0,
 							finished: true,
 						})
-						expect(
-							parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
-						).toEqual({
+						expect(parseSummaryMarker(reviewBody(fixture.fake) ?? '')).toEqual({
 							v: SUMMARY_MARKER.v,
 							runs: 3,
 							head: fixture.head,
 							finished: true,
 						})
-						expect(fixture.fake.comments[0]?.body).not.toContain(
+						expect(reviewBody(fixture.fake)).not.toContain(
 							'from earlier runs on this head still count'
 						)
 					})
@@ -2325,7 +2335,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 						finished: true,
 						unthreadedBugs: 2,
 					}
-					fixture.fake.comments.push({
+					fixture.fake.reviews.push({
 						...summary(),
 						body: toMarkerComment('summary', marker),
 					})
@@ -2345,9 +2355,11 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 						openBugs: 2,
 						finished: false,
 					})
-					expect(
-						parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
-					).toEqual({ ...marker, runs: 2, finished: false })
+					expect(parseSummaryMarker(reviewBody(fixture.fake) ?? '')).toEqual({
+						...marker,
+						runs: 2,
+						finished: false,
+					})
 				})
 		)
 		for (const commandHead of ['same', 'moved', 'unreadable'] as const)
@@ -2363,7 +2375,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 								finished: true,
 								unthreadedBugs: 2,
 							}
-							fixture.fake.comments.push({
+							fixture.fake.reviews.push({
 								...summary(),
 								body: toMarkerComment('summary', marker),
 							})
@@ -2391,7 +2403,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 								finished: sameMarkerHead,
 							})
 							expect(
-								parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
+								parseSummaryMarker(reviewBody(fixture.fake) ?? '')
 							).toEqual({ ...marker, runs: 2 })
 						})
 				)
@@ -2404,7 +2416,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 					finished: true,
 					unthreadedBugs: 2,
 				}
-				fixture.fake.comments.push({
+				fixture.fake.reviews.push({
 					...summary(),
 					body: toMarkerComment('summary', marker),
 				})
@@ -2416,10 +2428,11 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 						})
 					).pipe(Effect.provide(fixture.publisher))
 				).toMatchObject({ verdict: 'needs fixes', openBugs: 3 })
-				expect(
-					parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
-				).toEqual({ ...marker, runs: 2 })
-				expect(fixture.fake.comments[0]?.body).toContain(
+				expect(parseSummaryMarker(reviewBody(fixture.fake) ?? '')).toEqual({
+					...marker,
+					runs: 2,
+				})
+				expect(reviewBody(fixture.fake)).toContain(
 					'2 bug(s) without a thread from earlier runs on this head'
 				)
 			})
@@ -2489,8 +2502,8 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 						expect(fixture.fake.failures.listThreads).toEqual([])
 						expect(
 							fixture.fake.threads.map(thread => thread.subjectType)
-						).toEqual(['LINE', 'LINE', 'LINE', 'FILE'])
-						expect(fixture.fake.comments[0]?.body).toContain(
+						).toEqual(['LINE', 'LINE', 'FILE', 'LINE'])
+						expect(reviewBody(fixture.fake)).toContain(
 							`${resolved ? 3 : 4} open bug thread(s)`
 						)
 					})
@@ -2535,8 +2548,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 					).toMatchObject({ onLine: 1, openBugs: 1, verdict: 'needs fixes' })
 					expect(fixture.fake.threadReads).toEqual([17, 17])
 					expect(
-						parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
-							?.unthreadedBugs
+						parseSummaryMarker(reviewBody(fixture.fake) ?? '')?.unthreadedBugs
 					).toBeUndefined()
 				})
 		)
@@ -2593,7 +2605,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 					})
 					expect(
 						fixture.fake.threads.map(thread => thread.subjectType)
-					).toEqual(['LINE', 'FILE'])
+					).toEqual(['FILE', 'LINE'])
 					expect(fixture.fake.threadReads).toEqual([17, 17])
 				})
 		)
@@ -3192,7 +3204,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 							expect(fixture.fake.writes.map(write => write.method)).toEqual([
 								'reply',
 								'resolve',
-								'create',
+								'review',
 							])
 						})
 				)
@@ -3219,7 +3231,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 					).pipe(Effect.provide(fixture.publisher))
 					expect(fixture.fake.writes.map(write => write.method)).toEqual([
 						'reply',
-						'create',
+						'review',
 						'label',
 					])
 					const answer = fixture.fake.writes.find(
@@ -3239,7 +3251,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 					expect(
 						JSON.parse(
 							/<!-- mng-review:summary (.*) -->$/u.exec(
-								fixture.fake.comments[0]?.body ?? ''
+								reviewBody(fixture.fake) ?? ''
 							)?.[1] ?? '{}'
 						)
 					).toEqual({
@@ -3334,7 +3346,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 						pullNumber: 17,
 						name: 'needs-owner',
 					})
-					const body = fixture.fake.comments[0]?.body ?? ''
+					const body = reviewBody(fixture.fake) ?? ''
 					expect(parseSummaryMarker(body)?.needsOwner).toEqual(['thread'])
 					expect(body).toContain('Waiting for the owner (1):')
 					expect(body).toContain('thread')
@@ -3359,7 +3371,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 								resolvedBy: { login: 'contributor' },
 							})
 						)
-						fixture.fake.comments.push({
+						fixture.fake.reviews.push({
 							...summary(),
 							body: toMarkerComment('summary', {
 								...SUMMARY_MARKER,
@@ -3391,8 +3403,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 							label: cleared ? 'removed' : 'added',
 						})
 						expect(
-							parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
-								?.needsOwner
+							parseSummaryMarker(reviewBody(fixture.fake) ?? '')?.needsOwner
 						).toEqual(cleared ? undefined : ['thread'])
 						expect(fixture.fake.writes).toContainEqual({
 							method: cleared ? 'unlabel' : 'label',
@@ -3414,7 +3425,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 							? APP_IDENTITY
 							: GITHUB_ACTIONS_IDENTITY
 					)
-					fixture.fake.comments.push({
+					fixture.fake.reviews.push({
 						...summary(),
 						body: toMarkerComment('summary', {
 							...SUMMARY_MARKER,
@@ -3454,15 +3465,22 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 						label: 'added',
 					})
 					const summaryWrite = fixture.fake.writes.find(
-						write => write.method === 'create' || write.method === 'update'
+						write =>
+							write.method === 'review' || write.method === 'updateReview'
 					)
 					expect(summaryWrite).toBeDefined()
 					if (
-						summaryWrite?.method !== 'create' &&
-						summaryWrite?.method !== 'update'
+						summaryWrite?.method !== 'review' &&
+						summaryWrite?.method !== 'updateReview'
 					)
 						return
-					expect(parseSummaryMarker(summaryWrite.body)).toMatchObject({
+					expect(
+						parseSummaryMarker(
+							summaryWrite.method === 'review'
+								? summaryWrite.input.body
+								: summaryWrite.body
+						)
+					).toMatchObject({
 						needsOwner: ['waiting-thread'],
 						runs: published.run,
 					})
@@ -3526,7 +3544,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 									...(raw.latest?.nodes ?? []),
 								])
 							if (scenario !== 'missing-summary')
-								fixture.fake.comments.push({
+								fixture.fake.reviews.push({
 									...summary(),
 									isMinimized: true,
 									body: toMarkerComment('summary', {
@@ -3565,14 +3583,22 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 								).state
 							).toBe(expectedState)
 							const written = fixture.fake.writes.findLast(
-								write => write.method === 'create' || write.method === 'update'
+								write =>
+									write.method === 'review' || write.method === 'updateReview'
 							)
 							expect(written).toBeDefined()
-							if (written?.method !== 'create' && written?.method !== 'update')
-								return
-							expect(parseSummaryMarker(written.body)?.needsOwner).toEqual(
-								expectedIds
+							if (
+								written?.method !== 'review' &&
+								written?.method !== 'updateReview'
 							)
+								return
+							expect(
+								parseSummaryMarker(
+									written.method === 'review'
+										? written.input.body
+										: written.body
+								)?.needsOwner
+							).toEqual(expectedIds)
 							expect(fixture.fake.writes).toContainEqual({
 								method: expectedLabel,
 								pullNumber: 17,
@@ -3597,8 +3623,8 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 					const fixture = setup()
 					fixture.fake.command.role = 'write'
 					fixture.fake.threads.push(pendingReviewThread())
-					fixture.fake.comments.push(summary())
-					fixture.fake.failures.update.push(error(503))
+					fixture.fake.reviews.push(summary())
+					fixture.fake.failures.updateReview.push(error(503))
 					const publisher = yield* PublishService.pipe(
 						Effect.provide(fixture.publisher)
 					)
@@ -3621,7 +3647,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 							.pipe(Effect.flip)
 					).toBeInstanceOf(PublishIncompleteError)
 					expect(
-						parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')?.needsOwner
+						parseSummaryMarker(reviewBody(fixture.fake) ?? '')?.needsOwner
 					).toBeUndefined()
 					expect(
 						fixture.fake.writes.filter(write => write.method === 'reply')
@@ -3665,7 +3691,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 						answered: {},
 					})
 					expect(
-						parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')?.needsOwner
+						parseSummaryMarker(reviewBody(fixture.fake) ?? '')?.needsOwner
 					).toEqual(['thread'])
 					expect(
 						fixture.fake.writes.filter(write => write.method === 'reply')
@@ -3685,7 +3711,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 							isResolved: true,
 						})
 					)
-					fixture.fake.comments.push({
+					fixture.fake.reviews.push({
 						...summary(),
 						isMinimized: true,
 						body: toMarkerComment('summary', {
@@ -3707,15 +3733,20 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 						label: 'added',
 					})
 					const written = fixture.fake.writes.findLast(
-						write => write.method === 'create' || write.method === 'update'
+						write =>
+							write.method === 'review' || write.method === 'updateReview'
 					)
 					expect(written).toBeDefined()
-					if (written?.method !== 'create' && written?.method !== 'update')
+					if (
+						written?.method !== 'review' &&
+						written?.method !== 'updateReview'
+					)
 						return
-					expect(parseSummaryMarker(written.body)?.needsOwner).toEqual([
-						'hidden',
-						'recent',
-					])
+					expect(
+						parseSummaryMarker(
+							written.method === 'review' ? written.input.body : written.body
+						)?.needsOwner
+					).toEqual(['hidden', 'recent'])
 					expect(
 						fixture.fake.reads.filter(read =>
 							read.startsWith('listThreadComments:')
@@ -3745,7 +3776,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 									resolvedBy: { login: 'contributor' },
 								})
 							)
-							fixture.fake.comments.push({
+							fixture.fake.reviews.push({
 								...summary(),
 								body: toMarkerComment('summary', {
 									...SUMMARY_MARKER,
@@ -3777,8 +3808,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 								label: cleared ? 'removed' : 'added',
 							})
 							expect(
-								parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
-									?.needsOwner
+								parseSummaryMarker(reviewBody(fixture.fake) ?? '')?.needsOwner
 							).toEqual(cleared ? undefined : ['thread'])
 							expect(fixture.fake.writes).toContainEqual({
 								method: cleared ? 'unlabel' : 'label',
@@ -3818,7 +3848,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 						label: 'added',
 					})
 					expect(
-						parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')?.needsOwner
+						parseSummaryMarker(reviewBody(fixture.fake) ?? '')?.needsOwner
 					).toEqual(['thread'])
 					expect(
 						fixture.fake.reads.filter(read =>
@@ -3914,8 +3944,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 							fixture.fake.writes.filter(write => write.method === 'reply')
 						).toHaveLength(stands ? 1 : 0)
 						expect(
-							parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
-								?.needsOwner
+							parseSummaryMarker(reviewBody(fixture.fake) ?? '')?.needsOwner
 						).toEqual(stands ? ['thread'] : undefined)
 						// One read either way: the check before the answer, or the rounds when the limit fails.
 						expect(
@@ -3971,8 +4000,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 							fixture.fake.writes.filter(write => write.method === 'reply')
 						).toHaveLength(stands ? 1 : 0)
 						expect(
-							parseSummaryMarker(fixture.fake.comments[0]?.body ?? '')
-								?.needsOwner
+							parseSummaryMarker(reviewBody(fixture.fake) ?? '')?.needsOwner
 						).toEqual(stands ? ['thread'] : undefined)
 						expect(
 							fixture.fake.reads.filter(read =>

@@ -45,29 +45,6 @@ const READS = [
 ] as const
 const WRITES = [
 	{
-		operation: 'createReview',
-		invoke: (service: GitHubApiService['Service']) =>
-			service.createReview(42, {
-				commitId: 'abcdef1234567',
-				body: 'Review body',
-				comments: [
-					{ path: 'src/one.ts', line: 7, body: 'First finding' },
-					{ path: 'src/two.ts', line: 19, body: 'Second finding' },
-				],
-			}),
-		method: 'POST',
-		path: '/pulls/42/reviews',
-		body: {
-			commit_id: 'abcdef1234567',
-			event: 'COMMENT',
-			body: 'Review body',
-			comments: [
-				{ path: 'src/one.ts', line: 7, side: 'RIGHT', body: 'First finding' },
-				{ path: 'src/two.ts', line: 19, side: 'RIGHT', body: 'Second finding' },
-			],
-		},
-	},
-	{
 		operation: 'createReviewComment',
 		invoke: (service: GitHubApiService['Service']) =>
 			service.createReviewComment(42, {

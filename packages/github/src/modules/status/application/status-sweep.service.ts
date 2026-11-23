@@ -1,5 +1,6 @@
 import { Context, Effect, Layer } from 'effect'
 import { GitHubApiService } from '../../../platform/github-api.service'
+import { GitHubReviewService } from '../../../platform/github-review.service'
 import { GitHubStatusService } from '../../../platform/github-status.service'
 import type { GitHubApiError } from '../../../platform/github.errors'
 import { OwnedIdentities } from '../../../platform/owned-identities.context'
@@ -11,9 +12,12 @@ import { toBotThread } from '../../publish/domain/bot-thread.helper'
 import {
 	getDuplicateSummaries,
 	getListedWaiting,
-	getSummary,
 	toSummaryComments,
 } from '../../publish/domain/summary-comment.helper'
+import {
+	getPriorSummary,
+	toSummaryReviews,
+} from '../../publish/domain/summary-review.helper'
 import { toResolvers } from '../../publish/domain/thread-conversation.helper'
 import { toSweptStatus } from '../domain/status.helper'
 
@@ -31,10 +35,11 @@ export interface SweepResult {
  * owned identity, from the open bug threads of the owned identities now, so a thread resolved by hand counts. It runs no model and posts no
  * comment; pull requests the bot never reviewed are left alone. It reads the status again right
  * before it writes and leaves a newer one alone; a publish run that lands between that read and
- * the write can still be overwritten until the next sweep or push. While the current identity
- * has more than one visible summary, the status is left as it is until a write removes the extra.
- * A thread the summary marker says waits for the owner keeps the status `failure` until an admin or
- * an allowed login resolves it; the sweep never edits the summary.
+ * the write can still be overwritten until the next sweep or push. The summary is the newest
+ * summary review of an owned identity, or with none the old sticky comment; while the current
+ * identity has more than one visible sticky comment and no review, the status is left as it is. A
+ * thread a summary marker says waits for the owner keeps the status `failure` until an admin or an
+ * allowed login resolves it; the sweep never edits the summary.
  */
 export class StatusSweepService extends Context.Service<
 	StatusSweepService,
@@ -50,6 +55,7 @@ export const StatusSweepServiceLive = Layer.effect(
 	StatusSweepService,
 	Effect.gen(function* () {
 		const api = yield* GitHubApiService
+		const reviewsApi = yield* GitHubReviewService
 		const github = yield* GitHubStatusService
 		const conversation = yield* ThreadReplyService
 
@@ -69,11 +75,17 @@ export const StatusSweepServiceLive = Layer.effect(
 			const openBugs = threads.filter(
 				thread => !thread.resolved && thread.marker.kind === 'bug'
 			).length
+			const reviews = yield* reviewsApi.listReviews(pullNumber)
 			const comments = yield* api.listComments(pullNumber)
+			const summaryReviews = toSummaryReviews(reviews, identities, current)
 			const summaries = toSummaryComments(comments, identities, current)
-			// With two summaries of the current identity, the oldest may be a stale finished one.
-			if (getDuplicateSummaries(summaries).length > 0) return 'kept' as const
-			const summary = getSummary(summaries)
+			// With two old sticky comments of the current identity, the oldest may be a stale finished one.
+			if (
+				summaryReviews.length === 0 &&
+				getDuplicateSummaries(summaries).length > 0
+			)
+				return 'kept' as const
+			const summary = getPriorSummary(summaryReviews, summaries)
 			const marker = summary?.marker
 			const onHead = marker?.head === head
 			// Bugs runs on this head left without a thread still block it until a full review replaces them.
@@ -85,7 +97,7 @@ export const StatusSweepServiceLive = Layer.effect(
 			// Hidden summaries still list, and threads the bot sent to the owner still wait, edited or resolved.
 			const waiting = [
 				...new Set([
-					...getListedWaiting(comments, identities),
+					...getListedWaiting([...reviews, ...comments], identities),
 					...(yield* conversation.getSentToOwner(raw)),
 				]),
 			]
