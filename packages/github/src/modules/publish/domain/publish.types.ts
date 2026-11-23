@@ -1,5 +1,6 @@
 import type { KeptFinding, ReplyAction } from '@mng-review/domain'
 import type { ReviewState } from '../../../platform/github-api.schema'
+import type { ReviewEvent } from '../../../platform/github-review.service'
 import type {
 	FindingMarker,
 	SummaryMarker,
@@ -134,10 +135,12 @@ export interface SummaryReview extends SummaryComment {
  */
 export type SummaryCleanup = 'none' | 'minimized' | 'deleted' | 'kept'
 
-/** A summary built from the summary read just before it is written: its text and marker. */
+/** A summary built from the summary read just before it is written: its text, marker and state. */
 export interface RenderedSummary {
 	readonly body: string
 	readonly marker: SummaryMarker
+	/** The state the review carries; unset keeps the state of the bot's newest review (`getReviewEvent`). */
+	readonly event?: ReviewEvent
 }
 
 /** An author's reply the bot answered in this run, with its decision. */

@@ -202,7 +202,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 						pullNumber: 17,
 						input: {
 							commitId: fixture.head,
-							event: 'COMMENT',
+							event: 'REQUEST_CHANGES',
 							body: reviewBody(fixture.fake),
 							comments: [{ path: bug().path, line: bug().line }],
 						},
@@ -1882,10 +1882,13 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 								visible
 							)
 							expect(
-								fixture.fake.writes.filter(
-									write => write.method === 'updateReview'
-								)
-							).toEqual([{ method: 'updateReview', id: 202, body }])
+								fixture.fake.writes.filter(write => write.method === 'review')
+							).toMatchObject([
+								{
+									method: 'review',
+									input: { event: 'REQUEST_CHANGES', body, comments: [] },
+								},
+							])
 						})
 				)
 		for (const agentOnly of [false, true])
@@ -3623,7 +3626,10 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 					const fixture = setup()
 					fixture.fake.command.role = 'write'
 					fixture.fake.threads.push(pendingReviewThread())
-					fixture.fake.reviews.push(summary())
+					fixture.fake.reviews.push({
+						...summary(),
+						state: 'CHANGES_REQUESTED',
+					})
 					fixture.fake.failures.updateReview.push(error(503))
 					const publisher = yield* PublishService.pipe(
 						Effect.provide(fixture.publisher)

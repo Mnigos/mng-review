@@ -1,4 +1,5 @@
 import type { ReviewReport, Rules, TokensByModel } from '@mng-review/engine'
+import type { ReviewEvent } from '../../../platform/github-review.service'
 import type {
 	AnswerCounts,
 	LabelOutcome,
@@ -65,6 +66,8 @@ export interface StatusInput extends PublishTarget {
 /** What a publish run did. */
 export interface PublishResult {
 	readonly verdict: Verdict
+	/** The state of the run's review: posted with it, or kept by an edit. */
+	readonly event: ReviewEvent
 	readonly openBugs: number
 	readonly onLine: number
 	readonly onFile: number

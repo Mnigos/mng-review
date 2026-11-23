@@ -1,27 +1,23 @@
 import { Context, Effect, Layer, Result } from 'effect'
 import { isIdentity } from '../../../platform/bot-identity.helper'
 import { isDeclined, isTransient } from '../../../platform/github-api.helper'
-import type {
-	PullRequestComment,
-	PullRequestReview,
-} from '../../../platform/github-api.schema'
+import type { PullRequestReview } from '../../../platform/github-api.schema'
 import { GitHubApiService } from '../../../platform/github-api.service'
 import {
 	GitHubReviewService,
-	type InlineComment,
 	REVIEW_STATE_BY_EVENT,
 	type ReviewInput,
 } from '../../../platform/github-review.service'
 import { GitHubConfig } from '../../../platform/github.config'
 import type { GitHubApiError } from '../../../platform/github.errors'
 import { OwnedIdentities } from '../../../platform/owned-identities.context'
+import { toCodeSpan } from '../../../utils/markdown.util'
 import { isRefused } from '../domain/bot-thread.helper'
 import type { SummaryMarker } from '../domain/publish-marker.schema'
 import type {
 	RenderedSummary,
 	SummaryCleanup,
 	SummaryComment,
-	SummaryReview,
 } from '../domain/publish.types'
 import {
 	getListedWaiting,
@@ -32,6 +28,7 @@ import {
 import {
 	getEditableReview,
 	getPriorSummary,
+	getStaleChangeRequests,
 	getStaleReviews,
 	toSummaryReviews,
 } from '../domain/summary-review.helper'
@@ -41,61 +38,20 @@ import {
 	toReservedSummary,
 } from '../presentation/summary-status.formatter'
 import { toBlobLinks } from '../presentation/thread-comment.formatter'
-import type { PublishTarget, StatusInput } from './publish.service.types'
+import type { StatusInput } from './publish.service.types'
+import type {
+	ManualRunInput,
+	PostedReview,
+	SummaryDraft,
+	SummaryRead,
+	WrittenSummary,
+} from './summary-review.service.types'
 
 const NOT_FOUND_STATUS = 404
 
-/**
- * What a write left: the summary written, whether it is a review this write created, whether the
- * draft's inline comments went into it, and what became of earlier reviews and sticky comments.
- */
-export interface WrittenSummary extends RenderedSummary {
-	readonly cleanup: SummaryCleanup
-	readonly created: boolean
-	/** `false` when GitHub refused the inline comments and the body lists their findings instead. */
-	readonly inline: boolean
-}
-
-/** A manual run to count before the endpoint is used. */
-export interface ManualRunInput extends PublishTarget {
-	/** `commands.max_runs` at the reviewed base. */
-	readonly maxRuns: number
-	/** The handle commands mention; a status review the reservation creates names it in a code span. */
-	readonly handle: string
-}
-
-/**
- * Builds the summary over the one read just before the write; `undefined` when there is none.
- * `inline` is `false` when GitHub refused the inline comments, whose findings the body then lists.
- */
-export type SummaryRender = (
-	current: SummaryComment | undefined,
-	inline: boolean
-) => RenderedSummary
-
-/** One run's review: the summary, the run's new inline comments and whether it posted threads. */
-export interface SummaryDraft {
-	/** The commit the review and its comments are on. */
-	readonly head: string
-	readonly render: SummaryRender
-	readonly comments?: readonly InlineComment[]
-	/** The run posted threads of its own, inline or on a file, so the summary is a new review. */
-	readonly fresh?: boolean
-}
-
-/** The pull request's reviews and conversation comments, and the summaries among them. */
-interface SummaryRead {
-	readonly raw: readonly PullRequestReview[]
-	readonly comments: readonly PullRequestComment[]
-	readonly reviews: readonly SummaryReview[]
-	readonly summaries: readonly SummaryComment[]
-}
-
-/** A review this write posted: its id, the summary it holds and whether its comments went in. */
-interface PostedReview {
-	readonly id: number
-	readonly rendered: RenderedSummary
-	readonly inline: boolean
+/** The reason a stale change request is dismissed with: fixed text and the head, never model output. */
+function toDismissMessage(head: string): string {
+	return `MNG Review no longer finds an open bug thread or a thread waiting for the owner at ${toCodeSpan(head)}.`
 }
 
 /** Leaves a review or comment visible on a failure, retried on the next write. */
@@ -220,20 +176,21 @@ export const SummaryReviewServiceLive = Layer.effect(
 		})
 
 		/**
-		 * Posts the run's review with its inline comments. When GitHub refuses one of them (422), the
-		 * summary is rendered again with their findings in the body and posted with no comments.
+		 * Posts the run's review with its inline comments and the rendered state, `COMMENT` when the
+		 * render keeps the state. When GitHub refuses one comment (422), the summary is rendered again
+		 * with their findings in the body and posted with no comments.
 		 */
 		const post = Effect.fn('SummaryReviewService.post')(function* (
 			pullNumber: number,
 			draft: SummaryDraft,
-			prior: SummaryComment | undefined,
+			rendered: RenderedSummary,
+			retry: () => RenderedSummary,
 			before: readonly PullRequestReview[]
 		) {
 			const comments = draft.comments ?? []
-			const rendered = draft.render(prior, true)
 			const review = {
 				commitId: draft.head,
-				event: 'COMMENT',
+				event: rendered.event ?? 'COMMENT',
 				body: rendered.body,
 				comments,
 			} satisfies ReviewInput
@@ -246,14 +203,44 @@ export const SummaryReviewServiceLive = Layer.effect(
 				} satisfies PostedReview
 			if (comments.length === 0 || !isRefused(first.failure))
 				return yield* first.failure
-			const fallback = draft.render(prior, false)
+			const fallback = retry()
 			const id = yield* create(
 				pullNumber,
-				{ ...review, body: fallback.body, comments: [] },
+				{
+					...review,
+					event: fallback.event ?? 'COMMENT',
+					body: fallback.body,
+					comments: [],
+				},
 				before
 			)
 			return { id, rendered: fallback, inline: false } satisfies PostedReview
 		})
+
+		/**
+		 * Dismisses the owned change requests the run's review leaves stale
+		 * (`getStaleChangeRequests`); one GitHub refuses stays for the next write. The count dismissed.
+		 */
+		const dismissStale = Effect.fn('SummaryReviewService.dismissStale')(
+			function* (
+				pullNumber: number,
+				head: string,
+				found: SummaryRead,
+				event: RenderedSummary['event']
+			) {
+				const { current, identities } = yield* OwnedIdentities
+				const dismissed = yield* Effect.forEach(
+					getStaleChangeRequests(found.raw, identities, current, event),
+					id =>
+						github.dismissReview(pullNumber, id, toDismissMessage(head)).pipe(
+							Effect.as(true),
+							Effect.orElseSucceed(() => false)
+						),
+					{ concurrency: 1 }
+				)
+				return dismissed.filter(Boolean).length
+			}
+		)
 
 		/** Hides an old sticky comment, deleting it only when GitHub refuses to hide it. */
 		const hideComment = (summary: SummaryComment) =>
@@ -293,40 +280,60 @@ export const SummaryReviewServiceLive = Layer.effect(
 			return toSummaryCleanup([...reviews, ...comments])
 		})
 
+		/** Edits the newest summary review when it can be edited, else posts a new review. */
+		const writeReview = Effect.fn('SummaryReviewService.writeReview')(
+			function* (pullNumber: number, draft: SummaryDraft, found: SummaryRead) {
+				const prior = getPriorSummary(found.reviews, found.summaries)
+				const fresh = draft.fresh === true || (draft.comments?.length ?? 0) > 0
+				const rendered = draft.render(prior, true)
+				const editable = getEditableReview(
+					found.reviews,
+					rendered.event && REVIEW_STATE_BY_EVENT[rendered.event],
+					fresh
+				)
+				if (editable) {
+					const updated = yield* github
+						.updateReview(pullNumber, editable.id, rendered.body)
+						.pipe(
+							Effect.as(true),
+							Effect.catchIf(isNotFound, () => Effect.succeed(false))
+						)
+					if (updated)
+						return {
+							id: editable.id,
+							rendered,
+							inline: true,
+							created: false,
+						}
+				}
+				const posted = yield* post(
+					pullNumber,
+					draft,
+					rendered,
+					() => draft.render(prior, false),
+					found.raw
+				)
+				return { ...posted, created: true }
+			}
+		)
+
 		const write = Effect.fn('SummaryReviewService.write')(function* (
 			pullNumber: number,
 			draft: SummaryDraft
 		) {
-			const summaries = yield* read(pullNumber)
-			const prior = getPriorSummary(summaries.reviews, summaries.summaries)
-			const fresh = draft.fresh === true || (draft.comments?.length ?? 0) > 0
-			const editable = getEditableReview(
-				summaries.reviews,
-				REVIEW_STATE_BY_EVENT.COMMENT,
-				fresh
-			)
-			if (editable) {
-				const rendered = draft.render(prior, true)
-				const updated = yield* github
-					.updateReview(pullNumber, editable.id, rendered.body)
-					.pipe(
-						Effect.as(true),
-						Effect.catchIf(isNotFound, () => Effect.succeed(false))
-					)
-				if (updated)
-					return {
-						...rendered,
-						inline: true,
-						created: false,
-						cleanup: yield* cleanUp(summaries, editable.id),
-					} satisfies WrittenSummary
-			}
-			const posted = yield* post(pullNumber, draft, prior, summaries.raw)
+			const found = yield* read(pullNumber)
+			const written = yield* writeReview(pullNumber, draft, found)
 			return {
-				...posted.rendered,
-				inline: posted.inline,
-				created: true,
-				cleanup: yield* cleanUp(summaries, posted.id),
+				...written.rendered,
+				inline: written.inline,
+				created: written.created,
+				cleanup: yield* cleanUp(found, written.id),
+				dismissed: yield* dismissStale(
+					pullNumber,
+					draft.head,
+					found,
+					written.rendered.event
+				),
 			} satisfies WrittenSummary
 		})
 

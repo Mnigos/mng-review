@@ -49,6 +49,12 @@ export class GitHubReviewService extends Context.Service<
 			pullNumber: number,
 			input: ReviewInput
 		) => Effect.Effect<number, GitHubApiError>
+		/** Dismisses a `CHANGES_REQUESTED` review; its state becomes `DISMISSED` and its body stays. */
+		readonly dismissReview: (
+			pullNumber: number,
+			reviewId: number,
+			message: string
+		) => Effect.Effect<void, GitHubApiError>
 		/** Replaces the body of a submitted review; its state stays. */
 		readonly updateReview: (
 			pullNumber: number,
@@ -122,6 +128,20 @@ export const GitHubReviewServiceLive = Layer.effect(
 			}
 		)
 
-		return { listReviews, createReview, updateReview }
+		const dismissReview = Effect.fn('GitHubReviewService.dismissReview')(
+			function* (pullNumber: number, reviewId: number, message: string) {
+				yield* sendJson(
+					'dismissReview',
+					HttpClientRequest.put(
+						`${repo}/pulls/${pullNumber}/reviews/${reviewId}/dismissals`
+					).pipe(
+						HttpClientRequest.bodyJsonUnsafe({ message, event: 'DISMISS' })
+					),
+					createdSchema
+				)
+			}
+		)
+
+		return { listReviews, createReview, updateReview, dismissReview }
 	})
 )

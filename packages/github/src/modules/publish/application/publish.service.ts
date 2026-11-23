@@ -22,6 +22,7 @@ import type {
 	PlannedThread,
 	PublishPlan,
 } from '../domain/publish.types'
+import { canApprove, getReviewEvent } from '../domain/review-event.helper'
 import {
 	getCarriedBugs,
 	type MarkedRun,
@@ -174,7 +175,8 @@ export const PublishServiceLive = Layer.effect(
 						threads: found,
 					})
 				: []
-			const { identities } = yield* OwnedIdentities
+			const { current, identities } = yield* OwnedIdentities
+			const approve = canApprove(input.rules.config, current)
 			// A failed whole-thread read leaves the latest comments the read brought for this run.
 			const sentBefore = yield* conversation
 				.getSentToOwner(first.raw)
@@ -290,17 +292,29 @@ export const PublishServiceLive = Layer.effect(
 						body: formatThreadComment(thread, links, true),
 					})),
 					fresh: posting,
-					render: (current, inline) => {
+					render: (prior, inline) => {
 						const plan = toPlan(inline)
 						const update = toUpdate(plan)
-						const marker = toNextSummaryMarker(current?.marker, update)
+						const marker = toNextSummaryMarker(prior?.marker, update)
+						const judged = standing(marker, update)
+						const event = getReviewEvent({
+							kind: 'review',
+							verdict: judged.verdict,
+							partial: run.partial,
+							findings: report.bugs.length + report.nits.length,
+							approve,
+						})
 						// The summary describes the head; a run whose head moved and posts nothing only counts itself.
-						if (current && run.moved && !posting)
-							return { body: toSummaryWithMarker(current.body, marker), marker }
+						if (prior && run.moved && !posting)
+							return {
+								body: toSummaryWithMarker(prior.body, marker),
+								marker,
+								event,
+							}
 						const body = formatSummaryComment({
 							report,
 							plan,
-							...standing(marker, update),
+							...judged,
 							carriedBugs: getCarriedBugs(marker, update),
 							marker,
 							maxRuns: input.rules.config.limits.max_runs_per_pr,
@@ -313,7 +327,7 @@ export const PublishServiceLive = Layer.effect(
 							tokens:
 								input.replies?.tokens ?? input.recheck?.tokens ?? report.tokens,
 						})
-						return { body, marker }
+						return { body, marker, event }
 					},
 				})
 				.pipe(Effect.mapError(error => new PublishIncompleteError({ error })))
@@ -332,6 +346,7 @@ export const PublishServiceLive = Layer.effect(
 				plan.threads.filter(thread => thread.place === place).length
 			return {
 				verdict,
+				event: written.event ?? 'COMMENT',
 				openBugs,
 				onLine: count('line'),
 				onFile: count('file'),
