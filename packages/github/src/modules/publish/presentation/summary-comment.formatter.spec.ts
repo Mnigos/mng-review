@@ -1,5 +1,8 @@
 import { agent, config } from '../../../shared/mocks/domain-test.helper'
-import { HOSTILE_TEXT } from '../../../shared/mocks/hostile-text.helper'
+import {
+	HOSTILE_TEXT,
+	toTextOutsideCode,
+} from '../../../shared/mocks/hostile-text.helper'
 import {
 	bug,
 	botThread,
@@ -10,6 +13,10 @@ import {
 import { escapeMarkdown } from '../../../utils/markdown.util'
 import { parseSummaryMarker } from '../domain/publish-marker.parser'
 import { planPublish } from '../domain/publish-plan.helper'
+import {
+	SEVERITY_MARKERS,
+	UNVERIFIED_MARKER,
+} from '../domain/publish.constants'
 import type { ThreadPlace } from '../domain/publish.types'
 import {
 	formatSummaryComment,
@@ -156,7 +163,7 @@ describe('formatSummaryComment', () => {
 		)
 		const [, nitsSection] = text.split('Nits not posted inline (1):')
 		expect(nitsSection).not.toContain(metadata.title)
-		expect(text.split(metadata.title)).toHaveLength(2)
+		expect(toTextOutsideCode(text).split(metadata.title)).toHaveLength(2)
 	})
 
 	test('a lone metadata summary nit has no nits list or code location', () => {
@@ -215,16 +222,28 @@ describe('formatSummaryComment', () => {
 					summaryNits: [],
 				},
 			})
-			const label =
+			const name =
 				kind === 'bug' ? 'High' : kind === 'nit' ? 'Nit' : 'Unverified, high'
+			const marker =
+				kind === 'bug'
+					? `${SEVERITY_MARKERS.high} `
+					: kind === 'nit'
+						? ''
+						: `${UNVERIFIED_MARKER} `
 			expect(text).toContain(
-				`About the pull request (1):\n\n<details><summary>${label} finding 1</summary>\n\n- **${label}** ${escapeMarkdown(finding.title)}\n`
+				`About the pull request (1):\n\n<details><summary>${marker}${name} finding 1</summary>\n\n- ${marker}**${name}** ${escapeMarkdown(finding.title)}\n`
 			)
 			expect(text).toContain(finding.trigger)
 			expect(text).toContain(finding.impact)
 			expect(text).toContain('</details>')
 			expect(
-				text.split('\n').find(line => line.startsWith('- **'))
+				text
+					.split('\n')
+					.find(
+						line =>
+							line.startsWith('- ') &&
+							line.includes(escapeMarkdown(finding.title))
+					)
 			).not.toContain(`${finding.path}:${finding.line}`)
 			expect(text).not.toContain('New threads')
 			expect(text).not.toContain('Not in the diff')
@@ -256,7 +275,7 @@ describe('formatSummaryComment', () => {
 			},
 		})
 		expect(text).toContain(
-			`Found again under threads resolved without a code change, not blocking (1):\n\n- **High** \`src/store.ts:10\` ${escapeMarkdown(HOSTILE_TEXT)}`
+			`Found again under threads resolved without a code change, not blocking (1):\n\n- ${SEVERITY_MARKERS.high} **High** \`src/store.ts:10\` ${escapeMarkdown(HOSTILE_TEXT)}`
 		)
 		expect(text).not.toContain('Below the severity floor')
 		expect(text).not.toContain('already have a thread')
@@ -302,7 +321,7 @@ describe('formatSummaryComment', () => {
 			})
 			expect(plan.threads).toEqual([])
 			expect(text).toContain(
-				`Below the severity floor (1):\n\n- **${unverified ? 'Unverified, medium' : 'Medium'}** \`src/store.ts:10\` ${finding.title}`
+				`Below the severity floor (1):\n\n- ${unverified ? `${UNVERIFIED_MARKER} **Unverified, medium**` : `${SEVERITY_MARKERS.medium} **Medium**`} \`src/store.ts:10\` ${finding.title}`
 			)
 			expect(text).not.toContain('New threads')
 		}
@@ -387,7 +406,9 @@ describe('formatSummaryComment', () => {
 					summary => !summary.includes('octocat') && !summary.includes('<img')
 				)
 		).toBe(true)
-		expect(text.split('\n').slice(3).join('\n')).not.toMatch(/(?<!\\)<img/u)
+		expect(toTextOutsideCode(text).split('\n').slice(3).join('\n')).not.toMatch(
+			/(?<!\\)<img/u
+		)
 		expect(text).not.toContain('<!-- mng-review:finding')
 		expect(parseSummaryMarker(text)).toEqual(SUMMARY_MARKER)
 	})
@@ -421,7 +442,12 @@ describe('formatSummaryComment', () => {
 			expect(text).toContain(`${section} (30):`)
 			expect(text).toContain('- and 5 more')
 			expect(
-				text.match(/<details><summary>High finding \d+<\/summary>/gu)
+				text.match(
+					new RegExp(
+						`<details><summary>${SEVERITY_MARKERS.high} High finding \\d+</summary>`,
+						'gu'
+					)
+				)
 			).toHaveLength(25)
 			expect(text).toContain('Finding 25')
 			expect(text).not.toContain('Finding 26')

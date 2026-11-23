@@ -42,3 +42,14 @@ export const STOP_WORDS = new Set([
 	'when',
 	'with',
 ])
+/**
+ * Most characters a finding's title keeps, so it fits one line of a comment after its severity.
+ * The prompt asks for less; the margin keeps a title that runs a little over from being cut.
+ */
+export const MAX_FINDING_TITLE_CHARS = 100
+/** Most characters of a finding's impact: the two or three sentences a comment shows first. */
+export const MAX_FINDING_IMPACT_CHARS = 450
+/** Most characters of a finding's suggested fix: one short line. */
+export const MAX_FINDING_FIX_CHARS = 300
+/** Most characters of one step of a finding's trigger, one step per line. */
+export const MAX_FINDING_STEP_CHARS = 200

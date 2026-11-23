@@ -9,12 +9,26 @@ export const VERDICTS = ['confirm', 'reject', 'unverified'] as const
 /** `path:line` or `path:start-end`, optionally followed by a note; the path may hold spaces, not colons. */
 const EVIDENCE_PATTERN = /^[^\s:](?:[^:]*[^\s:])?:\d+(?:-\d+)?(?:\s|$)/u
 
+/** Most characters a validator's reason keeps (`toValidation` cuts it); people read it, so two short sentences. */
+export const MAX_VERDICT_REASON_CHARS = 800
+/** Most characters an unverified finding's premise keeps: one sentence naming the package. */
+export const MAX_PREMISE_CHARS = 300
+
 /** One `path:line` evidence entry, trimmed. */
 export const evidenceSchema = Schema.Trim.check(
 	Schema.isPattern(EVIDENCE_PATTERN, {
 		message: 'evidence must start with path:line',
 	})
 )
+
+/**
+ * A fix as one edit of the finding's line: that line's text at head and the code that replaces it,
+ * whitespace kept. The engine checks it against the head before a comment may suggest it.
+ */
+const lineEditSchema = Schema.Struct({
+	line: Schema.String,
+	replacement: Schema.String,
+})
 
 /**
  * A validator's answer: confirm, reject or unverified, a re-rated severity, a reason and `path:line`
@@ -39,6 +53,8 @@ export const verdictSchema = Schema.Struct({
 			Schema.Array(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)))
 		)
 	),
+	/** A confirmed fix that is one edit of the finding's line; `toConfirmedEdit` checks it. */
+	edit: Schema.optionalKey(Schema.NullOr(lineEditSchema)),
 }).check(
 	Schema.makeFilter(
 		answer =>

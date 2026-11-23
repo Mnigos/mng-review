@@ -1,12 +1,18 @@
-import { escapeMarkdown, toCodeSpan } from '../../../utils/markdown.util'
-import { MARKER_VERSION, SHORT_SHA_LENGTH } from '../domain/publish.constants'
+import {
+	escapeMarkdown,
+	toCodeSpan,
+	toShort,
+} from '../../../utils/markdown.util'
+import {
+	MARKER_VERSION,
+	MAX_TEXT_CHARS,
+	SHORT_SHA_LENGTH,
+} from '../domain/publish.constants'
 import type { ThreadReplyDecision } from '../domain/thread-reply.schema'
 import {
 	type BlobLinks,
 	formatResolvedReply,
-	MAX_TEXT_CHARS,
 	toMarkerComment,
-	toShort,
 } from './thread-comment.formatter'
 
 /** Evidence entries an `accepted` answer shows; the rest are left out. */

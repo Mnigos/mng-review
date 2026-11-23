@@ -21,6 +21,8 @@ const BULLET_START = /^(\s*)([-+=])/u
 /** A start GitHub reads as a numbered list item: `1.` or `1)`. */
 const NUMBER_START = /^(\s*\d+)([.)])/u
 
+/** What a code block drops: control characters other than tab and line feed, format characters and line separators. */
+const HIDDEN_IN_BLOCK = /[^\P{Cc}\t\n]|[\p{Cf}\p{Zl}\p{Zp}]/gu
 /** Control and format characters and line separators: they could end a log line, drive the terminal or reorder text. */
 const CONTROL_CHARACTERS = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu
 
@@ -79,6 +81,29 @@ export function toCodeSpan(text: string): string {
 	const fence = '`'.repeat(longest + 1)
 	const padding = flat.startsWith('`') || flat.endsWith('`') ? ' ' : ''
 	return `${fence}${padding}${flat}${padding}${fence}`
+}
+
+/** Text cut to `max` characters, with an ellipsis when cut. */
+export function toShort(text: string, max: number): string {
+	return text.length > max ? `${text.slice(0, max)}…` : text
+}
+
+/**
+ * Text as a fenced code block with `info` after the opening fence. Line breaks stay; carriage
+ * returns, other control characters, format characters and line separators are dropped, and the
+ * fence is longer than any backtick run inside, so nothing in it can end the block or render as
+ * Markdown, HTML, a link, a mention or a reference. Empty text gives a block with no line.
+ */
+export function toCodeBlock(text: string, info: string): string {
+	const clean = text.replaceAll(/\r\n?/gu, '\n').replaceAll(HIDDEN_IN_BLOCK, '')
+	const longest = Math.max(
+		2,
+		...Array.from(clean.matchAll(BACKTICK_RUN), match => match[0].length)
+	)
+	const fence = '`'.repeat(longest + 1)
+	return clean === ''
+		? `${fence}${info}\n${fence}`
+		: `${fence}${info}\n${clean}\n${fence}`
 }
 
 /**

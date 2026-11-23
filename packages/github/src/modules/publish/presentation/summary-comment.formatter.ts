@@ -10,6 +10,7 @@ import type {
 	PublishPlan,
 	ResolvedThread,
 } from '../domain/publish.types'
+import { toFindingBodyLines } from './finding-body.formatter'
 import {
 	toAgentRows,
 	toRiskSource,
@@ -17,8 +18,8 @@ import {
 } from './summary-agents.formatter'
 import {
 	type BlobLinks,
-	toFindingDetailLines,
 	toKindLabel,
+	toKindTag,
 	toMarkerComment,
 	toSeverityLabel,
 } from './thread-comment.formatter'
@@ -93,7 +94,7 @@ type ListedFinding = Pick<PlannedThread, 'finding' | 'kind'> &
 /** A finding as one list line: kind, place and title; a finding about the pull request has no place. */
 function toFindingLine(thread: ListedFinding): string {
 	const { finding, kind } = thread
-	const label = `- **${toKindLabel(kind, finding.severity)}**`
+	const label = `- ${toKindTag(kind, finding.severity)}`
 	const title = escapeMarkdown(toShortText(finding.title))
 	if (thread.place === 'pull_request') return `${label} ${title}`
 	return `${label} ${toCodeSpan(toShortText(`${finding.path}:${finding.line}`))} ${title}`
@@ -115,7 +116,7 @@ function toCollapsedFinding(
 		'',
 		toFindingLine(thread),
 		'',
-		...toFindingDetailLines(finding, links, false),
+		...toFindingBodyLines(finding, links, 'summary'),
 		'',
 		'</details>',
 	]

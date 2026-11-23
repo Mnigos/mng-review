@@ -7,7 +7,17 @@ import {
 	getPublishedFindings,
 } from '../domain/publish-plan.helper'
 import { THREAD_PLACE_LINES } from '../domain/publish.constants'
-import type { BotThread, CommentableLines } from '../domain/publish.types'
+import type {
+	BotThread,
+	CommentableLines,
+	PlannedThread,
+	PublishPlan,
+} from '../domain/publish.types'
+import {
+	getConfirmedEdit,
+	isEditOnHeadLine,
+	toWithoutEdit,
+} from '../domain/suggested-edit.helper'
 import type { PublishInput } from './publish.service.types'
 
 /** Git reads that run at once when checking resolved threads. */
@@ -21,7 +31,8 @@ export type PlaceInput = Pick<PublishInput, 'report' | 'rules' | 'head'>
 /**
  * What git says about places in the pull request: the head lines that take an inline comment,
  * which resolved threads had their code changed since, so a finding found again under them is
- * posted again instead of dismissed, and the change's files between two commits.
+ * posted again instead of dismissed, the change's files between two commits, and whether a
+ * confirmed edit still fits its line.
  */
 export class ThreadPlaceService extends Context.Service<
 	ThreadPlaceService,
@@ -43,6 +54,16 @@ export class ThreadPlaceService extends Context.Service<
 			base: string,
 			head: string
 		) => Effect.Effect<Change | undefined>
+		/**
+		 * The plan with each confirmed edit kept only when publishing's own read of the finding's
+		 * line at `head` equals the edit's original text (`isEditOnHeadLine`); a mismatch or a failed
+		 * read drops the edit, so the comment is posted without a suggestion. The outcome file comes
+		 * from a job that runs model code, so suggestions rest on git's own read.
+		 */
+		readonly keepCheckedEdits: (
+			plan: PublishPlan,
+			head: string
+		) => Effect.Effect<PublishPlan>
 	}
 >()('mng-review/ThreadPlaceService') {}
 
@@ -145,6 +166,35 @@ export const ThreadPlaceServiceLive = Layer.effect(
 				.pipe(Effect.orElseSucceed((): Change | undefined => undefined))
 		})
 
-		return { readCommentableLines, getChangedPlaces, readChange }
+		const checkEdit = (thread: PlannedThread, head: string) => {
+			const { finding } = thread
+			if (!getConfirmedEdit(finding)) return Effect.succeed(thread)
+			return git.readFileAt(head, finding.path).pipe(
+				Effect.orElseSucceed(() => undefined),
+				Effect.map(headText =>
+					isEditOnHeadLine({ finding, head, headText })
+						? thread
+						: { ...thread, finding: toWithoutEdit(finding) }
+				)
+			)
+		}
+
+		const keepCheckedEdits = Effect.fn('ThreadPlaceService.keepCheckedEdits')(
+			function* (plan: PublishPlan, head: string) {
+				const threads = yield* Effect.forEach(
+					plan.threads,
+					thread => checkEdit(thread, head),
+					{ concurrency: GIT_CONCURRENCY }
+				)
+				return { ...plan, threads }
+			}
+		)
+
+		return {
+			readCommentableLines,
+			getChangedPlaces,
+			readChange,
+			keepCheckedEdits,
+		}
 	})
 )
