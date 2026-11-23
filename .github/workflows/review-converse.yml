@@ -1,7 +1,7 @@
 # Reusable reply schedule: answers authors' replies in the bot's threads that came without a push.
-# The caller runs it on a schedule (and workflow_dispatch), so it always runs from the default
-# branch; no workflow listens to pull_request_review_comment, whose runs take the caller's file
-# from the pull request's merge ref. It reviews no code and posts no finding. Three jobs, each
+# The caller runs it on a schedule, by hand, or through workflow_run after a secretless signal on a
+# reply, so it always runs from the default branch; no workflow that holds a secret listens to
+# pull_request_review_comment, whose runs take the caller's file from the pull request's merge ref. It reviews no code and posts no finding. Three jobs, each
 # holding only what it needs:
 # - find: no secret and no tailnet; lists the open pull requests of this repository with a reply
 #   waiting, at most max-pull-requests, over a read-only token, with the rules of the default

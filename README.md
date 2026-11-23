@@ -302,7 +302,7 @@ The handle is `app-slug`; use the same text in the caller's `if`, which cannot r
 
 Each command run shows four jobs. `MNG Review (authorize)` holds no secret and a read-only token and checks the comment, the commenter, the agent and the pull request. `MNG Review (reserve)` counts the manual run in the summary before the endpoint is used, so a run that fails later still counts. `MNG Review (review)` and `MNG Review (publish)` then work as in publish mode. Re-running a command run does nothing after `authorize`; start a failed command again with a new comment. An offline endpoint posts nothing for a command.
 
-`reserve` and both publish jobs, the push one and the command one, share one concurrency group per pull request, and GitHub keeps only one waiting job per group: a newer waiting job cancels an older waiting one. A command's publish can then be cancelled after its run was counted and the model was paid for, and a command's `reserve` can cancel a waiting push publish, which leaves that head without a status. To recover, re-run the push run's workflow, or post a new command comment. A pull request that closes or moves to a fork while a command reviews it gets nothing posted.
+`reserve` and the publish jobs, the push one, the command one and the reply schedule's, share one concurrency group per pull request, and GitHub keeps only one waiting job per group: a newer waiting job cancels an older waiting one. A command's publish can then be cancelled after its run was counted and the model was paid for, and a command's `reserve` or a reply schedule's publish can cancel a waiting push publish, which leaves that head without a status. A reply that comes with a push ("fixed" and the commit) makes the second case likely once the signal below starts the schedule right after the reply. To recover, re-run the push run's workflow, or post a new command comment. A pull request that closes or moves to a fork while a command reviews it gets nothing posted.
 
 ### Replies
 
@@ -312,26 +312,39 @@ Reply in one of the bot's bug or unverified threads to tell it what happened to 
 - `intentional because` and the reason, with a `path:line` that shows it. A reason that holds against the code, backed by a line that exists outside what the pull request added, is accepted: the bot stops counting the thread and offers one line for `.mng/MEMORY.md`, which counts only once a person merges it. A reason that does not hold is disputed once. A second disagreement, a `critical` finding, a file under `risk_paths` or a severity above `disputes.accept_intentional_up_to` goes to the owner.
 - Anything else gets one line saying what the bot understands.
 
-Only the latest comment of a thread counts, and only when a person with write access to the repository wrote it. The bot answers each reply once, at most eight threads per run, and never in a thread that waits for the owner. Answers come with the next push or command run, or sooner when you run the reply schedule. Give it and the status sweep one file:
+Only the latest comment of a thread counts, and only when a person with write access to the repository wrote it. The bot answers each reply once, at most eight threads per run, and never in a thread that waits for the owner. Answers come with the next push or command run, or sooner when you run the reply schedule. Give it and the status sweep one file, started by a short signal after each reply and by a schedule as the fallback:
 
 ```yaml
 # .github/workflows/mng-review-schedule.yml
 name: MNG Review schedule
 
 on:
+  workflow_run:
+    workflows: [MNG Review signal]
+    types: [completed]
   schedule:
-    - cron: '*/15 * * * *'
+    - cron: '17 * * * *'
   workflow_dispatch:
 
 permissions:
   contents: read
 
+# A run the signal did not earn gets a group of its own, so it never cancels a waiting real one.
 concurrency:
-  group: mng-review-schedule
+  group: >-
+    ${{ github.event_name == 'workflow_run' && !(github.event.workflow_run.conclusion == 'success' &&
+    github.event.workflow_run.event == 'pull_request_review_comment' &&
+    github.event.workflow_run.head_repository.full_name == github.repository) &&
+    format('mng-review-skip-{0}', github.run_id) || 'mng-review-schedule' }}
   cancel-in-progress: false
 
 jobs:
   replies:
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'pull_request_review_comment' &&
+      github.event.workflow_run.head_repository.full_name == github.repository)
     uses: Mnigos/mng-review/.github/workflows/review-converse.yml@<commit-sha>
     permissions:
       contents: read
@@ -345,6 +358,11 @@ jobs:
       app-client-id: ${{ secrets.MNG_REVIEW_APP_CLIENT_ID }}
       app-private-key: ${{ secrets.MNG_REVIEW_APP_PRIVATE_KEY }}
   sweep:
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'pull_request_review_comment' &&
+      github.event.workflow_run.head_repository.full_name == github.repository)
     uses: Mnigos/mng-review/.github/workflows/status-sweep.yml@<commit-sha>
     permissions:
       contents: read
@@ -357,7 +375,44 @@ jobs:
       app-private-key: ${{ secrets.MNG_REVIEW_APP_PRIVATE_KEY }}
 ```
 
-A schedule runs from the default branch, so a pull request cannot change it. Each tick lists the open pull requests of this repository with a reply waiting (never drafts or forks), at most `max-pull-requests` (default 5), and answers them one at a time; it reviews no code and posts no new finding, and it does not count toward the run limits. When nothing waits, a tick is one short job that holds no secret. The find job lists the open pull requests once and reads the review threads of each open, same-repository pull request that is not a draft; only where a thread's latest comment is a person's reply does it also read the pull request's comments, the full comments of the bot's longer threads with a reply, and each replying login's access. On a quiet pull request a tick costs one paged thread read of the read token's rate limit. It fails when the list fails or no pull request could be read, so a broken schedule shows red. Without the app, leave out `app-slug` and the app secrets.
+And the signal, in a file of its own:
+
+```yaml
+# .github/workflows/mng-review-signal.yml
+# Holds no secret and no write token: it runs from the pull request's side, so it only waits and
+# ends. "MNG Review schedule" starts from the default branch when it completes.
+name: MNG Review signal
+
+on:
+  pull_request_review_comment:
+    types: [created]
+
+permissions: {}
+
+# A burst of comments keeps one signal running and one waiting.
+concurrency:
+  group: mng-review-signal
+  cancel-in-progress: false
+
+jobs:
+  signal:
+    if: >-
+      github.event.comment.user.type == 'User' &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Let a resolve that follows the reply land
+        run: sleep 15
+```
+
+GitHub starts no workflow when a thread is resolved; `pull_request_review_thread` is a webhook event, not a workflow trigger. A reply in a thread does start `pull_request_review_comment`, but that event runs the workflow file from the pull request's merge ref, which a branch can change, so the signal holds nothing and only waits. When it completes, `workflow_run` starts the schedule file from the default branch with the app key, as the cron does; the reusable workflows read nothing from the signal's run. The wait lets a resolve that follows the reply land first, so the sweep counts it: on a quiet repository a reply followed by a resolve turns the status in about a minute. When a schedule run is already busy, the new one waits for it, and a resolve made after the sweep has read the threads waits for the next reply or the cron.
+
+The signal's `if` is a prefilter, not a gate: it skips comments from bots, the bot's own answers included, and from logins without a member or collaborator association, and a skipped run concludes `skipped`, which the schedule ignores. Whether a reply counts is decided by the find job, which checks write access again. The real gate is in the schedule: it acts only on a successful `pull_request_review_comment` run from this repository, and gives any other run a concurrency group of its own, so a skipped signal never cancels a waiting schedule run. Without it, any workflow named "MNG Review signal" would do: a fork's pull request could rewrite or add one that always succeeds and start the schedule on every comment or push. Within the repository a writer can still do that from a branch, and a branch's rewritten signal runs with the repository's secrets, as any workflow a writer pushes on `push` already does; the signal adds no access a writer did not have. Each extra run costs runner minutes and API reads from the token budget the push reviews share, and pays the model again for a writer's reply whose answer did not land (a refused publish or malformed model output), since find lists that reply again; it never answers, closes or approves anything a writer did not ask for. A reply on a fork's pull request waits for the cron.
+
+A thread resolved with no reply, which includes the common "read the answer, then resolve", waits for the cron, which GitHub can delay or drop at busy times, mostly around the full hour; a minute off the quarter hours fares better. On a private repository each cron tick bills about two runner minutes (the find job and the sweep), so every 15 minutes is about 5,800 minutes a month and hourly about 1,400, and each writer's review comment adds about one signal minute and one tick. The example runs hourly, which trades a wait of up to an hour for a resolve with no reply against those minutes; a public repository, whose minutes are free, can run it every 15 minutes.
+
+A schedule runs from the default branch, so a pull request cannot change it. Each tick lists the open pull requests of this repository with a reply waiting (never drafts or forks), at most `max-pull-requests` (default 5), and answers them one at a time; it reviews no code and posts no new finding, and it does not count toward the run limits. When nothing waits, the replies side of a tick is one short job that holds no secret; the sweep runs on every tick. The find job lists the open pull requests once and reads the review threads of each open, same-repository pull request that is not a draft; only where a thread's latest comment is a person's reply does it also read the pull request's comments, the full comments of the bot's longer threads with a reply, and each replying login's access. On a quiet pull request a tick costs one paged thread read of the read token's rate limit. It fails when the list fails or no pull request could be read, so a broken schedule shows red. Without the app, leave out `app-slug` and the app secrets.
 
 A thread that goes to the owner gets one last answer, and the pull request gets the `needs-owner` label, the verdict `needs owner` and a `failure` status until an admin, or a login in `commands.allow` with write access, resolves the thread on GitHub. A writer resolving it or removing the label does not clear it. The next run after the owner resolves it removes the label; the status sweep turns the status green sooner.
 

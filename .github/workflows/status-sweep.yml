@@ -1,6 +1,6 @@
 # Reusable status sweep: refreshes the MNG Review commit status of open pull requests whose head
 # already carries it, from the bot's open bug threads, so a thread resolved by hand counts. It runs
-# no model and needs no endpoint; the caller runs it on a schedule. With app-slug and the app's two
+# no model and needs no endpoint; the caller runs it on a schedule and after a reply's signal. With app-slug and the app's two
 # secrets it writes as the app. The rules, identity.previous included, come from the default
 # branch. See README.md.
 name: MNG Review status sweep
