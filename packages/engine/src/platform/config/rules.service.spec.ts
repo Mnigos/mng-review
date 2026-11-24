@@ -16,8 +16,10 @@ import {
 	NodePath,
 } from '@effect/platform-node-shared'
 import { layer } from '@effect/vitest'
+import { BUILT_IN_FLOOR } from '@mng-review/domain'
 import { Effect, FileSystem, Layer, PlatformError } from 'effect'
 import { toFixtureEnv } from '../../shared/mocks/git-env.helper'
+import { rateRepo } from '../../shared/mocks/risk-test.helper'
 import { GitServiceLive, GitWorkdir } from '../git/git.service'
 import { RulesService, RulesServiceLive } from './rules.service'
 
@@ -95,6 +97,67 @@ function rulesLayer(root: string) {
 }
 
 layer(NodeLayer, { excludeTestServices: true })('RulesService', test => {
+	for (const enabled of [true, false])
+		for (const ref of ['base', 'worktree'] as const)
+			test.effect(
+				`risk rubric imports load only when enabled=${enabled} from ${ref}`,
+				() =>
+					Effect.gen(function* () {
+						const repo = createRepo()
+						repo.write('.mng/review.yml', `risk:\n  enabled: ${enabled}\n`)
+						repo.write('.mng/risk.md', 'Runtime rubric\n@/docs/risk.md#Effects')
+						repo.write(
+							'docs/risk.md',
+							'# Effects\nBase rules.\n# Other\nNot part of the rubric.'
+						)
+						const base = repo.commit()
+						repo.write(
+							'docs/risk.md',
+							'# Effects\nHead rules.\n# Other\nNot part of the rubric.'
+						)
+						const head = repo.commit()
+						const rules = yield* RulesService.use(service =>
+							service.load(ref === 'base' ? base : undefined)
+						).pipe(Effect.provide(rulesLayer(repo.root)))
+						if (!enabled) {
+							expect(rules).not.toHaveProperty('risk')
+							return
+						}
+						expect(rules.risk).toEqual({
+							rubric: `Runtime rubric\n# Effects\n${ref === 'base' ? 'Base' : 'Head'} rules.`,
+							paths: ['.mng/risk.md', 'docs/risk.md'],
+						})
+						const { rating } = yield* rateRepo(
+							{ ...repo, base, head },
+							{ config: rules.config, rules: rules.risk }
+						)
+						expect(rating).toMatchObject({
+							status: 'rated',
+							level: 'high',
+							model: 'low',
+						})
+						expect(rating.floors).toContainEqual(
+							expect.objectContaining({
+								name: BUILT_IN_FLOOR.RULES,
+								paths: ['docs/risk.md'],
+							})
+						)
+					})
+			)
+
+	test.effect('disabled risk never reads a rubric with a broken import', () =>
+		Effect.gen(function* () {
+			const repo = createRepo()
+			repo.write('.mng/review.yml', 'risk:\n  enabled: false\n')
+			repo.write('.mng/risk.md', '@/missing.md')
+			const base = repo.commit()
+			expect(
+				yield* RulesService.use(service => service.load(base)).pipe(
+					Effect.provide(rulesLayer(repo.root))
+				)
+			).not.toHaveProperty('risk')
+		})
+	)
 	test.effect(
 		'absent rules use defaults and agents load in name order with imports expanded',
 		() =>
