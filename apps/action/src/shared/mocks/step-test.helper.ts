@@ -19,6 +19,7 @@ import { githubApiFake } from '../../../../../packages/github/src/shared/mocks/g
 // oxlint-disable-next-line no-restricted-imports -- The test brief requires these existing unexported GitHub fixtures.
 import { githubStatusFake } from '../../../../../packages/github/src/shared/mocks/github-status-fake.helper'
 import { PublishRunServiceLive } from '../../application/publish-run.service'
+import type { RiskRunService } from '../../application/risk-run.service'
 import { createRepo, gitLayer } from './git-test.helper'
 import {
 	BINDING_ENV,
@@ -35,7 +36,9 @@ export function stepFixture(
 	appMode = false,
 	readOnly = false,
 	allow: readonly string[] = RULES.config.commands.allow,
-	disputes: ReviewConfig['disputes'] = RULES.config.disputes
+	disputes: ReviewConfig['disputes'] = RULES.config.disputes,
+	riskLayer: Layer.Layer<RiskRunService> = RiskRunOffLayer,
+	riskEnabled = false
 ) {
 	const repo = createRepo()
 	repo.write('src/items/store.ts', 'first\nold value\nlast\n')
@@ -103,6 +106,7 @@ export function stepFixture(
 			identity: { previous },
 			commands: { ...RULES.config.commands, allow },
 			disputes,
+			risk: { ...RULES.config.risk, enabled: riskEnabled },
 		},
 	}
 	const loads: (string | undefined)[] = []
@@ -151,7 +155,7 @@ export function stepFixture(
 				publisherLayer,
 				StatusReportServiceLive.pipe(Layer.provide(status.layer)),
 				rulesLayer,
-				RiskRunOffLayer
+				riskLayer
 			)
 		),
 		Layer.merge(api.api)

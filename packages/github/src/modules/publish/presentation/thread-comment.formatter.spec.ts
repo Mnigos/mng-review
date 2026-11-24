@@ -316,3 +316,27 @@ describe('thread heading and matching compatibility', () => {
 		).not.toContain('```suggestion')
 	})
 })
+
+describe('finding marker validation', () => {
+	test('records a confirmed bug and leaves the flag off an unvalidated one', () => {
+		const confirmed = bug({
+			validation: {
+				status: 'confirmed',
+				severity: 'high',
+				reason: 'Reproduced.',
+				evidence: [],
+				model: 'validator',
+			},
+		})
+		expect(
+			parseFindingMarker(
+				formatThreadComment({ finding: confirmed, kind: 'bug' }, LINKS, true)
+			)
+		).toMatchObject({ kind: 'bug', confirmed: true })
+		expect(
+			parseFindingMarker(
+				formatThreadComment({ finding: bug(), kind: 'bug' }, LINKS, true)
+			)
+		).not.toHaveProperty('confirmed')
+	})
+})

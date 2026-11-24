@@ -588,3 +588,20 @@ describe('summary finding markers', () => {
 			expect(text).not.toContain(marker)
 	})
 })
+
+test('summary shows escaped model risk reasons before its final summary marker', () => {
+	const body = formatSummaryComment({
+		...input(),
+		rating: {
+			status: 'rated',
+			level: 'low',
+			reasons: ['<!-- hidden --> **bold**'],
+			floors: [],
+			reused: false,
+		},
+	})
+	expect(body).toContain('**Risk: low**')
+	expect(body).not.toContain('<!-- hidden')
+	expect(body).not.toContain('**bold**')
+	expect(parseSummaryMarker(body)).toBeDefined()
+})
