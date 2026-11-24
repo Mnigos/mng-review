@@ -455,3 +455,35 @@ describe('shadow output byte compatibility with main', () => {
 			).toBe(SHADOW_BYTES[index])
 		})
 })
+
+describe('formatResult unread files', () => {
+	test('names each file a main reviewer left unread, with why, and the reading cap', () => {
+		const reviewed = reviewReport()
+		const unreadFiles = [
+			{ path: 'src/store.ts', reason: 'partial' },
+			{ path: 'docs/notes.md', reason: 'untouched' },
+		] as const
+		const report = {
+			...reviewed,
+			agents: reviewed.agents.map(agent => ({
+				...agent,
+				unread: 2,
+				unreadFiles,
+			})),
+			capped: { needed: 1_600_000, cap: 1_400_000 },
+		}
+		expect(
+			decodeJson(
+				formatResult(
+					{ status: 'reviewed', rules: RULES, event: EVENT, report },
+					CONTEXT
+				)
+			)
+		).toMatchObject({
+			review: {
+				agents: reviewed.agents.map(() => ({ unread: 2, unreadFiles })),
+				capped: { needed: 1_600_000, cap: 1_400_000 },
+			},
+		})
+	})
+})

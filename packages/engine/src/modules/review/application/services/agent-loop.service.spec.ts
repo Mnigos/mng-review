@@ -2364,3 +2364,101 @@ layer(Layer.empty)('received coverage', test => {
 			)
 	)
 })
+
+layer(Layer.empty)('reading before the answer', test => {
+	const output = 'x'.repeat(CHARS_PER_TOKEN * 5)
+	for (const pooled of [false, true])
+		test.effect(
+			`delivers a first-turn read that fits before the answer call${pooled ? ' with tokens from the pool' : ''}`,
+			() =>
+				Effect.gen(function* () {
+					const pool = yield* makeTokenPool
+					yield* pool.release(pooled ? 100 : 0)
+					const callSpy = vi.fn(() => Effect.succeed(output))
+					yield* Effect.gen(function* () {
+						yield* AgentLoopService.use(loop =>
+							loop.run({
+								...REQUEST,
+								budget: {
+									runTokens: 10_000,
+									// Two more calls would pass the share, but the read and the answer fit.
+									conversationTokens: pooled ? 100 : 120,
+									...(pooled ? { pool } : {}),
+								},
+							})
+						)
+						expect(callSpy).toHaveBeenCalledOnce()
+						const calls = yield* ScriptedLlm.use(script => script.calls)
+						expect(calls[1]?.options.prompt.content).toContainEqual(
+							expect.objectContaining({
+								role: 'tool',
+								content: [
+									expect.objectContaining({
+										result: fenceData(TOOL_OUTPUT_LABEL, output),
+									}),
+								],
+							})
+						)
+					}).pipe(
+						Effect.provide(
+							loopLayer(
+								(_call, index) =>
+									Effect.succeed(
+										index === 0
+											? [toolCall('read_file'), finishWithUsage(40)]
+											: answer()
+									),
+								{},
+								callSpy
+							)
+						)
+					)
+				})
+		)
+	test.effect(
+		'a file whose diff came back in part gets a continuation naming why',
+		() =>
+			Effect.gen(function* () {
+				const diff = unifiedDiff(BILLING_PATH, 3)
+				const result = yield* AgentLoopService.use(loop =>
+					loop.run({
+						...COVERED_REQUEST,
+						coverage: {
+							...COVERED_REQUEST.coverage,
+							changed: getChangedLines(diff),
+						},
+					})
+				)
+				expect(result).toMatchObject({
+					continued: true,
+					unread: [{ path: BILLING_PATH, reason: 'partial' }],
+				})
+				const calls = yield* ScriptedLlm.use(script => script.calls)
+				expect(
+					JSON.stringify(calls[2]?.options.prompt.content.at(-1))
+				).toContain(`- ${BILLING_PATH} (only part of its diff came back)`)
+			}).pipe(
+				Effect.provide(
+					loopLayer(
+						(_call, index) =>
+							Effect.succeed(
+								index === 0
+									? [toolCall('diff', { path: BILLING_PATH }), FINISH]
+									: answer()
+							),
+						{},
+						undefined,
+						() =>
+							Effect.succeed({
+								output: 'part',
+								diff: getDiffParts(
+									unifiedDiff(BILLING_PATH, 3),
+									0,
+									unifiedDiff(BILLING_PATH, 3).indexOf('+after')
+								),
+							})
+					)
+				)
+			)
+	)
+})

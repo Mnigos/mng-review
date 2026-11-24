@@ -1,3 +1,4 @@
+import { BILLING_PATH } from '../../../shared/mocks/review-test.helper'
 import { toContinuationMessage } from './loop-message.helper'
 import { MAX_CONTINUATION_PATHS } from './review.constants'
 
@@ -26,4 +27,24 @@ describe('toContinuationMessage', () => {
 			)
 		}
 	)
+})
+
+describe('toContinuationMessage reasons', () => {
+	test('names why each file is unread and steers it to every part of its diff', () => {
+		const message = toContinuationMessage(
+			[
+				{ path: BILLING_PATH, reason: 'partial' },
+				{ path: 'src/a.ts', reason: 'deletions' },
+			],
+			'report_findings'
+		)
+		expect(message).toContain(
+			`- ${BILLING_PATH} (only part of its diff came back)`
+		)
+		expect(message).toContain(
+			'- src/a.ts (read with read_file, which never shows the lines the change deletes)'
+		)
+		expect(message).toContain('with `diff(path)`, every part of it')
+		expect(message).toContain('`read_file` does not count for these files')
+	})
 })

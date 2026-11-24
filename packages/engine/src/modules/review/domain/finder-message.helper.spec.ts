@@ -215,3 +215,23 @@ describe('whole first-message diffs', () => {
 		expect(getWholePaths('', 10_000)).toEqual(new Set())
 	})
 })
+
+describe('reading cut files', () => {
+	test('steers every cut file to each part of its diff, not to read_file', () => {
+		const diff = unifiedDiff('src/billing/refund.ts', 2000)
+		const message = toChangeMessage({
+			files: [file('src/billing/refund.ts')],
+			scope: ['src/billing/refund.ts'],
+			pr: {},
+			diff,
+			maxChars: MIN_FILE_DIFF_CHARS,
+		})
+		expect(message).toContain(
+			'Read each one with `diff(path)` before you answer, every part of it'
+		)
+		expect(message).toContain(
+			'A file counts as read only once its whole diff came back; `read_file` never shows the lines a change deletes.'
+		)
+		expect(message).not.toContain('or `read_file`')
+	})
+})

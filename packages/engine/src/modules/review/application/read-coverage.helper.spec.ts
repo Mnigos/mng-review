@@ -179,3 +179,52 @@ describe('isWholeRead', () => {
 		).toBe(false)
 	})
 })
+
+describe('getUnreadFiles', () => {
+	const coverage = {
+		paths: [BILLING_PATH, OTHER_PATH, 'a.ts', 'src/added.ts'],
+		changed: new Map([
+			...CHANGED,
+			...getChangedLines(DELETION),
+			...getChangedLines(addedDiff('src/added.ts', 3)),
+		]),
+	}
+	test('names each file not received whole with why', () => {
+		const middle = DIFF.indexOf('+after')
+		const reads = readAll([
+			output('diff', BILLING_PATH, { diff: getDiffParts(DIFF, 0, middle) }),
+			output('read_file', 'a.ts', {
+				shown: {
+					ref: 'head',
+					path: 'a.ts',
+					lines: { start: 1, end: 40 },
+					truncated: false,
+				},
+			}),
+			output('read_file', 'src/added.ts', {
+				shown: {
+					ref: 'head',
+					path: 'src/added.ts',
+					lines: { start: 1, end: 2 },
+					truncated: false,
+				},
+			}),
+			output('blame', OTHER_PATH),
+		])
+		expect(getUnreadFiles(reads, coverage)).toEqual([
+			{ path: BILLING_PATH, reason: 'partial' },
+			{ path: OTHER_PATH, reason: 'untouched' },
+			{ path: 'a.ts', reason: 'deletions' },
+			{ path: 'src/added.ts', reason: 'partial' },
+		])
+	})
+	test('leaves out the files whose whole diff came back', () => {
+		const reads = readAll([
+			output('diff', '', { diff: getDiffParts(DIFF, 0, DIFF.length) }),
+		])
+		expect(getUnreadFiles(reads, coverage)).toEqual([
+			{ path: 'a.ts', reason: 'untouched' },
+			{ path: 'src/added.ts', reason: 'untouched' },
+		])
+	})
+})

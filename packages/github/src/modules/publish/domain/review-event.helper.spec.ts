@@ -340,6 +340,46 @@ describe('toDecidedSummary', () => {
 	})
 })
 
+describe('toDecidedSummary after a failed read', () => {
+	const rendered = { body: 'Summary', marker: SUMMARY_MARKER } as const
+	test('marks the head unknown and claims no draft, so the state stands', () => {
+		expect(
+			toDecidedSummary(
+				{ ...rendered, evidence: COVERED_REVIEW },
+				false,
+				{ current: undefined, authored: false },
+				'head'
+			)
+		).toStrictEqual({
+			rendered: {
+				...rendered,
+				evidence: {
+					...COVERED_REVIEW,
+					onHead: false,
+					open: true,
+					headUnknown: true,
+				},
+			},
+			decision: KEEPS_COMMENT,
+		})
+	})
+	test('marks a reply-only run the same way', () => {
+		expect(
+			toDecidedSummary(
+				{ ...rendered, evidence: REPLIED },
+				false,
+				{ current: undefined, authored: false },
+				'head'
+			).rendered.evidence
+		).toStrictEqual({
+			...REPLIED,
+			current: false,
+			onHead: false,
+			headUnknown: true,
+		})
+	})
+})
+
 /** A report whose plan ran and reported the main reviewer and found nothing. */
 function coveredReport() {
 	const reviewed = report()

@@ -1,6 +1,6 @@
 import { Predicate, Result, Schema } from 'effect'
 import { Tool } from 'effect/ai'
-import { REPO_TOOLS } from './repo.toolkit'
+import { DiffTool, REPO_TOOLS, ReadFileTool } from './repo.toolkit'
 import { ReportFindingsTool } from './report-findings.tool'
 import { ReportVerdictTool } from './report-verdict.tool'
 
@@ -115,5 +115,19 @@ describe('provider tool schemas', () => {
 					},
 				})
 			).toEqual([`$.$defs.format.properties.minimum.anyOf[0].items.${keyword}`])
+	})
+})
+
+describe('tool descriptions for cut files', () => {
+	test('diff asks for every part of each cut file and read_file points to diff', () => {
+		expect(DiffTool.description).toContain(
+			'Read every changed file whose diff your first message cut with `diff(path)`.'
+		)
+		expect(DiffTool.description).toContain(
+			'a file counts as read only once every part came back'
+		)
+		expect(ReadFileTool.description).toContain(
+			'It never shows the lines a change deletes, so read a changed file whose diff was cut with `diff`'
+		)
 	})
 })

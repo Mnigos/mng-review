@@ -219,3 +219,52 @@ layer(Layer.empty)('returned finder tokens', test => {
 			})
 	)
 })
+
+layer(Layer.empty)('tool output room', test => {
+	test.effect('the whole share is open before the first answer', () =>
+		Effect.gen(function* () {
+			const budget = yield* makeConversationBudget(BUDGET, Effect.succeed(0))
+			expect(yield* budget.current).toEqual(BUDGET)
+		})
+	)
+	test.effect(
+		'claims from the pool what tool outputs lack before the answer call',
+		() =>
+			Effect.gen(function* () {
+				const pool = yield* makeTokenPool
+				yield* pool.release(50)
+				const budget = yield* makeConversationBudget(
+					{ ...BUDGET, pool },
+					Effect.succeed(0)
+				)
+				const state = { spentTokens: 40, nextInputTokens: 40 }
+				yield* budget.claimFor(state, 20)
+				expect(yield* budget.current).toMatchObject({ conversationTokens: 100 })
+				yield* budget.claimFor(state, 30)
+				expect(yield* budget.current).toMatchObject({ conversationTokens: 110 })
+				expect(yield* pool.available).toBe(40)
+				expect(
+					toAffordableOutputs(
+						['x'.repeat(CHARS_PER_TOKEN * 30)],
+						yield* budget.current,
+						state,
+						'refused'
+					)
+				).toEqual(['x'.repeat(CHARS_PER_TOKEN * 30)])
+			})
+	)
+	test.effect('without a pool or a budget it claims nothing', () =>
+		Effect.gen(function* () {
+			const state = { spentTokens: 40, nextInputTokens: 40 }
+			const budget = yield* makeConversationBudget(BUDGET, Effect.succeed(0))
+			yield* budget.claimFor(state, 1000)
+			expect(yield* budget.current).toEqual(BUDGET)
+			const unbounded = yield* makeConversationBudget(
+				undefined,
+				Effect.succeed(0)
+			)
+			yield* unbounded.claimFor(state, 1000)
+			expect(yield* unbounded.current).toBeUndefined()
+		})
+	)
+})

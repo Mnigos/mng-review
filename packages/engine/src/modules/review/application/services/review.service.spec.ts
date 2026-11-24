@@ -669,3 +669,89 @@ layer(Layer.empty)('per-review token pool', test => {
 			})
 	)
 })
+
+/** A main reviewer job of `tokens` that needs `need` to read its cut files; agents need nothing. */
+function jobsOf(
+	tokens: number,
+	need: number
+): FinderService['Service']['jobs'] {
+	return run =>
+		Effect.succeed([
+			{
+				system: 'system',
+				user: run.name,
+				tools: [],
+				tokens,
+				...(run.role === 'reviewer' ? { need } : {}),
+			},
+		])
+}
+
+layer(Layer.empty)('coverage sizing', test => {
+	for (const capped of [false, true])
+		test.effect(
+			capped
+				? 'past the cap every grant is cut alike and the report names the cap'
+				: 'raises each main reviewer conversation to what reading its cut files needs',
+			() =>
+				Effect.gen(function* () {
+					const tokensPerRun = capped ? 400_000 : 3_000_000
+					const cfg = config({
+						depth: 'deep',
+						limits: {
+							tokens_per_run: tokensPerRun,
+							tokens_by_depth: {
+								quick: 100_000,
+								balanced: 300_000,
+								deep: 300_000,
+							},
+						},
+					})
+					const request = reviewRequest(cfg, [agent('billing')])
+					const findSpy = vi.fn<FinderService['Service']['run']>(run =>
+						Effect.succeed(finderResult([], run.name))
+					)
+					const validateSpy = vi.fn<ValidatorService['Service']['validate']>(
+						() => Effect.succeed({ status: 'unvalidated', error: 'fixture' })
+					)
+					const report = yield* ReviewService.use(review =>
+						review.review(request)
+					).pipe(
+						Effect.provide(
+							reviewLayer(
+								findSpy,
+								validateSpy,
+								Effect.succeed([]),
+								0,
+								undefined,
+								jobsOf(1000, 151_000)
+							)
+						)
+					)
+					const reviewers = findSpy.mock.calls.filter(
+						([run]) => run.role === 'reviewer'
+					)
+					const runTokens = Math.floor(
+						getPlannedTokens(cfg.limits, 'deep') * FINDER_TOKEN_SHARE
+					)
+					const cap = Math.floor(tokensPerRun * FINDER_TOKEN_SHARE)
+					const needed = 150_000 * reviewers.length
+					const granted = capped ? cap - runTokens : needed
+					for (const [, context, jobs] of reviewers) {
+						expect(jobs?.[0]?.tokens).toBe(
+							1000 + Math.floor((150_000 * granted) / needed)
+						)
+						expect(granted).toBeGreaterThan(0)
+						expect(context.tokens.runTokens).toBe(runTokens + granted)
+					}
+					expect(
+						findSpy.mock.calls.find(([run]) => run.role === 'agent')?.[2]
+					).toEqual([
+						{ system: 'system', user: 'billing', tools: [], tokens: 1000 },
+					])
+					expect(report.capped).toEqual(
+						capped ? { needed: runTokens + needed, cap } : undefined
+					)
+				})
+		)
+})
