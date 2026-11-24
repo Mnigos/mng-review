@@ -73,3 +73,20 @@ export const refusalConfig = Config.all({
 	),
 	run: Config.Int('GITHUB_RUN_ID'),
 })
+
+/** The review workflow `status-sweep.yml` dispatches, such as `review.yml`; empty dispatches nothing. */
+export const dispatchWorkflowConfig = Config.String(
+	'MNG_REVIEW_DISPATCH_WORKFLOW'
+).pipe(Config.withDefault(''))
+
+/** The pull request one risk sweep job checks, and the id every run it counts must carry. */
+export interface RiskSweepTarget {
+	readonly pullNumber: number
+	readonly repositoryId: number
+}
+
+/** `MNG_REVIEW_TARGET_PR` from the matrix and the runner's `GITHUB_REPOSITORY_ID`. */
+export const riskSweepTargetConfig = Config.all({
+	pullNumber: Config.Int('MNG_REVIEW_TARGET_PR'),
+	repositoryId: Config.Int('GITHUB_REPOSITORY_ID'),
+}).pipe(Config.map((target): RiskSweepTarget => target))

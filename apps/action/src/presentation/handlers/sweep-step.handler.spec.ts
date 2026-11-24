@@ -9,6 +9,7 @@ import {
 	cleanupRepos,
 	FileSystemLayer,
 } from '../../shared/mocks/git-test.helper'
+import { RiskSweepOffLayer } from '../../shared/mocks/risk-run.helper'
 import { stepFixture } from '../../shared/mocks/step-test.helper'
 import { failSweepConfig, runSweepStep } from './sweep-step.handler'
 
@@ -40,6 +41,7 @@ layer(FileSystemLayer)('sweep step app identity', test => {
 							Layer.mergeAll(
 								fixture.rulesLayer,
 								Layer.succeed(StatusSweepService, { sweep: sweepSpy }),
+								RiskSweepOffLayer,
 								GitHubWriteConfigLive
 							)
 						),
@@ -77,6 +79,7 @@ layer(FileSystemLayer)('sweep step app identity', test => {
 								Layer.mergeAll(
 									fixture.rulesLayer,
 									Layer.succeed(StatusSweepService, { sweep: sweepSpy }),
+									RiskSweepOffLayer,
 									GitHubWriteConfigLive
 								)
 							),

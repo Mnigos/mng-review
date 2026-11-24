@@ -2,7 +2,7 @@ import { RISK_STATUS_CONTEXT, type RiskStatusState } from '@mng-review/domain'
 import { Context, Effect, Layer, Predicate, Schema } from 'effect'
 import { HttpClientRequest } from 'effect/http'
 import { MAX_PAGES, PAGE_SIZE } from './github-api.constants'
-import { collect, read } from './github-api.helper'
+import { collect, pages, read } from './github-api.helper'
 import { createdSchema } from './github-api.schema'
 import { makeGitHubHttp } from './github-http.client'
 import {
@@ -13,6 +13,10 @@ import {
 	runCreatedSchema,
 	type TimelineItem,
 	timelineAnswerSchema,
+	type WorkflowJob,
+	type WorkflowRun,
+	workflowJobsPageSchema,
+	workflowRunsPageSchema,
 } from './github-risk.schema'
 import { GitHubApiError } from './github.errors'
 
@@ -34,8 +38,8 @@ export const TIMELINE_QUERY = `query($owner: String!, $name: String!, $number: I
         pageInfo { hasNextPage endCursor }
         nodes {
           __typename
-          ... on PullRequestCommit { commit { oid } }
-          ... on HeadRefForcePushedEvent { beforeCommit { oid } afterCommit { oid } }
+          ... on PullRequestCommit { commit { oid committedDate } }
+          ... on HeadRefForcePushedEvent { createdAt beforeCommit { oid } afterCommit { oid } }
           ... on LabeledEvent { actor { __typename login } label { name } }
           ... on UnlabeledEvent { actor { __typename login } label { name } }
           ... on IssueComment { databaseId }
@@ -67,10 +71,29 @@ export const COMMENT_EDITS_QUERY = `query($id: ID!, $cursor: String) {
   }
 }`
 
+/** A `workflow_dispatch` of a workflow on a ref, with its inputs. */
+export interface DispatchInput {
+	/** The workflow file name, such as `review.yml`. */
+	readonly workflow: string
+	readonly ref: string
+	readonly inputs: Readonly<Record<string, string>>
+}
+
 /**
- * The risk rating's own reads and its one write: every status of a commit, the timeline, the
- * status.
+ * The runs list filter: one workflow's runs or every workflow's, one status per call, the event
+ * that started them, their branch, and a lower bound on their creation time.
  */
+export interface RunsQuery {
+	/** The workflow file name, such as `review.yml`; without it, the runs of every workflow. */
+	readonly workflow?: string
+	readonly status?: string
+	readonly event?: string
+	readonly branch?: string
+	/** Only runs created at or after this time; paging stops at the first older run. */
+	readonly since?: string
+}
+
+/** The risk rating's GitHub reads and writes: statuses, timeline, edits, runs and dispatches. */
 export class GitHubRiskService extends Context.Service<
 	GitHubRiskService,
 	{
@@ -100,6 +123,22 @@ export class GitHubRiskService extends Context.Service<
 		readonly getRunCreated: (
 			runId: number
 		) => Effect.Effect<string, GitHubApiError>
+		/**
+		 * Every page of the workflow runs the query names, newest first, down to its lower bound. More
+		 * than `MAX_PAGES` pages, or fewer runs than GitHub's `total_count` (a filtered search ends at
+		 * 1,000), fails the read, so a caller holds rather than act on a partial list.
+		 */
+		readonly listRuns: (
+			query: RunsQuery
+		) => Effect.Effect<readonly WorkflowRun[], GitHubApiError>
+		/** Every job of one run, with its name and conclusion. */
+		readonly listRunJobs: (
+			runId: number
+		) => Effect.Effect<readonly WorkflowJob[], GitHubApiError>
+		/** Starts a workflow on a ref; GitHub answers no body and no run id. */
+		readonly dispatch: (
+			input: DispatchInput
+		) => Effect.Effect<void, GitHubApiError>
 	}
 >()('mng-review/GitHubRiskService') {}
 
@@ -110,13 +149,18 @@ function editsFailure(reason: string) {
 	)
 }
 
+/** True for a run created before the lower bound; the list is newest first. */
+function isOlder(run: WorkflowRun, since: string | undefined): boolean {
+	return since !== undefined && run.created_at < since
+}
+
 /** GitHub's limit on a status description. */
 const MAX_DESCRIPTION_CHARS = 140
 
 export const GitHubRiskServiceLive = Layer.effect(
 	GitHubRiskService,
 	Effect.gen(function* () {
-		const { config, repo, sendJson, query } = yield* makeGitHubHttp
+		const { config, repo, sendJson, sendEmpty, query } = yield* makeGitHubHttp
 
 		/** One page of statuses and the pages after it; a page past `MAX_PAGES` fails the read. */
 		const statusPage = (
@@ -272,12 +316,85 @@ export const GitHubRiskServiceLive = Layer.effect(
 			}
 		)
 
+		const listRuns = Effect.fn('GitHubRiskService.listRuns')(function* (
+			runs: RunsQuery
+		) {
+			const path = runs.workflow
+				? `${repo}/actions/workflows/${encodeURIComponent(runs.workflow)}/runs`
+				: `${repo}/actions/runs`
+			const listed = yield* pages(
+				'listRuns',
+				page =>
+					sendJson(
+						'listRuns',
+						HttpClientRequest.get(path).pipe(
+							HttpClientRequest.setUrlParams({
+								...(runs.status ? { status: runs.status } : {}),
+								...(runs.event ? { event: runs.event } : {}),
+								...(runs.branch ? { branch: runs.branch } : {}),
+								...(runs.since ? { created: `>=${runs.since}` } : {}),
+								per_page: String(PAGE_SIZE),
+								page: String(page),
+							})
+						),
+						workflowRunsPageSchema
+					).pipe(
+						Effect.map(answer => ({
+							entries: answer.workflow_runs,
+							total: answer.total_count,
+						}))
+					),
+				1,
+				entries => entries.some(run => isOlder(run, runs.since))
+			)
+			return listed.filter(run => !isOlder(run, runs.since))
+		})
+
+		const listRunJobs = Effect.fn('GitHubRiskService.listRunJobs')(function* (
+			runId: number
+		) {
+			return yield* pages(
+				'listRunJobs',
+				page =>
+					sendJson(
+						'listRunJobs',
+						HttpClientRequest.get(`${repo}/actions/runs/${runId}/jobs`).pipe(
+							HttpClientRequest.setUrlParams({
+								per_page: String(PAGE_SIZE),
+								page: String(page),
+							})
+						),
+						workflowJobsPageSchema
+					).pipe(Effect.map(answer => ({ entries: answer.jobs }))),
+				1
+			)
+		})
+
+		const dispatch = Effect.fn('GitHubRiskService.dispatch')(function* (
+			input: DispatchInput
+		) {
+			return yield* sendEmpty(
+				'dispatch',
+				HttpClientRequest.post(
+					`${repo}/actions/workflows/${encodeURIComponent(input.workflow)}/dispatches`
+				).pipe(
+					HttpClientRequest.bodyJsonUnsafe({
+						ref: input.ref,
+						inputs: input.inputs,
+					})
+				)
+			)
+		})
+
 		return {
 			listStatuses,
 			createStatus,
 			listTimeline,
 			readCommentEdits,
 			getRunCreated,
+			listRuns,
+			listRunJobs,
+			dispatch,
 		}
 	})
 )

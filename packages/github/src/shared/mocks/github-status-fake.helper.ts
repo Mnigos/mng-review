@@ -217,6 +217,9 @@ export function riskFixture() {
 	}
 	const risk = Layer.succeed(GitHubRiskService, {
 		getRunCreated: () => Effect.die('unexpected run read'),
+		listRuns: () => Effect.succeed([]),
+		listRunJobs: () => Effect.succeed([]),
+		dispatch: () => Effect.die('the publish risk fake never dispatches'),
 		listTimeline: () =>
 			Effect.gen(function* () {
 				reads.push('timeline')

@@ -124,3 +124,48 @@ export function collect<TNode>(
 		})
 	)
 }
+
+/** One page of a list, and how many entries GitHub says the whole list holds, when it says. */
+export interface ListPage<TEntry> {
+	readonly entries: readonly TEntry[]
+	readonly total?: number
+}
+
+/**
+ * Every page of a list whose page holds `PAGE_SIZE` entries, up to the page `isLast` ends; past
+ * `MAX_PAGES` fails. A list that ends before the `total` its last page gives fails too: GitHub ends
+ * a filtered runs search at 1,000 entries with an empty page and says so only in the total.
+ */
+export function pages<TEntry>(
+	operation: string,
+	fetchPage: (page: number) => Effect.Effect<ListPage<TEntry>, GitHubApiError>,
+	page: number,
+	isLast: (entries: readonly TEntry[]) => boolean = () => false,
+	seen = 0
+): Effect.Effect<readonly TEntry[], GitHubApiError> {
+	return read(fetchPage(page)).pipe(
+		Effect.flatMap(({ entries, total }) => {
+			if (isLast(entries)) return Effect.succeed(entries)
+			const listed = seen + entries.length
+			if (entries.length < PAGE_SIZE)
+				return total === undefined || listed >= total
+					? Effect.succeed(entries)
+					: Effect.fail(
+							new GitHubApiError({
+								operation,
+								reason: `GitHub listed ${listed} of ${total} entries`,
+							})
+						)
+			if (page >= MAX_PAGES)
+				return Effect.fail(
+					new GitHubApiError({
+						operation,
+						reason: `more than ${MAX_PAGES * PAGE_SIZE} entries`,
+					})
+				)
+			return pages(operation, fetchPage, page + 1, isLast, listed).pipe(
+				Effect.map(rest => [...entries, ...rest])
+			)
+		})
+	)
+}

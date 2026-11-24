@@ -11,7 +11,7 @@ import {
 	openPullRequestSchema,
 } from './github-api.schema'
 import { makeGitHubHttp } from './github-http.client'
-import type { GitHubApiError } from './github.errors'
+import { GitHubApiError } from './github.errors'
 import { OwnedIdentities } from './owned-identities.context'
 
 export const STATUS_CONTEXT = 'MNG Review'
@@ -36,6 +36,12 @@ export interface CommitStatusInput {
 	readonly description: string
 }
 
+/** How the open list ends past `MAX_PAGES` pages. */
+export interface OpenPullsOptions {
+	/** Fail rather than stop there, for a caller that must not act on a cut list. */
+	readonly complete?: boolean
+}
+
 /** Check runs and the `MNG Review` commit status, and the reads the status sweep needs. */
 export class GitHubStatusService extends Context.Service<
 	GitHubStatusService,
@@ -54,10 +60,13 @@ export class GitHubStatusService extends Context.Service<
 			GitHubApiError,
 			OwnedIdentities
 		>
-		readonly listOpenPullRequests: () => Effect.Effect<
-			readonly OpenPullRequest[],
-			GitHubApiError
-		>
+		/**
+		 * Every open pull request, page by page. Past `MAX_PAGES` full pages the list stops there,
+		 * or with `complete` fails.
+		 */
+		readonly listOpenPullRequests: (
+			options?: OpenPullsOptions
+		) => Effect.Effect<readonly OpenPullRequest[], GitHubApiError>
 	}
 >()('mng-review/GitHubStatusService') {}
 
@@ -125,7 +134,8 @@ export const GitHubStatusServiceLive = Layer.effect(
 
 		/** One page of open pull requests and the pages after it, up to `MAX_PAGES`. */
 		const pullsPage = (
-			page: number
+			page: number,
+			complete: boolean
 		): Effect.Effect<readonly OpenPullRequest[], GitHubApiError> =>
 			read(
 				sendJson(
@@ -140,17 +150,26 @@ export const GitHubStatusServiceLive = Layer.effect(
 					Schema.Array(openPullRequestSchema)
 				)
 			).pipe(
-				Effect.flatMap(pulls =>
-					pulls.length < PAGE_SIZE || page >= MAX_PAGES
-						? Effect.succeed(pulls)
-						: pullsPage(page + 1).pipe(Effect.map(rest => [...pulls, ...rest]))
-				)
+				Effect.flatMap(pulls => {
+					if (pulls.length < PAGE_SIZE) return Effect.succeed(pulls)
+					if (page < MAX_PAGES)
+						return pullsPage(page + 1, complete).pipe(
+							Effect.map(rest => [...pulls, ...rest])
+						)
+					if (!complete) return Effect.succeed(pulls)
+					return Effect.fail(
+						new GitHubApiError({
+							operation: 'listOpenPullRequests',
+							reason: `more than ${MAX_PAGES * PAGE_SIZE} entries`,
+						})
+					)
+				})
 			)
 
 		const listOpenPullRequests = Effect.fn(
 			'GitHubStatusService.listOpenPullRequests'
-		)(function* () {
-			return yield* pullsPage(1)
+		)(function* (options?: OpenPullsOptions) {
+			return yield* pullsPage(1, options?.complete === true)
 		})
 
 		return { createCheckRun, setStatus, getStatus, listOpenPullRequests }
