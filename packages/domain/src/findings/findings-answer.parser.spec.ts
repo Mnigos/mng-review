@@ -1,6 +1,6 @@
 import { layer } from '@effect/vitest'
 import { Effect, Layer } from 'effect'
-import { rawFinding } from '../shared/mocks/domain-test.helper'
+import { LONG_TITLE, rawFinding } from '../shared/mocks/domain-test.helper'
 import {
 	MAX_FINDING_FIX_CHARS,
 	MAX_FINDING_IMPACT_CHARS,
@@ -161,5 +161,28 @@ layer(Layer.empty)('parseFindingsAnswer text limits', test => {
 				finding,
 			])
 		})
+	)
+})
+
+layer(Layer.empty)('addLaterFindings with cut titles', test => {
+	test.effect(
+		'compares the uncut titles, so reports that differ only past the cut are both kept',
+		() =>
+			Effect.gen(function* () {
+				const longer = `${LONG_TITLE} on a second retry`
+				const first = yield* parseFindingsAnswer([
+					rawFinding({ title: LONG_TITLE }),
+				])
+				const later = yield* parseFindingsAnswer([
+					rawFinding({ title: longer }),
+					rawFinding({ title: LONG_TITLE }),
+				])
+				const { findings } = addLaterFindings(first, later)
+				expect(findings.map(finding => finding.uncutTitle)).toEqual([
+					LONG_TITLE,
+					longer,
+				])
+				expect(new Set(findings.map(finding => finding.title)).size).toBe(1)
+			})
 	)
 })

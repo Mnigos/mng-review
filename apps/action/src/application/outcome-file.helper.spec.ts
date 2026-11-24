@@ -1,4 +1,5 @@
 import { layer } from '@effect/vitest'
+import { getFingerprints, toFingerprint, toFinding } from '@mng-review/domain'
 import { REDACTED } from '@mng-review/engine'
 import {
 	MAX_REPORT_ENTRIES,
@@ -213,6 +214,36 @@ describe('outcome file helpers', () => {
 })
 
 layer(Layer.empty)('toOutcomeText', test => {
+	test.effect(
+		'keeps the cut title fingerprint when redaction changes the title',
+		() =>
+			Effect.gen(function* () {
+				const report = boundReviewReport()
+				const title =
+					'A retried write to the store loses data after the first write…'
+				const bugs = report.bugs.map(finding => ({
+					...finding,
+					...toFinding(
+						{
+							...finding,
+							title,
+							uncutTitle: `${title.slice(0, -1)} already committed its row`,
+						},
+						{ agent: 'reviewer', model: 'model-a', kind: 'bug' }
+					),
+				}))
+				const file = { ...outcomeFile(), report: { ...report, bugs } }
+				const decoded = yield* parseOutcomeFile(
+					toOutcomeText(file, ['retried'])
+				)
+				const [published] = decoded.report?.bugs ?? []
+				expect(published?.title).toBe(title.replace('retried', REDACTED))
+				expect(published && getFingerprints(published)).toEqual([
+					bugs[0]?.fingerprint,
+					toFingerprint({ path: report.bugs[0]?.path ?? '', title }),
+				])
+			})
+	)
 	test.effect('caps finding models at the name-list limit', () =>
 		Effect.gen(function* () {
 			const report = boundReviewReport()

@@ -1,7 +1,13 @@
 import { SEVERITIES } from '../config/review-config.constants'
-import { finding, rawFinding } from '../shared/mocks/domain-test.helper'
+import {
+	finding,
+	LONG_TITLE,
+	rawFinding,
+} from '../shared/mocks/domain-test.helper'
+import { toWithinTextLimits } from './finding-text.helper'
 import {
 	FINGERPRINT_LENGTH,
+	MAX_FINDING_TITLE_CHARS,
 	NEAR_LINES,
 	SAME_TITLE_OVERLAP,
 	SAME_DESCRIPTION_OVERLAP,
@@ -9,6 +15,7 @@ import {
 } from './finding.constants'
 import {
 	absorb,
+	getFingerprints,
 	getNearGroups,
 	isNearDuplicate,
 	toFingerprint,
@@ -649,5 +656,62 @@ describe('getWordCoverage', () => {
 	test('returns zero when the other text is empty or disjoint', () => {
 		expect(getWordCoverage('invoice retry', '')).toBe(0)
 		expect(getWordCoverage('invoice retry', 'cache session')).toBe(0)
+	})
+})
+
+/** The finder that reports the findings under examination. */
+const REPORTER = { agent: 'reviewer', model: 'model-a', kind: 'bug' } as const
+
+describe('fingerprints of cut titles', () => {
+	test('a title over the limit keeps the fingerprint of the uncut title', () => {
+		const reported = rawFinding({ title: LONG_TITLE })
+		const cut = toWithinTextLimits(reported)
+		expect(LONG_TITLE.length).toBeGreaterThan(MAX_FINDING_TITLE_CHARS)
+		expect(cut.title.length).toBeLessThanOrEqual(MAX_FINDING_TITLE_CHARS)
+		const attributed = toFinding(cut, REPORTER)
+		expect(attributed.title).toBe(cut.title)
+		expect(attributed.fingerprint).toBe(toFingerprint(reported))
+		expect(attributed.cutTitleFingerprint).toBe(
+			toFingerprint({ path: cut.path, title: cut.title })
+		)
+		expect(attributed.cutTitleFingerprint).not.toBe(attributed.fingerprint)
+		expect(attributed).not.toHaveProperty('uncutTitle')
+	})
+	test('a finding with a cut title also answers to the fingerprint of the cut title', () => {
+		const attributed = toFinding(
+			toWithinTextLimits(rawFinding({ title: LONG_TITLE })),
+			REPORTER
+		)
+		expect(getFingerprints(attributed)).toEqual([
+			attributed.fingerprint,
+			toFingerprint({ path: attributed.path, title: attributed.title }),
+		])
+	})
+	test('a title within the limit keeps its fingerprint', () => {
+		const attributed = toFinding(toWithinTextLimits(rawFinding()), REPORTER)
+		expect(attributed.fingerprint).toBe('ef737da9c02c2892')
+		expect(attributed).not.toHaveProperty('cutTitleFingerprint')
+		expect(getFingerprints(attributed)).toEqual(['ef737da9c02c2892'])
+	})
+	test('a title put on one line but not cut keeps one fingerprint', () => {
+		const attributed = toFinding(
+			toWithinTextLimits(
+				rawFinding({ title: 'Duplicate charge\nloses balance' })
+			),
+			REPORTER
+		)
+		expect(attributed.fingerprint).toBe('ef737da9c02c2892')
+		expect(attributed).not.toHaveProperty('cutTitleFingerprint')
+	})
+	test('a merged finding keeps the fingerprints of the report it keeps', () => {
+		const long = toFinding(
+			toWithinTextLimits(rawFinding({ title: LONG_TITLE, severity: 'high' })),
+			REPORTER
+		)
+		const [merged] = mergeFindings([
+			long,
+			{ ...long, severity: 'low', models: ['model-b'] },
+		])
+		expect(merged && getFingerprints(merged)).toEqual(getFingerprints(long))
 	})
 })
