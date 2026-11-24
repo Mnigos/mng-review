@@ -6,6 +6,7 @@ import { RECENT_COMMENTS } from '../../../platform/github-api.constants'
 import type { ReviewThread } from '../../../platform/github-api.schema'
 import { GitHubConfig } from '../../../platform/github.config'
 import { GitHubApiError } from '../../../platform/github.errors'
+import { provideListCompleteness } from '../../../platform/list-completeness.context'
 import { provideOwnedIdentities } from '../../../platform/owned-identities.context'
 import { agent, file } from '../../../shared/mocks/domain-test.helper'
 import {
@@ -4514,5 +4515,73 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 					).toMatchObject({ openBugs: 1 })
 				})
 		)
+	}
+)
+
+layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
+	'PublishService null nodes',
+	test => {
+		for (const list of ['threads', 'comments', 'reviews'] as const) {
+			test.effect(
+				`with the rating off, a null node in the ${list} is left out and the publish succeeds`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = setup()
+						fixture.fake.nullNodes[list] = 1
+						expect(
+							yield* PublishService.use(service =>
+								service.publish(fixture.input)
+							).pipe(
+								Effect.provide(fixture.publisher),
+								provideListCompleteness(false)
+							)
+						).toMatchObject({ onLine: 1, run: 1, verdict: 'needs fixes' })
+						expect(fixture.fake.writes.map(call => call.method)).toEqual([
+							'review',
+						])
+					})
+			)
+			test.effect(
+				`with the rating on, a null node in the ${list} fails the publish before any write`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = setup()
+						fixture.fake.nullNodes[list] = 1
+						expect(
+							yield* PublishService.use(service =>
+								service.publish(fixture.input)
+							).pipe(
+								Effect.provide(fixture.publisher),
+								provideListCompleteness(true),
+								Effect.flip
+							)
+						).toMatchObject({ _tag: 'GitHubApiError' })
+						expect(fixture.fake.writes).toEqual([])
+					})
+			)
+		}
+		for (const complete of [true, false])
+			test.effect(
+				`an unsettled answer GitHub lists as a null node keeps its bug open only while the rating is on (${complete})`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = setup()
+						const { thread, comments } = unsettledBugThread('outside')
+						fixture.fake.threads.push(thread)
+						fixture.fake.threadReader.read = readThreadOverHttp(
+							comments.map(comment =>
+								parseReplyMarker(comment.body)?.unsettled ? null : comment
+							)
+						)
+						expect(
+							yield* PublishService.use(service =>
+								service.publish(withoutBugs(fixture.input))
+							).pipe(
+								Effect.provide(fixture.publisher),
+								provideListCompleteness(complete)
+							)
+						).toMatchObject({ openBugs: complete ? 1 : 0 })
+					})
+			)
 	}
 )

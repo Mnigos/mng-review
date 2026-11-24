@@ -18,6 +18,7 @@ import {
 	READ_RETRIES,
 } from './github-api.constants'
 import { GitHubReviewService, REVIEW_EVENTS } from './github-review.service'
+import { provideListCompleteness } from './list-completeness.context'
 
 layer(Layer.empty)('GitHubReviewService', test => {
 	for (const event of REVIEW_EVENTS)
@@ -192,6 +193,33 @@ layer(Layer.empty)('GitHubReviewService', test => {
 						service.listReviews(42)
 					).pipe(Effect.provide(fixture.reviewLayer), Effect.flip)
 				).toMatchObject({ _tag: 'GitHubApiError', operation: 'listReviews' })
+			})
+	)
+	test.effect(
+		'listReviews leaves out a review GitHub lists as a null node when the run does not rate',
+		() =>
+			Effect.gen(function* () {
+				const first = summaryReview()
+				const fixture = makeGitHubHttp((_request, attempt) =>
+					Effect.succeed(
+						Response.json(
+							toGitHubPage(
+								'reviews',
+								attempt === 1 ? [first, null] : [null, first],
+								attempt === 1,
+								attempt === 1 ? 'next' : null
+							)
+						)
+					)
+				)
+				expect(
+					yield* GitHubReviewService.use(service =>
+						service.listReviews(42)
+					).pipe(
+						Effect.provide(fixture.reviewLayer),
+						provideListCompleteness(false)
+					)
+				).toEqual([first, first])
 			})
 	)
 	for (const status of [403, 404, 422, 429])

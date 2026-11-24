@@ -5,6 +5,7 @@ import {
 	GITHUB_ACTIONS_IDENTITY,
 	GitHubApiError,
 	GitHubConfig,
+	ListCompleteness,
 	toBotIdentity,
 	toAnswerEntry,
 	MARKER_VERSION,
@@ -1325,4 +1326,56 @@ layer(Layer.empty)('PublishRunService fails closed while rating', test => {
 				})
 			})
 	)
+})
+
+layer(Layer.empty)('PublishRunService list completeness', test => {
+	const OUTSIDE_CONTEXT = {
+		...RATED_CONTEXT,
+		event: { ...EVENT, pr: { ...EVENT.pr, target: 'release' } },
+	} as const satisfies PublishContext
+	for (const [name, rules, context, identity, complete] of [
+		['the rating off', RULES, CONTEXT, GITHUB_ACTIONS_IDENTITY, false],
+		[
+			'rules that rate a pull request outside the default branch',
+			RISK_RULES,
+			OUTSIDE_CONTEXT,
+			APP_IDENTITY,
+			false,
+		],
+		['the rating on', RISK_RULES, RATED_CONTEXT, APP_IDENTITY, true],
+	] as const)
+		test.effect(
+			`with ${name}, the prior read and the publish read complete lists: ${complete}`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup(
+						false,
+						undefined,
+						rules,
+						undefined,
+						undefined,
+						riskSpyLayer().spyLayer,
+						identity
+					)
+					const seen: boolean[] = []
+					fixture.readPriorSpy.mockImplementation(() =>
+						Effect.gen(function* () {
+							seen.push((yield* ListCompleteness).complete)
+							return undefined
+						})
+					)
+					fixture.publishSpy.mockImplementation(() =>
+						Effect.gen(function* () {
+							seen.push((yield* ListCompleteness).complete)
+							return PUBLISHED
+						})
+					)
+					expect(
+						yield* PublishRunService.use(service =>
+							service.run(boundOutcomeFile(), context)
+						).pipe(Effect.provide(fixture.service))
+					).toMatchObject({ status: 'published' })
+					expect(seen).toEqual([complete, complete])
+				})
+		)
 })
