@@ -5,6 +5,7 @@ import {
 	PULL_REQUEST_COMMENTS_QUERY,
 	REPLY_TO_THREAD_MUTATION,
 	RESOLVE_THREAD_MUTATION,
+	UNRESOLVE_THREAD_MUTATION,
 	REVIEW_THREADS_QUERY,
 	THREAD_COMMENTS_QUERY,
 } from './github-api.constants'
@@ -16,6 +17,7 @@ import {
 	type IssueComment,
 	issueCommentSchema,
 	mutationAnswerSchema,
+	replyAnswerSchema,
 	type PullRequest,
 	type PullRequestComment,
 	pullRequestCommentsAnswerSchema,
@@ -79,12 +81,20 @@ export class GitHubApiService extends Context.Service<
 		readonly minimizeComment: (
 			nodeId: string
 		) => Effect.Effect<void, GitHubApiError>
-		/** Replies in a review thread by its GraphQL node id. */
+		/** Replies in a review thread by its GraphQL node id; the new comment's `databaseId`. */
 		readonly replyToThread: (
 			threadId: string,
 			body: string
+		) => Effect.Effect<number | undefined, GitHubApiError>
+		/** Replaces the body of a review thread comment by its `databaseId`. */
+		readonly updateThreadComment: (
+			commentId: number,
+			body: string
 		) => Effect.Effect<void, GitHubApiError>
 		readonly resolveThread: (
+			threadId: string
+		) => Effect.Effect<void, GitHubApiError>
+		readonly unresolveThread: (
 			threadId: string
 		) => Effect.Effect<void, GitHubApiError>
 		readonly getPullRequest: (
@@ -265,20 +275,47 @@ export const GitHubApiServiceLive = Layer.effect(
 
 		const replyToThread = Effect.fn('GitHubApiService.replyToThread')(
 			function* (threadId: string, body: string) {
-				yield* graphql(
+				const answer = yield* graphql(
 					'replyToThread',
 					REPLY_TO_THREAD_MUTATION,
 					{ thread: threadId, body },
-					mutationAnswerSchema
+					replyAnswerSchema
+				)
+				return (
+					answer.data?.addPullRequestReviewThreadReply?.comment?.databaseId ??
+					undefined
 				)
 			}
 		)
+
+		const updateThreadComment = Effect.fn(
+			'GitHubApiService.updateThreadComment'
+		)(function* (commentId: number, body: string) {
+			yield* sendJson(
+				'updateThreadComment',
+				HttpClientRequest.patch(`${repo}/pulls/comments/${commentId}`).pipe(
+					HttpClientRequest.bodyJsonUnsafe({ body })
+				),
+				createdSchema
+			)
+		})
 
 		const resolveThread = Effect.fn('GitHubApiService.resolveThread')(
 			function* (threadId: string) {
 				yield* graphql(
 					'resolveThread',
 					RESOLVE_THREAD_MUTATION,
+					{ thread: threadId },
+					mutationAnswerSchema
+				)
+			}
+		)
+
+		const unresolveThread = Effect.fn('GitHubApiService.unresolveThread')(
+			function* (threadId: string) {
+				yield* graphql(
+					'unresolveThread',
+					UNRESOLVE_THREAD_MUTATION,
 					{ thread: threadId },
 					mutationAnswerSchema
 				)
@@ -328,7 +365,9 @@ export const GitHubApiServiceLive = Layer.effect(
 			getIssueComment,
 			getCollaboratorRole,
 			replyToThread,
+			updateThreadComment,
 			resolveThread,
+			unresolveThread,
 			listReviewThreads,
 			listComments,
 			listThreadComments,

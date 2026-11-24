@@ -3282,6 +3282,8 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 					).pipe(Effect.provide(fixture.publisher))
 					expect(fixture.fake.writes.map(write => write.method)).toEqual([
 						'reply',
+						'unresolve',
+						'editReply',
 						'review',
 						'label',
 					])
@@ -3293,11 +3295,13 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 					expect(answer.body).toContain(
 						'This goes to the owner: The disagreement remains.'
 					)
+					// Posted unsettled; the edit after the reopen drops the flag.
 					expect(parseReplyMarker(answer.body)).toEqual({
 						v: SUMMARY_MARKER.v,
 						action: 'needs-owner',
 						commit: fixture.head,
 						reply: 42,
+						unsettled: true,
 					})
 					expect(
 						JSON.parse(
@@ -3660,8 +3664,13 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 									read.startsWith('listThreadComments:')
 								)
 							).toEqual(
+								// The owner read, the settle read, the bug count's read and, for an owner's
+								// resolution, the clearing read.
 								scenario === 'outside-window'
-									? ['listThreadComments:thread']
+									? Array.from(
+											{ length: cleared ? 4 : 3 },
+											() => 'listThreadComments:thread'
+										)
 									: []
 							)
 						})
@@ -3811,7 +3820,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 						fixture.fake.reads.filter(read =>
 							read.startsWith('listThreadComments:')
 						)
-					).toEqual(['listThreadComments:long'])
+					).toEqual(Array.from({ length: 3 }, () => 'listThreadComments:long'))
 				})
 		)
 	}
@@ -3914,7 +3923,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 						fixture.fake.reads.filter(read =>
 							read.startsWith('listThreadComments:')
 						)
-					).toEqual(['listThreadComments:thread'])
+					).toEqual(['listThreadComments:thread', 'listThreadComments:thread'])
 				})
 		)
 	}

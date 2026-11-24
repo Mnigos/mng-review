@@ -1,4 +1,5 @@
 import { parseRiskDescription, type RiskDescription } from '@mng-review/domain'
+import { REFUSAL_KINDS } from '@mng-review/github'
 import { Config, Option } from 'effect'
 
 export const APP_ENVIRONMENT_VARIABLE = 'MNG_REVIEW_APP_ENVIRONMENT'
@@ -43,3 +44,32 @@ export const riskDescriptionConfig = Config.option(
 			undefined
 	)
 )
+
+/**
+ * `MNG_REVIEW_HELD_REPLY`: the reply a dispatched converse was sent for; a resolved thread that
+ * holds it is answered as if open. Unset or not a whole number above 0 is no reply.
+ */
+export const heldReplyConfig = Config.option(
+	Config.Int('MNG_REVIEW_HELD_REPLY')
+).pipe(
+	Config.map(value => {
+		const held = Option.getOrUndefined(value)
+		return held !== undefined && held > 0 ? held : undefined
+	})
+)
+
+/** `GITHUB_RUN_ID` as a number, the run every answer's marker names; unset outside a workflow. */
+export const runIdConfig = Config.option(Config.Int('GITHUB_RUN_ID')).pipe(
+	Config.map(Option.getOrUndefined)
+)
+
+/** What the denial job posts, from the decide job's outputs. */
+export const refusalConfig = Config.all({
+	pullNumber: Config.Int('MNG_REVIEW_TARGET_PR'),
+	commentId: Config.Int('MNG_REVIEW_ANSWER_COMMENT'),
+	kind: Config.Literals(REFUSAL_KINDS, 'MNG_REVIEW_ANSWER_KIND'),
+	reason: Config.String('MNG_REVIEW_ANSWER_REASON').pipe(
+		Config.withDefault('the command was refused')
+	),
+	run: Config.Int('GITHUB_RUN_ID'),
+})

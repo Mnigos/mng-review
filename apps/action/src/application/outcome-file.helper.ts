@@ -4,6 +4,7 @@ import {
 	MAX_REPORT_NAMES,
 	MAX_REPORT_TEXT,
 	type ThreadRecheckProposals,
+	toGitHubTime,
 } from '@mng-review/github'
 import { Predicate } from 'effect'
 import type { RunTrigger } from '../infrastructure/command-run.config'
@@ -21,12 +22,16 @@ import type {
 	ShadowOutcome,
 } from './shadow-run.types'
 
-/** The runner's variables an outcome is bound to, and the trigger, `push` when unset. */
+/**
+ * The runner's variables an outcome is bound to, the trigger (`push` when unset) and when the
+ * review step started, in milliseconds.
+ */
 export interface BindingEnvironment extends Pick<
 	RunnerEnvironment,
 	'repository' | 'runId' | 'runAttempt' | 'engineCommit'
 > {
 	readonly trigger?: RunTrigger
+	readonly startedAt?: number
 }
 
 /** The binding's fields in the order a mismatch is reported. */
@@ -96,6 +101,9 @@ export function toOutcomeFile(
 	return {
 		version: OUTCOME_VERSION,
 		binding: toOutcomeBinding(outcome.event, env),
+		...(env.startedAt === undefined
+			? {}
+			: { startedAt: toGitHubTime(env.startedAt) }),
 		status: outcome.status,
 		...toOutcomeReason(outcome),
 		...(outcome.status === 'reviewed'

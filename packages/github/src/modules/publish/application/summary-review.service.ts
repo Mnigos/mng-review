@@ -24,6 +24,7 @@ import {
 	getSummary,
 	toSummaryComments,
 } from '../domain/summary-comment.helper'
+import { getMarkerError } from '../domain/summary-marker.helper'
 import {
 	getEditableReview,
 	getPriorSummary,
@@ -51,6 +52,7 @@ import type {
 	PostedReview,
 	SummaryDraft,
 	SummaryRead,
+	SummaryWriteError,
 	WrittenSummary,
 } from './summary-review.service.types'
 
@@ -67,14 +69,14 @@ export class SummaryReviewService extends Context.Service<
 		readonly write: (
 			pullNumber: number,
 			draft: SummaryDraft
-		) => Effect.Effect<WrittenSummary, GitHubApiError, OwnedIdentities>
+		) => Effect.Effect<WrittenSummary, SummaryWriteError, OwnedIdentities>
 		/**
 		 * The offline path: the newest summary keeps its text with the marker set to unfinished, or
 		 * with none a status review; the state stays.
 		 */
 		readonly publishStatus: (
 			input: StatusInput
-		) => Effect.Effect<WrittenSummary, GitHubApiError, OwnedIdentities>
+		) => Effect.Effect<WrittenSummary, SummaryWriteError, OwnedIdentities>
 		/** The marker of the summary a run builds on: run count and last finished head. */
 		readonly readPrior: (
 			pullNumber: number
@@ -240,14 +242,13 @@ export const SummaryReviewServiceLive = Layer.effect(
 					)
 				const fresh = draft.fresh === true || (draft.comments?.length ?? 0) > 0
 				const decided = decide(true)
+				const unreadable = getMarkerError(decided.rendered.marker)
+				if (unreadable) return yield* unreadable
 				const editable = getEditableReview(
 					found.reviews,
 					decided.decision,
 					fresh,
-					{
-						head: draft.head,
-						current: latest.current,
-					}
+					{ head: draft.head, current: latest.current }
 				)
 				if (editable) {
 					const edited = toHeadedSummary(

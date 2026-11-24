@@ -14,6 +14,7 @@ import {
 import { Effect, Layer } from 'effect'
 import { PublishService } from '../../modules/publish/application/publish.service'
 import type { BotThread } from '../../modules/publish/domain/publish.types'
+import { AnswerReadService } from '../../modules/risk/application/answer-read.service'
 import { RiskFinishServiceLive } from '../../modules/risk/application/risk-finish.service'
 import { RiskReadServiceLive } from '../../modules/risk/application/risk-read.service'
 import { RiskStartServiceLive } from '../../modules/risk/application/risk-start.service'
@@ -215,6 +216,7 @@ export function riskFixture() {
 		diff: { intact: true, files: [] } as FloorDiff,
 	}
 	const risk = Layer.succeed(GitHubRiskService, {
+		getRunCreated: () => Effect.die('unexpected run read'),
 		listTimeline: () =>
 			Effect.gen(function* () {
 				reads.push('timeline')
@@ -323,7 +325,13 @@ export function riskFixture() {
 	const readLayer = RiskReadServiceLive.pipe(Layer.provide(dependencies))
 	const services = Layer.mergeAll(
 		RiskStartServiceLive,
-		RiskFinishServiceLive
+		RiskFinishServiceLive,
+		// The publish layer's specs name no commands; the holds specs use the real answer reads.
+		Layer.succeed(AnswerReadService, {
+			readCommands: () => Effect.succeed({ commands: [], entries: [] }),
+			getCommandEntry: () => Effect.succeed(undefined),
+			getCountedReviews: () => Effect.succeed([]),
+		})
 	).pipe(Layer.provideMerge(readLayer), Layer.provideMerge(dependencies))
 	api.command.pullRequest = structuredClone(COMMAND_PULL_REQUEST)
 	return {

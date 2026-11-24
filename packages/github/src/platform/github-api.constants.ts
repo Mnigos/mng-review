@@ -35,10 +35,10 @@ export const REVIEW_THREADS_QUERY = `query($owner: String!, $name: String!, $num
           id isResolved isOutdated path line originalLine subjectType resolvedBy { login }
           comments(first: 1) {
             totalCount
-            nodes { databaseId body author { __typename login } editor { __typename login } originalCommit { oid } }
+            nodes { databaseId body createdAt lastEditedAt author { __typename login } editor { __typename login } originalCommit { oid } }
           }
           latest: comments(last: ${RECENT_COMMENTS}) {
-            nodes { databaseId body author { __typename login } editor { __typename login } originalCommit { oid } }
+            nodes { databaseId body createdAt lastEditedAt author { __typename login } editor { __typename login } originalCommit { oid } }
           }
         }
       }
@@ -52,7 +52,7 @@ export const THREAD_COMMENTS_QUERY = `query($id: ID!, $cursor: String) {
     ... on PullRequestReviewThread {
       comments(first: ${PAGE_SIZE}, after: $cursor) {
         pageInfo { hasNextPage endCursor }
-        nodes { databaseId body author { __typename login } editor { __typename login } originalCommit { oid } }
+        nodes { databaseId body createdAt lastEditedAt author { __typename login } editor { __typename login } originalCommit { oid } }
       }
     }
   }
@@ -64,7 +64,7 @@ export const PULL_REQUEST_COMMENTS_QUERY = `query($owner: String!, $name: String
     pullRequest(number: $number) {
       comments(first: ${PAGE_SIZE}, after: $cursor) {
         pageInfo { hasNextPage endCursor }
-        nodes { id databaseId isMinimized body author { __typename login } editor { __typename login } }
+        nodes { id databaseId isMinimized body createdAt lastEditedAt author { __typename login } editor { __typename login } }
       }
     }
   }
@@ -72,7 +72,7 @@ export const PULL_REQUEST_COMMENTS_QUERY = `query($owner: String!, $name: String
 
 /** The fields of a review every read takes. */
 const REVIEW_FIELDS =
-	'id databaseId state isMinimized body author { __typename login } editor { __typename login }'
+	'id databaseId state isMinimized body createdAt lastEditedAt author { __typename login } editor { __typename login }'
 
 /** The reviews query over `fields`. */
 function toReviewsQuery(fields: string): string {
@@ -115,6 +115,13 @@ export const MINIMIZE_COMMENT_MUTATION = `mutation($id: ID!) {
 /** Marks a review thread resolved. */
 export const RESOLVE_THREAD_MUTATION = `mutation($thread: ID!) {
   resolveReviewThread(input: { threadId: $thread }) {
+    thread { id isResolved }
+  }
+}`
+
+/** Reopens a resolved review thread. */
+export const UNRESOLVE_THREAD_MUTATION = `mutation($thread: ID!) {
+  unresolveReviewThread(input: { threadId: $thread }) {
     thread { id isResolved }
   }
 }`

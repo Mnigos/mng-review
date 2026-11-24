@@ -46,5 +46,13 @@ export const answerEntrySchema = Schema.Struct({
 		Schema.String.check(Schema.isPattern(AGENT_NAME_PATTERN))
 	),
 	ids: Schema.NonEmptyArray(answeredCommentSchema),
+	/**
+	 * When the answering run was created, as GitHub gives it: a `review` or `run` entry answers a
+	 * command only when its run was created after the command's current edit time, the merge tool's
+	 * run rule. Unset on the other kinds.
+	 */
+	created: Schema.optionalKey(
+		Schema.String.check(Schema.isPattern(EDIT_TIME_PATTERN))
+	),
 }).check(hasAgentOnRunOnly)
 export type AnswerEntry = typeof answerEntrySchema.Type

@@ -51,6 +51,7 @@ export const RUN_MODES = [
 	'reserve',
 	'find',
 	'risk-cleanup',
+	'deny',
 ] as const
 export type RunMode = (typeof RUN_MODES)[number]
 
@@ -63,7 +64,7 @@ export type RunMode = (typeof RUN_MODES)[number]
  * token, no secret) and `reserve` (counts the manual run before the review job starts). The reply
  * schedule runs `find` (lists the pull requests with a reply waiting over the read token, no
  * model). `risk-cleanup` runs after a failed or cancelled publish and writes step 1's risk
- * `error` again. Any other value fails, before the review spends anything.
+ * `error` again; `deny` posts a denial or cap reply for a refused command. Any other value fails, before the review spends anything.
  */
 export const modeConfig = Config.Literals(RUN_MODES, MODE_VARIABLE).pipe(
 	Config.withDefault('shadow' as RunMode)

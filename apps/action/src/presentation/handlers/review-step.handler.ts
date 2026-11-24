@@ -186,9 +186,10 @@ const writeCheckedOutcome = Effect.fn('reviewStep.writeCheckedOutcome')(
 	}
 )
 
-/** The runner's variables and what started the run. */
+/** The runner's variables, what started the run and when the review step started. */
 interface ReviewEnvironment extends RunnerEnvironment {
 	readonly trigger: RunTrigger
+	readonly startedAt: number
 }
 
 /** What the outcome file is built from besides the outcome. */
@@ -245,7 +246,7 @@ export const runReviewStep = Effect.gen(function* () {
 				? yield* decideReplies(reviewed, prepared)
 				: undefined
 	const refused = yield* writeCheckedOutcome(outcome, {
-		env: { ...env, trigger },
+		env: { ...env, trigger, startedAt },
 		recheck,
 		replies,
 		masked,

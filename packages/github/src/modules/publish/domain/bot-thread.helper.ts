@@ -22,13 +22,12 @@ import {
 	parseReplyMarker,
 } from './publish-marker.parser'
 import type { SummaryMarker } from './publish-marker.schema'
+import { CLOSING_ACTIONS } from './publish.constants'
 import type { BotThread } from './publish.types'
 import type { MarkedRun } from './summary-marker.helper'
 
 /** The status GitHub answers when it refuses a comment's place, such as a line outside the diff. */
 const UNPROCESSABLE_STATUS = 422
-/** The bot's reply actions that close a thread for its counts. */
-const CLOSING_ACTIONS: ReadonlySet<string> = new Set(['resolved', 'accepted'])
 const isCommitSha = Schema.is(commitShaSchema)
 
 /** A digest of a comment's whole text: two reads of one comment differ in it once someone edited it. */
@@ -188,15 +187,23 @@ function getNewestAnswer(
 	)
 }
 
+/** The newest answer of `app` among `comments` when it carries `unsettled`. */
+export function getUnsettledAnswer(
+	comments: readonly ThreadComment[],
+	app: BotIdentity
+): ThreadComment | undefined {
+	const answer = getNewestAnswer(comments, app)
+	return answer && parseReplyMarker(answer.body)?.unsettled === true
+		? answer
+		: undefined
+}
+
 /** True when the newest answer of `app` among `comments` carries `unsettled`. */
 export function isUnsettled(
 	comments: readonly ThreadComment[],
 	app: BotIdentity
 ): boolean {
-	const answer = getNewestAnswer(comments, app)
-	return (
-		answer !== undefined && parseReplyMarker(answer.body)?.unsettled === true
-	)
+	return getUnsettledAnswer(comments, app) !== undefined
 }
 
 /**
@@ -204,7 +211,7 @@ export function isUnsettled(
  * latest comments the read brought; `undefined` when the thread is longer than its two windows and
  * the latest one holds no such answer.
  */
-function getWindowUnsettled(
+export function getWindowUnsettled(
 	thread: Pick<ReviewThread, 'comments' | 'latest'>,
 	owned: readonly BotIdentity[]
 ): boolean | undefined {
@@ -213,6 +220,20 @@ function getWindowUnsettled(
 	if (!app) return false
 	if (getNewestAnswer(latest, app)) return isUnsettled(latest, app)
 	return thread.comments.totalCount > latest.length + 1 ? undefined : false
+}
+
+/**
+ * True for a bug thread that counts as open: unresolved, or resolved while the token app's newest
+ * answer in it is unsettled or not known to be settled (`ThreadSettleService.resolveUnsettled`
+ * reads the whole thread first, so only a failed read leaves it unknown).
+ */
+export function isOpenBug(
+	thread: Pick<BotThread, 'resolved' | 'unsettled' | 'marker'>
+): boolean {
+	return (
+		thread.marker.kind === 'bug' &&
+		(!thread.resolved || thread.unsettled !== false)
+	)
 }
 
 /** True for a refusal of the comment's place, the only failure after which another place is tried. */

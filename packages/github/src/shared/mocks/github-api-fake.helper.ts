@@ -20,8 +20,8 @@ import {
 	GitHubReviewService,
 	REVIEW_STATE_BY_EVENT,
 } from '../../platform/github-review.service'
-import type { GitHubApiError } from '../../platform/github.errors'
 import { getBasePermission } from './collaborator-role.helper'
+import { editThreadComment, toApiFailures } from './github-api-failures.helper'
 import type { ApiWrite } from './github-api-fake.types'
 
 /** An open same-repository pull request with full commits, as a command run reads it again. */
@@ -40,6 +40,9 @@ export const COMMAND_PULL_REQUEST = {
 	},
 	head: { sha: 'b'.repeat(40), repo: { full_name: 'example/project' } },
 } as const satisfies PullRequest
+
+/** Thread replies get ids above every fixture comment's, so an edit never hits another comment. */
+const REPLY_ID_BASE = 10_000
 
 /** The command comment the fake answers with by default. */
 export const COMMAND_COMMENT = {
@@ -82,30 +85,7 @@ export function githubApiFake(
 		role: 'admin',
 		permission: undefined,
 	}
-	const failures = {
-		review: [] as GitHubApiError[],
-		comment: [] as GitHubApiError[],
-		create: [] as GitHubApiError[],
-		update: [] as GitHubApiError[],
-		updateReview: [] as GitHubApiError[],
-		dismissReview: [] as GitHubApiError[],
-		/** `undefined` lets that call succeed, so a later one can fail. */
-		listReviews: [] as (GitHubApiError | undefined)[],
-		delete: [] as GitHubApiError[],
-		minimize: [] as GitHubApiError[],
-		reply: [] as GitHubApiError[],
-		resolve: [] as GitHubApiError[],
-		/** `undefined` lets that call succeed, so a later one can fail. */
-		listThreads: [] as (GitHubApiError | undefined)[],
-		listComments: [] as GitHubApiError[],
-		/** `undefined` lets that call succeed, so a later one can fail. */
-		getPullRequest: [] as (GitHubApiError | undefined)[],
-		getIssueComment: [] as GitHubApiError[],
-		getCollaboratorRole: [] as GitHubApiError[],
-		listThreadComments: [] as GitHubApiError[],
-		label: [] as GitHubApiError[],
-		unlabel: [] as GitHubApiError[],
-	}
+	const failures = toApiFailures()
 	/** Every comment of a thread by id; unset, a thread shows its first and latest comment. */
 	const threadComments = new Map<string, ThreadComment[]>()
 	const author = { __typename: 'Bot', login: identity.login }
@@ -159,7 +139,7 @@ export function githubApiFake(
 							nodes: [
 								...earlier,
 								{
-									databaseId: writes.length,
+									databaseId: REPLY_ID_BASE + writes.length,
 									body,
 									author,
 									editor: null,
@@ -172,7 +152,7 @@ export function githubApiFake(
 							totalCount: thread.comments.totalCount + 1,
 						},
 					}
-				return undefined
+				return REPLY_ID_BASE + writes.length
 			}),
 		resolveThread: id =>
 			Effect.gen(function* () {
@@ -182,6 +162,25 @@ export function githubApiFake(
 				const index = threads.findIndex(thread => thread.id === id)
 				const thread = threads[index]
 				if (thread) threads[index] = { ...thread, isResolved: true }
+				return undefined
+			}),
+		unresolveThread: id =>
+			Effect.gen(function* () {
+				writes.push({ method: 'unresolve', id })
+				const error = failures.unresolve.shift()
+				if (error) return yield* error
+				const index = threads.findIndex(thread => thread.id === id)
+				const thread = threads[index]
+				if (thread)
+					threads[index] = { ...thread, isResolved: false, resolvedBy: null }
+				return undefined
+			}),
+		updateThreadComment: (id, body) =>
+			Effect.gen(function* () {
+				writes.push({ method: 'editReply', id, body })
+				const error = failures.editReply.shift()
+				if (error) return yield* error
+				editThreadComment({ threads, threadComments }, id, body)
 				return undefined
 			}),
 		listReviewThreads,

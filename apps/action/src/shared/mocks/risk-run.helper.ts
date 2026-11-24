@@ -1,3 +1,4 @@
+import { CommandAnswerService } from '@mng-review/github'
 import { Effect, Layer } from 'effect'
 import { RiskRunService } from '../../application/risk-run.service'
 
@@ -11,4 +12,11 @@ export const RiskRunOffLayer = Layer.succeed(RiskRunService, {
 			Effect.map(value => ({ value, risk: { status: 'off' } as const }))
 		),
 	rateThread: () => Effect.succeed({ status: 'off' } as const),
+	readAnswers: () => Effect.succeed([]),
+})
+
+/** The cap and denial rules as a run with `risk.enabled` off sees them: the decision stands. */
+export const CommandAnswerOffLayer = Layer.succeed(CommandAnswerService, {
+	check: input => Effect.succeed(input.decision),
+	post: () => Effect.succeed(false),
 })

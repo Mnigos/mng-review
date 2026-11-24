@@ -102,6 +102,7 @@ const PUBLISHED = {
 	waiting: 0,
 	label: 'none',
 	cleanup: 'none',
+	unsettled: 0,
 } as const
 
 /** Publisher test layer records which outcome path is taken and can fail either write. */
@@ -954,6 +955,7 @@ function riskSpyLayer() {
 				Effect.map(value => ({ value, risk: { status: 'none' } as const }))
 			),
 		rateThread: rateThreadSpy,
+		readAnswers: () => Effect.succeed([]),
 	})
 	return { spyLayer, rateThreadSpy }
 }

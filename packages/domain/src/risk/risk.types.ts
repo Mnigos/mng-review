@@ -133,6 +133,27 @@ export interface AuthorFixture {
 	readonly actedOn: boolean
 }
 
+/** A thread of the app as the converse reads it; every flag is false when unset. */
+export interface ThreadState {
+	readonly kind: 'bug' | 'unverified' | 'nit'
+	/** Resolved on GitHub, or closed by the bot's own `resolved` or `accepted` reply. */
+	readonly resolved?: boolean
+	readonly closedByBot?: boolean
+	/** In the summary marker's list of threads that wait for the owner. */
+	readonly waiting?: boolean
+	/** The bot answered `needs-owner` in the thread. */
+	readonly sentToOwner?: boolean
+	/** The thread holds the reply a dispatched converse was sent for. */
+	readonly held?: boolean
+}
+
+/** One thread-state case: whether the converse answers a reply in it. */
+export interface ThreadFixture {
+	readonly name: string
+	readonly state: ThreadState
+	readonly answered: boolean
+}
+
 /** A run that touches the rating; `RISK_RUN_KINDS` says what each is. */
 export type RiskRunKind = (typeof RISK_RUN_KINDS)[number]
 

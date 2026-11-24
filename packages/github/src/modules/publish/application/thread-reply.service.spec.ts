@@ -743,11 +743,13 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService apply', test => {
 							)
 						if ('reason' in decision)
 							expect(write.body).toContain(decision.reason)
+						// A needs-owner answer is posted unsettled until the reopen after it lands.
 						expect(parseReplyMarker(write.body)).toEqual({
 							v: MARKER_VERSION,
 							action: decision.action,
 							commit: LINKS.head,
 							reply: 42,
+							...(decision.action === 'needs-owner' ? { unsettled: true } : {}),
 						})
 					}
 					expect(
@@ -1079,6 +1081,7 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService owner waiting', test => {
 					service.getCleared({
 						waiting: ['thread'],
 						resolvers: new Map([['thread', 'Contributor']]),
+						threads: [],
 						allow: ['contributor'],
 					})
 				).pipe(
@@ -1213,6 +1216,7 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService recovered owner state', test => {
 							service.getCleared({
 								waiting: ['thread'],
 								resolvers: toResolvers([raw]),
+								threads: [raw],
 								allow: allowed ? ['CONTRIBUTOR'] : [],
 							})
 						).pipe(
@@ -1301,7 +1305,12 @@ layer(TOKEN_MODE_OWNED)(
 							'getCollaboratorRole:contributor',
 							'listThreadComments:thread',
 						])
-						expect(fake.writes.map(write => write.method)).toEqual(['reply'])
+						// Reopened and settled after the answer, so only a later resolution clears the wait.
+						expect(fake.writes.map(write => write.method)).toEqual([
+							'reply',
+							'unresolve',
+							'editReply',
+						])
 					})
 			)
 		for (const rounds of [
@@ -1381,7 +1390,7 @@ layer(TOKEN_MODE_OWNED)(
 							...(accepted ? ['listThreadComments:thread'] : []),
 						])
 						expect(fake.writes.map(write => write.method)).toEqual(
-							accepted ? ['reply'] : []
+							accepted ? ['reply', 'unresolve', 'editReply'] : []
 						)
 					})
 			)

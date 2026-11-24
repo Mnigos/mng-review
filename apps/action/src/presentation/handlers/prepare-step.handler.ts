@@ -1,6 +1,7 @@
 import type { Rules } from '@mng-review/engine'
 import {
 	type BotThread,
+	GITHUB_ACTIONS_IDENTITY,
 	GitHubConfig,
 	provideOwnedIdentities,
 	PublishService,
@@ -22,6 +23,7 @@ import {
 	runNumberConfig,
 	triggerConfig,
 } from '../../infrastructure/command-run.config'
+import { heldReplyConfig } from '../../infrastructure/risk-run.config'
 import {
 	outputPathConfig,
 	writeOutputs,
@@ -111,12 +113,27 @@ export const runPrepareStep = Effect.gen(function* () {
 				threads,
 				rotation: rotation ?? prior?.runs ?? 0,
 				waiting: prior?.waiting ?? [],
+				...(isNaming(rules) ? { naming: true } : {}),
 			})
 			.pipe(provideOwnedIdentities(identity, rules.config.identity.previous))
 	// The schedule's own read: the waiting list from every summary and the bot's answers.
+	/** With a rating from the app, answers name replies, so older unnamed replies count too. */
+	const isNaming = (rules: Rules) =>
+		rules.config.risk.enabled &&
+		identity.login !== GITHUB_ACTIONS_IDENTITY.login
+	const held = yield* heldReplyConfig.pipe(
+		Effect.orElseSucceed(() => undefined)
+	)
 	const readPending = (event: PullRequestEvent, rules: Rules) =>
 		finder
-			.readPending({ pullNumber: event.number, rotation: rotation ?? 0 })
+			.readPending({
+				pullNumber: event.number,
+				rotation: rotation ?? 0,
+				// A dispatched reply and older unnamed ones only matter while answers name replies.
+				...(isNaming(rules)
+					? { naming: true, ...(held === undefined ? {} : { held }) }
+					: {}),
+			})
 			.pipe(
 				provideOwnedIdentities(identity, rules.config.identity.previous),
 				Effect.orElseSucceed(() => ({ threads: [], replies: [] }))

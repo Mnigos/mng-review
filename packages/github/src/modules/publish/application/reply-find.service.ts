@@ -45,6 +45,10 @@ export interface ReplyFindResult {
 export interface ReplyPendingInput {
 	readonly pullNumber: number
 	readonly rotation: number
+	/** A dispatched converse's reply: a resolved thread holding it is read as if open. */
+	readonly held?: number
+	/** With a rating: older unnamed replies count too (`ReplyCollectInput.naming`). */
+	readonly naming?: boolean
 }
 
 /** The bot's threads, oldest latest comment first, and the replies in them worth a decision. */
@@ -129,7 +133,9 @@ export const ReplyFindServiceLive = Layer.effect(
 					.filter(thread => getPendingReply(thread, []) !== undefined)
 					.map(thread => thread.id)
 			)
-			if (open.size === 0) return { threads, replies: [] }
+			// With naming an older unnamed reply, or a dispatched one, may wait behind an app answer.
+			if (open.size === 0 && !input.naming && input.held === undefined)
+				return { threads, replies: [] }
 			const candidates = raw.filter(thread => open.has(thread.id))
 			// A failed whole-thread read leaves the latest comments the read brought, as at publish.
 			const sent = yield* conversation
@@ -148,6 +154,8 @@ export const ReplyFindServiceLive = Layer.effect(
 				threads,
 				rotation: input.rotation,
 				waiting,
+				...(input.held === undefined ? {} : { held: input.held }),
+				...(input.naming ? { naming: true } : {}),
 			})
 			return { threads, replies }
 		})

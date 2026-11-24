@@ -30,6 +30,7 @@ export const timelineItemSchema = Schema.Struct({
 	beforeCommit: Schema.optionalKey(commitRefSchema),
 	afterCommit: Schema.optionalKey(commitRefSchema),
 	actor: Schema.optionalKey(Schema.NullOr(commentAuthorSchema)),
+	databaseId: Schema.optionalKey(Schema.NullOr(Schema.Number)),
 	label: Schema.optionalKey(
 		Schema.NullOr(Schema.Struct({ name: Schema.String }))
 	),
@@ -130,3 +131,7 @@ export interface CommentEdits {
 	/** Every page GitHub listed; `null` for an edit GitHub listed as a null node. */
 	readonly edits: readonly (CommentEdit | null)[]
 }
+
+/** The part of a workflow run the answer read takes: when GitHub created it. */
+export const runCreatedSchema = Schema.Struct({ created_at: Schema.String })
+export type RunCreated = typeof runCreatedSchema.Type

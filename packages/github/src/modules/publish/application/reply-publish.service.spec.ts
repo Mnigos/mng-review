@@ -295,6 +295,8 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 							])
 							expect(fixture.fake.writes.map(write => write.method)).toEqual([
 								'reply',
+								'unresolve',
+								'editReply',
 								'updateReview',
 								'label',
 							])

@@ -21,6 +21,8 @@ export interface RiskTarget {
 	 * counts them as open even when GitHub shows them resolved.
 	 */
 	readonly answered?: readonly string[]
+	/** Severities of bug threads the run kept open that GitHub still shows resolved. */
+	readonly openBugs?: readonly string[]
 }
 
 /** A full run: the target and the review whose rating, router and kept bugs it reads. */

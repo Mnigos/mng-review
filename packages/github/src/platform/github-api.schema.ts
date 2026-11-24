@@ -7,6 +7,15 @@ export const commentAuthorSchema = Schema.Struct({
 })
 export type CommentAuthor = typeof commentAuthorSchema.Type
 
+/**
+ * When a comment was written and last edited, to the second; the answer entries name a comment by
+ * the later of the two. Optional so a read without them still decodes.
+ */
+const commentTimeFields = {
+	createdAt: Schema.optionalKey(Schema.String),
+	lastEditedAt: Schema.optionalKey(Schema.NullOr(Schema.String)),
+} as const
+
 /** Who last edited a comment, with its type, so a user named like the bot is told apart; `null` when nobody did. */
 const commentEditorSchema = Schema.NullOr(commentAuthorSchema)
 
@@ -14,6 +23,7 @@ const commentEditorSchema = Schema.NullOr(commentAuthorSchema)
 export const threadCommentSchema = Schema.Struct({
 	databaseId: Schema.NullOr(Schema.Number),
 	body: Schema.String,
+	...commentTimeFields,
 	author: Schema.NullOr(commentAuthorSchema),
 	editor: commentEditorSchema,
 	originalCommit: Schema.NullOr(Schema.Struct({ oid: Schema.String })),
@@ -55,6 +65,7 @@ export const pullRequestCommentSchema = Schema.Struct({
 	databaseId: Schema.NullOr(Schema.Number),
 	isMinimized: Schema.Boolean,
 	body: Schema.String,
+	...commentTimeFields,
 	author: Schema.NullOr(commentAuthorSchema),
 	editor: commentEditorSchema,
 })
@@ -77,6 +88,7 @@ export const pullRequestReviewSchema = Schema.Struct({
 	state: Schema.Literals(REVIEW_STATES),
 	isMinimized: Schema.Boolean,
 	body: Schema.String,
+	...commentTimeFields,
 	author: Schema.NullOr(commentAuthorSchema),
 	editor: commentEditorSchema,
 	/** The commit the review is on; read only with `withCommits`, `null` when GitHub lost it. */
@@ -205,6 +217,30 @@ export const mutationAnswerSchema = Schema.Struct({
 	errors: graphqlErrorsSchema,
 })
 export type MutationAnswer = typeof mutationAnswerSchema.Type
+
+/** A key GitHub may leave out or set to `null`. */
+const optionalNull = <TSchema extends Schema.Top>(schema: TSchema) =>
+	Schema.optionalKey(Schema.NullOr(schema))
+
+/**
+ * What the thread reply mutation answers: the new comment's `databaseId` when GitHub gives it. Every
+ * level may be missing, since the reply already landed and only its later settle needs the id.
+ */
+export const replyAnswerSchema = Schema.Struct({
+	errors: graphqlErrorsSchema,
+	data: optionalNull(
+		Schema.Struct({
+			addPullRequestReviewThreadReply: optionalNull(
+				Schema.Struct({
+					comment: optionalNull(
+						Schema.Struct({ databaseId: optionalNull(Schema.Number) })
+					),
+				})
+			),
+		})
+	),
+})
+export type ReplyAnswer = typeof replyAnswerSchema.Type
 
 /** What a create call answers with that the caller needs: the new object's id. */
 export const createdSchema = Schema.Struct({ id: Schema.Number })

@@ -32,7 +32,9 @@ export type ApiWrite =
 	| { readonly method: 'delete'; readonly id: number }
 	| { readonly method: 'minimize'; readonly id: string }
 	| { readonly method: 'reply'; readonly id: string; readonly body: string }
+	| { readonly method: 'editReply'; readonly id: number; readonly body: string }
 	| { readonly method: 'resolve'; readonly id: string }
+	| { readonly method: 'unresolve'; readonly id: string }
 	| {
 			readonly method: 'label' | 'unlabel'
 			readonly pullNumber: number

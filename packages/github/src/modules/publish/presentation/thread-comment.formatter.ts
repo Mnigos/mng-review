@@ -5,7 +5,11 @@ import {
 	toShort,
 } from '../../../utils/markdown.util'
 import type { MarkerName } from '../domain/publish-marker.parser'
-import type { FindingMarker, ThreadKind } from '../domain/publish-marker.schema'
+import type {
+	FindingMarker,
+	ReplyMarker,
+	ThreadKind,
+} from '../domain/publish-marker.schema'
 import {
 	MARKER_PREFIX,
 	MARKER_VERSION,
@@ -158,7 +162,8 @@ export function formatThreadComment(
 export function formatResolvedReply(
 	reason: string,
 	links: BlobLinks,
-	reply?: number
+	reply?: number,
+	answers: Pick<ReplyMarker, 'answers'> = {}
 ): string {
 	const head = toCodeSpan(links.head.slice(0, SHORT_SHA_LENGTH))
 	return [
@@ -169,6 +174,7 @@ export function formatResolvedReply(
 			action: 'resolved',
 			commit: links.head,
 			...(reply === undefined ? {} : { reply }),
+			...answers,
 		}),
 	].join('\n')
 }

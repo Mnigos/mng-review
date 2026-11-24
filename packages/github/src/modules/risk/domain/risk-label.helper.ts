@@ -33,7 +33,7 @@ export interface LabelState {
 }
 
 /** True when the item brought `head`: a commit with its oid, or a force push onto it. */
-function bringsHead(item: TimelineItem, head: string): boolean {
+export function bringsHead(item: TimelineItem, head: string): boolean {
 	if (item.__typename === TIMELINE_TYPES.COMMIT)
 		return item.commit?.oid === head
 	return (

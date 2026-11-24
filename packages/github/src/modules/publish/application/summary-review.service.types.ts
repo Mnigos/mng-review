@@ -6,6 +6,8 @@ import type {
 	InlineComment,
 	ReviewEvent,
 } from '../../../platform/github-review.service'
+import type { GitHubApiError } from '../../../platform/github.errors'
+import type { SummaryMarkerError } from '../domain/publish.errors'
 import type {
 	DecidedSummary,
 	DismissalOutcome,
@@ -39,6 +41,9 @@ export interface WrittenSummary extends RenderedSummary {
 	 */
 	readonly outlived?: boolean
 }
+
+/** Why a summary write failed: GitHub refused a call, or the marker would not decode. */
+export type SummaryWriteError = GitHubApiError | SummaryMarkerError
 
 /** A manual run to count before the endpoint is used. */
 export interface ManualRunInput extends PublishTarget {

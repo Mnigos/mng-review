@@ -14,6 +14,7 @@ for (const status of ['published', 'replied'] as const)
 				waiting: 0,
 				label: 'none',
 				run: 3,
+				unsettled: 0,
 			} as const
 			const report =
 				status === 'replied'
@@ -59,6 +60,7 @@ for (const status of ['published', 'replied'] as const)
 			waiting: 0,
 			label: 'none',
 			run: 3,
+			unsettled: 0,
 		} as const
 		const report =
 			status === 'replied'

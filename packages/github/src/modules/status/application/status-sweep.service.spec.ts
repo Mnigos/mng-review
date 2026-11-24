@@ -1371,8 +1371,13 @@ layer(APP_MODE_OWNED)('StatusSweepService recovered owner state', test => {
 						expect(
 							api.reads.filter(read => read.startsWith('listThreadComments:'))
 						).toEqual(
+							// Each sweep reads it whole for its bug count and the owner answer and, for an
+							// owner's resolution, again for an unsettled answer.
 							scenario === 'outside-window'
-								? ['listThreadComments:thread', 'listThreadComments:thread']
+								? Array.from(
+										{ length: resolver === 'writer' ? 4 : 6 },
+										() => 'listThreadComments:thread'
+									)
 								: []
 						)
 					})
@@ -1394,13 +1399,13 @@ layer(APP_MODE_OWNED)('StatusSweepService recovered owner state', test => {
 						{ isMinimized: true }
 					)
 				)
-				api.failures.listThreadComments.push(
-					new GitHubApiError({
-						operation: 'listThreadComments',
-						reason: 'unavailable',
-						status: 503,
-					})
-				)
+				const unavailable = new GitHubApiError({
+					operation: 'listThreadComments',
+					reason: 'unavailable',
+					status: 503,
+				})
+				// The bug count's read and the owner answer's read both fail.
+				api.failures.listThreadComments.push(unavailable, unavailable)
 				const getStatusSpy = vi.fn(() =>
 					Effect.succeed({
 						id: 1,

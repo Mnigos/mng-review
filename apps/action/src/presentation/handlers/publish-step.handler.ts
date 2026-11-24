@@ -25,7 +25,11 @@ import {
 import { OutcomeFileError } from '../../infrastructure/outcome-file.errors'
 import { parseOutcomeFile } from '../../infrastructure/outcome-file.parser'
 import { parsePullRequestEvent } from '../../infrastructure/pull-request-event.parser'
-import { riskRunConfig } from '../../infrastructure/risk-run.config'
+import {
+	heldReplyConfig,
+	riskRunConfig,
+	runIdConfig,
+} from '../../infrastructure/risk-run.config'
 import { addPublishToResult } from '../../infrastructure/runner-output.client'
 import {
 	hasOutcomeFile,
@@ -85,7 +89,13 @@ const readCommandTarget = Effect.fn('publishStep.readCommandTarget')(
 		const mismatch = getCommandStateMismatch(pr)
 		if (mismatch !== undefined)
 			return yield* new OutcomeFileError({ message: mismatch })
-		return { event, command: { agentOnly: target.agent !== undefined } }
+		return {
+			event,
+			command: {
+				agentOnly: target.agent !== undefined,
+				...(target.agent === undefined ? {} : { agent: target.agent }),
+			},
+		}
 	},
 	Effect.catchTags({
 		ConfigError: error =>
@@ -140,10 +150,16 @@ const readTrustedOutcome = Effect.fn('publishStep.readTrustedOutcome')(
 		const risk = yield* riskRunConfig.pipe(
 			Effect.orElseSucceed(() => ({ environment: '', defaultBranch: '' }))
 		)
+		const run = yield* runIdConfig.pipe(Effect.orElseSucceed(() => undefined))
+		const held = yield* heldReplyConfig.pipe(
+			Effect.orElseSucceed(() => undefined)
+		)
 		return {
 			file,
 			context: {
 				risk,
+				...(run === undefined ? {} : { run }),
+				...(held === undefined ? {} : { held }),
 				engineCommit: env.engineCommit,
 				pullNumber: trusted.pullNumber,
 				head: trusted.headSha,

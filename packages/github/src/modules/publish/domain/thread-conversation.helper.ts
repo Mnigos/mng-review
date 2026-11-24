@@ -42,6 +42,25 @@ export interface ThreadReplyItem {
 }
 
 /**
+ * True when the converse answers replies in the thread: a bug or unverified thread that does not
+ * wait for the owner, open, or resolved but holding the reply a dispatched converse was sent for,
+ * which it then treats as open under the normal reply rules.
+ */
+export function isAnswerableThread(
+	thread: BotThread,
+	waiting: readonly string[],
+	held?: boolean
+): boolean {
+	const kinds: readonly ThreadKind[] = ANSWERED_KINDS
+	return (
+		(!thread.resolved || held === true) &&
+		kinds.includes(thread.marker.kind) &&
+		!waiting.includes(thread.id) &&
+		!thread.sentToOwner
+	)
+}
+
+/**
  * The reply a thread waits on, or `undefined`: the thread is open (not closed by the bot either),
  * a bug or unverified thread, not waiting for the owner (in `waiting` or `sentToOwner`), and its
  * latest comment is a person's (`User`) that does not end with a marker of the bot's form.
@@ -112,6 +131,44 @@ export function toResolvers(
 	)
 }
 
+/** A thread read made after the answers, and whether it read (`false` means the first read stands in). */
+export interface FreshRead {
+	readonly raw: readonly Pick<
+		ReviewThread,
+		'id' | 'isResolved' | 'resolvedBy'
+	>[]
+	readonly reread: boolean
+}
+
+/**
+ * Who resolved each thread after this run's answers, for `getCleared`: none when the read after
+ * the answers failed, since the first read's resolutions predate them, and none for a thread an
+ * answer could not reopen after it was posted (`unsettled`).
+ */
+export function toFreshResolvers(
+	read: FreshRead,
+	answered: readonly AppliedReply[]
+): ReadonlyMap<string, string> {
+	if (!read.reread) return new Map()
+	const unsettled = new Set(
+		answered.flatMap(entry => (entry.unsettled ? [entry.thread.id] : []))
+	)
+	return new Map(
+		[...toResolvers(read.raw)].filter(([id]) => !unsettled.has(id))
+	)
+}
+
+/** The threads an answer of this run or an earlier one left unsettled (`ThreadSettleService`). */
+export function toUnsettledIds(
+	answered: readonly AppliedReply[],
+	left: readonly string[]
+): ReadonlySet<string> {
+	return new Set([
+		...answered.flatMap(entry => (entry.unsettled ? [entry.thread.id] : [])),
+		...left,
+	])
+}
+
 /**
  * The pending replies the engine can decide on, each with its item: the thread is among `threads`
  * with the reply's fingerprint, its commit is a full SHA and its path a repository-relative one, as
@@ -142,14 +199,17 @@ export function toReplyItems(
 
 /**
  * The decisions that still hold in a fresh read, each with its thread: the thread's pending reply
- * (`getPendingReply`) is the comment the decision names, with the digest it was decided on, and the
- * fingerprint matches. Anything else is dropped, since someone answered or edited meanwhile; a
- * thread decided twice counts once.
+ * (`getPendingReply`) is the comment the decision names, with the digest it was decided on, or the
+ * decision names an older reply in a thread the converse answers while answers name replies
+ * (`naming`), which the answer's own read of the whole thread checks; and the fingerprint matches. Anything else is dropped, since someone
+ * answered or edited meanwhile; a thread decided twice counts once.
  */
 export function getApplicableReplies(
 	decisions: readonly DecidedThreadReply[],
 	threads: readonly BotThread[],
-	waiting: readonly string[]
+	waiting: readonly string[],
+	held?: number,
+	naming?: boolean
 ): AppliedReply[] {
 	const byId = new Map(threads.map(thread => [thread.id, thread]))
 	return decisions.flatMap((decided, index) => {
@@ -159,14 +219,42 @@ export function getApplicableReplies(
 			decisions.findIndex(other => other.threadId === decided.threadId) !==
 				index ||
 			thread.marker.fingerprint !== decided.fingerprint ||
-			getPendingReply(thread, waiting)?.commentId !== decided.commentId ||
-			thread.latestDigest !== decided.digest
+			!isStillPending(thread, decided, waiting, naming === true ? held : null)
 		)
 			return []
 		return [
-			{ thread, decision: decided.decision, commentId: decided.commentId },
+			{
+				thread,
+				decision: decided.decision,
+				commentId: decided.commentId,
+				digest: decided.digest,
+				...(decided.named ? { named: decided.named } : {}),
+			},
 		]
 	})
+}
+
+/**
+ * True when the decided reply is the thread's pending latest reply at the decided digest, or an
+ * older reply in a thread the converse answers (the answer reads the whole thread before posting).
+ * With a dispatched reply (`held`), a resolved thread is answered as if open whichever of its
+ * replies was decided; that the thread holds `held` is checked by the answer's read of the whole
+ * thread (`ReplyNamingService.readNamed`), as the collection checked it.
+ */
+function isStillPending(
+	thread: BotThread,
+	decided: DecidedThreadReply,
+	waiting: readonly string[],
+	held: number | undefined | null
+): boolean {
+	const asOpen = held !== null && held !== undefined
+	// Without naming (`null`), only the latest reply is ever decided, as before the rating.
+	if (thread.latestCommentId !== decided.commentId)
+		return held !== null && isAnswerableThread(thread, waiting, asOpen)
+	if (thread.latestDigest !== decided.digest) return false
+	if (held === decided.commentId || (asOpen && thread.resolved))
+		return isAnswerableThread(thread, waiting, true)
+	return getPendingReply(thread, waiting)?.commentId === decided.commentId
 }
 
 /**
@@ -208,9 +296,16 @@ export function toDecidedReplies(
 	return results.flatMap((result, index) => {
 		const pair = pairs[index]
 		if (!pair || result.error !== undefined) return []
-		const { threadId, fingerprint, commentId, digest } = pair.reply
+		const { threadId, fingerprint, commentId, digest, named } = pair.reply
 		return [
-			{ threadId, fingerprint, commentId, digest, decision: result.decision },
+			{
+				threadId,
+				fingerprint,
+				commentId,
+				digest,
+				decision: result.decision,
+				...(named ? { named } : {}),
+			},
 		]
 	})
 }

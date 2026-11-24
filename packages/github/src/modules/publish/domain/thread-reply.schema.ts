@@ -1,10 +1,19 @@
-import { countSchema } from '@mng-review/domain'
+import { answeredCommentSchema, countSchema } from '@mng-review/domain'
 import { Schema } from 'effect'
-import { MAX_REPLY_CHARS } from './publish.constants'
+import { MAX_ANSWER_ENTRIES, MAX_REPLY_CHARS } from './publish.constants'
 import { MAX_REPORT_ENTRIES, MAX_REPORT_TEXT } from './review-report.schema'
 
 const textSchema = Schema.String.check(Schema.isMaxLength(MAX_REPORT_TEXT))
 const reasonFields = { reason: textSchema } as const
+/**
+ * The writer replies no app answer named when the prepare step read the thread, at the versions it
+ * read; the answer names only those still at that version, so an edit made meanwhile waits.
+ */
+const namedField = Schema.optionalKey(
+	Schema.Array(answeredCommentSchema).check(
+		Schema.isMaxLength(MAX_ANSWER_ENTRIES)
+	)
+)
 
 /**
  * An author's reply the prepare step found in one of the bot's threads, for the review step to
@@ -20,6 +29,7 @@ export const pendingReplySchema = Schema.Struct({
 	author: textSchema,
 	body: Schema.String.check(Schema.isMaxLength(MAX_REPLY_CHARS)),
 	disputes: countSchema,
+	named: namedField,
 })
 export type PendingReply = typeof pendingReplySchema.Type
 
@@ -56,5 +66,6 @@ export const decidedThreadReplySchema = Schema.Struct({
 	commentId: Schema.Int,
 	digest: textSchema,
 	decision: replyDecisionSchema,
+	named: namedField,
 })
 export type DecidedThreadReply = typeof decidedThreadReplySchema.Type

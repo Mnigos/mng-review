@@ -1,3 +1,4 @@
+import type { AnswerEntry } from '@mng-review/domain'
 import type { ReviewReport, Rules, TokensByModel } from '@mng-review/engine'
 import type { ReviewEvent } from '../../../platform/github-review.service'
 import type { RatingBlock } from '../../risk/domain/risk.types'
@@ -18,12 +19,18 @@ export interface PublishTarget {
 	/** The reviewed head commit; threads are posted on it. */
 	readonly head: string
 	readonly engineCommit: string | undefined
+	/** The workflow run id; set, every answer the run posts names the comments it handled. */
+	readonly run?: number
+	/** A dispatched converse's reply: a resolved thread holding it is answered as if open. */
+	readonly held?: number
 }
 
 /** A run a command started. */
 export interface CommandRun {
 	/** Set when the command named one agent: the run is not a full review. */
 	readonly agentOnly: boolean
+	/** The agent a `run <agent>` command named. */
+	readonly agent?: string
 }
 
 /**
@@ -50,6 +57,8 @@ export interface PublishInput extends PublishTarget {
 	readonly replies?: PublishReplies
 	/** The risk rating's block, set by a full run that reached write-order step 1. */
 	readonly rating?: RatingBlock
+	/** The commands this review answers, carried in its summary marker. */
+	readonly answers?: readonly AnswerEntry[]
 }
 
 /** What the review decided on authors' replies in the bot's threads. */
@@ -112,4 +121,6 @@ export interface PublishResult {
 	 * deleted duplicate counts as `none`.
 	 */
 	readonly cleanup: SummaryCleanup
+	/** Threads whose newest app answer is still unsettled after the run; any fails the job. */
+	readonly unsettled: number
 }

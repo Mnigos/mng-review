@@ -358,7 +358,7 @@ export const RiskStartServiceLive = Layer.effect(
 					? yield* reads.readHistory(pullNumber, held.statuses)
 					: true
 			const decision = decideThreadRating({
-				confirmedBugs: threadBugs ?? [],
+				confirmedBugs: [...(threadBugs ?? []), ...(target.openBugs ?? [])],
 				threadsRead: threadBugs !== undefined,
 				marker,
 				history,

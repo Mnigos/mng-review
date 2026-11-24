@@ -43,6 +43,13 @@ export interface AuthorizedCommand {
 export interface DeniedCommand {
 	readonly status: 'denied'
 	readonly reason: string
+	/**
+	 * With `risk.enabled`, the answer the denial job posts for a command from an acted-on author:
+	 * `deny` for a refused one, `cap` for a `review` past `risk.reviews_per_head`.
+	 */
+	readonly answer?: 'deny' | 'cap'
+	readonly pullNumber?: number
+	readonly commentId?: number
 }
 
 export type CommandDecision = AuthorizedCommand | DeniedCommand

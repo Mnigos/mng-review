@@ -1,5 +1,7 @@
-import { toRiskDescription } from '@mng-review/domain'
+import { type AnswerEntry, toRiskDescription } from '@mng-review/domain'
 import {
+	AnswerReadService,
+	type AnswerRequest,
 	type FullRiskInput,
 	type OwnedIdentities,
 	type RatingBlock,
@@ -60,6 +62,14 @@ export class RiskRunService extends Context.Service<
 			gate: RiskGate,
 			target: RiskTarget
 		) => Effect.Effect<RiskReport, never, OwnedIdentities>
+		/**
+		 * The entry a review carries for the commands it answers; none when the run does not rate. A
+		 * failed read names none, so those commands keep holding until a later answer names them.
+		 */
+		readonly readAnswers: (
+			gate: RiskGate,
+			request: AnswerRequest
+		) => Effect.Effect<readonly AnswerEntry[], never, OwnedIdentities>
 	}
 >()('mng-review/RiskRunService') {}
 
@@ -68,6 +78,7 @@ export const RiskRunServiceLive = Layer.effect(
 	Effect.gen(function* () {
 		const starts = yield* RiskStartService
 		const finishes = yield* RiskFinishService
+		const answers = yield* AnswerReadService
 		const fs = yield* FileSystem.FileSystem
 
 		/** Hands step 1's description to the cleanup step, which writes the same `error` again. */
@@ -128,6 +139,17 @@ export const RiskRunServiceLive = Layer.effect(
 			return { status: 'written', result } satisfies RiskReport
 		})
 
-		return { rateFull, rateThread }
+		const readAnswers = Effect.fn('RiskRunService.readAnswers')(function* (
+			gate: RiskGate,
+			request: AnswerRequest
+		) {
+			if (gate.status !== 'on') return []
+			const entry = yield* answers
+				.getCommandEntry(request)
+				.pipe(Effect.orElseSucceed(() => undefined))
+			return entry ? [entry] : []
+		})
+
+		return { rateFull, rateThread, readAnswers }
 	})
 )

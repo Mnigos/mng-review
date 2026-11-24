@@ -8,11 +8,25 @@ import type { ReserveDecision } from '../application/command-run.types'
 
 export const AUTHORIZE_SUMMARY_TITLE = '## MNG Review (command)'
 
-/** The step outputs the later jobs read; a denied command sets only `authorized=false`. */
+/**
+ * The step outputs the later jobs read. A denied command sets `authorized=false`, and with an
+ * answer the denial job posts also `answer`, `answer_pull`, `answer_comment` and `answer_reason`.
+ */
 export function toAuthorizeOutputs(
 	decision: CommandDecision
 ): Readonly<Record<string, string>> {
-	if (decision.status === 'denied') return { authorized: 'false' }
+	if (decision.status === 'denied')
+		return decision.answer &&
+			decision.pullNumber !== undefined &&
+			decision.commentId !== undefined
+			? {
+					authorized: 'false',
+					answer: decision.answer,
+					answer_pull: String(decision.pullNumber),
+					answer_comment: String(decision.commentId),
+					answer_reason: decision.reason,
+				}
+			: { authorized: 'false' }
 	return {
 		authorized: 'true',
 		pull_number: String(decision.pullNumber),

@@ -7,7 +7,10 @@ import type {
 	ThreadKind,
 } from './publish-marker.schema'
 import type { ReviewDecision, ReviewEvidence } from './review-event.helper'
-import type { ThreadReplyDecision } from './thread-reply.schema'
+import type {
+	DecidedThreadReply,
+	ThreadReplyDecision,
+} from './thread-reply.schema'
 
 /** One of the bot's review threads, found by its author and its marker. */
 export interface BotThread {
@@ -172,6 +175,15 @@ export interface AppliedReply {
 	readonly decision: ThreadReplyDecision
 	/** The `databaseId` of the author's comment the answer names. */
 	readonly commentId: number
+	/** The digest the decision was made on; unset means the thread's latest. */
+	readonly digest?: string
+	/** The reply versions the collection saw unnamed; unset names every unnamed reply. */
+	readonly named?: DecidedThreadReply['named']
+	/**
+	 * The thread could not be reopened after the answer, so a resolution GitHub shows may predate it
+	 * and clears no wait (`toFreshResolvers`).
+	 */
+	readonly unsettled?: true
 }
 
 /**
