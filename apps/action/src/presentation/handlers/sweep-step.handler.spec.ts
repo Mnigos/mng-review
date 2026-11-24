@@ -4,6 +4,7 @@ import {
 	GitHubApiError,
 	GitHubStatusService,
 	GitHubWriteConfigLive,
+	ListCompleteness,
 	OwnedIdentities,
 	StatusSweepService,
 } from '@mng-review/github'
@@ -138,7 +139,15 @@ layer(FileSystemLayer)('sweep step app identity', test => {
 						undefined,
 						scenario !== 'off'
 					)
-					const sweepSpy = vi.fn(() => Effect.succeed(SWEPT))
+					const seen: boolean[] = []
+					const sweepSpy = vi.fn(() =>
+						ListCompleteness.pipe(
+							Effect.map(reading => {
+								seen.push(reading.complete)
+								return SWEPT
+							})
+						)
+					)
 					const listOpenPullRequestsSpy = vi.fn(() =>
 						scenario === 'list failed'
 							? Effect.fail(
@@ -177,6 +186,8 @@ layer(FileSystemLayer)('sweep step app identity', test => {
 						Effect.result
 					)
 					expect(sweepSpy).toHaveBeenCalledOnce()
+					// Only rules that rate read complete lists; a null node fails such a pull request.
+					expect(seen).toEqual([scenario !== 'off'])
 					const fs = yield* FileSystem.FileSystem
 					if (scenario === 'list failed') {
 						expect(outcome).toMatchObject({

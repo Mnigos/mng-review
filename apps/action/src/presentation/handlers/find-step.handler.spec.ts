@@ -1,5 +1,9 @@
 import { layer } from '@effect/vitest'
-import { GitHubApiError, ReplyFindService } from '@mng-review/github'
+import {
+	GitHubApiError,
+	ListCompleteness,
+	ReplyFindService,
+} from '@mng-review/github'
 import { Effect, FileSystem, Layer } from 'effect'
 import { TestConsole } from 'effect/testing'
 import {
@@ -151,5 +155,45 @@ layer(FileSystemLayer)('find step failures', test => {
 				expect(yield* TestConsole.logLines).toEqual([`mng-review: ${line}`])
 				expect(fixture.api.writes).toEqual([])
 			}).pipe(Effect.provide(Layer.fresh(TestConsole.layer)))
+		)
+})
+
+layer(FileSystemLayer)('find step list completeness', test => {
+	for (const riskEnabled of [false, true])
+		test.effect(
+			`reads complete lists only while the rules rate: ${riskEnabled}`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = stepFixture(
+						undefined,
+						false,
+						false,
+						undefined,
+						undefined,
+						undefined,
+						riskEnabled
+					)
+					const seen: boolean[] = []
+					const findSpy = vi.fn(() =>
+						ListCompleteness.pipe(
+							Effect.map(reading => {
+								seen.push(reading.complete)
+								return { candidates: [], read: 0, failed: 0 }
+							})
+						)
+					)
+					yield* runFindStep.pipe(
+						Effect.provide(fixture.rulesLayer),
+						Effect.provide(
+							Layer.succeed(ReplyFindService, {
+								find: findSpy,
+								readPending: () => Effect.succeed({ threads: [], replies: [] }),
+							})
+						),
+						Effect.provide(fixture.publisherLayer),
+						Effect.provide(fixture.envLayer())
+					)
+					expect(seen).toEqual([riskEnabled])
+				})
 		)
 })

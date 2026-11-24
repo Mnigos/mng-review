@@ -548,3 +548,41 @@ layer(FileSystemLayer)('prepare named converse', test => {
 				})
 		)
 })
+
+layer(FileSystemLayer)('prepare step null nodes', test => {
+	for (const riskEnabled of [false, true])
+		test.effect(
+			`a review thread GitHub lists as a null node ${riskEnabled ? 'fails the thread read while the rules rate' : 'is left out while the rules do not rate'}`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = stepFixture(
+						undefined,
+						false,
+						false,
+						undefined,
+						undefined,
+						undefined,
+						riskEnabled
+					)
+					fixture.api.threads.push({ ...reviewThread(), id: 'owned' })
+					fixture.api.nullNodes.threads = 1
+					yield* runPrepareStep.pipe(
+						Effect.provide(
+							PrepareRunServiceLive.pipe(Layer.provide(fixture.rulesLayer))
+						),
+						Effect.provide(fixture.publisherLayer),
+						Effect.provide(fixture.envLayer())
+					)
+					const prepared = yield* parsePreparedRun(
+						yield* (yield* FileSystem.FileSystem).readFileString(
+							fixture.paths.prepared
+						)
+					)
+					expect(prepared).toMatchObject({ status: 'ready' })
+					if (prepared.status === 'ready')
+						expect(prepared.threads.map(thread => thread.id)).toEqual(
+							riskEnabled ? [] : ['owned']
+						)
+				})
+		)
+})

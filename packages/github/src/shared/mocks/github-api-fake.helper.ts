@@ -24,6 +24,7 @@ import type { GitHubApiError } from '../../platform/github.errors'
 import { getBasePermission } from './collaborator-role.helper'
 import { editThreadComment, toApiFailures } from './github-api-failures.helper'
 import type { ApiWrite } from './github-api-fake.types'
+import { readListedOverHttp, toNullNodes } from './github-http.helper'
 
 /** An open same-repository pull request with full commits, as a command run reads it again. */
 export const COMMAND_PULL_REQUEST = {
@@ -97,6 +98,8 @@ export function githubApiFake(
 			threadId: string
 		) => Effect.Effect<readonly ThreadComment[], GitHubApiError>
 	} = {}
+	const nullNodes = toNullNodes()
+	const listed = readListedOverHttp(nullNodes)
 	const author = { __typename: 'Bot', login: identity.login }
 	const addThread = (input: ReviewCommentInput) => {
 		threads.push({
@@ -127,7 +130,7 @@ export function githubApiFake(
 			threadReads.push(pullNumber)
 			const error = failures.listThreads.shift()
 			if (error) return yield* error
-			return threadSnapshots.shift() ?? [...threads]
+			return yield* listed.threads(threadSnapshots.shift() ?? [...threads])
 		})
 	const api = Layer.succeed(GitHubApiService, {
 		replyToThread: (id, body) =>
@@ -231,7 +234,7 @@ export function githubApiFake(
 				commentReads.push(pullNumber)
 				const error = failures.listComments.shift()
 				if (error) return yield* error
-				return commentSnapshots.shift() ?? [...comments]
+				return yield* listed.comments(commentSnapshots.shift() ?? [...comments])
 			}),
 		getPullRequest: pullNumber =>
 			Effect.gen(function* () {
@@ -322,7 +325,7 @@ export function githubApiFake(
 				reviewCommitReads.push(withCommits)
 				const error = failures.listReviews.shift()
 				if (error) return yield* error
-				return reviewSnapshots.shift() ?? [...reviews]
+				return yield* listed.reviews(reviewSnapshots.shift() ?? [...reviews])
 			}),
 		createReview: (pullNumber, input) =>
 			Effect.gen(function* () {
@@ -385,6 +388,7 @@ export function githubApiFake(
 		command,
 		threadComments,
 		threadReader,
+		nullNodes,
 		beforeReply,
 	}
 }

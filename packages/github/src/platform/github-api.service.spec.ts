@@ -32,6 +32,7 @@ import {
 } from './github-api.constants'
 import { GitHubApiService } from './github-api.service'
 import { GitHubApiError } from './github.errors'
+import { provideListCompleteness } from './list-completeness.context'
 
 type GitHubRead = Effect.Effect<readonly unknown[], GitHubApiError>
 type GitHubWrite = Effect.Effect<number | void, GitHubApiError>
@@ -252,6 +253,36 @@ layer(Layer.empty)('GitHubApiService reads', test => {
 							operation
 						)
 						expect(fixture.requests).toHaveLength(page === 'first' ? 1 : 2)
+					})
+			)
+		for (const page of ['first', 'later'] as const)
+			test.effect(
+				`${operation} leaves out a node GitHub lists as null on the ${page} page when the run does not rate`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = makeGitHubHttp((_request, attempt) =>
+							Effect.succeed(
+								Response.json(
+									attempt === 1
+										? toGitHubPage(
+												connection,
+												page === 'first' ? [node, null] : [node],
+												true,
+												'cursor-1'
+											)
+										: toGitHubPage(connection, [node, null])
+								)
+							)
+						)
+						expect(
+							yield* GitHubApiService.use((service): GitHubRead =>
+								service[operation](42)
+							).pipe(
+								Effect.provide(fixture.layer),
+								provideListCompleteness(false)
+							)
+						).toEqual([node, node])
+						expect(fixture.requests).toHaveLength(2)
 					})
 			)
 		test.effect(`${operation} accepts an empty connection`, () =>
@@ -865,6 +896,20 @@ layer(Layer.empty)('GitHubApiService whole thread read', test => {
 					).pipe(Effect.provide(fixture.layer), Effect.flip),
 					'listThreadComments'
 				)
+			})
+	)
+	test.effect(
+		'listThreadComments leaves out a comment GitHub lists as a null node when the run does not rate',
+		() =>
+			Effect.gen(function* () {
+				const fixture = makeGitHubHttp(() =>
+					Effect.succeed(Response.json(toThreadCommentsPage([null, comment])))
+				)
+				expect(
+					yield* GitHubApiService.use(service =>
+						service.listThreadComments('thread-1')
+					).pipe(Effect.provide(fixture.layer), provideListCompleteness(false))
+				).toEqual([comment])
 			})
 	)
 })

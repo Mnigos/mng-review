@@ -20,6 +20,7 @@ import {
 	GitHubRiskService,
 	TIMELINE_QUERY,
 } from './github-risk.service'
+import { provideListCompleteness } from './list-completeness.context'
 
 const REPO_URL = `${GITHUB_SETTINGS.apiUrl}/repos/${GITHUB_SETTINGS.owner}/${GITHUB_SETTINGS.name}`
 
@@ -222,39 +223,44 @@ layer(Layer.empty)('GitHubRiskService HTTP boundary', test => {
 				expect(TIMELINE_QUERY).toContain('HeadRefForcePushedEvent { createdAt')
 			})
 	)
-	test.effect(
-		'a timeline item GitHub lists as a null node fails the read, since it may be a head',
-		() =>
-			Effect.gen(function* () {
-				const fake = makeGitHubHttp(() =>
-					Effect.succeed(
-						Response.json({
-							data: {
-								repository: {
-									pullRequest: {
-										timelineItems: {
-											nodes: [
-												{
-													__typename: 'PullRequestCommit',
-													commit: { oid: 'old' },
-												},
-												null,
-											],
-											pageInfo: { hasNextPage: false, endCursor: null },
+	for (const complete of [true, false])
+		test.effect(
+			`a timeline item GitHub lists as a null node fails the read with complete=${complete}, since it may be a head`,
+			() =>
+				Effect.gen(function* () {
+					const fake = makeGitHubHttp(() =>
+						Effect.succeed(
+							Response.json({
+								data: {
+									repository: {
+										pullRequest: {
+											timelineItems: {
+												nodes: [
+													{
+														__typename: 'PullRequestCommit',
+														commit: { oid: 'old' },
+													},
+													null,
+												],
+												pageInfo: { hasNextPage: false, endCursor: null },
+											},
 										},
 									},
 								},
-							},
-						})
+							})
+						)
 					)
-				)
-				expect(
-					yield* GitHubRiskService.use(service =>
-						service.listTimeline(17)
-					).pipe(Effect.provide(fake.riskLayer), Effect.flip)
-				).toMatchObject({ _tag: 'GitHubApiError', operation: 'listTimeline' })
-			})
-	)
+					expect(
+						yield* GitHubRiskService.use(service =>
+							service.listTimeline(17)
+						).pipe(
+							Effect.provide(fake.riskLayer),
+							provideListCompleteness(complete),
+							Effect.flip
+						)
+					).toMatchObject({ _tag: 'GitHubApiError', operation: 'listTimeline' })
+				})
+		)
 	test.effect(
 		'GraphQL timeline errors fail rather than returning empty history',
 		() =>

@@ -9,6 +9,7 @@ import { GITHUB_ACTIONS_IDENTITY } from '../../platform/bot-identity.helper'
 import type {
 	ConnectionPage,
 	PullRequestComment,
+	PullRequestReview,
 	ReviewThread,
 	ThreadComment,
 } from '../../platform/github-api.schema'
@@ -16,7 +17,10 @@ import {
 	GitHubApiService,
 	GitHubApiServiceLive,
 } from '../../platform/github-api.service'
-import { GitHubReviewServiceLive } from '../../platform/github-review.service'
+import {
+	GitHubReviewService,
+	GitHubReviewServiceLive,
+} from '../../platform/github-review.service'
 import { GitHubRiskServiceLive } from '../../platform/github-risk.service'
 import { GitHubStatusServiceLive } from '../../platform/github-status.service'
 import { GitHubConfig } from '../../platform/github.config'
@@ -161,4 +165,61 @@ export function readThreadOverHttp(nodes: readonly (ThreadComment | null)[]) {
 		GitHubApiService.use(service => service.listThreadComments(threadId)).pipe(
 			Effect.provide(http.layer)
 		)
+}
+
+/** How many null nodes each list read of the fake lists after its entries, as GitHub can. */
+export interface NullNodes {
+	threads: number
+	comments: number
+	reviews: number
+}
+
+/** No null nodes in any list, until a spec sets some. */
+export function toNullNodes(): NullNodes {
+	return { threads: 0, comments: 0, reviews: 0 }
+}
+
+/** One page of `entries` and `nulls` null nodes after them, answered to every request. */
+function answerListed(
+	connection: GitHubConnection,
+	entries: readonly unknown[],
+	nulls: number
+) {
+	const nodes = [...entries, ...Array.from({ length: nulls }, () => null)]
+	return makeGitHubHttp(() =>
+		Effect.succeed(Response.json(toGitHubPage(connection, nodes)))
+	)
+}
+
+/**
+ * The fake's list reads: the entries as they are, or, once a spec sets `nullNodes`, read by the
+ * real adapter over one page that lists that many null nodes after them.
+ */
+export function readListedOverHttp(nullNodes: NullNodes) {
+	return {
+		threads: (threads: readonly ReviewThread[]) =>
+			nullNodes.threads === 0
+				? Effect.succeed(threads)
+				: GitHubApiService.use(service => service.listReviewThreads(0)).pipe(
+						Effect.provide(
+							answerListed('reviewThreads', threads, nullNodes.threads).layer
+						)
+					),
+		comments: (comments: readonly PullRequestComment[]) =>
+			nullNodes.comments === 0
+				? Effect.succeed(comments)
+				: GitHubApiService.use(service => service.listComments(0)).pipe(
+						Effect.provide(
+							answerListed('comments', comments, nullNodes.comments).layer
+						)
+					),
+		reviews: (reviews: readonly PullRequestReview[]) =>
+			nullNodes.reviews === 0
+				? Effect.succeed(reviews)
+				: GitHubReviewService.use(service => service.listReviews(0)).pipe(
+						Effect.provide(
+							answerListed('reviews', reviews, nullNodes.reviews).reviewLayer
+						)
+					),
+	}
 }
