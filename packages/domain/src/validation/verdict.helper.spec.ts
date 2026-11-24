@@ -4,7 +4,12 @@ import {
 	toValidation,
 	UNNAMED_PREMISE,
 } from './verdict.helper'
-import { type Verdict, VERDICTS } from './verdict.schema'
+import {
+	MAX_PREMISE_CHARS,
+	MAX_VERDICT_REASON_CHARS,
+	type Verdict,
+	VERDICTS,
+} from './verdict.schema'
 
 const MODEL = 'validator-model'
 const STATUS_BY_VERDICT = {
@@ -212,5 +217,79 @@ describe('toValidation', () => {
 				hasRepositoryEvidence: false,
 			})
 		).toMatchObject({ status: 'confirmed', severity: 'medium' })
+	})
+})
+
+describe('validated edit retention', () => {
+	test.each(VERDICTS)('keeps an edit only for %s confirmation', name => {
+		const edit = {
+			commit: 'a'.repeat(40),
+			line: 2,
+			original: 'old()',
+			replacement: 'new()',
+		} as const
+		const validation = toValidation({
+			verdict: verdict({ verdict: name, premise: 'A package retries.' }),
+			reported: 'high',
+			model: MODEL,
+			hasRepositoryEvidence: true,
+			edit,
+		})
+		if (name === 'confirm') expect(validation).toHaveProperty('edit', edit)
+		else expect(validation).not.toHaveProperty('edit')
+	})
+	test('does not retain an edit when an unsupported rejection becomes unverified', () => {
+		expect(
+			toValidation({
+				verdict: verdict({ verdict: 'reject' }),
+				reported: 'high',
+				model: MODEL,
+				hasRepositoryEvidence: false,
+				edit: {
+					commit: 'a'.repeat(40),
+					line: 2,
+					original: 'old()',
+					replacement: 'new()',
+				},
+			})
+		).not.toHaveProperty('edit')
+	})
+})
+
+describe('verdict text limits', () => {
+	test.each(VERDICTS)(
+		'cuts an over-long reason and premise of a %s answer at a word boundary and keeps its status',
+		name => {
+			const validation = toValidation({
+				verdict: verdict({
+					verdict: name,
+					reason: 'because '.repeat(200).trim(),
+					premise: 'retries '.repeat(100).trim(),
+				}),
+				reported: 'high',
+				model: MODEL,
+				hasRepositoryEvidence: true,
+			})
+			expect(validation.status).toBe(STATUS_BY_VERDICT[name])
+			expect(validation.reason.length).toBeLessThanOrEqual(
+				MAX_VERDICT_REASON_CHARS
+			)
+			expect(validation.reason).toMatch(/because…$/u)
+			if (validation.status !== 'unverified') return
+			expect(validation.premise.length).toBeLessThanOrEqual(MAX_PREMISE_CHARS)
+			expect(validation.premise).toMatch(/retries…$/u)
+		}
+	)
+	test('keeps a reason and premise exactly at the limits', () => {
+		const reason = 'x'.repeat(MAX_VERDICT_REASON_CHARS)
+		const premise = 'y'.repeat(MAX_PREMISE_CHARS)
+		expect(
+			toValidation({
+				verdict: verdict({ verdict: 'unverified', reason, premise }),
+				reported: 'high',
+				model: MODEL,
+				hasRepositoryEvidence: true,
+			})
+		).toMatchObject({ reason, premise })
 	})
 })

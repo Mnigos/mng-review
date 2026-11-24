@@ -1,6 +1,10 @@
 import { Schema, Result } from 'effect'
 import { verdict } from '../shared/mocks/domain-test.helper'
-import { verdictSchema } from './verdict.schema'
+import {
+	MAX_PREMISE_CHARS,
+	MAX_VERDICT_REASON_CHARS,
+	verdictSchema,
+} from './verdict.schema'
 
 const VERDICT = verdict()
 const decode = Schema.decodeUnknownResult(verdictSchema)
@@ -171,4 +175,39 @@ describe('same_root_cause', () => {
 			).toBeTruthy()
 		}
 	)
+})
+
+describe('verdict text and edit boundaries', () => {
+	test.each([
+		undefined,
+		null,
+		{ line: ' old() ', replacement: '\tnew()\n' },
+		{ line: 'old()', replacement: '' },
+	])('decodes optional edit without altering code %j', edit => {
+		expect(
+			decode({ ...VERDICT, ...(edit === undefined ? {} : { edit }) })
+		).toEqual(
+			Result.succeed({ ...VERDICT, ...(edit === undefined ? {} : { edit }) })
+		)
+	})
+	test.each([
+		{ line: 1, replacement: '' },
+		{ line: 'old()' },
+		{ replacement: '' },
+		'edit',
+	])('rejects malformed edit %j', edit => {
+		expect(
+			Result.isFailure(
+				decode({ ...VERDICT, ...(edit === undefined ? {} : { edit }) })
+			)
+		).toBeTruthy()
+	})
+	test.each([
+		['reason', MAX_VERDICT_REASON_CHARS],
+		['premise', MAX_PREMISE_CHARS],
+	] as const)('never rejects an over-long %s', (field, max) => {
+		expect(
+			Result.isSuccess(decode({ ...VERDICT, [field]: 'x'.repeat(max * 2) }))
+		).toBeTruthy()
+	})
 })

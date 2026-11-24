@@ -1,4 +1,11 @@
-import { escapeMarkdown, toCodeSpan, toLogText } from './markdown.util'
+import { getCodeBlocks } from '../shared/mocks/hostile-text.helper'
+import {
+	escapeMarkdown,
+	toCodeBlock,
+	toShort,
+	toCodeSpan,
+	toLogText,
+} from './markdown.util'
 
 describe('escapeMarkdown', () => {
 	test('escapes image, HTML and table syntax and flattens line breaks', () => {
@@ -252,5 +259,45 @@ describe('toCodeSpan', () => {
 	})
 	test('flattens lines and encloses text in code', () => {
 		expect(toCodeSpan('src/items.ts:2\r\n next')).toBe('`src/items.ts:2 next`')
+	})
+})
+
+describe('toCodeBlock', () => {
+	test.each(['text', 'suggestion'])(
+		'uses a fence longer than all embedded runs for %s',
+		info => {
+			const input =
+				'@user #12 deadbeef </details> -->\n```\n``````\n<img src=x>'
+			const body = toCodeBlock(input, info)
+			expect(body).toBe(`\`\`\`\`\`\`\`${info}\n${input}\n\`\`\`\`\`\`\``)
+			expect(getCodeBlocks(body)).toEqual([
+				{ fence: '`'.repeat(7), info, body: input },
+			])
+		}
+	)
+	test('normalizes CR, keeps tabs and LF, and removes hidden characters before choosing the fence', () => {
+		expect(
+			toCodeBlock(
+				'a\r\nb\rc\t\n\u0000\u007F\u0085\u202E\u200B\u2028\u2029`\u200B``',
+				'text'
+			)
+		).toBe('````text\na\nb\nc\t\n```\n````')
+	})
+	test.each(['', '\u202E\u0000'])(
+		'empty or hidden-only replacement %j has no content line',
+		input => {
+			expect(toCodeBlock(input, 'suggestion')).toBe('```suggestion\n```')
+		}
+	)
+})
+
+describe('toShort', () => {
+	test.each([
+		['', 3, ''],
+		['abc', 3, 'abc'],
+		['abcd', 3, 'abc…'],
+		['a', 0, '…'],
+	] as const)('cuts %j at %i only when needed', (text, max, expected) => {
+		expect(toShort(text, max)).toBe(expected)
 	})
 })

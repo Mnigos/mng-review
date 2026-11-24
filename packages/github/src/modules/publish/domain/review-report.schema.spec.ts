@@ -294,3 +294,58 @@ describe('reviewReportSchema', () => {
 		).toEqual(report)
 	})
 })
+
+describe('judgement edit decoding', () => {
+	test.each([40, 64])(
+		'round trips an optional edit with a %i-character commit',
+		length => {
+			const validation = {
+				status: 'confirmed',
+				severity: 'high',
+				reason: 'Confirmed.',
+				evidence: [],
+				model: 'model',
+				edit: {
+					commit: 'a'.repeat(length),
+					line: 10,
+					original: '',
+					replacement: '',
+				},
+			} as const
+			expect(
+				roundTrip({ ...reviewReport(), bugs: [bug({ validation })] }).bugs[0]
+					?.validation
+			).toEqual(validation)
+		}
+	)
+	test.each([
+		{ commit: 'head', line: 10 },
+		{ commit: 'g'.repeat(40), line: 10 },
+		{ commit: 'a'.repeat(40), line: 0 },
+		{ commit: 'a'.repeat(40), line: -1 },
+		{ commit: 'a'.repeat(40), line: 1.5 },
+		{ commit: 'a'.repeat(40), line: '10' },
+		{ commit: 'a'.repeat(40), line: 10, original: undefined },
+		{ commit: 'a'.repeat(40), line: 10, original: 7 },
+	])('rejects invalid edit commit, line or original %j', edit => {
+		const report = reviewReport()
+		expect(() =>
+			roundTrip({
+				...report,
+				bugs: [
+					{
+						...bug(),
+						validation: {
+							status: 'confirmed',
+							severity: 'high',
+							reason: 'Confirmed.',
+							evidence: [],
+							model: 'model',
+							edit: { original: 'old()', replacement: 'new()', ...edit },
+						},
+					},
+				],
+			})
+		).toThrow()
+	})
+})

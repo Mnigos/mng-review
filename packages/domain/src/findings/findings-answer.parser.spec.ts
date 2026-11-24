@@ -1,6 +1,12 @@
 import { layer } from '@effect/vitest'
 import { Effect, Layer } from 'effect'
 import { rawFinding } from '../shared/mocks/domain-test.helper'
+import {
+	MAX_FINDING_FIX_CHARS,
+	MAX_FINDING_IMPACT_CHARS,
+	MAX_FINDING_STEP_CHARS,
+	MAX_FINDING_TITLE_CHARS,
+} from './finding.constants'
 import { FindingsAnswerError } from './finding.errors'
 import { addLaterFindings, parseFindingsAnswer } from './findings-answer.parser'
 
@@ -94,4 +100,66 @@ describe('addLaterFindings', () => {
 		const later = { findings: [rawFinding()], dropped: 1 }
 		expect(addLaterFindings({ findings: [], dropped: 0 }, later)).toEqual(later)
 	})
+})
+
+/** `count` words separated by spaces. */
+function words(count: number): string {
+	return 'word '.repeat(count).trim()
+}
+
+layer(Layer.empty)('parseFindingsAnswer text limits', test => {
+	test.effect(
+		'cuts an over-long title, impact, fix and trigger step and keeps every finding',
+		() =>
+			Effect.gen(function* () {
+				const parsed = yield* parseFindingsAnswer({
+					findings: [
+						rawFinding(),
+						rawFinding({
+							title: words(60),
+							impact: words(200),
+							suggestion: words(100),
+							trigger: `${words(80)}\nshort step`,
+						}),
+					],
+				})
+				expect(parsed.dropped).toBe(0)
+				expect(parsed.findings).toHaveLength(2)
+				const [kept, cut] = parsed.findings
+				expect(kept).toEqual(rawFinding())
+				expect(cut?.title.length).toBeLessThanOrEqual(MAX_FINDING_TITLE_CHARS)
+				expect(cut?.impact.length).toBeLessThanOrEqual(MAX_FINDING_IMPACT_CHARS)
+				expect(cut?.suggestion?.length).toBeLessThanOrEqual(
+					MAX_FINDING_FIX_CHARS
+				)
+				const [first, second] = cut?.trigger.split('\n') ?? []
+				expect(first?.length).toBeLessThanOrEqual(MAX_FINDING_STEP_CHARS)
+				expect(second).toBe('short step')
+				for (const text of [cut?.title, cut?.impact, cut?.suggestion, first])
+					expect(text).toMatch(/word…$/u)
+			})
+	)
+	test.effect('puts a title and a fix with line breaks on one line', () =>
+		Effect.gen(function* () {
+			const parsed = yield* parseFindingsAnswer([
+				rawFinding({ title: 'first\r\n  last', suggestion: 'one\ntwo' }),
+			])
+			expect(parsed.findings[0]).toMatchObject({
+				title: 'first last',
+				suggestion: 'one two',
+			})
+		})
+	)
+	test.effect('keeps a null suggestion and text exactly at the limits', () =>
+		Effect.gen(function* () {
+			const finding = rawFinding({
+				title: 'x'.repeat(MAX_FINDING_TITLE_CHARS),
+				impact: 'x'.repeat(MAX_FINDING_IMPACT_CHARS),
+				suggestion: null,
+			})
+			expect((yield* parseFindingsAnswer([finding])).findings).toEqual([
+				finding,
+			])
+		})
+	)
 })

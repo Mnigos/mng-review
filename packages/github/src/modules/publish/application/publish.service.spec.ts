@@ -1,5 +1,5 @@
 import { layer } from '@effect/vitest'
-import { GitService } from '@mng-review/engine'
+import { GitError, GitService } from '@mng-review/engine'
 import { Effect, Layer, Redacted } from 'effect'
 import { GITHUB_ACTIONS_IDENTITY } from '../../../platform/bot-identity.helper'
 import { RECENT_COMMENTS } from '../../../platform/github-api.constants'
@@ -4072,5 +4072,122 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 						])
 					})
 			)
+	}
+)
+
+/** A confirmed bug whose outcome-file edit names `line` and claims `original` there. */
+function editedBug(head: string, line: number, original: string) {
+	return bug({
+		line,
+		suggestion: 'Write once.',
+		validation: {
+			status: 'confirmed',
+			severity: 'high',
+			reason: 'Confirmed.',
+			evidence: [],
+			model: 'model',
+			edit: { commit: head, line, original, replacement: 'fixed 10' },
+		},
+	})
+}
+
+/** The posted inline comment's body for one bug, with publishing reading git through `git`. */
+const postedBody = (
+	fixture: ReturnType<typeof setup>,
+	finding: ReturnType<typeof bug>,
+	git: GitService['Service']
+) =>
+	Effect.gen(function* () {
+		const publisher = yield* PublishService.pipe(
+			Effect.provide(
+				PublishServiceLive.pipe(
+					Layer.provide(SummaryReviewServiceLive),
+					Layer.provide(
+						Layer.merge(fixture.dependencies, Layer.succeed(GitService, git))
+					)
+				)
+			)
+		)
+		yield* publisher.publish({
+			...fixture.input,
+			report: { ...fixture.input.report, bugs: [finding] },
+		})
+		const review = fixture.fake.writes.find(call => call.method === 'review')
+		expect(review?.input.comments).toHaveLength(1)
+		const body = review?.input.comments[0]?.body ?? ''
+		expect(parseFindingMarker(body)?.fingerprint).toBe(finding.fingerprint)
+		expect(body).toContain('**Fix:** Write once.')
+		return body
+	})
+
+const SUGGESTION = /`{3,}suggestion\n/u
+
+layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
+	'PublishServiceLive suggested edits',
+	test => {
+		test.effect(
+			'suggests an edit whose original text is the head line git reads',
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup()
+					const git = yield* GitService.pipe(
+						Effect.provide(gitLayer(fixture.repo.root))
+					)
+					const readFileAtSpy = vi.spyOn(git, 'readFileAt')
+					expect(
+						yield* postedBody(
+							fixture,
+							editedBug(fixture.head, 10, 'changed 10'),
+							git
+						)
+					).toMatch(SUGGESTION)
+					expect(readFileAtSpy).toHaveBeenCalledWith(fixture.head, bug().path)
+				})
+		)
+		for (const [scenario, line, original] of [
+			['a finding moved to another line', 11, 'changed 10'],
+			['a wrong original text', 10, 'line 10'],
+			['an original with trailing whitespace', 10, 'changed 10 '],
+		] as const)
+			test.effect(
+				`posts no suggestion for a hostile outcome with ${scenario}`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = setup()
+						const git = yield* GitService.pipe(
+							Effect.provide(gitLayer(fixture.repo.root))
+						)
+						expect(
+							yield* postedBody(
+								fixture,
+								editedBug(fixture.head, line, original),
+								git
+							)
+						).not.toMatch(SUGGESTION)
+					})
+			)
+		test.effect('posts no suggestion when the head read fails', () =>
+			Effect.gen(function* () {
+				const fixture = setup()
+				const git = yield* GitService.pipe(
+					Effect.provide(gitLayer(fixture.repo.root))
+				)
+				const readFileAtSpy = vi
+					.spyOn(git, 'readFileAt')
+					.mockReturnValue(
+						Effect.fail(
+							new GitError({ args: ['show'], exitCode: 128, stderr: 'gone' })
+						)
+					)
+				expect(
+					yield* postedBody(
+						fixture,
+						editedBug(fixture.head, 10, 'changed 10'),
+						git
+					)
+				).not.toMatch(SUGGESTION)
+				expect(readFileAtSpy).toHaveBeenCalled()
+			})
+		)
 	}
 )
