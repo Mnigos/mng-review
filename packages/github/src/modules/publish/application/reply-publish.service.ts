@@ -8,6 +8,7 @@ import { OwnedIdentities } from '../../../platform/owned-identities.context'
 import { toCommitStatus } from '../../status/domain/status.helper'
 import {
 	getOwnerAnswered,
+	getOwnerWaiting,
 	getStandingVerdict,
 	isOpenBug,
 	toBotThread,
@@ -18,8 +19,12 @@ import type {
 	AnswerCounts,
 	DismissalOutcome,
 	LabelOutcome,
+	OwnerWaits,
 } from '../domain/publish.types'
-import { toRepliedMarker } from '../domain/summary-marker.helper'
+import {
+	toJudgedMarker,
+	toRepliedMarker,
+} from '../domain/summary-marker.helper'
 import {
 	toAnswerCounts,
 	toFreshResolvers,
@@ -63,7 +68,7 @@ export interface ReplyPublishResult {
 	 */
 	readonly reopened?: readonly string[]
 	readonly answered: AnswerCounts
-	/** Threads that wait for the owner after the run. */
+	/** Threads that wait for the owner after the run, those it held for itself only included. */
 	readonly waiting: number
 	readonly label: LabelOutcome
 	/** The run count, unchanged. */
@@ -79,9 +84,11 @@ interface FailClosedInput {
 	readonly pullNumber: number
 	readonly head: string
 	readonly openBugs: number
-	/** Threads waiting before and after the run. */
+	/** Threads the summary kept waiting before the run and would keep after it. */
 	readonly before: number
 	readonly after: number
+	/** Threads the run held waiting for itself only, which set the status but not the label. */
+	readonly held: number
 }
 
 /** The open bugs, finished flag and verdict of the summary's head after a reply-only run. */
@@ -106,7 +113,8 @@ function toStanding(marker: SummaryMarker, head: string, threadBugs: number) {
  * updates the summary's verdict and waiting list (an edit of the bot's newest review, or a new
  * review when that one cannot be edited), the `needs-owner` label and the `MNG Review` status. It
  * posts no finding thread and no check run, and the summary's run count, head, finished flag and
- * unthreaded bugs stay as they were.
+ * unthreaded bugs stay as they were. Threads a failed whole-thread read left unknown wait for this
+ * run only, as at publishing: they set its verdict and status but are never stored.
  */
 export class ReplyPublishService extends Context.Service<
 	ReplyPublishService,
@@ -136,7 +144,7 @@ export const ReplyPublishServiceLive = Layer.effect(
 		const failClosed = Effect.fn('ReplyPublishService.failClosed')(function* (
 			input: FailClosedInput
 		) {
-			if (input.after > 0)
+			if (input.after + input.held > 0)
 				yield* github
 					.setStatus({
 						sha: input.head,
@@ -166,19 +174,19 @@ export const ReplyPublishServiceLive = Layer.effect(
 			const first = yield* readAll(pullNumber)
 			const found = first.threads
 			const { current, identities } = yield* OwnedIdentities
-			// A failed whole-thread read leaves the latest comments the read brought for this run.
-			const sentBefore = yield* conversation
-				.getSentToOwner(first.raw)
-				.pipe(
-					Effect.orElseSucceed(() => getOwnerAnswered(first.raw, identities))
-				)
+			// A failed whole-thread read holds every longer owner thread for this run only.
+			const waits = yield* conversation.getSentToOwner(first.raw).pipe(
+				Effect.map((sent): OwnerWaits => ({ sent, held: [] })),
+				Effect.orElseSucceed(() => getOwnerWaiting(first.raw, identities))
+			)
 			// Every summary's list, hidden ones too, and every thread the bot sent to the owner.
-			const waiting = [
+			const stored = [
 				...new Set([
 					...(yield* summaries.readWaiting(pullNumber)),
-					...sentBefore,
+					...waits.sent,
 				]),
 			]
+			const waiting = [...new Set([...stored, ...waits.held])]
 			// Publishing's own git read between the bound base and the head, never the outcome file.
 			const change = input.replies.decisions.some(entry =>
 				LIMITED_ACTIONS.has(entry.decision.action)
@@ -227,7 +235,7 @@ export const ReplyPublishServiceLive = Layer.effect(
 			// Answers this run or one alongside it sent to the owner wait, even if the summary write failed.
 			const all = [
 				...new Set([
-					...waiting,
+					...stored,
 					...answered
 						.filter(entry => entry.decision.action === 'needs-owner')
 						.map(entry => entry.thread.id),
@@ -235,12 +243,14 @@ export const ReplyPublishServiceLive = Layer.effect(
 				]),
 			]
 			const cleared = yield* conversation.getCleared({
-				waiting: all,
+				waiting: [...all, ...waits.held],
 				resolvers: toFreshResolvers(second, answered),
 				threads: second.raw,
 				allow: input.rules.config.commands.allow,
 			})
 			const update = { added: all.filter(id => !cleared.has(id)), cleared }
+			// Held threads count in this run's verdict and status; the marker never stores them.
+			const held = waits.held.filter(id => !cleared.has(id))
 			const threadBugs = (yield* conversation.resolveUnsettled(
 				latest,
 				second.raw
@@ -255,11 +265,12 @@ export const ReplyPublishServiceLive = Layer.effect(
 					head: input.head,
 					render: prior => {
 						const marker = toRepliedMarker(prior?.marker, update)
-						const judged = toStanding(marker, input.head, threadBugs)
+						const judging = toJudgedMarker(marker, held)
+						const judged = toStanding(judging, input.head, threadBugs)
 						const body = formatRepliedSummary(prior, {
 							...judged,
 							waiting: latest.filter(thread =>
-								marker.needsOwner?.includes(thread.id)
+								judging.needsOwner?.includes(thread.id)
 							),
 							marker,
 							links,
@@ -283,13 +294,15 @@ export const ReplyPublishServiceLive = Layer.effect(
 							pullNumber,
 							head: input.head,
 							openBugs: threadBugs,
-							before: waiting.length,
+							before: stored.length,
 							after: update.added.length,
+							held: held.length,
 						})
 					)
 				)
-			const standing = toStanding(written.marker, input.head, threadBugs)
-			const owner = written.marker.needsOwner?.length ?? 0
+			const judging = toJudgedMarker(written.marker, held)
+			const standing = toStanding(judging, input.head, threadBugs)
+			const owner = judging.needsOwner?.length ?? 0
 			const status = yield* github
 				.setStatus({
 					sha: input.head,
@@ -303,10 +316,11 @@ export const ReplyPublishServiceLive = Layer.effect(
 					Effect.as(true),
 					Effect.orElseSucceed(() => false)
 				)
+			// The label outlives the run, so held threads never set it.
 			const label = yield* conversation.syncLabel(
 				pullNumber,
-				waiting.length,
-				owner
+				stored.length,
+				written.marker.needsOwner?.length ?? 0
 			)
 			// Only a bug validation confirmed raises, as in the thread read.
 			const reopenedBugs = reopened

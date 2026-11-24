@@ -5,23 +5,23 @@ import type { GitHubApiError } from '../../../platform/github.errors'
 import { OwnedIdentities } from '../../../platform/owned-identities.context'
 import {
 	getOwnerAnswered,
-	getVerdict,
+	getOwnerWaiting,
 	isFinished,
-	isFullReview,
 	toBotThread,
 } from '../domain/bot-thread.helper'
 import { getCoverageGaps, hasFailedRuns } from '../domain/coverage-gap.helper'
-import type { SummaryMarker } from '../domain/publish-marker.schema'
 import {
 	countOpenBugs,
 	countUnthreadedBugs,
 	planPublish,
 	toSummaryPlace,
 } from '../domain/publish-plan.helper'
+import { getPublishStanding } from '../domain/publish-standing.helper'
 import { CLOSING_ACTIONS, LIMITED_ACTIONS } from '../domain/publish.constants'
 import { PublishIncompleteError } from '../domain/publish.errors'
 import type {
 	BotThread,
+	OwnerWaits,
 	PlannedThread,
 	PublishPlan,
 } from '../domain/publish.types'
@@ -30,6 +30,7 @@ import {
 	getCarriedBugs,
 	type MarkerUpdate,
 	toAnsweredMarker,
+	toJudgedMarker,
 	toNextSummaryMarker,
 } from '../domain/summary-marker.helper'
 import {
@@ -71,7 +72,8 @@ import { ThreadResolutionService } from './thread-resolution.service'
  * `PublishIncompleteError`. First it applies the re-check's proposals and the reply decisions that
  * pass its own git check (`ReplyCheckService`, `ThreadReplyService`) and settles earlier
  * unsettled answers; it keeps the owner's waiting threads in the summary marker, drops those an
- * owner cleared, and adds or removes the `needs-owner` label.
+ * owner cleared, and adds or removes the `needs-owner` label. Threads a failed whole-thread read
+ * left unknown wait for this run only: they count in its verdict but are never stored.
  */
 export class PublishService extends Context.Service<
 	PublishService,
@@ -160,19 +162,19 @@ export const PublishServiceLive = Layer.effect(
 				: []
 			const { current, identities } = yield* OwnedIdentities
 			const approval = getApproval(input.rules.config, current)
-			// A failed whole-thread read leaves the latest comments the read brought for this run.
-			const sentBefore = yield* conversation
-				.getSentToOwner(first.raw)
-				.pipe(
-					Effect.orElseSucceed(() => getOwnerAnswered(first.raw, identities))
-				)
+			// A failed whole-thread read holds every longer owner thread for this run only.
+			const waits = yield* conversation.getSentToOwner(first.raw).pipe(
+				Effect.map((sent): OwnerWaits => ({ sent, held: [] })),
+				Effect.orElseSucceed(() => getOwnerWaiting(first.raw, identities))
+			)
 			// Every summary's list, hidden ones too, and every thread the bot sent to the owner.
-			const waiting = [
+			const stored = [
 				...new Set([
 					...(yield* summaries.readWaiting(pullNumber)),
-					...sentBefore,
+					...waits.sent,
 				]),
 			]
+			const waiting = [...new Set([...stored, ...waits.held])]
 			const { replies } = input
 			const change = replies?.decisions.some(entry =>
 				LIMITED_ACTIONS.has(entry.decision.action)
@@ -245,7 +247,7 @@ export const PublishServiceLive = Layer.effect(
 			// Answers this run or one alongside it sent to the owner wait, even if the summary write failed.
 			const all = [
 				...new Set([
-					...waiting,
+					...stored,
 					...answered
 						.filter(entry => entry.decision.action === 'needs-owner')
 						.map(entry => entry.thread.id),
@@ -253,11 +255,13 @@ export const PublishServiceLive = Layer.effect(
 				]),
 			]
 			const cleared = yield* conversation.getCleared({
-				waiting: all,
+				waiting: [...all, ...waits.held],
 				resolvers: toFreshResolvers(second, answered),
 				threads: second.raw,
 				allow: input.rules.config.commands.allow,
 			})
+			// Held threads count in this run's verdict and status; the marker never stores them.
+			const held = waits.held.filter(id => !cleared.has(id))
 			/** The plan with its line threads inline, or in the summary when GitHub refused them. */
 			const toPlan = (inline: boolean): PublishPlan => ({
 				...planned,
@@ -272,20 +276,7 @@ export const PublishServiceLive = Layer.effect(
 					unthreadedBugs: countUnthreadedBugs(plan, latest),
 					waiting: { added: all.filter(id => !cleared.has(id)), cleared },
 				}) satisfies MarkerUpdate
-			const standing = (
-				marker: SummaryMarker,
-				update: MarkerUpdate,
-				checked: CheckedRun = run
-			) => {
-				const finished = isFullReview(report, marker, checked)
-				const openBugs = threadBugs + getCarriedBugs(marker, update)
-				const owner = marker.needsOwner?.length ?? 0
-				return {
-					finished,
-					openBugs,
-					verdict: getVerdict(report, openBugs, finished, owner),
-				}
-			}
+			const basis = { report, threadBugs, held }
 			const written = yield* summaries
 				.write(pullNumber, {
 					head: input.head,
@@ -301,7 +292,7 @@ export const PublishServiceLive = Layer.effect(
 						const plan = toPlan(inline)
 						const update = toUpdate(plan, checked)
 						const marker = toNextSummaryMarker(prior?.marker, update)
-						const judged = standing(marker, update, checked)
+						const judged = getPublishStanding(basis, marker, update, checked)
 						const evidence = {
 							kind: 'review',
 							verdict: judged.verdict,
@@ -340,7 +331,7 @@ export const PublishServiceLive = Layer.effect(
 							resolved,
 							answered,
 							waiting: latest.filter(thread =>
-								marker.needsOwner?.includes(thread.id)
+								toJudgedMarker(marker, held).needsOwner?.includes(thread.id)
 							),
 							tokens:
 								input.replies?.tokens ?? input.recheck?.tokens ?? report.tokens,
@@ -352,12 +343,14 @@ export const PublishServiceLive = Layer.effect(
 			const plan = toPlan(written.inline)
 			// The standing of the render the write used, which judged against the write's own head read.
 			const { finished, openBugs, verdict } =
-				written.standing ?? standing(written.marker, toUpdate(plan))
-			const owner = written.marker.needsOwner?.length ?? 0
+				written.standing ??
+				getPublishStanding(basis, written.marker, toUpdate(plan), run)
+			const owner = toJudgedMarker(written.marker, held).needsOwner?.length ?? 0
+			// The label outlives the run, so held threads never set it.
 			const label = yield* conversation.syncLabel(
 				pullNumber,
-				waiting.length,
-				owner
+				stored.length,
+				written.marker.needsOwner?.length ?? 0
 			)
 			const count = (place: PlannedThread['place']) =>
 				plan.threads.filter(thread => thread.place === place).length

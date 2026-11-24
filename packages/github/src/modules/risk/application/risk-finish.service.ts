@@ -1,8 +1,6 @@
 import {
-	getHigherLevel,
 	type RiskDescription,
 	type RiskLevel,
-	type StatusLevel,
 	toRiskDescription,
 } from '@mng-review/domain'
 import { Context, Effect, Layer, Predicate } from 'effect'
@@ -22,11 +20,12 @@ import {
 } from '../domain/grant-stop.constants'
 import { getNewestStatus } from '../domain/risk-history.helper'
 import {
+	getEditedLevelStop,
 	getMarkerEditStop,
 	toNextRiskMarker,
 	toRaisedRiskMarker,
 } from '../domain/risk-marker.helper'
-import { hasThreadRaise } from '../domain/risk-rating.helper'
+import { getHeldStop, hasThreadRaise } from '../domain/risk-rating.helper'
 import type { RiskResult, RiskRun } from '../domain/risk-run.types'
 import {
 	EDIT_LAG_RETRIES,
@@ -46,18 +45,6 @@ import { RiskReadService } from './risk-read.service'
 /** A revocation from a cleanup step: the step-1 description when the run reached it. */
 export interface RevokeInput extends LabelTarget {
 	readonly description?: RiskDescription
-}
-
-/** A stop when a held level is above the level the run would grant. */
-function getHeldStop(
-	held: StatusLevel,
-	level: RiskLevel
-): GrantStop | undefined {
-	if (getHigherLevel(held, level) === level) return undefined
-	return {
-		reason: 'publish-failed',
-		detail: `the held level ${held} is above ${level}`,
-	}
 }
 
 /**
@@ -140,10 +127,12 @@ export const RiskFinishServiceLive = Layer.effect(
 		 * else edited it. GitHub has no conditional comment update, so the comment's edit history is
 		 * read before and after the update: an edit by anyone else in between was overwritten, and
 		 * the run stays unrated; its text stays in the history, and the next full run carries what it
-		 * named, also when the update's answer was lost. A history that does not list the update yet
-		 * is read again (`EDIT_LAG_RETRY`). A person's risk label above the status does not raise it,
-		 * but the merge script refuses such a pull request. Another run's update in between is the
-		 * app's own; that run's step 5 sees its entry gone.
+		 * named, also when the update's answer was lost. A level above the run's that the history
+		 * before the update names stops it too, since GitHub can list an edit only after the run's
+		 * start read the history (`getEditedLevelStop`). A history that does not list the update
+		 * yet is read again (`EDIT_LAG_RETRY`). A person's risk label above the status does not
+		 * raise it, but the merge script refuses such a pull request. Another run's update in
+		 * between is the app's own; that run's step 5 sees its entry gone.
 		 */
 		const updateMarker = Effect.fn('RiskFinishService.updateMarker')(function* (
 			run: RiskRun,
@@ -168,6 +157,8 @@ export const RiskFinishServiceLive = Layer.effect(
 					reason: 'marker-edited',
 					detail: 'the risk comment changed while this run read it',
 				} satisfies GrantStop
+			const edited = getEditedLevelStop(before, level, app)
+			if (edited) return edited
 			const next =
 				run.tree === undefined
 					? toRaisedRiskMarker(current.marker, level)

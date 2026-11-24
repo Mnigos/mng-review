@@ -185,8 +185,11 @@ export interface CommentEdit {
 export interface CommentEdits {
 	readonly body: string
 	readonly total: number
-	/** Every page GitHub listed; a null node fails the read. */
-	readonly edits: readonly CommentEdit[]
+	/**
+	 * Every page GitHub listed; `null` for an edit GitHub listed as a null node, whose editor and
+	 * text are unknown.
+	 */
+	readonly edits: readonly (CommentEdit | null)[]
 }
 
 /** The part of a workflow run the answer read takes: when GitHub created it. */

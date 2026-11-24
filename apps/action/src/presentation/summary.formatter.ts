@@ -359,6 +359,11 @@ export function formatSummary(
 	].join('\n')
 }
 
+/** The log line for answers a run left unsettled, and whether they fail the step. */
+export function formatUnsettledLine(unsettled: number, rated: boolean): string {
+	return `mng-review: ${unsettled} answer(s) left unsettled keep waiting; ${rated ? 'the rating fails the step' : 'the risk gate is not on, so the step passes'}`
+}
+
 /** What the status sweep did, in words. */
 export function formatSweepLine(result: SweepResult): string {
 	return `status sweep: ${result.checked} pull request(s) carry the status, ${result.updated} updated, ${result.failed} failed; ${result.dismissal.dismissed} change request(s) dismissed, ${result.dismissal.failed} not dismissed`

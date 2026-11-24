@@ -1,5 +1,5 @@
 import { RISK_STATUS_CONTEXT, type RiskStatusState } from '@mng-review/domain'
-import { Context, Effect, Layer, Predicate, Schema } from 'effect'
+import { Context, Effect, Layer, Schema } from 'effect'
 import { HttpClientRequest } from 'effect/http'
 import { MAX_PAGES, PAGE_SIZE } from './github-api.constants'
 import { collect, pages, read } from './github-api.helper'
@@ -115,9 +115,9 @@ export class GitHubRiskService extends Context.Service<
 			pullNumber: number
 		) => Effect.Effect<readonly TimelineItem[], GitHubApiError>
 		/**
-		 * The comment's body and its whole edit history by its node id, every page. A missing comment
-		 * or page, an edit GitHub lists as a null node, a count that changes between pages, or more
-		 * than `COMMENT_EDIT_PAGES` pages fails.
+		 * The comment's body and its whole edit history by its node id, every page, with an edit
+		 * GitHub lists as a null node kept as `null`. A missing comment or page, a count that changes
+		 * between pages, or more than `COMMENT_EDIT_PAGES` pages fails.
 		 */
 		readonly readCommentEdits: (
 			nodeId: string
@@ -280,13 +280,10 @@ export const GitHubRiskServiceLive = Layer.effect(
 					const edits = comment?.userContentEdits
 					if (!(comment && edits))
 						return editsFailure('the comment or its edit history did not read')
-					const listed = edits.nodes.filter(Predicate.isNotNull)
-					if (listed.length < edits.nodes.length)
-						return editsFailure('GitHub listed an edit as a null node')
 					const pageRead = {
 						body: comment.body,
 						total: edits.totalCount,
-						edits: listed,
+						edits: edits.nodes,
 					} satisfies CommentEdits
 					const { hasNextPage, endCursor } = edits.pageInfo
 					if (!hasNextPage) return Effect.succeed(pageRead)

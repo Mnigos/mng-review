@@ -10,7 +10,11 @@ import {
 	toMismatchReason,
 	toOutcomeBinding,
 } from '../../application/outcome-file.helper'
-import { failsRating } from '../../application/publish-report.helper'
+import {
+	failsRating,
+	getUnsettled,
+	isRated,
+} from '../../application/publish-report.helper'
 import {
 	type PublishContext,
 	PublishRunService,
@@ -46,6 +50,7 @@ import {
 } from '../action-exit.errors'
 import {
 	formatPublishLogLine,
+	formatUnsettledLine,
 	formatPublishSummary,
 } from '../summary.formatter'
 
@@ -213,8 +218,9 @@ export const publishMissingOutcome = Effect.gen(function* () {
  * the review leg had nothing to answer, and a pull request that changed since the find job listed
  * it is left to the next tick: both post nothing and the step passes. Once the file is trusted, a
  * GitHub refusal is reported and the step passes, as before the split, unless the run rates: then
- * any failed report carries a failed rating, and the step exits 1 on it or on a grant that may
- * still stand.
+ * any failed report carries a failed rating, and the step exits 1 on it, on a grant that may
+ * still stand or on an answer left unsettled. Without the rating an unsettled answer is logged and
+ * keeps its wait, and the step passes.
  */
 export const runPublishStep = Effect.gen(function* () {
 	if (yield* publishMissingOutcome) return yield* Effect.void
@@ -238,6 +244,9 @@ export const runPublishStep = Effect.gen(function* () {
 		service.run(trusted.file, trusted.context)
 	)
 	yield* finishPublish(report, env)
+	const unsettled = getUnsettled(report)
+	if (unsettled > 0)
+		yield* Console.log(formatUnsettledLine(unsettled, isRated(report)))
 	// A failed rating fails the job, so the merge sweep's run hold sees it and the cleanup runs.
 	if (!failsRating(report)) return yield* Effect.void
 	return yield* new ActionExit({ code: FAILED_EXIT_CODE })

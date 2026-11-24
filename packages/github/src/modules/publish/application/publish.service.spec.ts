@@ -3816,7 +3816,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 				})
 		)
 		test.effect(
-			'a failed whole-thread read falls back to window hits and preserves the hidden summary list',
+			'a failed whole-thread read holds the longer threads for the run only and preserves the hidden summary list',
 			() =>
 				Effect.gen(function* () {
 					const fixture = setup()
@@ -3846,7 +3846,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 						).pipe(Effect.provide(fixture.publisher))
 					).toMatchObject({
 						verdict: 'needs owner',
-						waiting: 2,
+						waiting: 3,
 						label: 'added',
 					})
 					const written = fixture.fake.writes.findLast(

@@ -103,6 +103,21 @@ function toNextWaiting(
 }
 
 /**
+ * The marker as one run judges it: its waiting threads plus those the run holds for itself only,
+ * such as the longer threads a failed whole-thread read could not check. Never written.
+ */
+export function toJudgedMarker(
+	marker: SummaryMarker,
+	held: readonly string[]
+): SummaryMarker {
+	if (held.length === 0) return marker
+	return {
+		...marker,
+		needsOwner: [...new Set([...(marker.needsOwner ?? []), ...held])],
+	}
+}
+
+/**
  * The summary marker after a reply-only run, which reviewed nothing: the run count, head, finished
  * flag and unthreaded bugs stay; only the threads waiting for the owner change.
  */

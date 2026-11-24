@@ -79,7 +79,8 @@ export class RiskReadService extends Context.Service<
 		/**
 		 * The highest level any edit of the risk comment by someone other than the token's app named
 		 * in its whole edit history, so an edit an app write overwrote still counts; `none` without a
-		 * comment to read, `undefined` when the history could not be read.
+		 * comment to read, `undefined` when the history could not be read or the comment has no node
+		 * id to read it by.
 		 */
 		readonly readEditedLevel: (
 			marker: MarkerRead
@@ -197,7 +198,7 @@ export const RiskReadServiceLive = Layer.effect(
 				const { current } = yield* OwnedIdentities
 				if (marker.status !== 'trusted' && marker.status !== 'edited')
 					return 'none'
-				if (marker.nodeId === undefined) return 'none'
+				if (marker.nodeId === undefined) return undefined
 				return yield* risk.readCommentEdits(marker.nodeId).pipe(
 					Effect.map(edits => getEditedLevel(edits, current)),
 					Effect.orElseSucceed(() => undefined)

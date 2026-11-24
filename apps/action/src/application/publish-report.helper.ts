@@ -35,17 +35,29 @@ export function toFailed(reason: string, gate: RiskGate): PublishReport {
 	}
 }
 
+/** How many answers the run left unsettled (their thread could not be reopened after them). */
+export function getUnsettled(report: PublishReport): number {
+	return report.status === 'published' || report.status === 'replied'
+		? report.result.unsettled
+		: 0
+}
+
+/** True when the run rated: the risk gate was on, so the report carries a rating it did not refuse. */
+export function isRated(report: PublishReport): boolean {
+	const risk = 'risk' in report ? report.risk : undefined
+	return (
+		risk !== undefined && risk.status !== 'off' && risk.status !== 'refused'
+	)
+}
+
 /**
  * True when the report fails the job: a failed rating, a grant that may still stand because its
- * revocation was refused, which the cleanup step then writes again, or an answer left unsettled
- * (its thread could not be reopened after it), so the run hold applies.
+ * revocation was refused, which the cleanup step then writes again, or, while the run rates, an
+ * answer left unsettled, so the failed-run hold applies. That hold exists only for the rating, so
+ * without it an unsettled answer passes the step; its wait and marker stay either way.
  */
 export function failsRating(report: PublishReport): boolean {
-	if (
-		(report.status === 'published' || report.status === 'replied') &&
-		report.result.unsettled > 0
-	)
-		return true
+	if (getUnsettled(report) > 0 && isRated(report)) return true
 	const risk = 'risk' in report ? report.risk : undefined
 	if (risk?.status === 'failed') return true
 	return risk?.status === 'written' && risk.result.grantStands === true

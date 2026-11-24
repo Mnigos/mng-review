@@ -45,3 +45,7 @@ export const MARKER_PARTIAL_STOP = {
 	reason: 'publish-failed',
 	detail: "the risk comment's edit history did not list every edit it counts",
 } as const satisfies GrantStop
+export const MARKER_NULL_STOP = {
+	reason: 'publish-failed',
+	detail: "the risk comment's edit history lists a new edit as a null node",
+} as const satisfies GrantStop
