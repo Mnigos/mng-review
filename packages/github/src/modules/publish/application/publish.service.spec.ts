@@ -4191,3 +4191,47 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 		)
 	}
 )
+
+layer(APP_MODE_OWNED, { excludeTestServices: true })(
+	'published rating block marker',
+	test => {
+		for (const status of ['rated', 'unrated', 'absent'] as const)
+			test.effect(
+				`a ${status} block has the matching summary marker risk`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = setup(undefined, APP_IDENTITY)
+						const rating =
+							status === 'absent'
+								? undefined
+								: status === 'rated'
+									? ({
+											status: 'rated',
+											level: 'medium',
+											floors: [],
+											reasons: ['A local change.'],
+											reused: false,
+										} as const)
+									: ({
+											status: 'unrated',
+											reason: 'coverage-gap',
+											detail: 'missing range',
+											floors: [],
+										} as const)
+						yield* PublishService.use(service =>
+							service.publish({
+								...fixture.input,
+								...(rating ? { rating } : {}),
+							})
+						).pipe(Effect.provide(fixture.publisher))
+						const body = fixture.fake.reviews.at(-1)?.body ?? ''
+						expect(parseSummaryMarker(body)?.risk).toBe(
+							status === 'rated' ? 'medium' : undefined
+						)
+						if (status === 'rated') expect(body).toContain('**Risk: medium**')
+						if (status === 'unrated')
+							expect(body).toContain('**Risk: not rated**')
+					})
+			)
+	}
+)

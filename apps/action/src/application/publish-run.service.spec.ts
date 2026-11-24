@@ -13,7 +13,17 @@ import {
 	SummaryReviewService,
 	type SummaryMarker,
 } from '@mng-review/github'
-import { Effect, Layer, Redacted } from 'effect'
+import { Effect, FileSystem, Layer, Redacted } from 'effect'
+// oxlint-disable-next-line no-restricted-imports -- The brief requires shared risk boundary fixtures.
+import {
+	riskFixture,
+	RISK_RULES,
+	RISK_HEAD,
+	RISK_BASE,
+	LOW_RATING,
+} from '../../../../packages/github/src/shared/mocks/github-status-fake.helper'
+// oxlint-disable-next-line no-restricted-imports -- The brief requires shared app identity fixtures.
+import { APP_IDENTITY } from '../../../../packages/github/src/shared/mocks/publish-test.helper'
 import { parseOutcomeFile } from '../infrastructure/outcome-file.parser'
 import type {
 	OutcomeBinding,
@@ -30,6 +40,7 @@ import {
 	PublishRunServiceLive,
 	type PublishContext,
 } from './publish-run.service'
+import { RiskRunService, RiskRunServiceLive } from './risk-run.service'
 import { FORK_REASON } from './run-gate.helper'
 import type { PullRequestEvent } from './shadow-run.types'
 
@@ -99,7 +110,11 @@ function setup(
 	rulesError?: ConfigError,
 	rules: Rules = RULES,
 	prior?: SummaryMarker,
-	readPriorError?: GitHubApiError
+	readPriorError?: GitHubApiError,
+	riskLayer: Layer.Layer<RiskRunService> = RiskRunOffLayer,
+	identity = GITHUB_ACTIONS_IDENTITY,
+	replyPublish: ReplyPublishService['Service']['publish'] = () =>
+		Effect.die('a push or command run never answers alone')
 ) {
 	const readPriorSpy = vi.fn(() =>
 		readPriorError ? Effect.fail(readPriorError) : Effect.succeed(prior)
@@ -135,7 +150,7 @@ function setup(
 	const service = PublishRunServiceLive.pipe(
 		Layer.provide(
 			Layer.mergeAll(
-				RiskRunOffLayer,
+				riskLayer,
 				Layer.succeed(RulesService, { load: loadSpy }),
 				Layer.succeed(StatusReportService, {
 					report: reportSpy,
@@ -146,10 +161,7 @@ function setup(
 					readThreads: () => Effect.succeed([]),
 					publish: publishSpy,
 				}),
-				Layer.succeed(ReplyPublishService, {
-					publish: () =>
-						Effect.die('a push or command run never answers alone'),
-				}),
+				Layer.succeed(ReplyPublishService, { publish: replyPublish }),
 				Layer.succeed(SummaryReviewService, {
 					write: () => Effect.die('the run never writes the summary itself'),
 					readPrior: readPriorSpy,
@@ -165,7 +177,7 @@ function setup(
 					owner: 'example',
 					name: 'project',
 					token: Redacted.make('fixture'),
-					identity: GITHUB_ACTIONS_IDENTITY,
+					identity,
 				})
 			)
 		)
@@ -786,4 +798,426 @@ layer(Layer.empty)('PublishRunService dismissal outcomes', test => {
 					})
 				})
 		)
+})
+
+layer(Layer.empty)('PublishRunService risk integration', test => {
+	for (const failHeld of [true, false])
+		test.effect(
+			`full publish integrates the real risk run with held failure=${failHeld}`,
+			() =>
+				Effect.gen(function* () {
+					const fake = riskFixture()
+					if (failHeld)
+						fake.failures.timeline.push(
+							new GitHubApiError({ operation: 'held', reason: 'unavailable' })
+						)
+					const riskLayer = RiskRunServiceLive.pipe(
+						Layer.provide(fake.services),
+						Layer.provide(FileSystem.layerNoop({}))
+					)
+					const fixture = setup(
+						false,
+						undefined,
+						RISK_RULES,
+						undefined,
+						undefined,
+						riskLayer,
+						APP_IDENTITY
+					)
+					const context = {
+						...CONTEXT,
+						head: RISK_HEAD,
+						risk: { environment: 'review-app', defaultBranch: 'main' },
+						event: {
+							...EVENT,
+							pr: { ...EVENT.pr, author: 'author-a', target: 'main' },
+						},
+					}
+					const outcome = outcomeFile({
+						status: 'reviewed',
+						report: { ...reviewReport(), bugs: [], rating: LOW_RATING },
+					})
+					const published = yield* PublishRunService.use(service =>
+						service.run(
+							{
+								...outcome,
+								binding: {
+									...outcome.binding,
+									baseSha: RISK_BASE,
+									headSha: RISK_HEAD,
+								},
+							},
+							context
+						)
+					).pipe(Effect.provide(fixture.service))
+					expect(published).toMatchObject(
+						failHeld
+							? { status: 'failed', risk: { status: 'failed' } }
+							: {
+									status: 'published',
+									risk: {
+										status: 'written',
+										result: { state: 'success', level: 'low' },
+									},
+								}
+					)
+					if (failHeld) {
+						expect(fixture.publishSpy).not.toHaveBeenCalled()
+						expect(fixture.reportSpy).not.toHaveBeenCalled()
+						expect(fake.writes).toEqual([])
+						expect(fake.api.writes).toEqual([])
+						return
+					}
+					expect(fixture.publishSpy.mock.calls[0]?.[0].rating).toMatchObject({
+						status: 'rated',
+						level: 'low',
+					})
+					expect(fake.writes.map(write => write.state)).toEqual([
+						'error',
+						'success',
+					])
+				})
+		)
+	test.effect(
+		'the risk grant is the last GitHub write, after the normal checks and status report',
+		() =>
+			Effect.gen(function* () {
+				const fake = riskFixture()
+				const riskLayer = RiskRunServiceLive.pipe(
+					Layer.provide(fake.services),
+					Layer.provide(FileSystem.layerNoop({}))
+				)
+				const fixture = setup(
+					false,
+					undefined,
+					RISK_RULES,
+					undefined,
+					undefined,
+					riskLayer,
+					APP_IDENTITY
+				)
+				const riskWritesAtChecks: number[] = []
+				fixture.reportSpy.mockImplementation(() =>
+					Effect.sync(() => {
+						riskWritesAtChecks.push(fake.writes.length)
+						return { checks: 1, status: true }
+					})
+				)
+				const outcome = outcomeFile({
+					status: 'reviewed',
+					report: { ...reviewReport(), bugs: [], rating: LOW_RATING },
+				})
+				yield* PublishRunService.use(service =>
+					service.run(
+						{
+							...outcome,
+							binding: {
+								...outcome.binding,
+								baseSha: RISK_BASE,
+								headSha: RISK_HEAD,
+							},
+						},
+						{
+							...CONTEXT,
+							head: RISK_HEAD,
+							risk: { environment: 'review-app', defaultBranch: 'main' },
+							event: {
+								...EVENT,
+								pr: { ...EVENT.pr, author: 'author-a', target: 'main' },
+							},
+						}
+					)
+				).pipe(Effect.provide(fixture.service))
+				expect(fake.writes.map(write => write.state)).toEqual([
+					'error',
+					'success',
+				])
+				expect(riskWritesAtChecks).toEqual([1])
+			})
+	)
+})
+
+/** A rating gate that is on: the app, its environment and a pull request into the default branch. */
+const RATED_CONTEXT = {
+	...CONTEXT,
+	risk: { environment: 'review-app', defaultBranch: 'main' },
+	event: { ...EVENT, pr: { ...EVENT.pr, target: 'main' } },
+} as const satisfies PublishContext
+/** A recorded thread raise that writes nothing and a full rating that publishes unrated. */
+function riskSpyLayer() {
+	const rateThreadSpy = vi.fn<RiskRunService['Service']['rateThread']>(() =>
+		Effect.succeed({ status: 'none' } as const)
+	)
+	const spyLayer = Layer.succeed(RiskRunService, {
+		rateFull: (_gate, _input, publish) =>
+			publish(undefined).pipe(
+				Effect.map(value => ({ value, risk: { status: 'none' } as const }))
+			),
+		rateThread: rateThreadSpy,
+	})
+	return { spyLayer, rateThreadSpy }
+}
+const UNAVAILABLE = new GitHubApiError({
+	operation: 'publish',
+	reason: 'unavailable',
+	status: 503,
+})
+/** A rated context on the risk fixture's head, for the real risk run. */
+const LIVE_RATED_CONTEXT = {
+	...RATED_CONTEXT,
+	head: RISK_HEAD,
+	event: { ...EVENT, pr: { ...EVENT.pr, author: 'author-a', target: 'main' } },
+} as const satisfies PublishContext
+
+/** The real risk run over the in-memory risk boundary, with the app identity and risk rules. */
+function liveRiskSetup() {
+	const fake = riskFixture()
+	const riskLayer = RiskRunServiceLive.pipe(
+		Layer.provide(fake.services),
+		Layer.provide(FileSystem.layerNoop({}))
+	)
+	const fixture = setup(
+		false,
+		undefined,
+		RISK_RULES,
+		undefined,
+		undefined,
+		riskLayer,
+		APP_IDENTITY
+	)
+	return { fake, fixture }
+}
+
+/** A reviewed Low outcome bound to the risk fixture's base and head. */
+function liveRiskOutcome(): OutcomeFile {
+	const outcome = outcomeFile({
+		status: 'reviewed',
+		report: { ...reviewReport(), bugs: [], rating: LOW_RATING },
+	})
+	return {
+		...outcome,
+		binding: { ...outcome.binding, baseSha: RISK_BASE, headSha: RISK_HEAD },
+	}
+}
+
+layer(Layer.empty)('PublishRunService fails closed while rating', test => {
+	test.effect('a failed prior read fails the rating when the gate is on', () =>
+		Effect.gen(function* () {
+			const fixture = setup(
+				false,
+				undefined,
+				RISK_RULES,
+				undefined,
+				UNAVAILABLE,
+				riskSpyLayer().spyLayer,
+				APP_IDENTITY
+			)
+			expect(
+				yield* PublishRunService.use(service =>
+					service.run(boundOutcomeFile(), RATED_CONTEXT)
+				).pipe(Effect.provide(fixture.service))
+			).toMatchObject({ status: 'failed', risk: { status: 'failed' } })
+		})
+	)
+	test.effect(
+		'rules that do not load fail the rating when the settings rate',
+		() =>
+			Effect.gen(function* () {
+				const fixture = setup(
+					false,
+					new ConfigError({ source: '.mng/review.yml', reason: 'Invalid.' }),
+					RISK_RULES,
+					undefined,
+					undefined,
+					riskSpyLayer().spyLayer,
+					APP_IDENTITY
+				)
+				expect(
+					yield* PublishRunService.use(service =>
+						service.run(boundOutcomeFile(), RATED_CONTEXT)
+					).pipe(Effect.provide(fixture.service))
+				).toMatchObject({ status: 'failed', risk: { status: 'failed' } })
+			})
+	)
+	test.effect(
+		'a failed publish after step one writes the unfinished status, then revokes, and fails',
+		() =>
+			Effect.gen(function* () {
+				const { fake, fixture } = liveRiskSetup()
+				fixture.publishSpy.mockImplementation(() =>
+					Effect.fail(new PublishIncompleteError({ error: UNAVAILABLE }))
+				)
+				const riskWritesAtUnfinished: number[] = []
+				fixture.reportUnfinishedSpy.mockImplementation(() =>
+					Effect.sync(() => {
+						riskWritesAtUnfinished.push(fake.writes.length)
+						return true
+					})
+				)
+				expect(
+					yield* PublishRunService.use(service =>
+						service.run(liveRiskOutcome(), LIVE_RATED_CONTEXT)
+					).pipe(Effect.provide(fixture.service))
+				).toMatchObject({ status: 'failed', risk: { status: 'failed' } })
+				expect(fixture.publishSpy).toHaveBeenCalledOnce()
+				expect(riskWritesAtUnfinished).toEqual([1])
+				expect(fake.writes.map(write => write.state)).toEqual([
+					'error',
+					'error',
+				])
+				expect(fake.writes[1]?.description).toBe(fake.writes[0]?.description)
+			})
+	)
+	test.effect(
+		'a refused MNG Review status fails the rating and writes no grant',
+		() =>
+			Effect.gen(function* () {
+				const { fake, fixture } = liveRiskSetup()
+				fixture.reportSpy.mockImplementation(() =>
+					Effect.succeed({ checks: 1, status: false })
+				)
+				expect(
+					yield* PublishRunService.use(service =>
+						service.run(liveRiskOutcome(), LIVE_RATED_CONTEXT)
+					).pipe(Effect.provide(fixture.service))
+				).toMatchObject({ status: 'failed', risk: { status: 'failed' } })
+				expect(fixture.reportUnfinishedSpy).toHaveBeenCalledOnce()
+				expect(fake.writes.map(write => write.state)).toEqual([
+					'error',
+					'error',
+				])
+			})
+	)
+	test.effect(
+		'a refused MNG Review status stays best effort while the rating is off',
+		() =>
+			Effect.gen(function* () {
+				const fixture = setup()
+				fixture.reportSpy.mockImplementation(() =>
+					Effect.succeed({ checks: 1, status: false })
+				)
+				expect(
+					yield* PublishRunService.use(service =>
+						service.run(
+							outcomeFile({ status: 'reviewed', report: reviewReport() }),
+							CONTEXT
+						)
+					).pipe(Effect.provide(fixture.service))
+				).toMatchObject({
+					status: 'published',
+					checks: { checks: 1, status: false },
+				})
+				expect(fixture.reportUnfinishedSpy).not.toHaveBeenCalled()
+			})
+	)
+	test.effect(
+		'a run agent publish that fails part way writes the unfinished status before the thread raise',
+		() =>
+			Effect.gen(function* () {
+				const risk = riskSpyLayer()
+				const fixture = setup(
+					false,
+					undefined,
+					RISK_RULES,
+					undefined,
+					undefined,
+					risk.spyLayer,
+					APP_IDENTITY
+				)
+				fixture.publishSpy.mockImplementation(() =>
+					Effect.fail(new PublishIncompleteError({ error: UNAVAILABLE }))
+				)
+				yield* PublishRunService.use(service =>
+					service.run(
+						outcomeFile({ status: 'reviewed', report: reviewReport() }),
+						{ ...RATED_CONTEXT, command: { agentOnly: true } }
+					)
+				).pipe(Effect.provide(fixture.service))
+				expect(fixture.reportUnfinishedSpy).toHaveBeenCalledOnce()
+				expect(risk.rateThreadSpy).toHaveBeenCalledOnce()
+				expect(
+					fixture.reportUnfinishedSpy.mock.invocationCallOrder[0]
+				).toBeLessThan(risk.rateThreadSpy.mock.invocationCallOrder[0] ?? 0)
+			})
+	)
+	test.effect(
+		'a run agent publish that fails still runs the thread raise and fails',
+		() =>
+			Effect.gen(function* () {
+				const risk = riskSpyLayer()
+				const fixture = setup(
+					true,
+					undefined,
+					RISK_RULES,
+					undefined,
+					undefined,
+					risk.spyLayer,
+					APP_IDENTITY
+				)
+				expect(
+					yield* PublishRunService.use(service =>
+						service.run(
+							outcomeFile({ status: 'reviewed', report: reviewReport() }),
+							{ ...RATED_CONTEXT, command: { agentOnly: true } }
+						)
+					).pipe(Effect.provide(fixture.service))
+				).toMatchObject({ status: 'failed', risk: { status: 'failed' } })
+				expect(risk.rateThreadSpy).toHaveBeenCalledOnce()
+			})
+	)
+	test.effect(
+		'a converse that fails after posting raises for the threads it kept open and fails',
+		() =>
+			Effect.gen(function* () {
+				const risk = riskSpyLayer()
+				const publishSpy = vi.fn<ReplyPublishService['Service']['publish']>(
+					() => Effect.fail(UNAVAILABLE)
+				)
+				const fixture = setup(
+					false,
+					undefined,
+					RISK_RULES,
+					undefined,
+					undefined,
+					risk.spyLayer,
+					APP_IDENTITY,
+					publishSpy
+				)
+				const reply = {
+					fingerprint: 'fingerprint',
+					commentId: 1,
+					digest: 'digest',
+				} as const
+				const replied = yield* PublishRunService.use(service =>
+					service.run(
+						{
+							version: 1,
+							binding: { ...BINDING, trigger: 'converse' },
+							status: 'replied',
+							replies: {
+								decided: [
+									{
+										...reply,
+										threadId: 'closed',
+										decision: { action: 'resolved', reason: 'Fixed.' },
+									},
+									{ ...reply, threadId: 'kept', decision: { action: 'seen' } },
+								],
+								tokens: {},
+							},
+						},
+						{ ...RATED_CONTEXT, converse: true }
+					)
+				).pipe(Effect.provide(fixture.service))
+				expect(replied).toMatchObject({
+					status: 'failed',
+					risk: { status: 'failed' },
+				})
+				expect(publishSpy).toHaveBeenCalledOnce()
+				expect(risk.rateThreadSpy.mock.calls[0]?.[1]).toMatchObject({
+					answered: ['kept'],
+					defaultBranch: RATED_CONTEXT.risk.defaultBranch,
+				})
+			})
+	)
 })

@@ -6,7 +6,9 @@ import {
 	parseSummaryMarker,
 	toMarkerComment,
 } from '@mng-review/github'
-import { Effect, FileSystem } from 'effect'
+import { Effect, FileSystem, Layer } from 'effect'
+// oxlint-disable-next-line no-restricted-imports -- The brief requires the shared in-memory risk boundary.
+import { riskFixture } from '../../../../../packages/github/src/shared/mocks/github-status-fake.helper'
 // oxlint-disable-next-line no-restricted-imports -- The test brief requires shared GitHub fixtures.
 import {
 	reviewThread,
@@ -19,6 +21,7 @@ import {
 	pendingReviewThread,
 } from '../../../../../packages/github/src/shared/mocks/thread-reply-test.helper'
 import { PublishRunService } from '../../application/publish-run.service'
+import { RiskRunServiceLive } from '../../application/risk-run.service'
 import {
 	MAX_OUTCOME_BYTES,
 	type OutcomeBinding,
@@ -972,3 +975,58 @@ layer(FileSystemLayer)('publish converse', test => {
 				})
 		)
 })
+
+layer(FileSystemLayer, { excludeTestServices: true })(
+	'publish risk step-one failure',
+	test => {
+		for (const failure of ['timeline', 'statuses'] as const)
+			test.effect(
+				`a held ${failure} failure exits 1 without any GitHub write`,
+				() =>
+					Effect.gen(function* () {
+						const risk = riskFixture()
+						risk.failures[failure].push(
+							new GitHubApiError({ operation: 'held', reason: 'unavailable' })
+						)
+						const riskLayer = RiskRunServiceLive.pipe(
+							Layer.provide(risk.services),
+							Layer.provide(FileSystem.layerNoop({}))
+						)
+						const fixture = stepFixture(
+							undefined,
+							true,
+							false,
+							undefined,
+							undefined,
+							riskLayer,
+							true
+						)
+						const fs = yield* FileSystem.FileSystem
+						yield* fs.writeFileString(
+							fixture.paths.outcome,
+							JSON.stringify(fixture.file)
+						)
+						expect(
+							yield* runPublishStep.pipe(
+								Effect.provide(fixture.publishRunLayer),
+								Effect.provide(
+									fixture.envLayer({
+										MNG_REVIEW_APP_ENVIRONMENT: 'review-app',
+										MNG_REVIEW_DEFAULT_BRANCH: 'main',
+									})
+								),
+								Effect.flip
+							)
+						).toMatchObject({ _tag: 'ActionExit', code: 1 })
+						expect(risk.writes).toEqual([])
+						expect(risk.api.writes).toEqual([])
+						expect(fixture.api.writes).toEqual([])
+						expect(fixture.status.statuses).toEqual([])
+						expect(fixture.status.checks).toEqual([])
+						expect(yield* fs.readFileString(fixture.paths.summary)).toContain(
+							'stopped before step 1'
+						)
+					})
+			)
+	}
+)

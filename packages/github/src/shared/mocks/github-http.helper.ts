@@ -13,6 +13,7 @@ import type {
 } from '../../platform/github-api.schema'
 import { GitHubApiServiceLive } from '../../platform/github-api.service'
 import { GitHubReviewServiceLive } from '../../platform/github-review.service'
+import { GitHubRiskServiceLive } from '../../platform/github-risk.service'
 import { GitHubStatusServiceLive } from '../../platform/github-status.service'
 import { GitHubConfig } from '../../platform/github.config'
 
@@ -82,6 +83,7 @@ export function makeGitHubHttp(
 	)
 	return {
 		requests,
+		riskLayer: GitHubRiskServiceLive.pipe(Layer.provide(dependencies)),
 		reviewLayer: GitHubReviewServiceLive.pipe(Layer.provide(dependencies)),
 		statusLayer: GitHubStatusServiceLive.pipe(Layer.provide(dependencies)),
 		layer: GitHubApiServiceLive.pipe(Layer.provide(dependencies)),

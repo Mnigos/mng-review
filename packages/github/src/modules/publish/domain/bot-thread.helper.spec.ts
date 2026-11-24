@@ -28,6 +28,7 @@ import {
 	isFullReview,
 	isBotComment,
 	isRefused,
+	isUnsettled,
 	toBodyDigest,
 	toBotThread,
 } from './bot-thread.helper'
@@ -768,5 +769,93 @@ describe('raw owner thread discovery', () => {
 				OWNED
 			)
 		).toEqual([])
+	})
+})
+
+/** An answer the app wrote, its marker carrying `unsettled` when asked. */
+function appAnswer(
+	unsettled: boolean,
+	overrides: Partial<ThreadComment> = {}
+): ThreadComment {
+	return threadReply({
+		author: { __typename: 'Bot', login: APP_IDENTITY.login },
+		body: toMarkerComment('reply', {
+			v: MARKER_VERSION,
+			action: 'still-found',
+			commit: 'a'.repeat(40),
+			reply: 42,
+			...(unsettled ? { unsettled: true as const } : {}),
+		}),
+		...overrides,
+	})
+}
+
+/** A resolved app thread whose latest window holds `latest`, `totalCount` comments in all. */
+function resolvedWith(
+	latest: readonly ThreadComment[],
+	totalCount = latest.length + 1
+) {
+	return reviewThread(undefined, {
+		isResolved: true,
+		comments: { ...reviewThread().comments, totalCount },
+		latest: { nodes: latest },
+	})
+}
+
+describe('unsettled answers', () => {
+	test('the newest answer of the token app decides whether a thread is unsettled', () => {
+		const person = threadReply({
+			author: { __typename: 'User', login: 'writer' },
+			body: 'still broken',
+		})
+		expect(
+			toBotThread(resolvedWith([appAnswer(true), person]), APP_MODE_IDENTITIES)
+				?.unsettled
+		).toBe(true)
+		expect(
+			toBotThread(
+				resolvedWith([appAnswer(true), appAnswer(false)]),
+				APP_MODE_IDENTITIES
+			)?.unsettled
+		).toBe(false)
+		expect(
+			toBotThread(resolvedWith([person]), APP_MODE_IDENTITIES)?.unsettled
+		).toBe(false)
+	})
+	test('an unsettled answer of another owned identity or one someone else edited is ignored', () => {
+		const jobToken = appAnswer(true, {
+			author: { __typename: 'Bot', login: GITHUB_ACTIONS_IDENTITY.login },
+		})
+		const edited = appAnswer(true, {
+			editor: { __typename: 'User', login: 'writer' },
+		})
+		for (const answer of [jobToken, edited])
+			expect(
+				toBotThread(resolvedWith([answer]), APP_MODE_IDENTITIES)?.unsettled
+			).toBe(false)
+	})
+	test('a thread longer than its windows without an app answer in the latest one is left unknown', () => {
+		const person = threadReply({
+			author: { __typename: 'User', login: 'writer' },
+			body: 'later',
+		})
+		const window = Array.from({ length: RECENT_COMMENTS }, () => person)
+		expect(
+			toBotThread(
+				resolvedWith(window, RECENT_COMMENTS + 2),
+				APP_MODE_IDENTITIES
+			)?.unsettled
+		).toBeUndefined()
+		expect(
+			toBotThread(
+				resolvedWith(
+					[...window.slice(1), appAnswer(true)],
+					RECENT_COMMENTS + 2
+				),
+				APP_MODE_IDENTITIES
+			)?.unsettled
+		).toBe(true)
+		expect(isUnsettled([appAnswer(true), ...window], APP_IDENTITY)).toBeTruthy()
+		expect(isUnsettled(window, APP_IDENTITY)).toBe(false)
 	})
 })
