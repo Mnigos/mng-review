@@ -30,6 +30,7 @@ import {
 	editedOwnerReviewThread,
 	markedThreadReply,
 	ownerReviewThread,
+	unsettledBugThread,
 } from '../../../shared/mocks/thread-reply-test.helper'
 import {
 	SummaryReviewService,
@@ -2146,4 +2147,53 @@ layer(APP_MODE_OWNED)('StatusSweepService reads before dismissals', test => {
 				expect(api.reviews[0]?.state).toBe('CHANGES_REQUESTED')
 			})
 	)
+})
+
+layer(TOKEN_MODE_OWNED)('StatusSweepService unsettled bug threads', test => {
+	for (const [place, readFails] of [
+		['window', false],
+		['outside', false],
+		['outside', true],
+	] as const)
+		test.effect(
+			`a resolved bug with its unsettled answer ${place} the window is open, read fails=${readFails}`,
+			() =>
+				Effect.gen(function* () {
+					const api = githubApiFake()
+					const { thread, comments } = unsettledBugThread(place)
+					api.threads.push(thread)
+					api.threadComments.set(thread.id, [...comments])
+					if (readFails)
+						api.failures.listThreadComments.push(
+							new GitHubApiError({
+								operation: 'listThreadComments',
+								reason: 'unavailable',
+								status: 503,
+							})
+						)
+					const fake = githubStatusFake({
+						listOpenPullRequests: () =>
+							Effect.succeed([openPullRequest(1, 'head')]),
+						getStatus: () =>
+							Effect.succeed({
+								id: 1,
+								state: 'success',
+								description: 'stale',
+								context: 'MNG Review',
+								creator: { login: 'github-actions[bot]', type: 'Bot' },
+							}),
+					})
+					yield* StatusSweepService.use(service => service.sweep()).pipe(
+						Effect.provide(
+							StatusSweepServiceLive.pipe(
+								Layer.provide(Layer.merge(fake.layer, api.api))
+							)
+						)
+					)
+					expect(fake.statuses).toEqual([
+						expect.objectContaining({ sha: 'head', state: 'failure' }),
+					])
+					expect(api.writes).toEqual([])
+				})
+		)
 })

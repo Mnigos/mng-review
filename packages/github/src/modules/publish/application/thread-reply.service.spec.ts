@@ -9,6 +9,8 @@ import { githubApiFake } from '../../../shared/mocks/github-api-fake.helper'
 import { HOSTILE_TEXT } from '../../../shared/mocks/hostile-text.helper'
 import {
 	ACCEPTING_RULES,
+	APP_IDENTITY,
+	APP_MODE_OWNED,
 	botThread,
 	bug,
 	reviewThread,
@@ -29,6 +31,7 @@ import {
 	replyRules,
 } from '../../../shared/mocks/thread-reply-test.helper'
 import { parseMentionCommand } from '../../command/domain/mention-command.parser'
+import { toAnswerEntry } from '../../risk/domain/answer.helper'
 import { toBodyDigest, toBotThread } from '../domain/bot-thread.helper'
 import { parseReplyMarker } from '../domain/publish-marker.parser'
 import {
@@ -1461,6 +1464,835 @@ layer(TOKEN_MODE_OWNED)('ThreadReplyService edited root recovery', test => {
 				).toEqual(['edited'])
 				expect(fake.reads).toEqual(['listThreadComments:edited'])
 				expect(fake.writes).toEqual([])
+			})
+	)
+})
+
+layer(TOKEN_MODE_OWNED)('ThreadReplyService named replies', test => {
+	for (const naming of [false, true])
+		test.effect(`collect older edited reply with naming=${naming}`, () =>
+			Effect.gen(function* () {
+				const { fake } = setup()
+				const reply = threadReply({
+					databaseId: 42,
+					body: pendingReply().body,
+					createdAt: '2026-01-01T12:00:00Z',
+					lastEditedAt: '2026-01-03T12:00:00Z',
+					author: { __typename: 'User', login: 'contributor' },
+				})
+				fake.threadComments.set('thread', [
+					reply,
+					threadReply({ databaseId: 50, createdAt: '2026-01-02T12:00:00Z' }),
+				])
+				expect(
+					yield* ThreadReplyService.use(service =>
+						service.collect({
+							pullNumber: 17,
+							threads: [
+								pendingBotThread({ latestCommentId: 50, latestMarked: true }),
+							],
+							rotation: 0,
+							waiting: [],
+							naming,
+						})
+					).pipe(
+						Effect.provide(ThreadReplyServiceLive.pipe(Layer.provide(fake.api)))
+					)
+				).toHaveLength(naming ? 1 : 0)
+			})
+		)
+	for (const held of [undefined, 42])
+		test.effect(
+			`a resolved held reply whose id is still latest is answered only with held=${held}`,
+			() =>
+				Effect.gen(function* () {
+					const { fake } = setup()
+					const reply = threadReply({
+						databaseId: 42,
+						body: pendingReply().body,
+						createdAt: '2026-01-01T12:00:00Z',
+						author: { __typename: 'User', login: 'contributor' },
+					})
+					fake.threadComments.set('thread', [reply])
+					const answered = yield* ThreadReplyService.use(service =>
+						service.apply({
+							...replyRules(),
+							links: LINKS,
+							threads: [pendingBotThread({ resolved: true })],
+							decisions: [
+								decidedReply({
+									action: 'still-found',
+									reason: 'Confirmed by the writer.',
+								}),
+							],
+							waiting: [],
+							run: 7,
+							...(held === undefined ? {} : { held }),
+						})
+					).pipe(
+						Effect.provide(ThreadReplyServiceLive.pipe(Layer.provide(fake.api)))
+					)
+					expect(answered).toHaveLength(held === 42 ? 1 : 0)
+				})
+		)
+	for (const held of [42, 41])
+		test.effect(
+			`a resolved thread answers its newest unnamed reply only while it holds held=${held}`,
+			() =>
+				Effect.gen(function* () {
+					const { fake } = setup()
+					fake.threadComments.set(
+						'thread',
+						[42, 43].map(databaseId =>
+							threadReply({
+								databaseId,
+								body: pendingReply().body,
+								createdAt: '2026-01-01T12:00:00Z',
+								author: { __typename: 'User', login: 'contributor' },
+							})
+						)
+					)
+					const answered = yield* ThreadReplyService.use(service =>
+						service.apply({
+							...replyRules(),
+							links: LINKS,
+							threads: [
+								pendingBotThread({ resolved: true, latestCommentId: 43 }),
+							],
+							decisions: [
+								decidedReply(
+									{ action: 'still-found', reason: 'Confirmed by the writer.' },
+									{ commentId: 43 }
+								),
+							],
+							waiting: [],
+							run: 7,
+							held,
+						})
+					).pipe(
+						Effect.provide(ThreadReplyServiceLive.pipe(Layer.provide(fake.api)))
+					)
+					expect(answered).toHaveLength(held === 42 ? 1 : 0)
+				})
+		)
+	for (const unresolved of [true, false])
+		test.effect(
+			`a resolved thread is reopened before a needs-owner answer, reopened=${unresolved}`,
+			() =>
+				Effect.gen(function* () {
+					const { fake } = setup()
+					if (!unresolved) fake.failures.unresolve.push(apiError())
+					fake.threadComments.set('thread', [
+						threadReply({
+							databaseId: 42,
+							body: pendingReply().body,
+							createdAt: '2026-01-01T12:00:00Z',
+							author: { __typename: 'User', login: 'contributor' },
+						}),
+					])
+					const answered = yield* ThreadReplyService.use(service =>
+						service.apply({
+							...replyRules(),
+							links: LINKS,
+							threads: [
+								pendingBotThread({
+									resolved: true,
+									marker: { ...botThread().marker, severity: 'critical' },
+								}),
+							],
+							decisions: [
+								decidedReply({
+									action: 'needs-owner',
+									reason: 'Owner required.',
+								}),
+							],
+							waiting: [],
+							run: 7,
+							held: 42,
+						})
+					).pipe(
+						Effect.provide(ThreadReplyServiceLive.pipe(Layer.provide(fake.api)))
+					)
+					expect(answered).toHaveLength(unresolved ? 1 : 0)
+					expect(fake.writes.map(write => write.method)).toEqual(
+						unresolved
+							? ['unresolve', 'reply', 'unresolve', 'editReply']
+							: ['unresolve']
+					)
+				})
+		)
+	for (const unresolved of [true, false])
+		test.effect(
+			`a resolved thread is reopened on GitHub before a still-found answer, reopened=${unresolved}`,
+			() =>
+				Effect.gen(function* () {
+					const { fake } = setup()
+					fake.threads.splice(0, 1, {
+						...pendingReviewThread(),
+						isResolved: true,
+						resolvedBy: { login: 'contributor' },
+					})
+					if (!unresolved) fake.failures.unresolve.push(apiError())
+					fake.threadComments.set('thread', [
+						threadReply({
+							databaseId: 42,
+							body: pendingReply().body,
+							createdAt: '2026-01-01T12:00:00Z',
+							author: { __typename: 'User', login: 'contributor' },
+						}),
+					])
+					const answered = yield* ThreadReplyService.use(service =>
+						service.apply({
+							...replyRules(),
+							links: LINKS,
+							threads: [pendingBotThread({ resolved: true })],
+							decisions: [
+								decidedReply({
+									action: 'still-found',
+									reason: 'The writer confirms it.',
+								}),
+							],
+							waiting: [],
+							run: 7,
+							held: 42,
+						})
+					).pipe(
+						Effect.provide(ThreadReplyServiceLive.pipe(Layer.provide(fake.api)))
+					)
+					expect(answered).toHaveLength(unresolved ? 1 : 0)
+					expect(fake.writes.map(write => write.method)).toEqual(
+						unresolved
+							? ['unresolve', 'reply', 'unresolve', 'editReply']
+							: ['unresolve']
+					)
+					expect(fake.threads[0]?.isResolved).toBe(!unresolved)
+				})
+		)
+	test.effect(
+		'an answer names all writer replies and a second apply does not answer again',
+		() =>
+			Effect.gen(function* () {
+				const { fake } = setup()
+				const replies = [40, 42].map(databaseId =>
+					threadReply({
+						databaseId,
+						body: pendingReply().body,
+						createdAt: '2026-01-01T12:00:00Z',
+						author: { __typename: 'User', login: 'contributor' },
+					})
+				)
+				fake.threadComments.set('thread', replies)
+				const service = yield* ThreadReplyService.pipe(
+					Effect.provide(ThreadReplyServiceLive.pipe(Layer.provide(fake.api)))
+				)
+				const input = {
+					...replyRules(),
+					links: LINKS,
+					threads: [pendingBotThread()],
+					decisions: [decidedReply()],
+					waiting: [],
+					run: 7,
+				}
+				expect(yield* service.apply(input)).toHaveLength(1)
+				const write = fake.writes.find(entry => entry.method === 'reply')
+				expect(write?.method).toBe('reply')
+				if (write?.method !== 'reply') return
+				expect(
+					parseReplyMarker(write.body)?.answers?.flatMap(entry =>
+						entry.ids.map(comment => comment.id)
+					)
+				).toEqual([40, 42])
+				replies.push(
+					threadReply({
+						databaseId: 50,
+						body: write.body,
+						createdAt: '2026-01-02T12:00:00Z',
+					})
+				)
+				expect(
+					yield* service.apply({
+						...input,
+						threads: [
+							pendingBotThread({ latestCommentId: 50, latestMarked: true }),
+						],
+					})
+				).toEqual([])
+			})
+	)
+	test.effect(
+		'an older reply edited after a later reply was answered goes from collect to its answer',
+		() =>
+			Effect.gen(function* () {
+				const { fake } = setup()
+				const author = { __typename: 'User', login: 'contributor' } as const
+				const later = {
+					id: 42,
+					at: '2026-01-02T12:00:00Z',
+					body: pendingReply().body,
+				}
+				const answerTo = (
+					databaseId: number,
+					createdAt: string,
+					named: typeof later
+				) => {
+					const entry = toAnswerEntry(6, 'converse', [named])
+					return threadReply({
+						databaseId,
+						createdAt,
+						body: toMarkerComment('reply', {
+							v: MARKER_VERSION,
+							action: 'seen',
+							commit: LINKS.head,
+							reply: named.id,
+							answers: entry ? [entry] : [],
+						}),
+					})
+				}
+				fake.threadComments.set('thread', [
+					threadReply({
+						databaseId: 40,
+						body: 'edited after both answers',
+						createdAt: '2026-01-01T12:00:00Z',
+						lastEditedAt: '2026-01-05T12:00:00Z',
+						author,
+					}),
+					answerTo(41, '2026-01-01T13:00:00Z', {
+						id: 40,
+						at: '2026-01-01T12:00:00Z',
+						body: 'the first version',
+					}),
+					threadReply({
+						databaseId: later.id,
+						body: later.body,
+						createdAt: later.at,
+						author,
+					}),
+					answerTo(43, '2026-01-03T12:00:00Z', later),
+				])
+				const service = yield* ThreadReplyService.pipe(
+					Effect.provide(ThreadReplyServiceLive.pipe(Layer.provide(fake.api)))
+				)
+				const thread = pendingBotThread({
+					latestCommentId: 43,
+					latestMarked: true,
+				})
+				const collected = yield* service.collect({
+					pullNumber: 17,
+					threads: [thread],
+					rotation: 0,
+					waiting: [],
+					naming: true,
+				})
+				expect(collected.map(reply => reply.commentId)).toEqual([40])
+				const decisions = collected.map(
+					({ threadId, fingerprint, commentId, digest }) => ({
+						threadId,
+						fingerprint,
+						commentId,
+						digest,
+						decision: { action: 'seen' } as const,
+					})
+				)
+				expect(
+					yield* service.apply({
+						...replyRules(),
+						links: LINKS,
+						threads: [thread],
+						decisions,
+						waiting: [],
+						run: 7,
+					})
+				).toHaveLength(1)
+				const write = fake.writes.find(entry => entry.method === 'reply')
+				expect(write?.method).toBe('reply')
+				if (write?.method !== 'reply') return
+				expect(
+					parseReplyMarker(write.body)?.answers?.flatMap(entry =>
+						entry.ids.map(comment => comment.id)
+					)
+				).toEqual([40])
+			})
+	)
+	test.effect(
+		'collect still leaves an older reply out while a later writer reply is unanswered',
+		() =>
+			Effect.gen(function* () {
+				const { fake } = setup()
+				const author = { __typename: 'User', login: 'contributor' } as const
+				fake.threadComments.set('thread', [
+					threadReply({
+						databaseId: 40,
+						body: 'the older reply',
+						createdAt: '2026-01-01T12:00:00Z',
+						author,
+					}),
+					threadReply({
+						databaseId: 42,
+						body: pendingReply().body,
+						createdAt: '2026-01-02T12:00:00Z',
+						author,
+					}),
+				])
+				expect(
+					yield* ThreadReplyService.use(service =>
+						service.collect({
+							pullNumber: 17,
+							threads: [pendingBotThread()],
+							rotation: 0,
+							waiting: [],
+							naming: true,
+						})
+					).pipe(
+						Effect.provide(
+							ThreadReplyServiceLive.pipe(Layer.provide(fake.api))
+						),
+						Effect.map(replies => replies.map(reply => reply.commentId))
+					)
+				).toEqual([42])
+			})
+	)
+})
+
+/** The token's own answer in the fixture thread, its marker unsettled when asked. */
+function ownAnswer(unsettled: boolean, databaseId = 50) {
+	return threadReply({
+		databaseId,
+		body: toMarkerComment('reply', {
+			v: MARKER_VERSION,
+			action: 'needs-owner',
+			commit: LINKS.head,
+			reply: 42,
+			...(unsettled ? { unsettled: true as const } : {}),
+		}),
+	})
+}
+
+/** The fixture thread resolved by `contributor`, its latest window holding `latest`. */
+function resolvedThread(latest: readonly ReturnType<typeof threadReply>[]) {
+	const thread = reviewThread()
+	return {
+		...thread,
+		isResolved: true,
+		resolvedBy: { login: 'contributor' },
+		comments: { ...thread.comments, totalCount: latest.length + 1 },
+		latest: { nodes: [...latest] },
+	}
+}
+
+layer(TOKEN_MODE_OWNED)('ThreadReplyService unsettled answers', test => {
+	for (const edited of [true, false])
+		test.effect(
+			`an answer posts unsettled and the edit after its reopen settles it, edited=${edited}`,
+			() =>
+				Effect.gen(function* () {
+					const { fake } = setup()
+					if (!edited) fake.failures.editReply.push(apiError())
+					const answered = yield* ThreadReplyService.use(service =>
+						service.apply({
+							...replyRules(),
+							links: LINKS,
+							threads: [
+								pendingBotThread({
+									marker: { ...botThread().marker, severity: 'critical' },
+								}),
+							],
+							decisions: [
+								decidedReply({
+									action: 'needs-owner',
+									reason: 'Owner required.',
+								}),
+							],
+							waiting: [],
+						})
+					).pipe(
+						Effect.provide(ThreadReplyServiceLive.pipe(Layer.provide(fake.api)))
+					)
+					expect(fake.writes.map(write => write.method)).toEqual([
+						'reply',
+						'unresolve',
+						'editReply',
+					])
+					const [posted, edit] = fake.writes.filter(
+						write => write.method === 'reply' || write.method === 'editReply'
+					)
+					expect(
+						parseReplyMarker(posted && 'body' in posted ? posted.body : '')
+							?.unsettled
+					).toBe(true)
+					expect(
+						parseReplyMarker(edit && 'body' in edit ? edit.body : '')
+					).toMatchObject({ action: 'needs-owner', reply: 42 })
+					expect(
+						parseReplyMarker(edit && 'body' in edit ? edit.body : '')?.unsettled
+					).toBeUndefined()
+					expect(answered[0]?.unsettled).toBe(edited ? undefined : true)
+				})
+		)
+	test.effect('a refused reopen after the answer leaves it unsettled', () =>
+		Effect.gen(function* () {
+			const { fake } = setup()
+			fake.failures.unresolve.push(apiError())
+			const answered = yield* ThreadReplyService.use(service =>
+				service.apply({
+					...replyRules(),
+					links: LINKS,
+					threads: [
+						pendingBotThread({
+							marker: { ...botThread().marker, severity: 'critical' },
+						}),
+					],
+					decisions: [
+						decidedReply({ action: 'needs-owner', reason: 'Owner required.' }),
+					],
+					waiting: [],
+				})
+			).pipe(
+				Effect.provide(ThreadReplyServiceLive.pipe(Layer.provide(fake.api)))
+			)
+			expect(fake.writes.map(write => write.method)).toEqual([
+				'reply',
+				'unresolve',
+			])
+			expect(answered[0]?.unsettled).toBe(true)
+		})
+	)
+	for (const [label, latest, whole, cleared] of [
+		['a settled answer', [ownAnswer(false)], undefined, true],
+		['an unsettled answer', [ownAnswer(true)], undefined, false],
+		[
+			'an unsettled answer only the whole thread shows',
+			Array.from({ length: RECENT_COMMENTS }, () =>
+				threadReply({
+					author: { __typename: 'User', login: 'contributor' },
+					body: 'later',
+				})
+			),
+			[ownAnswer(true)],
+			false,
+		],
+	] as const)
+		test.effect(`an owner resolution over ${label} clears=${cleared}`, () =>
+			Effect.gen(function* () {
+				const { fake } = setup()
+				fake.command.role = 'admin'
+				const thread = {
+					...resolvedThread(latest),
+					comments: {
+						...resolvedThread(latest).comments,
+						totalCount: latest.length + 1 + (whole ? 1 : 0),
+					},
+				}
+				if (whole) fake.threadComments.set('thread', [...whole, ...latest])
+				expect(
+					yield* ThreadReplyService.use(service =>
+						service.getCleared({
+							waiting: ['thread'],
+							resolvers: toResolvers([thread]),
+							threads: [thread],
+							allow: [],
+						})
+					).pipe(
+						Effect.provide(ThreadReplyServiceLive.pipe(Layer.provide(fake.api)))
+					)
+				).toEqual(new Set(cleared ? ['thread'] : []))
+			})
+		)
+	test.effect('a failed whole-thread read clears nothing', () =>
+		Effect.gen(function* () {
+			const { fake } = setup()
+			fake.command.role = 'admin'
+			fake.failures.listThreadComments.push(apiError())
+			const thread = {
+				...resolvedThread([]),
+				comments: { ...resolvedThread([]).comments, totalCount: 2 },
+			}
+			expect(
+				yield* ThreadReplyService.use(service =>
+					service.getCleared({
+						waiting: ['thread'],
+						resolvers: toResolvers([thread]),
+						threads: [thread],
+						allow: [],
+					})
+				).pipe(
+					Effect.provide(ThreadReplyServiceLive.pipe(Layer.provide(fake.api)))
+				)
+			).toEqual(new Set())
+		})
+	)
+	for (const [label, failure, left] of [
+		['settles', undefined, []],
+		['keeps a refused reopen', 'unresolve', ['thread']],
+		['keeps a refused edit', 'editReply', ['thread']],
+	] as const)
+		test.effect(`settle ${label}`, () =>
+			Effect.gen(function* () {
+				const fake = githubApiFake()
+				fake.threads.push(resolvedThread([ownAnswer(true)]))
+				if (failure) fake.failures[failure].push(apiError())
+				expect(
+					yield* ThreadReplyService.use(service =>
+						service.settle(fake.threads, [])
+					).pipe(
+						Effect.provide(ThreadReplyServiceLive.pipe(Layer.provide(fake.api)))
+					)
+				).toEqual(new Set(left))
+				expect(fake.writes.map(write => write.method)).toEqual(
+					failure === 'unresolve' ? ['unresolve'] : ['unresolve', 'editReply']
+				)
+				const [thread] = fake.threads
+				expect(
+					parseReplyMarker(thread?.latest?.nodes.at(-1)?.body ?? '')?.unsettled
+				).toBe(failure === undefined ? undefined : true)
+			})
+		)
+	test.effect(
+		'settle leaves a settled thread and a previous identity alone',
+		() =>
+			Effect.gen(function* () {
+				const fake = githubApiFake()
+				fake.threads.push(
+					resolvedThread([ownAnswer(true), ownAnswer(false, 51)]),
+					{
+						...resolvedThread([
+							{
+								...ownAnswer(true),
+								author: { __typename: 'Bot', login: 'other-app' },
+							},
+						]),
+						id: 'other',
+					}
+				)
+				expect(
+					yield* ThreadReplyService.use(service =>
+						service.settle(fake.threads, [])
+					).pipe(
+						Effect.provide(ThreadReplyServiceLive.pipe(Layer.provide(fake.api)))
+					)
+				).toEqual(new Set())
+				expect(fake.writes).toEqual([])
+			})
+	)
+})
+
+layer(TOKEN_MODE_OWNED)('ThreadReplyService settle after this run', test => {
+	test.effect(
+		'settle leaves a thread this run answered, which its answer decided',
+		() =>
+			Effect.gen(function* () {
+				const fake = githubApiFake()
+				fake.threads.push(resolvedThread([ownAnswer(true)]))
+				expect(
+					yield* ThreadReplyService.use(service =>
+						service.settle(fake.threads, [
+							{
+								thread: botThread({ resolved: true }),
+								decision: { action: 'resolved', reason: 'Fixed.' },
+								commentId: 42,
+							},
+						])
+					).pipe(
+						Effect.provide(ThreadReplyServiceLive.pipe(Layer.provide(fake.api)))
+					)
+				).toEqual(new Set())
+				expect(fake.writes).toEqual([])
+			})
+	)
+})
+
+/** The fixture thread, started by the job token, resolved after an unsettled answer by `author`. */
+function switchedThread(author: string) {
+	return resolvedThread([
+		{ ...ownAnswer(true), author: { __typename: 'Bot', login: author } },
+	])
+}
+
+layer(APP_MODE_OWNED)('ThreadReplyService settle after an app switch', test => {
+	test.effect(
+		"settles the current app's answer in a thread another owned identity started",
+		() =>
+			Effect.gen(function* () {
+				const fake = githubApiFake(APP_IDENTITY)
+				fake.threads.push(switchedThread(APP_IDENTITY.login))
+				expect(
+					yield* ThreadReplyService.use(service =>
+						service.settle(fake.threads, [])
+					).pipe(
+						Effect.provide(ThreadReplyServiceLive.pipe(Layer.provide(fake.api)))
+					)
+				).toEqual(new Set())
+				expect(fake.writes.map(write => write.method)).toEqual([
+					'unresolve',
+					'editReply',
+				])
+			})
+	)
+	test.effect("leaves another owned identity's own unsettled answer", () =>
+		Effect.gen(function* () {
+			const fake = githubApiFake(APP_IDENTITY)
+			fake.threads.push(switchedThread(GITHUB_ACTIONS_IDENTITY.login))
+			yield* ThreadReplyService.use(service =>
+				service.settle(fake.threads, [])
+			).pipe(
+				Effect.provide(ThreadReplyServiceLive.pipe(Layer.provide(fake.api)))
+			)
+			expect(fake.writes).toEqual([])
+		})
+	)
+})
+
+layer(TOKEN_MODE_OWNED)('ThreadReplyService named reply checks', test => {
+	test.effect(
+		'an older reply that became the latest is answered only while its author can write',
+		() =>
+			Effect.gen(function* () {
+				const { fake } = setup()
+				fake.command.role = 'read'
+				// The writer's reply 43 the snapshot showed latest is gone; reader 42 is left.
+				fake.threadComments.set('thread', [
+					threadReply({
+						databaseId: 42,
+						body: pendingReply().body,
+						createdAt: '2026-01-01T12:00:00Z',
+						author: { __typename: 'User', login: 'reader' },
+					}),
+				])
+				expect(
+					yield* ThreadReplyService.use(service =>
+						service.apply({
+							...replyRules(),
+							links: LINKS,
+							threads: [
+								pendingBotThread({
+									latestCommentId: 43,
+									latestAuthor: { type: 'User', login: 'contributor' },
+								}),
+							],
+							decisions: [decidedReply()],
+							waiting: [],
+							run: 7,
+						})
+					).pipe(
+						Effect.provide(ThreadReplyServiceLive.pipe(Layer.provide(fake.api)))
+					)
+				).toEqual([])
+				expect(fake.writes).toEqual([])
+			})
+	)
+	test.effect(
+		'an older writer reply is collected when a reader wrote the latest one',
+		() =>
+			Effect.gen(function* () {
+				const fake = githubApiFake()
+				const thread = pendingReviewThread()
+				fake.threads.push(thread)
+				const roleSpy = vi.fn((login: string) =>
+					login === 'reader' ? 'read' : 'write'
+				)
+				fake.threadComments.set('thread', [
+					...thread.comments.nodes,
+					threadReply({
+						databaseId: 42,
+						body: pendingReply().body,
+						createdAt: '2026-01-01T12:00:00Z',
+						author: { __typename: 'User', login: 'contributor' },
+					}),
+					threadReply({
+						databaseId: 43,
+						body: 'me too',
+						createdAt: '2026-01-01T12:05:00Z',
+						author: { __typename: 'User', login: 'reader' },
+					}),
+				])
+				const api = Layer.effect(
+					GitHubApiService,
+					GitHubApiService.pipe(
+						Effect.map(service => ({
+							...service,
+							getCollaboratorRole: (login: string) =>
+								Effect.succeed({
+									role_name: roleSpy(login),
+									permission: roleSpy(login),
+								}),
+						}))
+					)
+				).pipe(Layer.provide(fake.api))
+				const collected = yield* ThreadReplyService.use(service =>
+					service.collect({
+						pullNumber: 17,
+						threads: [
+							pendingBotThread({
+								latestCommentId: 43,
+								latestAuthor: { type: 'User', login: 'reader' },
+								latestDigest: toBodyDigest('me too'),
+							}),
+						],
+						rotation: 0,
+						waiting: [],
+						naming: true,
+					})
+				).pipe(Effect.provide(ThreadReplyServiceLive.pipe(Layer.provide(api))))
+				expect(collected.map(reply => reply.commentId)).toEqual([42])
+			})
+	)
+	test.effect(
+		'collection records the versions it saw and the answer names only those',
+		() =>
+			Effect.gen(function* () {
+				const { fake } = setup()
+				const older = threadReply({
+					databaseId: 41,
+					body: 'also this',
+					createdAt: '2026-01-01T11:00:00Z',
+					author: { __typename: 'User', login: 'contributor' },
+				})
+				const latest = threadReply({
+					databaseId: 42,
+					body: pendingReply().body,
+					createdAt: '2026-01-01T12:00:00Z',
+					author: { __typename: 'User', login: 'contributor' },
+				})
+				fake.threadComments.set('thread', [older, latest])
+				const service = yield* ThreadReplyService.pipe(
+					Effect.provide(ThreadReplyServiceLive.pipe(Layer.provide(fake.api)))
+				)
+				const [collected] = yield* service.collect({
+					pullNumber: 17,
+					threads: [pendingBotThread()],
+					rotation: 0,
+					waiting: [],
+					naming: true,
+				})
+				expect(collected?.named?.map(entry => entry.id)).toEqual([41, 42])
+				// A writer edits the older reply while the review runs.
+				fake.threadComments.set('thread', [
+					{
+						...older,
+						body: 'a new failure',
+						lastEditedAt: '2026-01-01T12:30:00Z',
+					},
+					latest,
+				])
+				expect(
+					yield* service.apply({
+						...replyRules(),
+						links: LINKS,
+						threads: [pendingBotThread()],
+						decisions: [
+							decidedReply(undefined, { named: collected?.named ?? [] }),
+						],
+						waiting: [],
+						run: 7,
+					})
+				).toHaveLength(1)
+				const write = fake.writes.find(entry => entry.method === 'reply')
+				expect(write?.method).toBe('reply')
+				if (write?.method !== 'reply') return
+				expect(
+					parseReplyMarker(write.body)?.answers?.flatMap(entry =>
+						entry.ids.map(comment => comment.id)
+					)
+				).toEqual([42])
 			})
 	)
 })

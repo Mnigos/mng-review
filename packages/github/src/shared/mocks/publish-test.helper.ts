@@ -1,4 +1,5 @@
 import {
+	type AnswerEntry,
 	type KeptFinding,
 	toFinding,
 	DEFAULT_PRESET,
@@ -273,3 +274,25 @@ export const COVERED_REVIEW = {
 	approval: 'allowed',
 	authored: false,
 } as const satisfies ReviewEvidence
+
+/**
+ * `count` `review` answer entries naming one comment each, runs and comment ids counting up from
+ * `first`; `width` pads each run id to that many digits, the size of a real one.
+ */
+export function reviewAnswers(
+	count: number,
+	first = 1,
+	width = 1
+): AnswerEntry[] {
+	return Array.from({ length: count }, (_, index) => ({
+		run: Number(String(first + index).padStart(width, '9')),
+		kind: 'review',
+		ids: [
+			{
+				id: Number(String(first + index).padStart(width, '9')),
+				at: '2026-01-01T12:00:00Z',
+				digest: 'a'.repeat(16),
+			},
+		],
+	}))
+}

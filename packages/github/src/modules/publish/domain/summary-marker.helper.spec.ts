@@ -1,10 +1,16 @@
-import { SUMMARY_MARKER } from '../../../shared/mocks/publish-test.helper'
+import {
+	reviewAnswers,
+	SUMMARY_MARKER,
+} from '../../../shared/mocks/publish-test.helper'
+import { toMarkerComment } from '../presentation/thread-comment.formatter'
+import { parseSummaryMarker } from './publish-marker.parser'
 import type { SummaryMarker } from './publish-marker.schema'
-import { MARKER_VERSION } from './publish.constants'
+import { MARKER_VERSION, MAX_ANSWER_ENTRIES } from './publish.constants'
 import {
 	getCarriedBugs,
 	type MarkerUpdate,
 	toNextSummaryMarker,
+	toAnsweredMarker,
 	toRepliedMarker,
 } from './summary-marker.helper'
 
@@ -519,5 +525,82 @@ describe('toRepliedMarker', () => {
 		expect(
 			toRepliedMarker(undefined, { added: ['new'], cleared: new Set() })
 		).toEqual({ v: MARKER_VERSION, runs: 0, needsOwner: ['new'] })
+	})
+})
+
+/** A `review` answer entry of `run` naming comment `id`. */
+function reviewEntry(run: number, id: number) {
+	return {
+		run,
+		kind: 'review',
+		ids: [{ id, at: '2026-01-01T12:00:00Z', digest: 'a'.repeat(16) }],
+	} as const
+}
+
+describe('summary command answers', () => {
+	test('a full rating review carries command answers and its risk level', () => {
+		const answers = [
+			{
+				run: 7,
+				kind: 'review',
+				ids: [{ id: 42, at: '2026-01-01T12:00:00Z', digest: 'a'.repeat(16) }],
+			},
+		] as const
+		expect(
+			toAnsweredMarker(
+				{ v: 1, runs: 1 },
+				{
+					answers,
+					rating: {
+						status: 'rated',
+						level: 'low',
+						floors: [],
+						reasons: [],
+						reused: false,
+					},
+				}
+			)
+		).toMatchObject({ risk: 'low', answers })
+	})
+	test('an edited summary keeps the command answers it already carried', () => {
+		expect(
+			toAnsweredMarker(
+				{ v: 1, runs: 2, answers: [reviewEntry(6, 41)] },
+				{ answers: [reviewEntry(7, 42)] }
+			).answers
+		).toEqual([reviewEntry(6, 41), reviewEntry(7, 42)])
+	})
+	test('a 21st answer keeps the summary marker readable', () => {
+		const marker = toAnsweredMarker(
+			{ v: 1, runs: 21, answers: reviewAnswers(20) },
+			{ answers: reviewAnswers(1, 21) }
+		)
+		expect(
+			parseSummaryMarker(toMarkerComment('summary', marker))?.answers
+		).toEqual(reviewAnswers(21))
+	})
+	test('a marker reads at the answer cap and not past it', () => {
+		const marker = { v: 1, runs: 1, answers: reviewAnswers(MAX_ANSWER_ENTRIES) }
+		expect(
+			parseSummaryMarker(toMarkerComment('summary', marker))?.answers
+		).toHaveLength(MAX_ANSWER_ENTRIES)
+		expect(
+			parseSummaryMarker(
+				toMarkerComment('summary', {
+					...marker,
+					answers: reviewAnswers(MAX_ANSWER_ENTRIES + 1),
+				})
+			)
+		).toBeUndefined()
+	})
+	test('answers at the cap with real-sized ids leave the summary text 15,000 characters of a GitHub body', () => {
+		const answers = reviewAnswers(MAX_ANSWER_ENTRIES, 1, 12).map(entry => ({
+			...entry,
+			kind: 'run' as const,
+			agent: 'a'.repeat(32),
+		}))
+		expect(
+			toMarkerComment('summary', { v: 1, runs: 1, answers }).length
+		).toBeLessThanOrEqual(65_536 - 15_000)
 	})
 })

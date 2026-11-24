@@ -14,6 +14,7 @@ import {
 	appSummary,
 	SUMMARY_MARKER,
 	reviewThread,
+	threadReply,
 } from '../../../shared/mocks/publish-test.helper'
 import {
 	pendingReviewThread,
@@ -412,3 +413,45 @@ layer(TOKEN_MODE_OWNED)(
 		)
 	}
 )
+
+layer(TOKEN_MODE_OWNED)('ReplyFindService named holds', test => {
+	for (const resolved of [false, true])
+		test.effect(
+			`the converse reaches an unnamed older reply in a resolved=${resolved} thread`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup([openPullRequest(17, 'a'.repeat(40))])
+					const thread = pendingReviewThread({
+						isResolved: resolved,
+						latest: {
+							nodes: [
+								markedThreadReply('disputed', {
+									databaseId: 50,
+									createdAt: '2026-01-02T12:00:00Z',
+								}),
+							],
+						},
+					})
+					fixture.fake.threadSnapshots.splice(0, 1, [thread])
+					fixture.fake.threadComments.set(thread.id, [
+						threadReply({
+							databaseId: 42,
+							body: 'confirmed',
+							createdAt: '2026-01-01T12:00:00Z',
+							author: { __typename: 'User', login: 'contributor' },
+						}),
+						...(thread.latest?.nodes ?? []),
+					])
+					expect(
+						(yield* ReplyFindService.use(service =>
+							service.readPending({
+								pullNumber: 17,
+								rotation: 0,
+								naming: true,
+								...(resolved ? { held: 42 } : {}),
+							})
+						).pipe(Effect.provide(fixture.service))).replies
+					).toMatchObject([{ commentId: 42, body: 'confirmed' }])
+				})
+		)
+})

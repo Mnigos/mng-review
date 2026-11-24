@@ -665,6 +665,28 @@ describe('countUnthreadedBugs', () => {
 })
 
 describe('countOpenBugs', () => {
+	for (const [resolved, unsettled, open] of [
+		[false, false, 1],
+		[true, false, 0],
+		[true, true, 1],
+		[true, undefined, 1],
+	] as const)
+		test(`a bug thread resolved=${resolved} unsettled=${unsettled} counts ${open}`, () => {
+			const plan = {
+				threads: [],
+				repeated: [],
+				dismissed: [],
+				summaryNits: [],
+			} as const
+			const { unsettled: _unknown, ...unknown } = botThread({ resolved })
+			expect(
+				countOpenBugs(plan, [
+					unsettled === undefined
+						? unknown
+						: botThread({ resolved, unsettled }),
+				])
+			).toBe(open)
+		})
 	for (const kind of THREAD_KINDS)
 		for (const place of [
 			'line',

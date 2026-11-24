@@ -1,4 +1,5 @@
 import { layer } from '@effect/vitest'
+import type { AnswerEntry } from '@mng-review/domain'
 import { Effect, Layer } from 'effect'
 import {
 	GITHUB_ACTIONS_IDENTITY,
@@ -20,6 +21,7 @@ import {
 	APP_MODE_OWNED,
 	appSummary,
 	COVERED_REVIEW,
+	reviewAnswers,
 	SUMMARY_MARKER,
 	summaryReview,
 	TOKEN_MODE_OWNED,
@@ -30,6 +32,7 @@ import {
 } from '../../status/application/status-sweep.service'
 import { toCommitStatus } from '../../status/domain/status.helper'
 import { parseSummaryMarker } from '../domain/publish-marker.parser'
+import { MAX_ANSWER_ENTRIES } from '../domain/publish.constants'
 import { toMarkerComment } from '../presentation/thread-comment.formatter'
 import {
 	SummaryReviewService,
@@ -59,6 +62,19 @@ function draft(overrides: Partial<SummaryDraft> = {}): SummaryDraft {
 			}
 		},
 		...overrides,
+	}
+}
+
+/** A draft whose summary marker carries `answers`. */
+function answered(answers: readonly AnswerEntry[]): SummaryDraft {
+	const base = draft()
+	return {
+		...base,
+		render: (prior, inline, moved) => {
+			const rendered = base.render(prior, inline, moved)
+			const marker = { ...rendered.marker, answers }
+			return { ...rendered, marker, body: toMarkerComment('summary', marker) }
+		},
 	}
 }
 
@@ -218,6 +234,34 @@ layer(TOKEN_MODE_OWNED)('SummaryReviewService', test => {
 				expect(fixture.fake.writes.map(write => write.method)).toEqual([
 					'updateReview',
 				])
+			})
+	)
+	test.effect('a render at the answer cap writes its summary', () =>
+		Effect.gen(function* () {
+			const fixture = setup()
+			const answers = reviewAnswers(MAX_ANSWER_ENTRIES)
+			const written = yield* SummaryReviewService.use(service =>
+				service.write(17, answered(answers))
+			).pipe(Effect.provide(fixture.layer))
+			expect(parseSummaryMarker(written.body)?.answers).toEqual(answers)
+			expect(fixture.fake.writes.map(write => write.method)).toEqual(['review'])
+		})
+	)
+	test.effect(
+		'a render past the answer cap fails closed and writes nothing',
+		() =>
+			Effect.gen(function* () {
+				const fixture = setup()
+				fixture.fake.reviews.push(summaryReview())
+				expect(
+					yield* SummaryReviewService.use(service =>
+						service.write(17, answered(reviewAnswers(MAX_ANSWER_ENTRIES + 1)))
+					).pipe(Effect.provide(fixture.layer), Effect.flip)
+				).toMatchObject({
+					_tag: 'SummaryMarkerError',
+					answers: MAX_ANSWER_ENTRIES + 1,
+				})
+				expect(fixture.fake.writes).toEqual([])
 			})
 	)
 	test.effect(

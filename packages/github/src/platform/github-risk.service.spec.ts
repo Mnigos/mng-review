@@ -51,6 +51,23 @@ function editsPage(
 }
 
 layer(Layer.empty)('GitHubRiskService HTTP boundary', test => {
+	test.effect('reads a workflow run creation time', () =>
+		Effect.gen(function* () {
+			const fake = makeGitHubHttp(() =>
+				Effect.succeed(
+					Response.json({ id: 7, created_at: '2026-01-01T12:00:00Z' })
+				)
+			)
+			expect(
+				yield* GitHubRiskService.use(service => service.getRunCreated(7)).pipe(
+					Effect.provide(fake.riskLayer)
+				)
+			).toBe('2026-01-01T12:00:00Z')
+			expect(fake.requests.map(request => request.url)).toEqual([
+				`${REPO_URL}/actions/runs/7`,
+			])
+		})
+	)
 	test.effect(
 		'reads all status pages without dropping other numbers or creators at the transport boundary',
 		() =>
@@ -407,4 +424,35 @@ layer(Layer.empty)('GitHubRiskService HTTP boundary', test => {
 					})
 				})
 		)
+})
+
+layer(Layer.empty)('GitHubRiskService timeline comments', test => {
+	test.effect('preserves timeline comment ids for the head cap', () =>
+		Effect.gen(function* () {
+			const http = makeGitHubHttp(() =>
+				Effect.succeed(
+					Response.json({
+						data: {
+							repository: {
+								pullRequest: {
+									timelineItems: {
+										pageInfo: { hasNextPage: false, endCursor: null },
+										nodes: [{ __typename: 'IssueComment', databaseId: 42 }],
+									},
+								},
+							},
+						},
+					})
+				)
+			)
+			expect(
+				yield* GitHubRiskService.use(service => service.listTimeline(17)).pipe(
+					Effect.provide(http.riskLayer)
+				)
+			).toEqual([{ __typename: 'IssueComment', databaseId: 42 }])
+			expect(JSON.stringify(getGitHubRequestBody(http.requests[0]))).toContain(
+				'... on IssueComment { databaseId }'
+			)
+		})
+	)
 })

@@ -108,6 +108,20 @@ describe('outcome file helpers', () => {
 		})
 		expect(report.planReport.plan.files).not.toHaveLength(0)
 	})
+	test('records when the review started in whole seconds, as GitHub writes times', () => {
+		expect(
+			toOutcomeFile(
+				{
+					status: 'reviewed',
+					event: EVENT,
+					rules: RULES,
+					report: boundReviewReport(),
+				},
+				undefined,
+				{ ...BINDING_ENV, startedAt: Date.UTC(2026, 0, 1, 12, 30, 0, 999) }
+			)?.startedAt
+		).toBe('2026-01-01T12:30:00Z')
+	})
 	test('turns recheck threads into proposals with only id, fingerprint and reason', () => {
 		const recheck = recheckProposals()
 		const file = toOutcomeFile(

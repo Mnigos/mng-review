@@ -1,6 +1,14 @@
 import { layer } from '@effect/vitest'
 import { DEFAULT_RISK_LABELS, parseRiskDescription } from '@mng-review/domain'
-import { GitHubApiError } from '@mng-review/github'
+import {
+	GitHubApiError,
+	AnswerReadService,
+	OwnedIdentities,
+	toBotIdentity,
+	RiskStartService,
+	RiskFinishService,
+	toAnswerEntry,
+} from '@mng-review/github'
 import { ConfigProvider, Effect, FileSystem, Layer } from 'effect'
 // oxlint-disable-next-line no-restricted-imports -- The test brief requires the shared in-memory risk fixture.
 import {
@@ -11,6 +19,7 @@ import {
 } from '../../../../packages/github/src/shared/mocks/github-status-fake.helper'
 // oxlint-disable-next-line no-restricted-imports -- The test brief requires shared identity and thread fixtures.
 import { APP_MODE_OWNED } from '../../../../packages/github/src/shared/mocks/publish-test.helper'
+import { FileSystemLayer } from '../shared/mocks/git-test.helper'
 import { RiskRunService, RiskRunServiceLive } from './risk-run.service'
 
 /** Records runner output in memory while forbidding all unconfigured file access. */
@@ -193,5 +202,109 @@ layer(
 			expect(fake.api.writes).toEqual([])
 			expect(fake.output).toEqual([])
 		})
+	)
+})
+
+layer(
+	Layer.merge(
+		FileSystemLayer,
+		Layer.succeed(OwnedIdentities, {
+			current: toBotIdentity('mng-review'),
+			identities: [toBotIdentity('mng-review')],
+		})
+	)
+)('RiskRunService command answers', test => {
+	for (const status of ['on', 'off', 'refused'] as const)
+		test.effect(
+			`${status} gate names commands only when the app can rate`,
+			() =>
+				Effect.gen(function* () {
+					const entry = toAnswerEntry(7, 'review', [
+						{ id: 42, at: '2026-01-01T12:00:00Z', body: 'command' },
+					])
+					const getCommandEntrySpy = vi.fn(() => Effect.succeed(entry))
+					const dependencies = Layer.mergeAll(
+						Layer.succeed(AnswerReadService, {
+							getCommandEntry: getCommandEntrySpy,
+							readCommands: () => Effect.die('unused'),
+							getCountedReviews: () => Effect.die('unused'),
+						}),
+						Layer.succeed(RiskStartService, {
+							startFull: () => Effect.die('unused'),
+							startThread: () => Effect.die('unused'),
+						}),
+						Layer.succeed(RiskFinishService, {
+							finish: () => Effect.die('unused'),
+							revoke: () => Effect.die('unused'),
+							revokeHead: () => Effect.die('unused'),
+						})
+					)
+					const request = {
+						pullNumber: 17,
+						run: 7,
+						kind: 'review',
+						before: '2026-01-01T12:30:00Z',
+					} as const
+					expect(
+						yield* RiskRunService.use(service =>
+							service.readAnswers(
+								status === 'refused'
+									? { status, reason: 'job token' }
+									: { status },
+								request
+							)
+						).pipe(
+							Effect.provide(
+								RiskRunServiceLive.pipe(Layer.provide(dependencies))
+							)
+						)
+					).toEqual(status === 'on' ? [entry] : [])
+					expect(getCommandEntrySpy).toHaveBeenCalledTimes(
+						status === 'on' ? 1 : 0
+					)
+				})
+		)
+	test.effect(
+		'a failed answer read names nothing so the commands remain held',
+		() =>
+			Effect.gen(function* () {
+				const dependencies = Layer.mergeAll(
+					Layer.succeed(AnswerReadService, {
+						getCommandEntry: () =>
+							Effect.fail(
+								new GitHubApiError({
+									operation: 'answers',
+									reason: 'unavailable',
+								})
+							),
+						readCommands: () => Effect.die('unused'),
+						getCountedReviews: () => Effect.die('unused'),
+					}),
+					Layer.succeed(RiskStartService, {
+						startFull: () => Effect.die('unused'),
+						startThread: () => Effect.die('unused'),
+					}),
+					Layer.succeed(RiskFinishService, {
+						finish: () => Effect.die('unused'),
+						revoke: () => Effect.die('unused'),
+						revokeHead: () => Effect.die('unused'),
+					})
+				)
+				expect(
+					yield* RiskRunService.use(service =>
+						service.readAnswers(
+							{ status: 'on' },
+							{
+								pullNumber: 17,
+								run: 7,
+								kind: 'review',
+								before: '2026-01-01T12:30:00Z',
+							}
+						)
+					).pipe(
+						Effect.provide(RiskRunServiceLive.pipe(Layer.provide(dependencies)))
+					)
+				).toEqual([])
+			})
 	)
 })

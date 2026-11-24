@@ -5,6 +5,8 @@ import {
 	GITHUB_ACTIONS_IDENTITY,
 	GitHubApiError,
 	GitHubConfig,
+	toBotIdentity,
+	toAnswerEntry,
 	MARKER_VERSION,
 	PublishIncompleteError,
 	PublishService,
@@ -797,6 +799,107 @@ layer(Layer.empty)('PublishRunService dismissal outcomes', test => {
 						posted: created,
 						dismissal: { dismissed: 1, failed: 2 },
 					})
+				})
+		)
+})
+
+layer(Layer.empty)('PublishRunService risk answer wiring', test => {
+	for (const kind of [
+		'push',
+		'review command',
+		'agent command',
+		'unknown start',
+	] as const)
+		test.effect(
+			`${kind} reads the commands it answers and passes the entry to publishing`,
+			() =>
+				Effect.gen(function* () {
+					const entry = toAnswerEntry(
+						7,
+						kind === 'agent command' ? 'run' : 'review',
+						[{ id: 42, at: '2026-01-01T12:00:00Z', body: 'command' }],
+						kind === 'agent command' ? 'auth' : undefined
+					)
+					const readAnswersSpy = vi.fn<
+						RiskRunService['Service']['readAnswers']
+					>(() => Effect.succeed(entry ? [entry] : []))
+					const riskLayer = Layer.succeed(RiskRunService, {
+						readAnswers: readAnswersSpy,
+						rateFull: (_gate, _input, publish) =>
+							publish(undefined).pipe(
+								Effect.map(value => ({
+									value,
+									risk: { status: 'none' } as const,
+								}))
+							),
+						rateThread: () => Effect.succeed({ status: 'none' } as const),
+					})
+					const rules = {
+						...RULES,
+						config: {
+							...RULES.config,
+							risk: { ...RULES.config.risk, enabled: true },
+						},
+					}
+					const fixture = setup(
+						false,
+						undefined,
+						rules,
+						undefined,
+						undefined,
+						riskLayer,
+						toBotIdentity('mng-review')
+					)
+					const context = {
+						...CONTEXT,
+						run: 7,
+						risk: { environment: 'review', defaultBranch: 'main' },
+						event: {
+							...EVENT,
+							pr: {
+								...EVENT.pr,
+								target: 'main',
+								...(kind === 'push' ? {} : { trigger: 'manual' as const }),
+							},
+						},
+						...(kind === 'agent command'
+							? { command: { agentOnly: true, agent: 'auth' } }
+							: kind === 'review command'
+								? { command: { agentOnly: false } }
+								: {}),
+					}
+					yield* PublishRunService.use(service =>
+						service.run(
+							outcomeFile({
+								status: 'reviewed',
+								report: reviewReport(),
+								...(kind === 'unknown start'
+									? {}
+									: { startedAt: '2026-01-01T12:30:00Z' }),
+							}),
+							context
+						)
+					).pipe(Effect.provide(fixture.service))
+					if (kind === 'unknown start') {
+						expect(readAnswersSpy).not.toHaveBeenCalled()
+						expect(fixture.publishSpy.mock.calls[0]?.[0]).not.toHaveProperty(
+							'answers'
+						)
+						return
+					}
+					expect(readAnswersSpy).toHaveBeenCalledWith(
+						{ status: 'on' },
+						{
+							pullNumber: 17,
+							run: 7,
+							kind: kind === 'agent command' ? 'run' : 'review',
+							before: '2026-01-01T12:30:00Z',
+							...(kind === 'agent command' ? { agent: 'auth' } : {}),
+						}
+					)
+					expect(fixture.publishSpy).toHaveBeenCalledWith(
+						expect.objectContaining({ answers: [entry], run: 7 })
+					)
 				})
 		)
 })

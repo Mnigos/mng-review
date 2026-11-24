@@ -165,3 +165,55 @@ export function editedOwnerReviewThread(
 		...overrides,
 	}
 }
+
+/** Where a thread holds the token app's newest answer: in its latest window or further back. */
+export type AnswerPlace = 'window' | 'outside'
+
+/** A resolved bug thread, and all its comments, whose newest token answer is unsettled. */
+export interface UnsettledBugThread {
+	readonly thread: ReviewThread
+	/** The whole thread as the per-thread read gives it. */
+	readonly comments: readonly ThreadComment[]
+}
+
+/**
+ * A resolved bug thread whose newest answer of the token's app (`still-found`, posted unsettled
+ * after its reopen failed) sits in its latest window, or, `outside`, only in the whole thread
+ * behind more people's comments than the window holds.
+ */
+export function unsettledBugThread(place: AnswerPlace): UnsettledBugThread {
+	const thread = reviewThread()
+	const answer = threadReply({
+		databaseId: 7,
+		body: toMarkerComment('reply', {
+			v: MARKER_VERSION,
+			action: 'still-found',
+			commit: LINKS.head,
+			reply: 6,
+			unsettled: true,
+		}),
+	})
+	const later = Array.from({ length: RECENT_COMMENTS }, (_, index) =>
+		threadReply({
+			databaseId: 100 + index,
+			author: { __typename: 'User', login: 'contributor' },
+			body: 'later',
+		})
+	)
+	const latest = place === 'window' ? [answer] : later
+	const comments = [
+		...thread.comments.nodes,
+		...(place === 'window' ? [] : [answer]),
+		...latest,
+	]
+	return {
+		thread: {
+			...thread,
+			isResolved: true,
+			resolvedBy: { login: 'contributor' },
+			comments: { ...thread.comments, totalCount: comments.length },
+			latest: { nodes: latest },
+		},
+		comments,
+	}
+}

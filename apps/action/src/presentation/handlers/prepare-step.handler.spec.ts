@@ -1,9 +1,11 @@
 import { layer } from '@effect/vitest'
+import { RulesService } from '@mng-review/engine'
 import {
 	GitHubApiError,
 	GitHubConfig,
 	GitHubReadConfigLive,
 	MAX_REPLY_THREADS,
+	ReplyFindService,
 } from '@mng-review/github'
 import { ConfigProvider, Effect, FileSystem, Layer } from 'effect'
 // oxlint-disable-next-line no-restricted-imports -- The test brief requires these existing unexported GitHub fixtures.
@@ -481,6 +483,68 @@ layer(FileSystemLayer)('prepare converse target', test => {
 					expect(prepared.replies?.[0]?.threadId).toBe(
 						`thread-${rotation === 0 ? 0 : MAX_REPLY_THREADS}`
 					)
+				})
+		)
+})
+
+layer(FileSystemLayer)('prepare named converse', test => {
+	for (const scenario of ['app', 'off', 'job token'] as const)
+		test.effect(
+			`${scenario} forwards naming and the dispatched reply only for an enabled app rating`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = stepFixture([], scenario !== 'job token')
+					const pr = fixture.api.command.pullRequest
+					fixture.api.command.pullRequest = {
+						...pr,
+						base: { ...pr.base, sha: fixture.base },
+						head: { ...pr.head, sha: fixture.head },
+					}
+					const rules = {
+						...fixture.rules,
+						config: {
+							...fixture.rules.config,
+							risk: {
+								...fixture.rules.config.risk,
+								enabled: scenario !== 'off',
+							},
+						},
+					}
+					const readPendingSpy = vi.fn(() =>
+						Effect.succeed({ threads: [], replies: [pendingReply()] })
+					)
+					yield* runPrepareStep.pipe(
+						Effect.provideService(ReplyFindService, {
+							readPending: readPendingSpy,
+							find: () => Effect.die('unused'),
+						}),
+						Effect.provide(
+							PrepareRunServiceLive.pipe(
+								Layer.provide(
+									Layer.succeed(RulesService, {
+										load: () => Effect.succeed(rules),
+									})
+								)
+							)
+						),
+						Effect.provide(fixture.publisherLayer),
+						Effect.provide(
+							fixture.envLayer({
+								GITHUB_EVENT_NAME: 'workflow_dispatch',
+								MNG_REVIEW_TRIGGER: 'converse',
+								MNG_REVIEW_TARGET_PR: '17',
+								MNG_REVIEW_TARGET_BASE: fixture.base,
+								MNG_REVIEW_TARGET_HEAD: fixture.head,
+								MNG_REVIEW_HELD_REPLY: '42',
+							})
+						)
+					)
+					expect(readPendingSpy).toHaveBeenCalledOnce()
+					expect(readPendingSpy).toHaveBeenCalledWith({
+						pullNumber: 17,
+						rotation: 0,
+						...(scenario === 'app' ? { naming: true, held: 42 } : {}),
+					})
 				})
 		)
 })

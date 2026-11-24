@@ -1,6 +1,7 @@
 import { getCodeBlocks } from '../shared/mocks/hostile-text.helper'
 import {
 	escapeMarkdown,
+	escapeCommentOpen,
 	toCodeBlock,
 	toShort,
 	toCodeSpan,
@@ -299,5 +300,17 @@ describe('toShort', () => {
 		['a', 0, '…'],
 	] as const)('cuts %j at %i only when needed', (text, max, expected) => {
 		expect(toShort(text, max)).toBe(expected)
+	})
+})
+
+describe('escapeCommentOpen', () => {
+	test('breaks every opener while retaining the model text', () => {
+		const escaped = escapeCommentOpen(
+			'before <!-- marker --> after <!-- unclosed'
+		)
+		expect(escaped).not.toContain('<!--')
+		expect(escaped.replaceAll('\u2060', '')).toBe(
+			'before <!-- marker --> after <!-- unclosed'
+		)
 	})
 })

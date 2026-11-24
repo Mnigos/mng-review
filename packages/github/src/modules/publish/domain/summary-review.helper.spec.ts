@@ -403,3 +403,33 @@ test('a foreign change request does not make the bot preserve a blocking state',
 		)
 	).toBe(false)
 })
+
+describe('summary answers from another identity', () => {
+	const answers = [
+		{
+			run: 7,
+			kind: 'review',
+			ids: [{ id: 42, at: '2026-01-01T12:00:00Z', digest: 'a'.repeat(16) }],
+		},
+	] as const
+	test.each([
+		[APP_IDENTITY.login, answers],
+		[GITHUB_ACTIONS_IDENTITY.login, undefined],
+	])(
+		'a summary by %s carries the answers only when the current app wrote it',
+		(login, expected) => {
+			const marker = { ...SUMMARY_MARKER, answers }
+			const author = { __typename: 'Bot', login }
+			expect(
+				summaries([summaryReview(marker, { author })])[0]?.marker.answers
+			).toEqual(expected)
+			expect(
+				toSummaryComments(
+					[appSummary(marker, { author })],
+					APP_MODE_IDENTITIES,
+					APP_IDENTITY
+				)[0]?.marker.answers
+			).toEqual(expected)
+		}
+	)
+})
