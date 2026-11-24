@@ -23,6 +23,11 @@ export const CHARS_PER_TOKEN = 3
 export const MIN_FIRST_DIFF_CHARS = 8000
 /** Tokens a deep-review unit needs to be worth its own conversation. */
 export const MIN_UNIT_TOKENS = 40_000
+/**
+ * Most diff characters a deep-review unit is planned to hold: a larger change splits into more
+ * units, so each can read the files its first message cuts within its tool calls.
+ */
+export const MAX_UNIT_DIFF_CHARS = 60_000
 /** Most tokens one validation plans to spend. */
 export const MAX_VALIDATION_TOKENS = 60_000
 /**
@@ -34,13 +39,29 @@ export const MIN_VALIDATION_TOKENS = 30_000
 export const MAX_LISTED_UNITS = 4
 /** Longest name of a changed function or block in a file line. */
 export const MAX_LISTED_UNIT_CHARS = 60
-/**
- * Share of a main reviewer conversation's tokens held back for its continuation turn, so it can
- * read the changed files it left unread even when the budget forced its first answer.
- */
-export const CONTINUATION_RESERVE_SHARE = 0.25
 /** Changed files a continuation turn names; it counts the rest. */
-export const MAX_LISTED_UNTOUCHED = 20
+export const MAX_CONTINUATION_PATHS = 20
+/**
+ * Why a changed file counts as unread: no tool output showed any of it (`untouched`), only part of
+ * its diff or of its added lines came back (`partial`), or `read_file` showed the head of a file
+ * whose diff deletes lines, which only the diff shows (`deletions`).
+ */
+export const UNREAD_REASONS = ['untouched', 'partial', 'deletions'] as const
+/**
+ * Fewest turns a main reviewer conversation is sized to read its cut files in before it answers;
+ * a file whose diff comes in more parts needs a turn per part, and more parts than
+ * `READ_CALLS_PER_TURN` a turn need more turns.
+ */
+export const MIN_READING_TURNS = 3
+/** Parallel reads a sized conversation is planned to make in one turn. */
+export const READ_CALLS_PER_TURN = 6
+/** Output tokens a sized conversation plans for each of its calls, reasoning included. */
+export const TURN_OUTPUT_TOKENS = 1000
+/**
+ * Tokens a sized conversation plans for reading beyond its changed files: callers, types and
+ * tests around the change.
+ */
+export const CONTEXT_READ_TOKENS = 10_000
 /** Invalid answers the loop corrects before it gives up on an agent. */
 export const MAX_CORRECTIONS = 2
 /** Longest tool output in characters, the cut marker included. */

@@ -283,7 +283,7 @@ export const SummaryReviewServiceLive = Layer.effect(
 
 		/**
 		 * The pull request's head, whether the token's identity opened it and whether it is open and
-		 * not a draft, read again; a failed read leaves the head unknown.
+		 * not a draft, read again; a failed read leaves the head and the state unknown, never a draft.
 		 */
 		const readHead = Effect.fn('SummaryReviewService.readHead')(function* (
 			pullNumber: number
@@ -295,7 +295,7 @@ export const SummaryReviewServiceLive = Layer.effect(
 			return {
 				current: pr?.head.sha,
 				authored: pr?.user?.login.toLowerCase() === current.restLogin,
-				open: pr?.state === 'open' && pr.draft !== true,
+				...(pr ? { open: pr.state === 'open' && pr.draft !== true } : {}),
 			} satisfies LatestHead
 		})
 

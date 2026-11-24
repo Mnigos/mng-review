@@ -1,17 +1,14 @@
 import { parseFileDiffs } from '@mng-review/domain'
-import { getReadPaths } from '../domain/loop-message.helper'
+import type { UnreadFile } from '../domain/review-report.types'
 import type { LoopCoverage, ToolOutput } from './agent-loop.types'
 import type { DiffPart } from './repo-tools.types'
-import { DiffTool } from './repo.toolkit'
 
 /**
- * What an agent received: the paths any successful tool call touched (`getReadPaths`), which decide
- * a continuation turn, and for the files it read whole the characters of each file's diff section,
- * by path and section size, and the head lines `read_file` showed whole, by path. Both come from
- * the tools' arguments and git's output, never from the model.
+ * What an agent received: the characters of each file's diff section that diff outputs showed, by
+ * path and section size, and the head lines `read_file` showed, by path. Both come from the tools'
+ * arguments and git's output, never from the model.
  */
 export interface ReadCoverage {
-	readonly touched: ReadonlySet<string>
 	readonly parts: ReadonlyMap<string, readonly DiffPart[]>
 	readonly lines: ReadonlyMap<string, ReadonlySet<number>>
 }
@@ -75,23 +72,18 @@ export function getChangedLines(
 	)
 }
 
-/** `reads` with what one tool output the agent received showed: its paths, diff parts and head lines. */
+/** `reads` with what one tool output the agent received showed: its diff parts and head lines. */
 export function addToolReads(
 	reads: ReadCoverage,
 	result: ToolOutput
 ): ReadCoverage {
-	const { call } = result
-	const touched = new Set([
-		...reads.touched,
-		...getReadPaths(call, result.output, call.name === DiffTool.name),
-	])
 	const parts = new Map(reads.parts)
 	for (const part of result.diff ?? []) {
 		const key = `${part.path}\0${part.size}`
 		parts.set(key, [...(parts.get(key) ?? []), part])
 	}
 	const { shown } = result
-	if (shown?.ref !== 'head') return { touched, parts, lines: reads.lines }
+	if (shown?.ref !== 'head') return { parts, lines: reads.lines }
 	const { start, end } = shown.lines
 	const lines = new Map(reads.lines)
 	lines.set(
@@ -101,34 +93,42 @@ export function addToolReads(
 			...Array.from({ length: end - start + 1 }, (_, index) => start + index),
 		])
 	)
-	return { touched, parts, lines }
+	return { parts, lines }
 }
 
 /** Nothing received yet. */
 export const NO_READS = {
-	touched: new Set(),
 	parts: new Map(),
 	lines: new Map(),
 } as const satisfies ReadCoverage
 
-/** The coverage paths the agent did not receive whole (`isWholeRead`), which the report counts. */
-export function getUnreadPaths(
+/** Why a file not received whole counts as unread (`UNREAD_REASONS`). */
+function toUnreadReason(
 	reads: ReadCoverage,
-	coverage: Pick<LoopCoverage<unknown>, 'paths' | 'changed'>
-): string[] {
-	return coverage.paths.filter(
-		path => !isWholeRead(reads, path, coverage.changed.get(path))
+	path: string,
+	changed: readonly number[] | undefined
+): UnreadFile['reason'] {
+	const diffSeen = [...reads.parts.values()].some(
+		parts => parts[0]?.path === path
 	)
+	if (diffSeen) return 'partial'
+	if (!reads.lines.has(path)) return 'untouched'
+	return (changed ?? []).length === 0 ? 'deletions' : 'partial'
 }
 
-/** The coverage paths no tool call touched and the answer does not name, which get a continuation. */
-export function getUntouchedPaths<TValue>(
+/**
+ * The coverage paths the agent did not receive whole (`isWholeRead`), each with its reason. They
+ * decide the continuation turn, and the report counts and names them.
+ */
+export function getUnreadFiles(
 	reads: ReadCoverage,
-	coverage: LoopCoverage<TValue>,
-	value: TValue
-): string[] {
-	const read = new Set([...reads.touched, ...coverage.answered(value)])
-	return coverage.paths.filter(path => !read.has(path))
+	coverage: Pick<LoopCoverage<unknown>, 'paths' | 'changed'>
+): UnreadFile[] {
+	return coverage.paths.flatMap(path => {
+		const changed = coverage.changed.get(path)
+		if (isWholeRead(reads, path, changed)) return []
+		return [{ path, reason: toUnreadReason(reads, path, changed) }]
+	})
 }
 
 /** True when the parts of one section together hold every character of it. */

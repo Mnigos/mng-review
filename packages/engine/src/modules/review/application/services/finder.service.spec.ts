@@ -37,7 +37,6 @@ import {
 import { getFirstDiffChars } from '../../domain/finder-budget.helper'
 import { makeTokenPool } from '../../domain/loop-budget.helper'
 import {
-	CONTINUATION_RESERVE_SHARE,
 	MIN_UNIT_TOKENS,
 	FINDER_TOKEN_SHARE,
 	MAX_FULL_DIFF_CHARS,
@@ -1033,7 +1032,10 @@ layer(Layer.empty)('finder coverage jobs', test => {
 								toolCalls: 0,
 								spentTokens: 5,
 								unspentTokens: 0,
-								unread: left.shift() ?? [],
+								unread: (left.shift() ?? []).map(path => ({
+									path,
+									reason: 'untouched' as const,
+								})),
 							}))
 						)
 					const output = yield* FinderService.use(finder =>
@@ -1270,7 +1272,7 @@ layer(Layer.empty)('failed continuation token accounting', test => {
 layer(Layer.empty)('coverage allowance wiring', test => {
 	for (const fanOut of [false, true])
 		test.effect(
-			`${fanOut ? 'deep units' : 'whole-change reviewer'} reserve tokens only for files whose diff was not wholly shown`,
+			`${fanOut ? 'deep units' : 'whole-change reviewer'} spend their whole share and cover only files whose diff was not wholly shown`,
 			() =>
 				Effect.gen(function* () {
 					const requests: Omit<LoopRequest<unknown>, 'parse' | 'coverage'>[] =
@@ -1343,9 +1345,7 @@ layer(Layer.empty)('coverage allowance wiring', test => {
 					expect(requests[0]?.budget).toEqual({
 						runTokens: 200_000,
 						conversationTokens: jobTokens,
-						reserve: Math.floor(jobTokens * CONTINUATION_RESERVE_SHARE),
 					})
-					if (fanOut) expect(requests[1]?.budget).not.toHaveProperty('reserve')
 				})
 		)
 })

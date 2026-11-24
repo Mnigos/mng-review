@@ -27,7 +27,6 @@ import { toRaterMessage } from '../domain/rater-message.helper'
 import {
 	MAX_RISK_DETAIL_CHARS,
 	NO_RATER_MODEL,
-	RATER_RESERVE_SHARE,
 	RATER_SOURCE,
 	RATER_TOKENS,
 } from '../domain/rater.constants'
@@ -136,7 +135,6 @@ export const RaterServiceLive = Layer.effect(
 					budget: {
 						runTokens: job.tokensPerRun,
 						conversationTokens: RATER_TOKENS,
-						reserve: Math.floor(RATER_TOKENS * RATER_RESERVE_SHARE),
 					},
 					source: RATER_SOURCE,
 					coverage: job.coverage,
@@ -179,7 +177,6 @@ export const RaterServiceLive = Layer.effect(
 			const coverage: LoopCoverage<RiskAnswer> = {
 				paths: getRaterCoverage(change.files, whole),
 				changed: getChangedLines(diff),
-				answered: () => [],
 				merge: mergeRiskAnswers,
 			}
 			const { result, model } = yield* ask(getRaterChoices(rules.config), {
@@ -197,7 +194,7 @@ export const RaterServiceLive = Layer.effect(
 			if (unread.length > 0)
 				return unrated(binding, {
 					reason: 'coverage-gap',
-					detail: toUnreadDetail(unread),
+					detail: toUnreadDetail(unread.map(file => file.path)),
 				})
 			const { value } = result
 			return {

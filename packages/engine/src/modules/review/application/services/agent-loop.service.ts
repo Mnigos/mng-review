@@ -3,7 +3,6 @@ import { Chat, type Prompt, type Response } from 'effect/ai'
 import { TokenLedger } from '../../../../platform/llm/token-ledger.service'
 import { fenceData } from '../../../../utils/fence.util'
 import {
-	type CallStop,
 	makeConversationBudget,
 	toAffordableOutputs,
 	toBudgetMark,
@@ -25,8 +24,7 @@ import type { LoopRequest, LoopResult, LoopState } from '../agent-loop.types'
 import { AGENT_TOOLKIT } from '../agent.toolkit'
 import {
 	addToolReads,
-	getUnreadPaths,
-	getUntouchedPaths,
+	getUnreadFiles,
 	NO_READS,
 	type ReadCoverage,
 } from '../read-coverage.helper'
@@ -98,22 +96,21 @@ export const AgentLoopServiceLive = Layer.effect(
 				Effect.gen(function* () {
 					if (!coverage) return answer
 					const reads = yield* Ref.get(received)
-					return { ...answer, unread: getUnreadPaths(reads, coverage) }
+					return { ...answer, unread: getUnreadFiles(reads, coverage) }
 				})
 
-			/** Files of `coverage` the answer leaves untouched, when tool calls and time allow a turn. */
-			const getUnread = (state: LoopState, value: TValue) =>
+			/** Files of `coverage` not received whole, when tool calls and time allow a turn. */
+			const getUnread = (state: LoopState) =>
 				Effect.gen(function* () {
 					if (!coverage || (yield* Ref.get(kept))) return []
 					if (state.toolCalls >= limits.maxToolCalls) return []
 					if ((yield* Clock.currentTimeMillis) >= deadline) return []
-					return getUntouchedPaths(yield* Ref.get(received), coverage, value)
+					return getUnreadFiles(yield* Ref.get(received), coverage)
 				})
 
 			/**
 			 * A parsed answer: merged into the kept one after a continuation, else held for one
-			 * continuation turn when it leaves files of `coverage` unread. The turn opens the
-			 * budget's reserve, so an answer the token budget forced still gets it.
+			 * continuation turn when it leaves files of `coverage` unread (`isWholeRead`).
 			 */
 			const accept = (
 				answer: LoopResult<TValue>,
@@ -129,9 +126,8 @@ export const AgentLoopServiceLive = Layer.effect(
 							continued: true,
 							...(first.budgetStopped ? { budgetStopped: true } : {}),
 						})
-					const unread = yield* getUnread(next, answer.value)
+					const unread = yield* getUnread(next)
 					if (unread.length === 0) return yield* withUnread(answer)
-					yield* tokens.openReserve
 					const text = toContinuationMessage(unread, finish)
 					const continued = {
 						...next,
@@ -172,15 +168,15 @@ export const AgentLoopServiceLive = Layer.effect(
 			/**
 			 * Runs the turn's repository calls; the first calls up to the allowance run, the rest get an
 			 * error. Each call ends at the wall deadline with an error result, so a stalled git process
-			 * cannot hold the agent and the grace period stays free for the finish answer.
+			 * cannot hold the agent and the grace period stays free for the finish answer. Tokens refuse
+			 * no call here: `toAffordableOutputs` refuses only the outputs that do not fit.
 			 */
 			const resolveCalls = (
 				calls: readonly ToolCall[],
 				state: LoopState,
-				stop: CallStop,
+				wrapUp: boolean,
 				now: number
 			) => {
-				const { wrapUp } = stop
 				const allowed = calls.filter(
 					call => !wrapUp && request.tools.some(name => name === call.name)
 				)
@@ -194,8 +190,6 @@ export const AgentLoopServiceLive = Layer.effect(
 					call => {
 						if (!allowed.includes(call))
 							return refuse(`error: tool ${call.name} is not available`)
-						if (stop.outOfTokens)
-							return refuse(`error: token budget reached; call ${finish} now`)
 						if (!runnable.has(call.id))
 							return refuse(`error: tool call limit reached; call ${finish}`)
 						return repoTools.run(request.scope, call.name, call.params).pipe(
@@ -335,15 +329,16 @@ export const AgentLoopServiceLive = Layer.effect(
 					const results = yield* resolveCalls(
 						calls,
 						state,
-						{
-							wrapUp: wrapUp || expired,
-							outOfTokens: yield* isSpent(sent),
-						},
+						wrapUp || expired,
 						yield* Clock.currentTimeMillis
 					)
 					const refusal = `error: token budget reached; call ${finish} now`
+					const outputs = results.map(({ output }) =>
+						fenceData(TOOL_OUTPUT_LABEL, output)
+					)
+					yield* tokens.claimFor(sent, toEstimatedTokens(outputs.join('')))
 					const fenced = toAffordableOutputs(
-						results.map(({ output }) => fenceData(TOOL_OUTPUT_LABEL, output)),
+						outputs,
 						yield* tokens.current,
 						sent,
 						refusal

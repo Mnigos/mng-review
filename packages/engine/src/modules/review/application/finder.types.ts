@@ -50,4 +50,9 @@ export interface FinderJob {
 	readonly coverage?: readonly string[]
 	/** The head lines each file of the job's diff changes (`getChangedLines`). */
 	readonly changed?: ReadonlyMap<string, readonly number[]>
+	/**
+	 * Tokens the conversation needs to read every file of `coverage` and answer (`getReadingNeed`);
+	 * the review grants what `tokens` lacks of it, within the run's cap. Unset without coverage.
+	 */
+	readonly need?: number
 }

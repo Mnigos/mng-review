@@ -6,10 +6,11 @@ import type { BotThread } from './publish.types'
  * Why a run is no evidence that the whole change was reviewed with nothing left to say, with the
  * counts the review body names: no main reviewer ran (a quick review skips it); changed files were
  * skipped as too large or binary; the token budget stopped a finder or a validation; a run failed
- * or never reported; the main reviewer answered with changed files unread (a file its first message
- * cut short counts until it reads it); findings that never block remain; or publishing could not
- * read the bot's threads again before the write (`threads`), so a thread reopened meanwhile could
- * go unseen.
+ * or never reported; reading every changed file needs more than `limits.tokens_per_run` lets the
+ * finders plan (`cap`, in tokens); the main reviewer answered with changed files unread (a file its
+ * first message cut short counts until it reads it); findings that never block remain; or
+ * publishing could not read the bot's threads again before the write (`threads`), so a thread
+ * reopened meanwhile could go unseen.
  */
 export type CoverageGap =
 	| { readonly kind: 'no-reviewer' }
@@ -21,6 +22,7 @@ export type CoverageGap =
 	  }
 	| { readonly kind: 'budget' }
 	| { readonly kind: 'failed'; readonly failed: number; readonly runs: number }
+	| { readonly kind: 'cap'; readonly cap: number }
 	| { readonly kind: 'unread'; readonly unread: number }
 	| { readonly kind: 'findings'; readonly findings: number }
 	| { readonly kind: 'threads' }
@@ -80,10 +82,10 @@ function isBudgetStopped(report: ReviewReport): boolean {
 /**
  * Every reason the run does not cover the change, in this order, or none when it does: the main
  * reviewer ran, no changed file was skipped as too large or binary (`skip.paths` is the rules'
- * choice), the budget stopped nothing, every planned run reported `ok` with no failed unit, the
- * main reviewer read every changed file, the run kept no finding (unverified, below the floor or
- * nit), and `threads`, publishing's own read of the bot's threads, holds no open unverified or nit
- * thread. The findings count adds the open threads no kept finding matches by one of its
+ * choice), the budget stopped nothing, every planned run reported `ok` with no failed unit, reading
+ * every changed file fit within the run's cap, the main reviewer read every changed file, the run
+ * kept no finding (unverified, below the floor or nit), and `threads`, publishing's own read of the
+ * bot's threads, holds no open unverified or nit thread. The findings count adds the open threads no kept finding matches by one of its
  * fingerprints (`getFingerprints`); the unread count is the most any one run left unread. A report
  * with an endpoint error counts as failed.
  */
@@ -105,8 +107,8 @@ export function getCoverageGaps(
 	).length
 	const binary = skips.size - tooLarge
 	const failed = countFailedRuns(report)
-	// Reports carry counts, not paths, and runs of one name may leave the same file unread, so the
-	// most any one run left unread is the count of distinct files that is known.
+	// Runs of one name may leave the same file unread, so the count is the most any one run left
+	// unread; the review body names the distinct files (`unreadFiles`).
 	const unread = Math.max(0, ...report.agents.map(agent => agent.unread ?? 0))
 	const kept = [...report.bugs, ...report.nits]
 	const fingerprints = new Set(
@@ -134,6 +136,7 @@ export function getCoverageGaps(
 			failed: Math.max(1, failed),
 			runs: plan.runs.length,
 		},
+		report.capped !== undefined && { kind: 'cap', cap: report.capped.cap },
 		unread > 0 && { kind: 'unread', unread },
 		findings > 0 && { kind: 'findings', findings },
 	]

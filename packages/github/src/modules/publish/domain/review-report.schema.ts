@@ -22,6 +22,7 @@ import {
 	MAX_RISK_REASONS,
 	MAX_RISK_REF_CHARS,
 	MAX_RISK_REFS,
+	UNREAD_REASONS,
 } from '@mng-review/engine'
 import { Effect, Schema } from 'effect'
 
@@ -252,6 +253,15 @@ const agentRunReportSchema = Schema.Struct({
 	units: Schema.optional(countSchema),
 	continued: Schema.optional(countSchema),
 	unread: Schema.optional(countSchema),
+	unreadFiles: Schema.optional(
+		boundedList(
+			Schema.Struct({
+				path: textSchema,
+				reason: Schema.Literals(UNREAD_REASONS),
+			}),
+			MAX_REPORT_FILES
+		)
+	),
 	unfinished: Schema.optional(textListSchema),
 	wallMillis: countSchema,
 })
@@ -339,6 +349,9 @@ export const reviewReportSchema = Schema.Struct({
 	endpointError: Schema.optional(textSchema),
 	incomplete: Schema.optional(
 		Schema.Struct({ reason: textSchema, unfinished: textListSchema })
+	),
+	capped: Schema.optional(
+		Schema.Struct({ needed: countSchema, cap: countSchema })
 	),
 	blocking: Schema.Boolean,
 	rating: Schema.optional(riskRatingSchema),

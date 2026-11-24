@@ -49,8 +49,6 @@ function toShownNote(file: BudgetedFile | undefined): string {
 	return `, diff cut to ${file.shownChars} of ${file.chars} characters`
 }
 
-/** A file list without a diff: no file is marked cut and none names its changed code. */
-
 /** What a file list knows about the diff: what each file kept, and the code each file changes. */
 interface FileListDiff {
 	readonly budgeted: readonly BudgetedFile[]
@@ -90,7 +88,7 @@ function toMissingNote(budgeted: readonly BudgetedFile[]): string[] {
 	const missing = budgeted.filter(file => file.shown !== 'full').length
 	if (missing === 0) return []
 	return [
-		`The diff above cuts or leaves out ${missing} of ${budgeted.length} files; the file list marks them. They are part of the change. Read each one you have not seen with \`diff(path)\` (a long diff comes in parts; pass the offset its end names) or \`read_file\` before you answer; do not assume they are fine.`,
+		`The diff above cuts or leaves out ${missing} of ${budgeted.length} files; the file list marks them. They are part of the change. Read each one with \`diff(path)\` before you answer, every part of it: a long diff comes in parts, and the end of each part names the offset of the next. Call several in one turn. A file counts as read only once its whole diff came back; \`read_file\` never shows the lines a change deletes. Do not assume they are fine.`,
 	]
 }
 

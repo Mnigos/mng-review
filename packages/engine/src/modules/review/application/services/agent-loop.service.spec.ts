@@ -1,9 +1,5 @@
 import { layer } from '@effect/vitest'
-import {
-	addLaterFindings,
-	parseFindingsAnswer,
-	type ParsedFindings,
-} from '@mng-review/domain'
+import { addLaterFindings, parseFindingsAnswer } from '@mng-review/domain'
 import { Deferred, Duration, Effect, Fiber, Layer, Predicate } from 'effect'
 import { AiError } from 'effect/ai'
 import { TestClock } from 'effect/testing'
@@ -42,10 +38,9 @@ import {
 import { toContinuationMessage } from '../../domain/loop-message.helper'
 import {
 	CHARS_PER_TOKEN,
-	CONTINUATION_RESERVE_SHARE,
 	FINDER_TOKEN_SHARE,
 	MAX_CORRECTIONS,
-	MAX_LISTED_UNTOUCHED,
+	MAX_CONTINUATION_PATHS,
 	TOOL_OUTPUT_LABEL,
 	WRAP_UP_GRACE,
 } from '../../domain/review.constants'
@@ -1044,10 +1039,12 @@ layer(Layer.empty)('conversation token budget and sources', test => {
 			)
 	)
 	test.effect(
-		'refuses the response repository calls when conversation tokens run out, then wraps up',
+		'refuses a repository output that does not fit before the answer call, then wraps up',
 		() =>
 			Effect.gen(function* () {
-				const callSpy = vi.fn(() => Effect.succeed('unused'))
+				const callSpy = vi.fn(() =>
+					Effect.succeed('x'.repeat(CHARS_PER_TOKEN * 40))
+				)
 				yield* Effect.gen(function* () {
 					yield* AgentLoopService.use(loop =>
 						loop.run({
@@ -1055,7 +1052,7 @@ layer(Layer.empty)('conversation token budget and sources', test => {
 							budget: { runTokens: 1000, conversationTokens: 100 },
 						})
 					)
-					expect(callSpy).not.toHaveBeenCalled()
+					expect(callSpy).toHaveBeenCalledOnce()
 					const calls = yield* ScriptedLlm.use(script => script.calls)
 					expect(calls).toHaveLength(2)
 					expect(JSON.stringify(calls[1]?.options.prompt)).toContain(
@@ -1081,10 +1078,12 @@ layer(Layer.empty)('conversation token budget and sources', test => {
 			})
 	)
 	test.effect(
-		'counts last output tokens when deciding whether repository calls can run',
+		'counts last output tokens when deciding whether a repository output fits',
 		() =>
 			Effect.gen(function* () {
-				const callSpy = vi.fn(() => Effect.succeed('unused'))
+				const callSpy = vi.fn(() =>
+					Effect.succeed('x'.repeat(CHARS_PER_TOKEN * 60))
+				)
 				yield* Effect.gen(function* () {
 					yield* AgentLoopService.use(loop =>
 						loop.run({
@@ -1092,7 +1091,7 @@ layer(Layer.empty)('conversation token budget and sources', test => {
 							budget: { runTokens: 1000, conversationTokens: 250 },
 						})
 					)
-					expect(callSpy).not.toHaveBeenCalled()
+					expect(callSpy).toHaveBeenCalledOnce()
 					const calls = yield* ScriptedLlm.use(script => script.calls)
 					expect(calls).toHaveLength(2)
 					expect(
@@ -1474,11 +1473,14 @@ const COVERED_REQUEST = {
 	coverage: {
 		paths: [BILLING_PATH],
 		changed: new Map(),
-		answered: (value: ParsedFindings) =>
-			value.findings.map(entry => entry.path),
 		merge: addLaterFindings,
 	},
 } as const
+
+/** `paths` as unread files that no tool output showed. */
+function untouched(paths: readonly string[]) {
+	return paths.map(path => ({ path, reason: 'untouched' as const }))
+}
 
 /** A typed parsed answer for coverage callbacks. */
 function rawParsed() {
@@ -1492,14 +1494,14 @@ layer(Layer.empty)('coverage continuation', test => {
 			() =>
 				Effect.gen(function* () {
 					const paths = Array.from(
-						{ length: MAX_LISTED_UNTOUCHED + 3 },
+						{ length: MAX_CONTINUATION_PATHS + 3 },
 						(_, index) => `src/unread/changed-file-${index}.ts`
 					)
 					const first = { findings: [rawFinding({ path: 'src/other.ts' })] }
 					const spentTokens =
 						FINISH.usage.inputTokens.total + FINISH.usage.outputTokens.total
 					const continuationTokens = toEstimatedTokens(
-						toContinuationMessage(paths, COVERED_REQUEST.finish)
+						toContinuationMessage(untouched(paths), COVERED_REQUEST.finish)
 					)
 					const conversationTokens = 3 * spentTokens + 2 * continuationTokens
 					expect(3 * spentTokens).toBeLessThan(conversationTokens)
@@ -1516,7 +1518,7 @@ layer(Layer.empty)('coverage continuation', test => {
 								})
 							)
 						).toEqual({
-							unread: paths,
+							unread: untouched(paths),
 							value: { ...first, dropped: 0 },
 							turns: 1,
 							spentTokens,
@@ -1612,7 +1614,7 @@ layer(Layer.empty)('coverage continuation', test => {
 								})
 							)
 						).toEqual({
-							unread: paths,
+							unread: untouched(paths),
 							value: { findings: [], dropped: 0 },
 							continued: true,
 							turns: 3,
@@ -1637,7 +1639,10 @@ layer(Layer.empty)('coverage continuation', test => {
 							content: [
 								{
 									name: REQUEST.finish,
-									result: toContinuationMessage(paths, REQUEST.finish),
+									result: toContinuationMessage(
+										untouched(paths),
+										REQUEST.finish
+									),
 								},
 							],
 						})
@@ -1657,21 +1662,22 @@ layer(Layer.empty)('coverage continuation', test => {
 		)
 	for (const name of ['read_file', 'diff', 'blame'] as const)
 		test.effect(
-			`successful ${name} of a normalized path needs no continuation`,
+			`a ${name} that shows no whole change of the file gets a continuation`,
 			() =>
 				Effect.gen(function* () {
 					expect(
 						yield* AgentLoopService.use(loop => loop.run(COVERED_REQUEST))
 					).toEqual({
 						// The scripted tool reports no diff parts or lines, so the file was not received whole.
-						unread: [BILLING_PATH],
+						unread: untouched([BILLING_PATH]),
 						value: { findings: [], dropped: 0 },
-						turns: 2,
-						spentTokens: 10,
+						continued: true,
+						turns: 3,
+						spentTokens: 15,
 						unspentTokens: 0,
 						toolCalls: 1,
 					})
-					expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(2)
+					expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(3)
 				}).pipe(
 					Effect.provide(
 						loopLayer((_call, index) =>
@@ -1685,20 +1691,21 @@ layer(Layer.empty)('coverage continuation', test => {
 				)
 		)
 	test.effect(
-		'a finding on the covered file needs no continuation but leaves it unread',
+		'a finding on the covered file still gets a continuation and leaves it unread',
 		() =>
 			Effect.gen(function* () {
 				expect(
 					yield* AgentLoopService.use(loop => loop.run(COVERED_REQUEST))
 				).toEqual({
-					unread: [BILLING_PATH],
+					unread: untouched([BILLING_PATH]),
 					value: rawParsed(),
-					turns: 1,
+					continued: true,
+					turns: 2,
 					toolCalls: 0,
-					spentTokens: 5,
+					spentTokens: 10,
 					unspentTokens: 0,
 				})
-				expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(1)
+				expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(2)
 			}).pipe(
 				Effect.provide(
 					loopLayer(() =>
@@ -1714,7 +1721,7 @@ layer(Layer.empty)('coverage continuation', test => {
 				expect(
 					yield* AgentLoopService.use(loop => loop.run(COVERED_REQUEST))
 				).toEqual({
-					unread: [BILLING_PATH],
+					unread: untouched([BILLING_PATH]),
 					value: { findings: [], dropped: 0 },
 					continued: true,
 					toolCalls: 1,
@@ -1760,7 +1767,7 @@ layer(Layer.empty)('coverage continuation', test => {
 					expect(
 						yield* AgentLoopService.use(loop => loop.run(COVERED_REQUEST))
 					).toEqual({
-						unread: [BILLING_PATH],
+						unread: untouched([BILLING_PATH]),
 						value: { findings: [first, second], dropped: 0 },
 						continued: true,
 						turns: 2,
@@ -1894,37 +1901,39 @@ layer(Layer.empty)('coverage continuation', test => {
 				)
 			)
 		)
-	test.effect('continuation names only files neither read nor answered', () =>
-		Effect.gen(function* () {
-			yield* AgentLoopService.use(loop =>
-				loop.run({
-					...COVERED_REQUEST,
-					coverage: {
-						...COVERED_REQUEST.coverage,
-						paths: [BILLING_PATH, 'answered.ts', 'unread.ts'],
-					},
-				})
-			)
-			const calls = yield* ScriptedLlm.use(script => script.calls)
-			const continuation = JSON.stringify(
-				calls[2]?.options.prompt.content.at(-1)
-			)
-			expect(continuation).toContain('- unread.ts')
-			expect(continuation).not.toContain(`- ${BILLING_PATH}`)
-			expect(continuation).not.toContain('- answered.ts')
-		}).pipe(
-			Effect.provide(
-				loopLayer((_call, index) =>
-					Effect.succeed(
-						index === 0
-							? [toolCall('read_file', { path: BILLING_PATH }), FINISH]
-							: answer('report_findings', {
-									findings: [rawFinding({ path: 'answered.ts' })],
-								})
+	test.effect(
+		'continuation names every file not received whole, an answered one too',
+		() =>
+			Effect.gen(function* () {
+				yield* AgentLoopService.use(loop =>
+					loop.run({
+						...COVERED_REQUEST,
+						coverage: {
+							...COVERED_REQUEST.coverage,
+							paths: [BILLING_PATH, 'answered.ts', 'unread.ts'],
+						},
+					})
+				)
+				const calls = yield* ScriptedLlm.use(script => script.calls)
+				const continuation = JSON.stringify(
+					calls[2]?.options.prompt.content.at(-1)
+				)
+				expect(continuation).toContain('- unread.ts (not read)')
+				expect(continuation).toContain(`- ${BILLING_PATH} (not read)`)
+				expect(continuation).toContain('- answered.ts (not read)')
+			}).pipe(
+				Effect.provide(
+					loopLayer((_call, index) =>
+						Effect.succeed(
+							index === 0
+								? [toolCall('read_file', { path: BILLING_PATH }), FINISH]
+								: answer('report_findings', {
+										findings: [rawFinding({ path: 'answered.ts' })],
+									})
+						)
 					)
 				)
 			)
-		)
 	)
 })
 
@@ -1951,7 +1960,7 @@ layer(Layer.empty)('reviewer token pool in the loop', test => {
 						).toEqual(
 							released ? [...REQUEST.tools, REQUEST.finish] : [REQUEST.finish]
 						)
-						expect(callSpy).toHaveBeenCalledTimes(released ? 1 : 0)
+						expect(callSpy).toHaveBeenCalledOnce()
 						expect(yield* pool.available).toBeLessThanOrEqual(released)
 					}).pipe(
 						Effect.provide(
@@ -1968,77 +1977,6 @@ layer(Layer.empty)('reviewer token pool in the loop', test => {
 												)
 										: Effect.succeed(answer()),
 								{ tokensPerRun: 20_000 },
-								callSpy
-							)
-						)
-					)
-				})
-		)
-})
-
-layer(Layer.empty)('reserved coverage after forced wrap-up', test => {
-	for (const maxToolCalls of [1, LIMITS.maxToolCalls])
-		test.effect(
-			`token-forced answers ${maxToolCalls === 1 ? 'stop at the tool limit' : 'get a continuation that can read and add findings'}`,
-			() =>
-				Effect.gen(function* () {
-					const conversationTokens = 10_000
-					const reserve = Math.floor(
-						conversationTokens * CONTINUATION_RESERVE_SHARE
-					)
-					const callSpy = vi.fn(() => Effect.succeed('source'))
-					const first = rawFinding({ path: 'src/other.ts' })
-					const second = rawFinding()
-					yield* Effect.gen(function* () {
-						const output = yield* AgentLoopService.use(loop =>
-							loop.run({
-								...COVERED_REQUEST,
-								budget: { runTokens: 20_000, conversationTokens, reserve },
-							})
-						)
-						expect(output.value.findings).toEqual(
-							maxToolCalls === 1 ? [first] : [first, second]
-						)
-						expect(output.continued).toBe(maxToolCalls === 1 ? undefined : true)
-						expect(output.budgetStopped).toBe(true)
-						expect(output.spentTokens).toBe(
-							2500 + (maxToolCalls === 1 ? 5 : 15)
-						)
-						expect(output.unspentTokens).toBe(maxToolCalls === 1 ? 7495 : 7485)
-						const calls = yield* ScriptedLlm.use(script => script.calls)
-						expect(calls).toHaveLength(maxToolCalls === 1 ? 2 : 4)
-						expect(
-							calls[1]?.options.tools.map(tool => String(tool.name))
-						).toEqual([REQUEST.finish])
-						expect(callSpy).toHaveBeenCalledTimes(maxToolCalls === 1 ? 0 : 1)
-						if (maxToolCalls > 1) {
-							expect(
-								calls[2]?.options.tools.map(tool => String(tool.name))
-							).toEqual([...COVERED_REQUEST.tools, REQUEST.finish])
-							expect(JSON.stringify(calls[2]?.options.prompt)).toContain(
-								`- ${BILLING_PATH}`
-							)
-						}
-					}).pipe(
-						Effect.provide(
-							loopLayer(
-								(_call, index) =>
-									Effect.succeed(
-										index === 0
-											? [
-													toolCall('read_file', { path: BILLING_PATH }),
-													finishWithUsage(2500),
-												]
-											: index === 1
-												? answer(REQUEST.finish, { findings: [first] })
-												: index === 2
-													? [
-															toolCall('read_file', { path: BILLING_PATH }),
-															FINISH,
-														]
-													: answer(REQUEST.finish, { findings: [second] })
-									),
-								{ maxToolCalls, tokensPerRun: 20_000 },
 								callSpy
 							)
 						)
@@ -2359,7 +2297,9 @@ layer(Layer.empty)('received coverage', test => {
 				Effect.gen(function* () {
 					expect(
 						(yield* AgentLoopService.use(loop => loop.run(covered))).unread
-					).toEqual(pages === 2 ? [] : [BILLING_PATH])
+					).toEqual(
+						pages === 2 ? [] : [{ path: BILLING_PATH, reason: 'partial' }]
+					)
 				}).pipe(
 					Effect.provide(
 						loopLayer(
@@ -2387,7 +2327,10 @@ layer(Layer.empty)('received coverage', test => {
 		() =>
 			Effect.gen(function* () {
 				const kept = yield* AgentLoopService.use(loop => loop.run(covered))
-				expect(kept).toMatchObject({ continued: true, unread: [BILLING_PATH] })
+				expect(kept).toMatchObject({
+					continued: true,
+					unread: untouched([BILLING_PATH]),
+				})
 				expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(3)
 			}).pipe(
 				Effect.provide(

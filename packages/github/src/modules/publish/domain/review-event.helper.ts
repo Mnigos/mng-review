@@ -44,8 +44,10 @@ export interface ReviewedEvidence {
 	readonly approval: Approval
 	/** The token's identity opened the pull request, so GitHub refuses it a review state. */
 	readonly authored: boolean
-	/** `false` when the write's head read found the pull request a draft or closed: it gets no approval. */
+	/** `false` when the write's head read found the pull request a draft, closed or merged. */
 	readonly open?: boolean
+	/** The write's last read of the pull request failed, so its head is unknown and the state stands. */
+	readonly headUnknown?: boolean
 }
 
 /** What a reply-only run knows: the standing verdict and whether it is on the summary's head. */
@@ -63,6 +65,8 @@ export interface RepliedEvidence {
 	 */
 	readonly failed: boolean
 	readonly authored: boolean
+	/** The write's last read of the pull request failed, so its head is unknown and the state stands. */
+	readonly headUnknown?: boolean
 }
 
 /** An offline run judged nothing; it still reads who opened the pull request. */
@@ -123,7 +127,7 @@ function toDecision(input: ReviewEventInput): ReviewDecision {
 	if (!input.full || input.verdict !== 'ready' || input.failed)
 		return toKept(false)
 	const approves = input.gap === undefined && input.approval === 'allowed'
-	// A draft or closed pull request gets no approval, and the run has no evidence for another state.
+	// A draft, closed or merged pull request gets no approval, and the run has no evidence for another state.
 	if (approves && input.open === false) return toKept(false)
 	return { event: approves ? 'APPROVE' : 'COMMENT', keep: false, clears: true }
 }
@@ -165,7 +169,7 @@ export function getApproval(
 export interface LatestHead {
 	readonly current: string | undefined
 	readonly authored: boolean
-	/** `false` when the pull request is a draft or closed. */
+	/** `false` when the pull request is a draft, closed or merged; unset when the read failed. */
 	readonly open?: boolean
 }
 
@@ -178,15 +182,18 @@ function toLatestEvidence(
 	const authored = evidence.authored || latest.authored
 	const onCurrent = latest.current === head
 	if (evidence.kind === 'offline') return { ...evidence, authored }
+	const unknown = latest.current === undefined ? { headUnknown: true } : {}
 	if (evidence.kind === 'review')
 		return {
 			...evidence,
+			...unknown,
 			authored,
 			onHead: evidence.onHead && onCurrent,
 			open: evidence.open !== false && latest.open !== false,
 		}
 	return {
 		...evidence,
+		...unknown,
 		authored,
 		current: evidence.current && onCurrent,
 		onHead: evidence.onHead && onCurrent,

@@ -1,9 +1,19 @@
 import { type PlannedRun, SEVERITIES } from '@mng-review/domain'
-import type { AgentRunReport, ReviewReport } from '@mng-review/engine'
+import type {
+	AgentRunReport,
+	ReviewReport,
+	UnreadReason,
+} from '@mng-review/engine'
 import { escapeMarkdown, toCodeSpan } from '../../../utils/markdown.util'
 
 /** Risk signals the summary names before it stops. */
 const MAX_SIGNALS = 3
+/** How the summary names why the main reviewer left a changed file unread. */
+const UNREAD_NOTE = {
+	untouched: 'not read',
+	partial: 'diff read in part',
+	deletions: 'read with read_file, which cannot show deleted lines',
+} as const satisfies Record<UnreadReason, string>
 
 /**
  * The report of one planned run, by name. A deep run plans the main reviewer once per reviewer
@@ -74,7 +84,32 @@ export function toAgentRows(report: ReviewReport): string[] {
 	]
 }
 
-/** Skipped agents, units that did not finish, dropped models and an endpoint failure. */
+/**
+ * The changed files a main reviewer answered without receiving whole, each once with the reason the
+ * first report gives, at most `limit` of them and the rest counted; nothing when none.
+ */
+function toUnreadNote(report: ReviewReport, limit: number): string[] {
+	const files = report.agents
+		.flatMap(agent => agent.unreadFiles ?? [])
+		.filter(
+			(file, index, all) =>
+				all.findIndex(other => other.path === file.path) === index
+		)
+	if (files.length === 0) return []
+	const listed = files
+		.slice(0, limit)
+		.map(file => `${toCodeSpan(file.path)} (${UNREAD_NOTE[file.reason]})`)
+	const rest = files.length - listed.length
+	return [
+		'',
+		`Not read whole: ${listed.join(', ')}${rest > 0 ? `, and ${rest} more` : ''}`,
+	]
+}
+
+/**
+ * Skipped agents, units that did not finish, dropped models, an endpoint failure and the changed
+ * files the main reviewer did not read whole.
+ */
 export function toRunNotes(report: ReviewReport, limit: number): string[] {
 	const { skips } = report.planReport.plan
 	const unfinished = [
@@ -103,5 +138,6 @@ export function toRunNotes(report: ReviewReport, limit: number): string[] {
 					`The model endpoint failed: ${escapeMarkdown(report.endpointError)}`,
 				]
 			: []),
+		...toUnreadNote(report, limit),
 	]
 }

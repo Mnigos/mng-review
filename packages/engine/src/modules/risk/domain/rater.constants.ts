@@ -15,8 +15,6 @@ export const MAX_RISK_DETAIL_CHARS = 1000
  * more than a validation: the first message carries up to `MAX_FULL_DIFF_CHARS` of the diff.
  */
 export const RATER_TOKENS = 400_000
-/** Share of the rater's tokens held back for its continuation turn over files it left unread. */
-export const RATER_RESERVE_SHARE = 0.25
 /** The rater's line in the run's tokens by source. */
 export const RATER_SOURCE = 'rater'
 export const NO_RATER_MODEL = 'no rater model left'
