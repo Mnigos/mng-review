@@ -95,6 +95,7 @@ const findingFields = {
 	agents: nameListSchema,
 	models: nameListSchema,
 	fingerprint: fingerprintSchema,
+	cutTitleFingerprint: Schema.optional(fingerprintSchema),
 } as const
 
 const judgementFields = {

@@ -9,8 +9,7 @@ import {
 	SAME_TITLE_OVERLAP,
 	STOP_WORDS,
 } from './finding.constants'
-import type { ReportedFinding } from './finding.schema'
-import type { Finding, FindingReporter } from './finding.types'
+import type { Finding, FindingReporter, ParsedFinding } from './finding.types'
 
 /** Code punctuation the title words drop, `-` and `/` included. */
 const TITLE_PUNCTUATION = /[`'"()[\]{}<>.,:;!?/-]/gu
@@ -34,34 +33,57 @@ export function getTitleWords(title: string): string[] {
 		.filter(word => word && !STOP_WORDS.has(word) && !/^\d+$/u.test(word))
 }
 
+/** What a fingerprint reads: the path and the title, the uncut one when the text limits cut it. */
+type FingerprintSource = Pick<ParsedFinding, 'path' | 'title' | 'uncutTitle'>
+
 /**
- * A short hash of the path and the title's sorted, distinct content words. It survives line
- * shifts, case, punctuation, numbers and word order, so a later run recognises its own finding.
+ * A short hash of the path and the title's sorted, distinct content words, read from `uncutTitle`
+ * when there is one. It survives line shifts, case, punctuation, numbers and word order, so a
+ * later run recognises its own finding.
  */
-export function toFingerprint(
-	finding: Pick<Finding, 'path' | 'title'>
-): string {
-	const words = [...new Set(getTitleWords(finding.title))].toSorted().join(' ')
+export function toFingerprint(finding: FingerprintSource): string {
+	const title = finding.uncutTitle ?? finding.title
+	const words = [...new Set(getTitleWords(title))].toSorted().join(' ')
 	return createHash('sha256')
 		.update(`${finding.path}\n${words}`)
 		.digest('hex')
 		.slice(0, FINGERPRINT_LENGTH)
 }
 
-/** A reported finding attributed to the agent and model that reported it. */
+/**
+ * A reported finding attributed to the agent and model that reported it, fingerprinted by its
+ * uncut title and keeping the cut one as its title, with the cut title's fingerprint when that
+ * differs.
+ */
 export function toFinding(
-	reported: ReportedFinding,
+	reported: ParsedFinding,
 	reporter: FindingReporter
 ): Finding {
-	const { suggestion, ...rest } = reported
+	const { suggestion, uncutTitle: _uncutTitle, ...rest } = reported
+	const fingerprint = toFingerprint(reported)
+	const cutTitleFingerprint = toFingerprint({
+		path: reported.path,
+		title: reported.title,
+	})
 	return {
 		...rest,
 		...(suggestion ? { suggestion } : {}),
 		kind: reporter.kind,
 		agents: [reporter.agent],
 		models: [reporter.model],
-		fingerprint: toFingerprint(reported),
+		fingerprint,
+		...(cutTitleFingerprint === fingerprint ? {} : { cutTitleFingerprint }),
 	}
+}
+
+/** The fingerprints a thread of the finding may carry: its own and its cut title's, if any. */
+export function getFingerprints(
+	finding: Pick<Finding, 'fingerprint' | 'cutTitleFingerprint'>
+): readonly string[] {
+	const { fingerprint, cutTitleFingerprint } = finding
+	return cutTitleFingerprint
+		? [fingerprint, cutTitleFingerprint]
+		: [fingerprint]
 }
 
 /** A word without a plural `s`, so `urls` and `url` count as one word. */
