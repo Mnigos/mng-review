@@ -98,6 +98,8 @@ export class RiskReadService extends Context.Service<
 		 * Severities of the confirmed bug threads that are open, that this run answered without
 		 * closing them (`answered`), or whose newest app answer is unsettled, or `undefined` when a
 		 * read failed. Its reads are complete whatever the run provides: a null node is a failed read.
+		 * The pin is defensive: every caller runs while the gate rates, whose rules already read
+		 * complete lists; it keeps this read complete should a caller ever provide `false`.
 		 */
 		readonly readThreadBugs: (
 			pullNumber: number,
