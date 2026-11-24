@@ -15,10 +15,17 @@ import {
 } from './publish-marker.schema'
 import { MARKER_PREFIX } from './publish.constants'
 
-/** The marker comment that ends a body: `<!-- mng-review:<name> <json> -->`, its JSON on one line. */
+/**
+ * The marker comment that ends a body: `<!-- mng-review:<name> <json> -->`, its JSON on one line.
+ */
 const MARKER_PATTERN = new RegExp(
 	String.raw`<!-- ${MARKER_PREFIX}(finding|summary|reply|risk|answer) (\{(?:(?!-->)[^\n])*\}) -->\s*$`,
 	'u'
+)
+/** Every risk marker form anywhere in a text, each JSON on one line, whatever follows it. */
+const RISK_FORM_PATTERN = new RegExp(
+	String.raw`<!-- ${MARKER_PREFIX}risk (\{(?:(?!-->)[^\n])*\}) -->`,
+	'gu'
 )
 const decodeFinding = Schema.decodeUnknownOption(
 	Schema.fromJsonString(findingMarkerSchema)
@@ -39,7 +46,9 @@ const decodeRisk = Schema.decodeUnknownOption(
 /** The kinds of hidden marker the bot writes. */
 export type MarkerName = 'finding' | 'summary' | 'reply' | 'risk' | 'answer'
 
-/** The JSON of the marker of that name that ends the body; the bot always writes its marker last. */
+/**
+ * The JSON of the marker of that name that ends the body; the bot always writes its marker last.
+ */
 function getLastMarkerJson(body: string, name: MarkerName): string | undefined {
 	const match = MARKER_PATTERN.exec(body)
 	return match?.[1] === name ? match[2] : undefined
@@ -87,7 +96,20 @@ export function parseRiskMarker(body: string): RiskMarker | undefined {
 		: Option.getOrUndefined(decodeRisk(json))
 }
 
-/** The answer marker of a denial or cap reply, or `undefined` when it has none or it does not decode. */
+/**
+ * Every risk marker form anywhere in a text that decodes, in the order they appear. Only edited
+ * text a person may have written is read this way; a trusted comment's marker is its last one.
+ */
+export function parseRiskMarkerForms(body: string): RiskMarker[] {
+	return [...body.matchAll(RISK_FORM_PATTERN)].flatMap(match =>
+		match[1] === undefined ? [] : Option.toArray(decodeRisk(match[1]))
+	)
+}
+
+/**
+ * The answer marker of a denial or cap reply, or `undefined` when it has none or it does not
+ * decode.
+ */
 export function parseAnswerMarker(body: string): AnswerMarker | undefined {
 	const json = getLastMarkerJson(body, 'answer')
 	return json === undefined

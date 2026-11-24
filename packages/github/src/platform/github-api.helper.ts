@@ -79,9 +79,10 @@ export function getGraphqlErrors(
 }
 
 /**
- * Every node of a connection, page by page. A missing pull request or more than `MAX_PAGES`
- * pages fails, so a partial list is never taken for the whole; nodes GitHub could not resolve
- * are left out.
+ * Every node of a connection, page by page. A missing pull request, more than `MAX_PAGES` pages
+ * or a node GitHub lists as `null` fails, so a partial list is never taken for the whole: a
+ * thread, comment, review or timeline item GitHub could not resolve may be the one that holds a
+ * level or an answer.
  */
 export function collect<TNode>(
 	operation: string,
@@ -102,6 +103,13 @@ export function collect<TNode>(
 					})
 				)
 			const nodes = connection.nodes.filter(Predicate.isNotNull)
+			if (nodes.length < connection.nodes.length)
+				return Effect.fail(
+					new GitHubApiError({
+						operation,
+						reason: 'GitHub listed an entry as a null node',
+					})
+				)
 			const { hasNextPage, endCursor } = connection.pageInfo
 			if (!hasNextPage) return Effect.succeed(nodes)
 			if (!endCursor)

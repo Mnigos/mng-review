@@ -23,7 +23,10 @@ export interface RunnerEnvironment {
 	 * reads it; unset, none is written.
 	 */
 	readonly outcomePath: string | undefined
-	/** `MNG_REVIEW_PREPARED_PATH`, where the prepare step leaves the prepared file for the review step. */
+	/**
+	 * `MNG_REVIEW_PREPARED_PATH`, where the prepare step leaves the prepared file for the review
+	 * step.
+	 */
 	readonly preparedPath: string | undefined
 	/** `GITHUB_REPOSITORY`, `owner/name` of the caller. */
 	readonly repository: string | undefined
@@ -58,16 +61,16 @@ export type RunMode = (typeof RUN_MODES)[number]
 
 /**
  * `MNG_REVIEW_MODE`: `shadow` (the default) reviews and writes the job summary only. The review
- * job of publish mode runs `prepare` (the checks and GitHub reads over the read token, no model)
- * and `review` (the model calls, no GitHub); the publish job runs `publish`, which posts the
- * outcome file and calls no model. `sweep` reviews nothing and refreshes the `MNG Review` status
- * of open pull requests. A mention command runs `authorize` (checks the comment over the read
- * token, no secret) and `reserve` (counts the manual run before the review job starts). The reply
- * schedule runs `find` (lists the pull requests with a reply waiting over the read token, no
- * model). `risk-cleanup` runs after a failed or cancelled publish and writes step 1's risk
- * `error` again; `deny` posts a denial or cap reply for a refused command; `risk-sweep` is the
- * sweep's per-pull-request risk job (the thread raise and the dispatches). Any other value fails,
- * before the review spends anything.
+ * job of publish mode runs `prepare` (the checks and GitHub reads over the read token, no
+ * model) and `review` (the model calls, no GitHub); the publish job runs `publish`, which posts
+ * the outcome file and calls no model. `sweep` reviews nothing and refreshes the `MNG Review`
+ * status of open pull requests. A mention command runs `authorize` (checks the comment over the
+ * read token, no secret) and `reserve` (counts the manual run before the review job starts).
+ * The reply schedule runs `find` (lists the pull requests with a reply waiting over the read
+ * token, no model). `risk-cleanup` runs after a failed or cancelled publish and writes step 1's
+ * risk `error` again; `deny` posts a denial or cap reply for a refused command; `risk-sweep` is
+ * the sweep's per-pull-request risk job (the thread raise and the dispatches). Any other value
+ * fails, before the review spends anything.
  */
 export const modeConfig = Config.Literals(RUN_MODES, MODE_VARIABLE).pipe(
 	Config.withDefault('shadow' as RunMode)
@@ -102,7 +105,10 @@ export const runnerEnvironmentConfig = Config.all({
 	}))
 )
 
-/** Every form of the endpoint that could reach a log: the URL, its origin, host and hostname, and the key as read and trimmed. */
+/**
+ * Every form of the endpoint that could reach a log: the URL, its origin, host and hostname, and
+ * the key as read and trimmed.
+ */
 function toMaskedValues(url: string, key: string): string[] {
 	const parsed = URL.canParse(url) ? new URL(url) : undefined
 	const forms = [
@@ -155,7 +161,9 @@ export const maskAppToken = Effect.fn('runner.maskAppToken')(function* () {
 	if (value.trim() !== '') yield* Console.log(`::add-mask::${value.trim()}`)
 })
 
-/** The event payload as text; a missing path or an unreadable file fails naming `GITHUB_EVENT_PATH`. */
+/**
+ * The event payload as text; a missing path or an unreadable file fails naming `GITHUB_EVENT_PATH`.
+ */
 export const readEventText = Effect.fn('runner.readEventText')(function* (
 	path: string | undefined
 ) {
@@ -208,7 +216,10 @@ export const writeOutcome = Effect.fn('runner.writeOutcome')(function* (
 	return yield* fs.writeFileString(path, json)
 })
 
-/** The prepared file as text; a missing path or an unreadable file fails naming `MNG_REVIEW_PREPARED_PATH`. */
+/**
+ * The prepared file as text; a missing path or an unreadable file fails naming
+ * `MNG_REVIEW_PREPARED_PATH`.
+ */
 export const readPreparedText = Effect.fn('runner.readPreparedText')(function* (
 	path: string | undefined
 ) {
@@ -245,7 +256,9 @@ export const writePrepared = Effect.fn('runner.writePrepared')(function* (
 	return yield* fs.writeFileString(path, JSON.stringify(file))
 })
 
-/** Whether the downloaded outcome file exists; an unset path or a failed check counts as missing. */
+/**
+ * Whether the downloaded outcome file exists; an unset path or a failed check counts as missing.
+ */
 export const hasOutcomeFile = Effect.fn('runner.hasOutcomeFile')(function* (
 	path: string | undefined
 ) {

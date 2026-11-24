@@ -66,7 +66,9 @@ function isUnderFloor(path: string, floor: ConfiguredFloor): boolean {
 	)
 }
 
-/** The hit for the files under one floor, with their lines summed; binaries and unknowns add none. */
+/**
+ * The hit for the files under one floor, with their lines summed; binaries and unknowns add none.
+ */
 function toFloorHit(
 	floor: Pick<FloorHit, 'name' | 'level' | 'builtIn'>,
 	files: readonly FloorDiffFile[]

@@ -37,7 +37,8 @@ export function toRulesDigest(rubric: string, risk: RiskConfig): string {
 
 /**
  * The digest an answer entry carries for a comment: the first 16 hex characters of the sha256 of
- * its whole body, the prefix of the engine's reply digest. Two edits within one second differ in it.
+ * its whole body, the prefix of the engine's reply digest. Two edits within one second differ in
+ * it.
  */
 export function toAnswerDigest(body: string): string {
 	return toSha256(body).slice(0, ANSWER_DIGEST_LENGTH)

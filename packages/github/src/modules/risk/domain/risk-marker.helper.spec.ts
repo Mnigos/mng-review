@@ -25,7 +25,6 @@ import { toAppRiskStatuses } from './risk-history.helper'
 import {
 	EMPTY_RISK_MARKER,
 	getMarkerEditStop,
-	getOverwrittenLevel,
 	toMarkerRead,
 	getReusedLevel,
 	toNextRiskMarker,
@@ -88,7 +87,7 @@ function listed(
 }
 
 /** A complete edit history: every edit GitHub counts is listed. */
-function history(edits: readonly (CommentEdit | null)[]) {
+function history(edits: readonly CommentEdit[]) {
 	return { total: edits.length, edits }
 }
 
@@ -265,22 +264,6 @@ describe('risk marker', () => {
 			)
 		).toEqual(MARKER_PARTIAL_STOP)
 	})
-	test('an edit GitHub lists as a null node counts as an unknown editor', () => {
-		expect(
-			getMarkerEditStop(
-				history([appEdit(3), appEdit(1)]),
-				history([null, appEdit(4), appEdit(3), appEdit(1)]),
-				APP_IDENTITY
-			)
-		).toEqual(MARKER_RACE_STOP)
-		expect(
-			getMarkerEditStop(
-				history([appEdit(2), null]),
-				history([appEdit(3), appEdit(2), null]),
-				APP_IDENTITY
-			)
-		).toEqual(MARKER_RACE_STOP)
-	})
 	for (const order of ['newest first', 'oldest first'] as const)
 		test(`picks the edits since the read by their id, listed ${order}`, () => {
 			expect(
@@ -397,68 +380,5 @@ describe('risk marker', () => {
 		expect(getMarkerEditStop(before, history(edits), APP_IDENTITY)).toEqual(
 			MARKER_RACE_STOP
 		)
-	})
-})
-
-/** A marker comment whose text names `level`, as a person could write it. */
-function namedText(level: 'medium' | 'high') {
-	return toMarkerComment('risk', { ...EMPTY_RISK_MARKER, highest: level })
-}
-
-describe('the level a rebuild overwrote', () => {
-	const older = [appEdit(2), personEdit(1, namedText('medium'))]
-	test('only the app editing since the read overwrote nothing', () => {
-		expect(
-			getOverwrittenLevel(
-				history(older),
-				history([appEdit(3), ...older]),
-				APP_IDENTITY
-			)
-		).toBe('none')
-	})
-	for (const level of ['medium', 'high'] as const)
-		test(`a person's edit since the read naming ${level} is carried`, () => {
-			expect(
-				getOverwrittenLevel(
-					history(older),
-					history([appEdit(4), personEdit(3, namedText(level)), ...older]),
-					APP_IDENTITY
-				)
-			).toBe(level)
-		})
-	test("a person's edit that names no level carries nothing", () => {
-		expect(
-			getOverwrittenLevel(
-				history(older),
-				history([appEdit(4), personEdit(3, 'a note'), ...older]),
-				APP_IDENTITY
-			)
-		).toBe('none')
-	})
-	test('an overwritten text GitHub does not give counts as High', () => {
-		expect(
-			getOverwrittenLevel(
-				history(older),
-				history([appEdit(4), { ...personEdit(3), diff: null }, ...older]),
-				APP_IDENTITY
-			)
-		).toBe('high')
-		expect(
-			getOverwrittenLevel(
-				history(older),
-				history([appEdit(4), null, ...older]),
-				APP_IDENTITY
-			)
-		).toBe('high')
-		expect(
-			getOverwrittenLevel(
-				history(older),
-				{ total: 4, edits: [appEdit(4), ...older] },
-				APP_IDENTITY
-			)
-		).toBe('high')
-		expect(
-			getOverwrittenLevel(history(older), history(older), APP_IDENTITY)
-		).toBe('high')
 	})
 })

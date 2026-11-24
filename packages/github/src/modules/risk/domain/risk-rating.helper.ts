@@ -27,6 +27,12 @@ function getMarkerNamed(marker: MarkerRead): StatusLevel {
 	return marker.status === 'edited' ? marker.named : 'none'
 }
 
+/** Why a full run is not rated when the risk comment's edit history could not be read. */
+const EDITS_GAP = {
+	reason: 'marker-read-failed',
+	detail: "the risk comment's edit history could not be read",
+} as const satisfies Unrated
+
 /** Why the marker or the history keeps the run unrated, or `undefined` when they allow a rating. */
 function getMarkerGap(
 	facts: Pick<FullRatingFacts, 'marker' | 'history'>
@@ -73,21 +79,27 @@ function getFullGap(facts: FullRatingFacts): Unrated | undefined {
 			reason: 'thread-read-failed',
 			detail: 'the review threads could not be read',
 		}
-	return getMarkerGap(facts)
+	return (
+		getMarkerGap(facts) ?? (facts.edits === undefined ? EDITS_GAP : undefined)
+	)
 }
 
 /**
  * A full run's decision: rated at the highest of the model's level (or the stored level of the
  * same tree, base and rules, which never stands in for an engine gap), every floor from publish's
  * own diff, Medium for a router `risky`, High for a confirmed High or Critical bug, the marker's
- * highest and the held level; or not rated with the first gap. Step 1 carries the higher of the
- * held level and the level it will publish, raised by what an edited marker names, so no later
- * write holds a level no status has.
+ * highest, what a person's edit anywhere in its history named, and the held level; or not rated
+ * with the first gap. Step 1 carries the higher of the held level and the level it will publish,
+ * raised by what an edited marker and its history name, so no later write holds a level no status
+ * has and an edit an app write overwrote is carried by the next full run.
  */
 export function decideFullRating(facts: FullRatingFacts): WritingDecision {
 	const floor = (facts.floors?.hits.length ?? 0) > 0
 	const gap = getFullGap(facts)
-	const named = getMarkerNamed(facts.marker)
+	const named = getHigherLevel(
+		getMarkerNamed(facts.marker),
+		facts.edits ?? 'none'
+	)
 	if (gap)
 		return {
 			status: 'unrated',
@@ -103,7 +115,10 @@ export function decideFullRating(facts: FullRatingFacts): WritingDecision {
 		floors: facts.floors?.hits ?? [],
 		routerRisky: facts.routerRisky,
 		confirmedBugs: facts.confirmedBugs,
-		markerHighest: marker.status === 'trusted' ? marker.marker.highest : 'none',
+		markerHighest: getHigherLevel(
+			marker.status === 'trusted' ? marker.marker.highest : 'none',
+			named
+		),
 		held: facts.held,
 	})
 	return {

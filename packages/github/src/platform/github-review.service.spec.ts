@@ -124,7 +124,7 @@ layer(Layer.empty)('GitHubReviewService', test => {
 				})
 			)
 	test.effect(
-		'listReviews paginates with a cursor, removes null nodes and retains hidden dismissed reviews',
+		'listReviews paginates with a cursor and retains hidden dismissed reviews',
 		() =>
 			Effect.gen(function* () {
 				const first = summaryReview()
@@ -139,7 +139,7 @@ layer(Layer.empty)('GitHubReviewService', test => {
 						Response.json(
 							toGitHubPage(
 								'reviews',
-								attempt === 1 ? [null, first] : [second, null],
+								attempt === 1 ? [first] : [second],
 								attempt === 1,
 								attempt === 1 ? 'next' : null
 							)

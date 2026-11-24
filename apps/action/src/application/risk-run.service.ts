@@ -32,7 +32,9 @@ export type RatedPublish<TValue, TError, TContext> = (
 	rating: RatingBlock | undefined
 ) => Effect.Effect<TValue, TError, TContext>
 
-/** The publish's value, unset when step 1 failed and nothing was published, and what the rating did. */
+/**
+ * The publish's value, unset when step 1 failed and nothing was published, and what the rating did.
+ */
 export interface RatedValue<TValue> {
 	readonly value: TValue | undefined
 	readonly risk: RiskReport

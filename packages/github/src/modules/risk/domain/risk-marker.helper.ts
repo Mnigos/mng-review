@@ -3,7 +3,6 @@ import {
 	type RiskLevel,
 	type StatusLevel,
 } from '@mng-review/domain'
-import { Predicate } from 'effect'
 import {
 	type BotIdentity,
 	isIdentity,
@@ -16,6 +15,7 @@ import type {
 import {
 	hasRiskMarker,
 	parseRiskMarker,
+	parseRiskMarkerForms,
 } from '../../publish/domain/publish-marker.parser'
 import { MARKER_VERSION } from '../../publish/domain/publish.constants'
 import {
@@ -36,16 +36,16 @@ export const EMPTY_RISK_MARKER = {
 } as const satisfies RiskMarker
 
 /**
- * The highest level the edited text names anywhere in a risk marker form; `none` when it names
- * none.
+ * The highest level edited text names in any valid risk marker form anywhere in it, its highest or
+ * a head's; `none` when it names none. A person can leave several forms, so none is preferred.
  */
 function getNamedLevel(body: string): StatusLevel {
-	const marker = parseRiskMarker(body)
-	if (!marker) return 'none'
-	return marker.heads.reduce<StatusLevel>(
-		(level, entry) => getHigherLevel(level, entry.level),
-		marker.highest
-	)
+	return parseRiskMarkerForms(body)
+		.flatMap(marker => [
+			marker.highest,
+			...marker.heads.map(head => head.level),
+		])
+		.reduce<StatusLevel>(getHigherLevel, 'none')
 }
 
 /**
@@ -166,37 +166,28 @@ function getEditsSince(
 	before: Pick<CommentEdits, 'edits'>,
 	after: Pick<CommentEdits, 'edits'>
 ): CommentEdit[] {
-	const seen = new Set(
-		before.edits.filter(Predicate.isNotNull).map(edit => edit.id)
-	)
-	return after.edits
-		.filter(Predicate.isNotNull)
-		.filter(edit => !seen.has(edit.id))
+	const seen = new Set(before.edits.map(edit => edit.id))
+	return after.edits.filter(edit => !seen.has(edit.id))
 }
 
 /**
- * True when `after` may hide an edit since `before`: it lists a null node (no id or editor),
- * GitHub counts more new edits than it lists, or it no longer lists the newest edit `before` did.
- * GitHub keeps the original text and the 99 newest edits, so the original stays in both reads
- * while edits in between drop out; only while `after` still lists `before`'s newest edit is every
- * edit since then listed.
+ * True when `after` may hide an edit since `before`: GitHub counts more new edits than it lists,
+ * or it no longer lists the newest edit `before` did. GitHub keeps the original text and the 99
+ * newest edits, so the original stays in both reads while edits in between drop out; only while
+ * `after` still lists `before`'s newest edit is every edit since then listed.
  */
 function hidesEdits(
 	before: Pick<CommentEdits, 'total' | 'edits'>,
 	after: Pick<CommentEdits, 'total' | 'edits'>,
 	since: readonly CommentEdit[]
 ): boolean {
-	const seen = before.edits.filter(Predicate.isNotNull)
-	const newest = seen.reduce<CommentEdit | undefined>(
+	const newest = before.edits.reduce<CommentEdit | undefined>(
 		(latest, edit) =>
 			latest === undefined || edit.editedAt > latest.editedAt ? edit : latest,
 		undefined
 	)
-	const listed = new Set(
-		after.edits.filter(Predicate.isNotNull).map(edit => edit.id)
-	)
+	const listed = new Set(after.edits.map(edit => edit.id))
 	return (
-		after.edits.some(Predicate.isNull) ||
 		after.total - before.total > since.length ||
 		(newest !== undefined && !listed.has(newest.id))
 	)
@@ -207,9 +198,9 @@ function hidesEdits(
  * when only `app` edited it. `before` is read before the update and `after` after it, each the
  * whole history GitHub keeps; the edits since `before` are the ones `after` lists by an id `before`
  * did not, this run's own update included, so neither GitHub's order nor its 100-edit retention
- * matters. No new edit, a null node, or more new edits counted than listed stop the grant too. A
- * person's edit there was overwritten unseen; GitHub has no conditional comment update, so the run
- * stays unrated.
+ * matters. No new edit (`MARKER_UNSEEN_STOP`, which the caller reads again for), or more new edits
+ * counted than listed, stop the grant too. A person's edit there was overwritten, and the next
+ * full run reads its level back from the history (`getEditedLevel`).
  */
 export function getMarkerEditStop(
 	before: Pick<CommentEdits, 'total' | 'edits'>,
@@ -217,7 +208,6 @@ export function getMarkerEditStop(
 	app: BotIdentity
 ): GrantStop | undefined {
 	const since = getEditsSince(before, after)
-	if (after.edits.some(Predicate.isNull)) return MARKER_RACE_STOP
 	if (since.length === 0) return MARKER_UNSEEN_STOP
 	if (hidesEdits(before, after, since)) return MARKER_PARTIAL_STOP
 	if (since.some(edit => !isIdentity(edit.editor, app))) return MARKER_RACE_STOP
@@ -225,19 +215,17 @@ export function getMarkerEditStop(
 }
 
 /**
- * The highest level the text of edits someone else made between `before` and `after` names, which
- * a rebuild of the risk comment overwrote: GitHub's `diff` of an edit is the whole text it left.
- * When that text, an edit or the rebuild's own update cannot be seen, the overwritten level is
- * unknown and counts as High, the highest a status carries; `none` when only `app` edited.
+ * The highest level any edit of the risk comment by someone other than `app` names, across the
+ * whole history GitHub keeps: GitHub's `diff` of an edit is the whole text it left, so an edit an
+ * app write later overwrote still shows there. A person's text GitHub does not give counts as
+ * High, the highest a status carries; `none` when only `app` edited. GitHub keeps the original and
+ * the 99 newest edits; an edit that drops out was read by the full runs while it was listed.
  */
-export function getOverwrittenLevel(
-	before: Pick<CommentEdits, 'total' | 'edits'>,
-	after: Pick<CommentEdits, 'total' | 'edits'>,
+export function getEditedLevel(
+	edits: Pick<CommentEdits, 'edits'>,
 	app: BotIdentity
 ): StatusLevel {
-	const since = getEditsSince(before, after)
-	if (since.length === 0 || hidesEdits(before, after, since)) return 'high'
-	return since
+	return edits.edits
 		.filter(edit => !isIdentity(edit.editor, app))
 		.reduce<StatusLevel>(
 			(level, edit) =>

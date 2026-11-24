@@ -13,6 +13,7 @@ import {
 	BASE_BRANCH_STOP,
 	HELD_READ_STOP,
 	MARKER_EDITS_STOP,
+	MARKER_UNSEEN_STOP,
 	MARKER_WRITE_STOP,
 	NONCE_LOST_STOP,
 	NONCE_READ_STOP,
@@ -27,7 +28,12 @@ import {
 } from '../domain/risk-marker.helper'
 import { hasThreadRaise } from '../domain/risk-rating.helper'
 import type { RiskResult, RiskRun } from '../domain/risk-run.types'
-import { ERROR_STATE, HIGH_STATE } from '../domain/risk.constants'
+import {
+	EDIT_LAG_RETRIES,
+	EDIT_LAG_RETRY,
+	ERROR_STATE,
+	HIGH_STATE,
+} from '../domain/risk.constants'
 import type { GrantStop } from '../domain/risk.types'
 import { formatRiskComment } from '../presentation/rating-block.formatter'
 import {
@@ -133,10 +139,11 @@ export const RiskFinishServiceLive = Layer.effect(
 		 * builds on the comment as it is now, never on the copy step 1 read, and stops when someone
 		 * else edited it. GitHub has no conditional comment update, so the comment's edit history is
 		 * read before and after the update: an edit by anyone else in between was overwritten, and
-		 * the run stays unrated. A person's edit can raise (its named level counts in step 1), so
-		 * losing it unseen could lose a High. A risk label a person sets higher than the status does
-		 * not raise the status, but the merge script refuses a pull request with such a label.
-		 * Another run's update in between is the app's own; that run's step 5 sees its entry gone.
+		 * the run stays unrated; its text stays in the history, and the next full run carries what it
+		 * named, also when the update's answer was lost. A history that does not list the update yet
+		 * is read again (`EDIT_LAG_RETRY`). A person's risk label above the status does not raise it,
+		 * but the merge script refuses such a pull request. Another run's update in between is the
+		 * app's own; that run's step 5 sees its entry gone.
 		 */
 		const updateMarker = Effect.fn('RiskFinishService.updateMarker')(function* (
 			run: RiskRun,
@@ -177,11 +184,16 @@ export const RiskFinishServiceLive = Layer.effect(
 				Effect.orElseSucceed(() => false)
 			)
 			if (!updated) return MARKER_WRITE_STOP
-			const after = yield* risk
-				.readCommentEdits(nodeId)
-				.pipe(Effect.orElseSucceed(() => undefined))
-			if (!after) return MARKER_EDITS_STOP
-			return getMarkerEditStop(before, after, app) ?? body
+			const stop = yield* risk.readCommentEdits(nodeId).pipe(
+				Effect.map(after => getMarkerEditStop(before, after, app)),
+				Effect.orElseSucceed((): GrantStop | undefined => MARKER_EDITS_STOP),
+				Effect.flatMap(read =>
+					read === MARKER_UNSEEN_STOP ? Effect.fail(read) : Effect.succeed(read)
+				),
+				Effect.retry({ schedule: EDIT_LAG_RETRY, times: EDIT_LAG_RETRIES }),
+				Effect.orElseSucceed(() => MARKER_UNSEEN_STOP)
+			)
+			return stop ?? body
 		})
 
 		/** True when the pull request's base still gives the merge base step 1 rated against. */

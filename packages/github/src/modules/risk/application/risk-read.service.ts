@@ -21,7 +21,7 @@ import {
 	type StatusOwners,
 	toAppRiskStatuses,
 } from '../domain/risk-history.helper'
-import { toMarkerRead } from '../domain/risk-marker.helper'
+import { getEditedLevel, toMarkerRead } from '../domain/risk-marker.helper'
 import { RiskStepOneError } from '../domain/risk.errors'
 import type {
 	AppRiskStatus,
@@ -76,6 +76,14 @@ export class RiskReadService extends Context.Service<
 		readonly readMarker: (
 			pullNumber: number
 		) => Effect.Effect<MarkerRead, never, OwnedIdentities>
+		/**
+		 * The highest level any edit of the risk comment by someone other than the token's app named
+		 * in its whole edit history, so an edit an app write overwrote still counts; `none` without a
+		 * comment to read, `undefined` when the history could not be read.
+		 */
+		readonly readEditedLevel: (
+			marker: MarkerRead
+		) => Effect.Effect<StatusLevel | undefined, never, OwnedIdentities>
 		/**
 		 * App history from the statuses and the reviews of the token's app and the previous apps; a
 		 * failed review read counts as history.
@@ -184,6 +192,19 @@ export const RiskReadServiceLive = Layer.effect(
 			)
 		})
 
+		const readEditedLevel = Effect.fn('RiskReadService.readEditedLevel')(
+			function* (marker: MarkerRead) {
+				const { current } = yield* OwnedIdentities
+				if (marker.status !== 'trusted' && marker.status !== 'edited')
+					return 'none'
+				if (marker.nodeId === undefined) return 'none'
+				return yield* risk.readCommentEdits(marker.nodeId).pipe(
+					Effect.map(edits => getEditedLevel(edits, current)),
+					Effect.orElseSucceed(() => undefined)
+				)
+			}
+		)
+
 		const readHistory = Effect.fn('RiskReadService.readHistory')(function* (
 			pullNumber: number,
 			statuses: readonly AppRiskStatus[]
@@ -276,6 +297,7 @@ export const RiskReadServiceLive = Layer.effect(
 			readHeld,
 			readHeadStatuses,
 			readMarker,
+			readEditedLevel,
 			readHistory,
 			readThreadBugs,
 			readMergeBase,

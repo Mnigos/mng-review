@@ -597,33 +597,20 @@ layer(APP_MODE_OWNED)('risk marker creation failure', test => {
 	)
 })
 
-/** The app's editor entry in an edit history. */
-const APP_EDITOR = { __typename: 'Bot', login: APP_IDENTITY.login } as const
-
-/** An edit by a person that left `text`. */
-function writerEdit(id: string, text: string) {
-	return {
-		id,
-		editor: { __typename: 'User', login: 'writer' },
-		editedAt: '2026-01-01T00:01:00Z',
-		diff: text,
-	}
+/** A marker comment text that names `level`, as a person could write it. */
+function namedText(level: 'medium' | 'high') {
+	return toMarkerComment('risk', { ...EMPTY_RISK_MARKER, highest: level })
 }
 
-/** A complete edit history of the risk comment whose text is `body`. */
-function rebuildEdits(
-	body: string,
-	edits: readonly ReturnType<typeof writerEdit>[]
+/** The app's risk comment, which a person then edited to name `level`. */
+function seedEditedMarker(
+	fake: ReturnType<typeof riskFixture>,
+	level: 'medium' | 'high'
 ) {
-	return { body, total: edits.length, edits }
-}
-
-/** An edited risk comment whose text names `level`. */
-function editedMarker(level: 'medium' | 'high') {
-	return appSummary(undefined, {
-		body: toMarkerComment('risk', { ...EMPTY_RISK_MARKER, highest: level }),
-		editor: { __typename: 'User', login: 'writer' },
-	})
+	fake.api.comments.push(
+		appSummary(undefined, { body: toMarkerComment('risk', EMPTY_RISK_MARKER) })
+	)
+	fake.editMarker(namedText(level))
 }
 
 layer(APP_MODE_OWNED)('risk marker rebuild after a later edit', test => {
@@ -632,13 +619,8 @@ layer(APP_MODE_OWNED)('risk marker rebuild after a later edit', test => {
 		() =>
 			Effect.gen(function* () {
 				const fake = riskFixture()
-				fake.api.comments.push(editedMarker('medium'))
-				fake.editSnapshots.push(
-					rebuildEdits(editedMarker('high').body, [
-						writerEdit('edit-1', editedMarker('high').body),
-						writerEdit('edit-0', editedMarker('medium').body),
-					])
-				)
+				seedEditedMarker(fake, 'medium')
+				fake.beforeCreate.push(() => fake.editMarker(namedText('high')))
 				const run = yield* RiskStartService.use(service =>
 					service.startFull(riskInput())
 				).pipe(Effect.provide(fake.services))
@@ -653,110 +635,30 @@ layer(APP_MODE_OWNED)('risk marker rebuild after a later edit', test => {
 	test.effect('an unchanged edited marker is still rebuilt', () =>
 		Effect.gen(function* () {
 			const fake = riskFixture()
-			fake.api.comments.push(editedMarker('medium'))
+			seedEditedMarker(fake, 'medium')
 			yield* RiskStartService.use(service =>
 				service.startFull(riskInput())
 			).pipe(Effect.provide(fake.services))
 			expect(fake.api.writes.map(write => write.method)).toEqual(['update'])
-			expect(fake.reads.filter(read => read.startsWith('edits:'))).toHaveLength(
-				2
-			)
 			expect(fake.writes.map(write => write.state)).toEqual(['error'])
 		})
-	)
-	test.effect(
-		"a person's edit between the rebuild's read and its update raises step one's level",
-		() =>
-			Effect.gen(function* () {
-				const fake = riskFixture()
-				const medium = editedMarker('medium').body
-				fake.api.comments.push(editedMarker('medium'))
-				fake.editSnapshots.push(
-					rebuildEdits(medium, [writerEdit('edit-0', medium)]),
-					rebuildEdits('rebuilt', [
-						{ ...writerEdit('edit-2', 'rebuilt'), editor: APP_EDITOR },
-						writerEdit('edit-1', editedMarker('high').body),
-						writerEdit('edit-0', medium),
-					])
-				)
-				const run = yield* RiskStartService.use(service =>
-					service.startFull(riskInput())
-				).pipe(Effect.provide(fake.services))
-				expect(
-					fake.writes.map(
-						write => parseRiskDescription(write.description)?.level
-					)
-				).toEqual(['medium', 'high'])
-				expect(fake.writes.map(write => write.state)).toEqual([
-					'error',
-					'error',
-				])
-				expect(parseRiskDescription(fake.writes[1]?.description ?? '')).toEqual(
-					run.description
-				)
-				expect(run.description.level).toBe('high')
-				expect(run.decision).toMatchObject({
-					status: 'unrated',
-					reason: 'marker-edited',
-				})
-			})
-	)
-	test.effect(
-		'an edit history that cannot be read after the rebuild raises step one to High',
-		() =>
-			Effect.gen(function* () {
-				const fake = riskFixture()
-				fake.api.comments.push(editedMarker('medium'))
-				fake.failures.edits.push(
-					undefined,
-					new GitHubApiError({ operation: 'edits', reason: 'unavailable' })
-				)
-				const run = yield* RiskStartService.use(service =>
-					service.startFull(riskInput())
-				).pipe(Effect.provide(fake.services))
-				expect(
-					fake.writes.map(
-						write => parseRiskDescription(write.description)?.level
-					)
-				).toEqual(['medium', 'high'])
-				expect(run.description.level).toBe('high')
-			})
 	)
 	test.effect(
 		'an edit history that cannot be read before the rebuild leaves the edited marker',
 		() =>
 			Effect.gen(function* () {
 				const fake = riskFixture()
-				fake.api.comments.push(editedMarker('medium'))
-				fake.failures.edits.push(
-					new GitHubApiError({ operation: 'edits', reason: 'unavailable' })
-				)
+				seedEditedMarker(fake, 'medium')
+				const error = new GitHubApiError({
+					operation: 'edits',
+					reason: 'unavailable',
+				})
+				fake.failures.edits.push(error, error)
 				yield* RiskStartService.use(service =>
 					service.startFull(riskInput())
 				).pipe(Effect.provide(fake.services))
 				expect(fake.api.writes).toEqual([])
 				expect(fake.writes.map(write => write.state)).toEqual(['error'])
-			})
-	)
-	test.effect(
-		'a raise that cannot be written fails step one so the job fails',
-		() =>
-			Effect.gen(function* () {
-				const fake = riskFixture()
-				fake.api.comments.push(editedMarker('medium'))
-				fake.failures.edits.push(
-					undefined,
-					new GitHubApiError({ operation: 'edits', reason: 'unavailable' })
-				)
-				fake.failures.create.push(
-					undefined,
-					new GitHubApiError({ operation: 'status', reason: 'unavailable' })
-				)
-				expect(
-					yield* RiskStartService.use(service =>
-						service.startFull(riskInput())
-					).pipe(Effect.provide(fake.services), Effect.flip)
-				).toMatchObject({ _tag: 'RiskStepOneError', stage: 'marker-raise' })
 			})
 	)
 })

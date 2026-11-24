@@ -40,6 +40,12 @@ import {
 } from '../../platform/github-status.service'
 import type { GitHubApiError } from '../../platform/github.errors'
 import { OwnedIdentities } from '../../platform/owned-identities.context'
+import {
+	commentUpdates,
+	editRiskComment,
+	type PersonEdit,
+	toCommentEdits,
+} from './comment-edit-log.helper'
 import { githubApiFake, COMMAND_PULL_REQUEST } from './github-api-fake.helper'
 import { APP_IDENTITY, botThread, report, RULES } from './publish-test.helper'
 
@@ -202,6 +208,8 @@ export function riskFixture() {
 		threads: [] as GitHubApiError[],
 		/** One entry per edit history read in turn; `undefined` lets that read pass. */
 		edits: [] as (GitHubApiError | undefined)[],
+		/** A comment update GitHub stores and whose answer is then lost. */
+		updateStored: [] as GitHubApiError[],
 	}
 	/** The edit history each read returns in turn; `undefined` reads it from the comments. */
 	const editSnapshots: (CommentEdits | undefined)[] = []
@@ -209,6 +217,13 @@ export function riskFixture() {
 	const beforeCreate: (() => void)[] = []
 	/** Run just after the next timeline read returns, like a person acting right after it. */
 	const afterTimeline: (() => void)[] = []
+	/** Run just before the next comment update stores, like a person's edit landing first. */
+	const beforeUpdate: (() => void)[] = []
+	/** Every person's edit of a comment, in the order they landed. */
+	const personEdits: PersonEdit[] = []
+	/** A person's edit of the risk comment: its text becomes `text` and its editor the person. */
+	const editMarker = (text: string, login = 'writer') =>
+		editRiskComment(api, personEdits, { text, login })
 	const statusSnapshots: (readonly RiskCommitStatus[] | undefined)[] = []
 	const gitState = {
 		base: RISK_BASE,
@@ -263,23 +278,16 @@ export function riskFixture() {
 				if (error) return yield* error
 				const snapshot = editSnapshots.shift()
 				if (snapshot) return snapshot
-				const comment = api.comments.find(entry => entry.id === nodeId)
-				const updates = api.writes.filter(
-					write => write.method === 'update' && write.id === comment?.databaseId
-				).length
-				// GitHub lists the created version too once a comment is first edited.
-				const total = updates === 0 ? 0 : updates + 1
-				return {
-					body: comment?.body ?? '',
-					total,
-					edits: Array.from({ length: total }, (_, index) => ({
-						id: `edit-${total - 1 - index}`,
-						editor: { __typename: 'Bot', login: APP_IDENTITY.login },
-						editedAt: `2026-01-01T00:${String(59 - index).padStart(2, '0')}:00Z`,
-						diff: comment?.body ?? '',
-					})),
-				} satisfies CommentEdits
+				return toCommentEdits(
+					api.comments.find(entry => entry.id === nodeId),
+					api.writes,
+					personEdits
+				)
 			}),
+	})
+	const comments = commentUpdates(api, {
+		beforeUpdate,
+		updateStored: failures.updateStored,
 	})
 	const git = Layer.succeed(GitService, {
 		root: '/fixture',
@@ -306,6 +314,7 @@ export function riskFixture() {
 	})
 	const dependencies = Layer.mergeAll(
 		api.api,
+		comments,
 		risk,
 		git,
 		Layer.succeed(FloorDiffService, {
@@ -347,6 +356,8 @@ export function riskFixture() {
 		failures,
 		beforeCreate,
 		afterTimeline,
+		beforeUpdate,
+		editMarker,
 		statusSnapshots,
 		editSnapshots,
 		gitState,

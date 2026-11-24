@@ -75,12 +75,12 @@ export class AnswerReadService extends Context.Service<
 			pullNumber: number
 		) => Effect.Effect<CommandRead, GitHubApiError, OwnedIdentities>
 		/**
-		 * The entry an answer of `kind` carries: every command of that kind (and agent) from an acted-on
-		 * author its read saw that no trusted answer names at its current version with a qualifying
-		 * run (`isAnswered`). Its read is the run's, so a command created or edited at or after
-		 * `before` is left for its own run, and so is one at or after the run's creation time, which
-		 * the merge tool requires an answering run to follow: GitHub's times are whole seconds, so the
-		 * same second never counts. A failed run read fails the call.
+		 * The entry an answer of `kind` carries: every command of that kind (and agent) from an
+		 * acted-on author its read saw that no trusted answer names at its current version with a
+		 * qualifying run (`isAnswered`). Its read is the run's, so a command created or edited at or
+		 * after `before` is left for its own run, and so is one at or after the run's creation time,
+		 * which the merge tool requires an answering run to follow: GitHub's times are whole seconds,
+		 * so the same second never counts. A failed run read fails the call.
 		 */
 		readonly getCommandEntry: (
 			request: AnswerRequest

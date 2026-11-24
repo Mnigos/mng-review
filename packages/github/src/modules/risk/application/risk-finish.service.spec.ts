@@ -4,7 +4,8 @@ import {
 	DEFAULT_RISK_LABELS,
 	parseRiskDescription,
 } from '@mng-review/domain'
-import { Effect } from 'effect'
+import { Effect, Fiber } from 'effect'
+import { TestClock } from 'effect/testing'
 import { GitHubApiError } from '../../../platform/github.errors'
 import {
 	confirmedThread,
@@ -25,6 +26,7 @@ import {
 import { parseRiskMarker } from '../../publish/domain/publish-marker.parser'
 import { toMarkerComment } from '../../publish/presentation/thread-comment.formatter'
 import { EMPTY_RISK_MARKER } from '../domain/risk-marker.helper'
+import { EDIT_LAG_RETRIES } from '../domain/risk.constants'
 import { formatRiskComment } from '../presentation/rating-block.formatter'
 import { RiskFinishService } from './risk-finish.service'
 import { RiskReadService } from './risk-read.service'
@@ -1326,27 +1328,6 @@ layer(APP_MODE_OWNED)('risk marker edits during the update', test => {
 				)
 			})
 	)
-	test.effect('an edit history with a null edit leaves the run unrated', () =>
-		Effect.gen(function* () {
-			const fake = riskFixture()
-			const run = yield* RiskStartService.use(service =>
-				service.startFull(riskInput())
-			).pipe(Effect.provide(fake.services))
-			const body = fake.api.comments[0]?.body ?? ''
-			const after = riskEdits(body, [APP_IDENTITY.login, APP_IDENTITY.login])
-			fake.editSnapshots.push(riskEdits(body, [APP_IDENTITY.login]), {
-				...after,
-				total: after.total + 1,
-				edits: [...after.edits, null],
-			})
-			expect(
-				yield* RiskFinishService.use(service => service.finish(run)).pipe(
-					Effect.provide(fake.services)
-				)
-			).toMatchObject({ state: 'error', reason: 'marker-edited' })
-			expect(fake.writes.map(write => write.state)).toEqual(['error'])
-		})
-	)
 	test.effect(
 		'a marker that changed between its read and the edit read is not updated',
 		() =>
@@ -1431,7 +1412,7 @@ layer(APP_MODE_OWNED)('risk marker edits during the update', test => {
 			})
 	)
 	test.effect(
-		'an update that does not show in the edit history stops the grant',
+		'an update that never shows in the edit history stops the grant after the retries',
 		() =>
 			Effect.gen(function* () {
 				const fake = riskFixture()
@@ -1439,12 +1420,24 @@ layer(APP_MODE_OWNED)('risk marker edits during the update', test => {
 					service.startFull(riskInput())
 				).pipe(Effect.provide(fake.services))
 				const body = fake.api.comments[0]?.body ?? ''
-				fake.editSnapshots.push(riskEdits(body, []), riskEdits(body, []))
-				expect(
-					yield* RiskFinishService.use(service => service.finish(run)).pipe(
-						Effect.provide(fake.services)
+				fake.editSnapshots.push(
+					...Array.from({ length: EDIT_LAG_RETRIES + 2 }, () =>
+						riskEdits(body, [])
 					)
-				).toMatchObject({ state: 'error', reason: 'publish-failed' })
+				)
+				const finished = yield* RiskFinishService.use(service =>
+					service.finish(run)
+				).pipe(Effect.provide(fake.services), Effect.forkChild)
+				yield* TestClock.adjust('1 minute')
+				expect(yield* Fiber.join(finished)).toMatchObject({
+					state: 'error',
+					reason: 'publish-failed',
+					detail:
+						"the risk comment's edit history does not show this run's update",
+				})
+				expect(
+					fake.reads.filter(read => read.startsWith('edits:'))
+				).toHaveLength(EDIT_LAG_RETRIES + 2)
 				expect(fake.writes.map(write => write.state)).toEqual(['error'])
 			})
 	)

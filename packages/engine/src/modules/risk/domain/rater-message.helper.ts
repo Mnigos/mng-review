@@ -10,7 +10,9 @@ import type { RaterInput } from './risk-rating.types'
 
 const NONE = '(none)'
 
-/** What the rater's first message is built from; never the title, description or commit messages. */
+/**
+ * What the rater's first message is built from; never the title, description or commit messages.
+ */
 export interface RaterMessageInput extends RaterInput {
 	/** Every changed file, `skip.paths` and binaries included. */
 	readonly files: readonly ChangedFile[]

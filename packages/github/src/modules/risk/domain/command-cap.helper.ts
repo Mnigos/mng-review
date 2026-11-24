@@ -1,7 +1,10 @@
 import type { AnswerEntry } from '@mng-review/domain'
 import { type CommentVersion, namesComment } from './answer.helper'
 
-/** A conversation comment as the cap reads it: its version, the command it holds and its author's standing. */
+/**
+ * A conversation comment as the cap reads it: its version, the command it holds and its author's
+ * standing.
+ */
 export interface CapComment extends CommentVersion {
 	/** The comment holds a `review` command for the handle (`run <agent>` does not count). */
 	readonly review: boolean
@@ -27,7 +30,10 @@ export function getCountedReviews(
 	)
 }
 
-/** True when the command is past `reviews_per_head`: more counted commands than the cap, itself included. */
+/**
+ * True when the command is past `reviews_per_head`: more counted commands than the cap, itself
+ * included.
+ */
 export function isOverCap(
 	counted: readonly Pick<CapComment, 'id'>[],
 	commentId: number,

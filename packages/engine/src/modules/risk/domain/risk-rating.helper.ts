@@ -43,7 +43,10 @@ export function isRatingRun(check: RatingRunCheck): boolean {
 	)
 }
 
-/** Why a reviewed run cannot be rated: a finder failed or only partly ran, or the token budget stopped it. */
+/**
+ * Why a reviewed run cannot be rated: a finder failed or only partly ran, or the token budget
+ * stopped it.
+ */
 export interface RatingGap {
 	readonly reason: UnratedReason
 	readonly detail: string
@@ -110,7 +113,9 @@ export function toRiskAnswer(answer: RiskAnswer): RiskAnswer {
 	}
 }
 
-/** Of a first answer and a continuation's, the higher level; on a tie the later, which read more. */
+/**
+ * Of a first answer and a continuation's, the higher level; on a tie the later, which read more.
+ */
 export function mergeRiskAnswers(
 	first: RiskAnswer,
 	next: RiskAnswer
