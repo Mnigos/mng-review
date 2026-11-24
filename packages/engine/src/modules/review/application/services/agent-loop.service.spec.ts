@@ -982,6 +982,67 @@ layer(Layer.empty)('conversation token budget and sources', test => {
 						})
 				}).pipe(Effect.provide(loopLayer(() => Effect.succeed(answer()))))
 		)
+	for (const stop of ['tokens', 'tool calls', 'none'] as const)
+		test.effect(
+			`an answer forced by ${stop} ${stop === 'tokens' ? 'is' : 'is not'} marked budget-stopped`,
+			() =>
+				Effect.gen(function* () {
+					const output = yield* AgentLoopService.use(loop =>
+						loop.run({
+							...REQUEST,
+							budget: { runTokens: 1000, conversationTokens: 100 },
+						})
+					)
+					expect(output.budgetStopped).toBe(
+						stop === 'tokens' ? true : undefined
+					)
+				}).pipe(
+					Effect.provide(
+						loopLayer(
+							(_call, index) =>
+								Effect.succeed(
+									index === 0
+										? [
+												toolCall('read_file'),
+												finishWithUsage(stop === 'tokens' ? 34 : 1),
+											]
+										: answer()
+								),
+							{ maxToolCalls: stop === 'tool calls' ? 1 : LIMITS.maxToolCalls }
+						)
+					)
+				)
+		)
+	test.effect(
+		'a budget-forced answer that needs a correction stays budget-stopped after a cheap correction',
+		() =>
+			Effect.gen(function* () {
+				const output = yield* AgentLoopService.use(loop =>
+					loop.run({
+						...REQUEST,
+						budget: { runTokens: 1000, conversationTokens: 100 },
+					})
+				)
+				const calls = yield* ScriptedLlm.use(script => script.calls)
+				expect(calls).toHaveLength(3)
+				expect(output.budgetStopped).toBe(true)
+			}).pipe(
+				Effect.provide(
+					loopLayer((_call, index) =>
+						Effect.succeed(
+							index === 0
+								? [toolCall('read_file'), finishWithUsage(34)]
+								: index === 1
+									? [
+											toolCall(REQUEST.finish, { findings: 'not a list' }),
+											finishWithUsage(1),
+										]
+									: answer()
+						)
+					)
+				)
+			)
+	)
 	test.effect(
 		'refuses the response repository calls when conversation tokens run out, then wraps up',
 		() =>
@@ -1939,6 +2000,7 @@ layer(Layer.empty)('reserved coverage after forced wrap-up', test => {
 							maxToolCalls === 1 ? [first] : [first, second]
 						)
 						expect(output.continued).toBe(maxToolCalls === 1 ? undefined : true)
+						expect(output.budgetStopped).toBe(true)
 						expect(output.spentTokens).toBe(
 							2500 + (maxToolCalls === 1 ? 5 : 15)
 						)

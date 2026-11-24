@@ -1,5 +1,14 @@
 import { FINGERPRINT_LENGTH, type Validation } from '@mng-review/domain'
-import { type ReviewReport, toEmptyReviewReport } from '@mng-review/engine'
+import {
+	MAX_RISK_DETAIL_CHARS,
+	MAX_RISK_DIRECTION_CHARS,
+	MAX_RISK_REASON_CHARS,
+	MAX_RISK_REASONS,
+	MAX_RISK_REF_CHARS,
+	MAX_RISK_REFS,
+	type ReviewReport,
+	toEmptyReviewReport,
+} from '@mng-review/engine'
 import { Schema } from 'effect'
 import { expectTypeOf } from 'vitest'
 import { bug } from '../../../shared/mocks/publish-test.helper'
@@ -22,6 +31,71 @@ function roundTrip(value: unknown) {
 }
 
 describe('reviewReportSchema', () => {
+	const binding = {
+		head: 'a'.repeat(40),
+		base: 'b'.repeat(40),
+		rules: 'abc123def456',
+		floor: false,
+		floors: [],
+	} as const
+	const rated = {
+		...binding,
+		status: 'rated',
+		level: 'medium',
+		model: 'low',
+		reasons: ['The public contract changes.'],
+		refs: ['src/store.ts:10'],
+		rater: 'model-a',
+		up: 'More callers.',
+		down: 'No callers.',
+	} as const
+	const unrated = {
+		...binding,
+		status: 'unrated',
+		reason: 'coverage-gap',
+		detail: 'Unread src/store.ts.',
+	} as const
+
+	test.each([rated, unrated])('round trips a $status risk rating', rating => {
+		expect(roundTrip({ ...reviewReport(), rating }).rating).toEqual(rating)
+	})
+	test.each([
+		{ ...rated, level: 'critical' },
+		{ ...rated, model: 'unknown' },
+		{ ...unrated, reason: 'unknown' },
+		{ ...rated, rules: 'g'.repeat(12) },
+		{ ...unrated, rules: 'g'.repeat(12) },
+		{ ...rated, reasons: [] },
+		{
+			...rated,
+			reasons: Array.from({ length: MAX_RISK_REASONS + 1 }, () => 'Reason.'),
+		},
+		{ ...rated, reasons: ['r'.repeat(MAX_RISK_REASON_CHARS + 1)] },
+		{
+			...rated,
+			refs: Array.from({ length: MAX_RISK_REFS + 1 }, () => 'src/store.ts:10'),
+		},
+		{ ...rated, refs: ['r'.repeat(MAX_RISK_REF_CHARS + 1)] },
+		{ ...rated, up: 'u'.repeat(MAX_RISK_DIRECTION_CHARS + 1) },
+		{ ...rated, down: 'd'.repeat(MAX_RISK_DIRECTION_CHARS + 1) },
+		{ ...unrated, detail: 'd'.repeat(MAX_RISK_DETAIL_CHARS + 1) },
+	])('rejects an invalid rating %j', rating => {
+		expect(() => roundTrip({ ...reviewReport(), rating })).toThrow()
+	})
+	test('round trips a rating at every limit', () => {
+		const rating = {
+			...rated,
+			reasons: Array.from({ length: MAX_RISK_REASONS }, () =>
+				'r'.repeat(MAX_RISK_REASON_CHARS)
+			),
+			refs: Array.from({ length: MAX_RISK_REFS }, () =>
+				'r'.repeat(MAX_RISK_REF_CHARS)
+			),
+			up: 'u'.repeat(MAX_RISK_DIRECTION_CHARS),
+			down: 'd'.repeat(MAX_RISK_DIRECTION_CHARS),
+		}
+		expect(roundTrip({ ...reviewReport(), rating }).rating).toEqual(rating)
+	})
 	test('preserves the complete shared report across JSON serialization', () => {
 		const report = reviewReport()
 		expect(roundTrip(report)).toEqual(report)

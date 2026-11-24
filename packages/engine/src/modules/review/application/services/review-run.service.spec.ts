@@ -16,6 +16,13 @@ import {
 } from '../../../../shared/mocks/git-test.helper'
 import { gitFixture } from '../../../../shared/mocks/review-layer.helper'
 import { answer } from '../../../../shared/mocks/review-test.helper'
+import { RISK_ANSWER } from '../../../../shared/mocks/risk-test.helper'
+import {
+	RaterPipelineLive,
+	makeRaterLayer,
+} from '../../../risk/infrastructure/risk.layers'
+import { toPlanJson } from '../../../routing/domain/plan-json.helper'
+import { toReviewJson } from '../../domain/review-json.helper'
 import { toEmptyReviewReport } from '../../domain/review-report.helper'
 import {
 	makeReviewLayer,
@@ -42,10 +49,120 @@ vi.mock('../../infrastructure/review.layers', async importOriginal => ({
 	),
 }))
 
+vi.mock('../../../risk/infrastructure/risk.layers', async importOriginal => ({
+	...(await importOriginal<
+		typeof import('../../../risk/infrastructure/risk.layers')
+	>()),
+	makeRaterLayer: vi.fn(),
+}))
+
 afterEach(() => {
 	cleanupRepos()
 	vi.clearAllMocks()
 })
+
+layer(Layer.empty, { excludeTestServices: true })(
+	'ReviewRunService risk orchestration',
+	test => {
+		for (const mode of [
+			'full',
+			'disabled',
+			'named',
+			'gate',
+			'all-skipped',
+		] as const)
+			test.effect(`rates only eligible full runs: ${mode}`, () =>
+				Effect.gen(function* () {
+					const repo = createRepo()
+					repo.write('src/value.ts', 'before\n')
+					const base = repo.commit()
+					repo.write('src/value.ts', 'after\n')
+					const head = repo.commit()
+					const cfg = config({
+						risk: { ...config().risk, enabled: mode !== 'disabled' },
+						skip: {
+							paths: mode === 'all-skipped' ? ['src/**'] : [],
+							labels: ['skip-review'],
+						},
+					})
+					const scriptSpy = vi.fn(() =>
+						Effect.succeed(answer('report_risk', RISK_ANSWER))
+					)
+					const reviewSpy = vi.fn((request: ReviewRequest) =>
+						Effect.succeed(toEmptyReviewReport(request.planReport, 0))
+					)
+					vi.mocked(makeReviewLayer).mockImplementation(() =>
+						Layer.succeed(ReviewService, { review: reviewSpy })
+					)
+					vi.mocked(makeRaterLayer).mockImplementation(limits =>
+						RaterPipelineLive.pipe(
+							Layer.provide(makeScriptedLlmLayer(scriptSpy)),
+							Layer.provide(Layer.succeed(ReviewLimits, limits))
+						)
+					)
+					const report = yield* ReviewRunService.use(service =>
+						service.run({
+							rules: { config: cfg, agents: [agent('storage')], source: base },
+							baseRef: base,
+							headRef: head,
+							pr: pr({ labels: mode === 'gate' ? ['skip-review'] : [] }),
+							routerDisabledReason: 'fixture',
+							...(mode === 'named' ? { onlyAgent: 'storage' } : {}),
+						})
+					).pipe(
+						Effect.provide(
+							ReviewRunServiceLive.pipe(
+								Layer.provide(
+									Layer.mergeAll(
+										gitLayer(repo.root),
+										TokenLedgerLive,
+										Layer.succeed(
+											HttpClient.HttpClient,
+											HttpClient.make(() => Effect.die('HTTP must not run'))
+										)
+									)
+								)
+							)
+						),
+						Effect.provide(
+							ConfigProvider.layer(ConfigProvider.fromEnvRecord({}))
+						)
+					)
+					const rates = mode === 'full' || mode === 'all-skipped'
+					expect(scriptSpy).toHaveBeenCalledTimes(rates ? 1 : 0)
+					expect(makeRaterLayer).toHaveBeenCalledTimes(rates ? 1 : 0)
+					if (rates) {
+						expect(report.rating).toMatchObject({
+							status: 'rated',
+							level: 'low',
+						})
+						expect(report.tokenSources.rater?.calls).toBe(1)
+					} else expect(report).not.toHaveProperty('rating')
+					if (mode === 'all-skipped') {
+						expect(reviewSpy).not.toHaveBeenCalled()
+						expect(report.planReport.change.files[0]?.skipped).toBe(
+							'skip.paths'
+						)
+					}
+					if (mode === 'disabled') {
+						const { planReport, ...outcome } = report
+						const legacy = {
+							...toPlanJson(planReport),
+							...outcome,
+							endpointError: report.endpointError ?? null,
+							incomplete: report.incomplete ?? null,
+						}
+						expect(JSON.stringify(toReviewJson(report))).toBe(
+							JSON.stringify(legacy)
+						)
+						expect(JSON.stringify(toReviewJson(report))).not.toContain(
+							'"rating"'
+						)
+					}
+				})
+			)
+	}
+)
 
 layer(Layer.empty)('ReviewRunService', test => {
 	for (const mode of ['skipped', 'empty'] as const)
