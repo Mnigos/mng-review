@@ -353,6 +353,9 @@ layer(Layer.empty)('GitHubRiskService HTTP boundary', test => {
 				).pipe(Effect.provide(fake.riskLayer))
 				expect(read.total).toBe(4)
 				expect(read.edits).toEqual(getEditedCommentEdits())
+				// GitHub's `diff` is the whole text an edit left, so the newest one's is the body.
+				expect(read.edits[0]?.diff).toBe(read.body)
+				expect(new Set(read.edits.map(edit => edit.diff)).size).toBe(4)
 				expect(read.edits.at(-1)?.editor?.login).toBe(COMMENT_EDITS_BOT)
 				expect(fake.requests.map(getGitHubRequestBody)).toEqual([
 					expect.objectContaining({
@@ -377,6 +380,41 @@ layer(Layer.empty)('GitHubRiskService HTTP boundary', test => {
 				editsPage(attempt === 1 ? 2 : 3, attempt === 1, 'next'),
 		],
 		['with more pages and no cursor', () => editsPage(2, true, null)],
+		[
+			'that lists an edit as a null node',
+			() => {
+				const page = editsPage(2, false, null)
+				const { userContentEdits } = page.data.node
+				return {
+					data: {
+						node: {
+							...page.data.node,
+							userContentEdits: {
+								...userContentEdits,
+								nodes: [...userContentEdits.nodes, null],
+							},
+						},
+					},
+				}
+			},
+		],
+		[
+			'whose later page lists an edit as a null node',
+			(attempt: number) => {
+				const page = editsPage(2, attempt === 1, 'next')
+				const { userContentEdits } = page.data.node
+				return attempt === 1
+					? page
+					: {
+							data: {
+								node: {
+									...page.data.node,
+									userContentEdits: { ...userContentEdits, nodes: [null] },
+								},
+							},
+						}
+			},
+		],
 		[
 			'whose later page fails',
 			(attempt: number) =>

@@ -10,8 +10,12 @@ import type {
 	ConnectionPage,
 	PullRequestComment,
 	ReviewThread,
+	ThreadComment,
 } from '../../platform/github-api.schema'
-import { GitHubApiServiceLive } from '../../platform/github-api.service'
+import {
+	GitHubApiService,
+	GitHubApiServiceLive,
+} from '../../platform/github-api.service'
 import { GitHubReviewServiceLive } from '../../platform/github-review.service'
 import { GitHubRiskServiceLive } from '../../platform/github-risk.service'
 import { GitHubStatusServiceLive } from '../../platform/github-status.service'
@@ -132,4 +136,29 @@ export function failGitHubTransport(
 			}),
 		})
 	)
+}
+
+/**
+ * The real whole-thread read over one page GitHub answers with `nodes`, where `null` is a comment
+ * it could not resolve.
+ */
+export function readThreadOverHttp(nodes: readonly (ThreadComment | null)[]) {
+	const http = makeGitHubHttp(() =>
+		Effect.succeed(
+			Response.json({
+				data: {
+					node: {
+						comments: {
+							nodes,
+							pageInfo: { hasNextPage: false, endCursor: null },
+						},
+					},
+				},
+			})
+		)
+	)
+	return (threadId: string) =>
+		GitHubApiService.use(service => service.listThreadComments(threadId)).pipe(
+			Effect.provide(http.layer)
+		)
 }

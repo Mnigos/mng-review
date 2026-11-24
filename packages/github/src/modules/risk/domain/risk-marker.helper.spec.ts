@@ -24,6 +24,7 @@ import {
 import { toAppRiskStatuses } from './risk-history.helper'
 import {
 	EMPTY_RISK_MARKER,
+	getEditedLevel,
 	getMarkerEditStop,
 	toMarkerRead,
 	getReusedLevel,
@@ -70,12 +71,40 @@ function appEdit(minute: number): CommentEdit {
 /** GitHub's documented limit on the edits it keeps for one comment. */
 const EDIT_RETENTION = 100
 
-/** A full retained history of older app edits, newest first. */
+/** An edit time `second` seconds into the fixture day, in GitHub's format. */
+function atSecond(second: number) {
+	const minutes = String(Math.floor(second / 60)).padStart(2, '0')
+	return `2026-01-01T00:${minutes}:${String(second % 60).padStart(2, '0')}Z`
+}
+
+/**
+ * A full retained history, newest first: the newest older app edits, each at its own time, over
+ * the created version, which GitHub keeps in every read.
+ */
 function retained() {
-	return Array.from({ length: EDIT_RETENTION }, (_, index) => ({
-		...appEdit(0),
-		id: `app-old-${EDIT_RETENTION - index}`,
-	}))
+	const intermediate = Array.from(
+		{ length: EDIT_RETENTION - 1 },
+		(_, index) => ({
+			...appEdit(0),
+			id: `app-old-${EDIT_RETENTION - 1 - index}`,
+			editedAt: atSecond(EDIT_RETENTION - index),
+		})
+	)
+	return [...intermediate, { ...appEdit(0), id: 'app-original' }]
+}
+
+/**
+ * The retained history after the `newest` edits: as many of the oldest intermediate edits drop out,
+ * and the created version stays.
+ */
+function evicted(newest: readonly CommentEdit[]) {
+	const kept = retained()
+	const intermediate = kept.slice(0, -1)
+	return [
+		...newest,
+		...intermediate.slice(0, intermediate.length - newest.length),
+		...kept.slice(-1),
+	]
 }
 
 /** `edits`, given newest first, in the order GitHub lists them. */
@@ -302,12 +331,12 @@ describe('risk marker', () => {
 	for (const total of [EDIT_RETENTION, EDIT_RETENTION + 40])
 		test(`at the edit retention with a count of ${total}, only the app's update passes`, () => {
 			const before = { total, edits: retained() }
-			const kept = retained().slice(0, EDIT_RETENTION - 1)
 			const counted = total === EDIT_RETENTION ? total : total + 1
+			const update = { ...appEdit(59), editedAt: atSecond(3600) }
 			expect(
 				getMarkerEditStop(
 					before,
-					{ total: counted, edits: [appEdit(59), ...kept] },
+					{ total: counted, edits: evicted([update]) },
 					APP_IDENTITY
 				)
 			).toBeUndefined()
@@ -316,7 +345,7 @@ describe('risk marker', () => {
 					before,
 					{
 						total: total === EDIT_RETENTION ? total : total + 2,
-						edits: [appEdit(59), personEdit(58), ...kept.slice(0, -1)],
+						edits: evicted([update, personEdit(58)]),
 					},
 					APP_IDENTITY
 				)
@@ -325,6 +354,17 @@ describe('risk marker', () => {
 				MARKER_UNSEEN_STOP
 			)
 		})
+	test('at the edit retention the newest edit of the read is found by its time, not its place', () => {
+		const before = { total: EDIT_RETENTION, edits: retained().toReversed() }
+		const update = { ...appEdit(59), editedAt: atSecond(3600) }
+		expect(
+			getMarkerEditStop(
+				before,
+				{ total: EDIT_RETENTION, edits: evicted([update]).toReversed() },
+				APP_IDENTITY
+			)
+		).toBeUndefined()
+	})
 	test('a capped history that shares no edit with the read stops the grant', () => {
 		const before = { total: EDIT_RETENTION, edits: retained() }
 		const newer = Array.from({ length: EDIT_RETENTION }, (_, index) => ({
@@ -380,5 +420,127 @@ describe('risk marker', () => {
 		expect(getMarkerEditStop(before, history(edits), APP_IDENTITY)).toEqual(
 			MARKER_RACE_STOP
 		)
+	})
+})
+
+/** A marker comment whose text names `level`, as a person could write it. */
+function namedText(level: 'medium' | 'high') {
+	return toMarkerComment('risk', { ...EMPTY_RISK_MARKER, highest: level })
+}
+
+describe("the level a person's edits of the risk comment named", () => {
+	const older = [appEdit(2), appEdit(1)]
+	test('a history only the app edited names nothing', () => {
+		expect(getEditedLevel(history([appEdit(3), ...older]), APP_IDENTITY)).toBe(
+			'none'
+		)
+		expect(getEditedLevel(history([]), APP_IDENTITY)).toBe('none')
+	})
+	for (const level of ['medium', 'high'] as const)
+		test(`a person's edit the app overwrote later still names ${level}`, () => {
+			expect(
+				getEditedLevel(
+					history([appEdit(4), personEdit(3, namedText(level)), ...older]),
+					APP_IDENTITY
+				)
+			).toBe(level)
+		})
+	test('the highest level any person named counts, not the newest', () => {
+		expect(
+			getEditedLevel(
+				history([
+					personEdit(5, namedText('medium')),
+					appEdit(4),
+					personEdit(3, namedText('high')),
+					...older,
+				]),
+				APP_IDENTITY
+			)
+		).toBe('high')
+	})
+	test("a person's edit that names no level adds nothing", () => {
+		expect(
+			getEditedLevel(
+				history([appEdit(4), personEdit(3, 'a note'), ...older]),
+				APP_IDENTITY
+			)
+		).toBe('none')
+	})
+	test('an edit by a deleted account or by another app counts as a person', () => {
+		const text = namedText('high')
+		expect(
+			getEditedLevel(
+				history([{ ...personEdit(3, text), editor: null }, ...older]),
+				APP_IDENTITY
+			)
+		).toBe('high')
+		expect(
+			getEditedLevel(
+				history([
+					{
+						...personEdit(3, text),
+						editor: { __typename: 'Bot', login: 'old-review' },
+					},
+					...older,
+				]),
+				APP_IDENTITY
+			)
+		).toBe('high')
+	})
+	test("a person's edit whose text GitHub does not give counts as High", () => {
+		expect(
+			getEditedLevel(
+				history([appEdit(4), { ...personEdit(3), diff: null }, ...older]),
+				APP_IDENTITY
+			)
+		).toBe('high')
+	})
+	test('a High form followed by a lower one in one edit names High', () => {
+		const text = `${namedText('high')}\n${namedText('medium')}`
+		expect(
+			getEditedLevel(history([personEdit(3, text), ...older]), APP_IDENTITY)
+		).toBe('high')
+	})
+	test("an app edit naming High is the app's own text and adds nothing", () => {
+		expect(
+			getEditedLevel(
+				history([{ ...appEdit(3), diff: namedText('high') }, ...older]),
+				APP_IDENTITY
+			)
+		).toBe('none')
+	})
+})
+
+describe('the level edited marker text names', () => {
+	for (const [first, second] of [
+		['high', 'medium'],
+		['medium', 'high'],
+	] as const)
+		test(`a ${first} form followed by a ${second} form names High`, () => {
+			expect(
+				toMarkerRead(
+					[
+						appSummary(undefined, {
+							body: `${namedText(first)}\n${namedText(second)}`,
+							editor: { __typename: 'User', login: 'writer' },
+						}),
+					],
+					APP_IDENTITY
+				)
+			).toMatchObject({ status: 'edited', named: 'high' })
+		})
+	test('a High form that does not decode names nothing', () => {
+		const broken = namedText('high').replace('"v":', '"x":')
+		expect(
+			toMarkerRead(
+				[
+					appSummary(undefined, {
+						body: `${broken}\n${namedText('medium')}`,
+						editor: { __typename: 'User', login: 'writer' },
+					}),
+				],
+				APP_IDENTITY
+			)
+		).toMatchObject({ status: 'edited', named: 'medium' })
 	})
 })

@@ -28,6 +28,7 @@ import {
 	REPLY_TO_THREAD_MUTATION,
 	RESOLVE_THREAD_MUTATION,
 	REQUEST_TIMEOUT,
+	THREAD_COMMENTS_QUERY,
 } from './github-api.constants'
 import { GitHubApiService } from './github-api.service'
 import { GitHubApiError } from './github.errors'
@@ -225,6 +226,34 @@ layer(Layer.empty)('GitHubApiService reads', test => {
 					expectHeaders(fixture)
 				})
 		)
+		for (const page of ['first', 'later'] as const)
+			test.effect(
+				`${operation} fails on a node GitHub lists as null on the ${page} page`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = makeGitHubHttp((_request, attempt) =>
+							Effect.succeed(
+								Response.json(
+									attempt === 1
+										? toGitHubPage(
+												connection,
+												page === 'first' ? [node, null] : [node],
+												true,
+												'cursor-1'
+											)
+										: toGitHubPage(connection, [node, null])
+								)
+							)
+						)
+						expectApiFailure(
+							yield* GitHubApiService.use((service): GitHubRead =>
+								service[operation](42)
+							).pipe(Effect.provide(fixture.layer), Effect.flip),
+							operation
+						)
+						expect(fixture.requests).toHaveLength(page === 'first' ? 1 : 2)
+					})
+			)
 		test.effect(`${operation} accepts an empty connection`, () =>
 			Effect.gen(function* () {
 				const fixture = makeGitHubHttp(() =>
@@ -778,4 +807,64 @@ layer(Layer.empty)('GitHubApiService manual REST reads', test => {
 				).toEqual(answer)
 			})
 		)
+})
+
+/** One page of a thread's comments in GitHub's answer to the thread comments query. */
+function toThreadCommentsPage(
+	nodes: readonly unknown[],
+	endCursor: string | null = null
+) {
+	return {
+		data: {
+			node: {
+				comments: {
+					nodes,
+					pageInfo: { hasNextPage: endCursor !== null, endCursor },
+				},
+			},
+		},
+	}
+}
+
+layer(Layer.empty)('GitHubApiService whole thread read', test => {
+	const [comment] = REVIEW_THREAD.comments.nodes
+	test.effect('listThreadComments reads every page of the thread', () =>
+		Effect.gen(function* () {
+			const fixture = makeGitHubHttp((_request, attempt) =>
+				Effect.succeed(
+					Response.json(
+						toThreadCommentsPage([comment], attempt === 1 ? 'cursor-1' : null)
+					)
+				)
+			)
+			expect(
+				yield* GitHubApiService.use(service =>
+					service.listThreadComments('thread-1')
+				).pipe(Effect.provide(fixture.layer))
+			).toEqual([comment, comment])
+			expect(
+				fixture.requests.map(request => getGitHubRequestBody(request))
+			).toEqual(
+				[null, 'cursor-1'].map(cursor => ({
+					query: THREAD_COMMENTS_QUERY,
+					variables: { id: 'thread-1', cursor },
+				}))
+			)
+		})
+	)
+	test.effect(
+		'listThreadComments fails on a comment GitHub lists as a null node, since it may be an answer',
+		() =>
+			Effect.gen(function* () {
+				const fixture = makeGitHubHttp(() =>
+					Effect.succeed(Response.json(toThreadCommentsPage([comment, null])))
+				)
+				expectApiFailure(
+					yield* GitHubApiService.use(service =>
+						service.listThreadComments('thread-1')
+					).pipe(Effect.provide(fixture.layer), Effect.flip),
+					'listThreadComments'
+				)
+			})
+	)
 })

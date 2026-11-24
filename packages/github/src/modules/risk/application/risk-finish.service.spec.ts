@@ -1328,6 +1328,46 @@ layer(APP_MODE_OWNED)('risk marker edits during the update', test => {
 				)
 			})
 	)
+	for (const answer of ['given', 'lost'] as const)
+		test.effect(
+			`a High in a person's edit the update overwrote, answer ${answer}, holds the next rating at High`,
+			() =>
+				Effect.gen(function* () {
+					const fake = riskFixture()
+					const run = yield* RiskStartService.use(service =>
+						service.startFull(riskInput())
+					).pipe(Effect.provide(fake.services))
+					fake.beforeUpdate.push(() =>
+						fake.editMarker(
+							toMarkerComment('risk', { ...EMPTY_RISK_MARKER, highest: 'high' })
+						)
+					)
+					if (answer === 'lost')
+						fake.failures.updateStored.push(
+							new GitHubApiError({ operation: 'update', reason: 'timed out' })
+						)
+					expect(
+						yield* RiskFinishService.use(service => service.finish(run)).pipe(
+							Effect.provide(fake.services)
+						)
+					).toMatchObject({
+						state: 'error',
+						reason: answer === 'given' ? 'marker-edited' : 'publish-failed',
+					})
+					const next = yield* RiskStartService.use(service =>
+						service.startFull(riskInput())
+					).pipe(Effect.provide(fake.services))
+					expect(next.decision).toMatchObject({
+						status: 'rated',
+						level: 'high',
+					})
+					expect(
+						yield* RiskFinishService.use(service => service.finish(next)).pipe(
+							Effect.provide(fake.services)
+						)
+					).toMatchObject({ state: 'failure', level: 'high' })
+				})
+		)
 	test.effect(
 		'a marker that changed between its read and the edit read is not updated',
 		() =>
@@ -1439,6 +1479,26 @@ layer(APP_MODE_OWNED)('risk marker edits during the update', test => {
 					fake.reads.filter(read => read.startsWith('edits:'))
 				).toHaveLength(EDIT_LAG_RETRIES + 2)
 				expect(fake.writes.map(write => write.state)).toEqual(['error'])
+			})
+	)
+	test.effect(
+		'an update that shows in the edit history only on a later read lets the grant through',
+		() =>
+			Effect.gen(function* () {
+				const fake = riskFixture()
+				const run = yield* RiskStartService.use(service =>
+					service.startFull(riskInput())
+				).pipe(Effect.provide(fake.services))
+				const body = fake.api.comments[0]?.body ?? ''
+				fake.editSnapshots.push(riskEdits(body, []), riskEdits(body, []))
+				const finished = yield* RiskFinishService.use(service =>
+					service.finish(run)
+				).pipe(Effect.provide(fake.services), Effect.forkChild)
+				yield* TestClock.adjust('1 minute')
+				expect(yield* Fiber.join(finished)).toMatchObject({
+					state: 'success',
+					level: 'low',
+				})
 			})
 	)
 })

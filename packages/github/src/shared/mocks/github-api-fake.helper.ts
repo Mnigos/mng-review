@@ -20,6 +20,7 @@ import {
 	GitHubReviewService,
 	REVIEW_STATE_BY_EVENT,
 } from '../../platform/github-review.service'
+import type { GitHubApiError } from '../../platform/github.errors'
 import { getBasePermission } from './collaborator-role.helper'
 import { editThreadComment, toApiFailures } from './github-api-failures.helper'
 import type { ApiWrite } from './github-api-fake.types'
@@ -90,6 +91,12 @@ export function githubApiFake(
 	const beforeReply: (() => void)[] = []
 	/** Every comment of a thread by id; unset, a thread shows its first and latest comment. */
 	const threadComments = new Map<string, ThreadComment[]>()
+	/** A whole-thread read that replaces the in-memory one, such as the real adapter over HTTP. */
+	const threadReader: {
+		read?: (
+			threadId: string
+		) => Effect.Effect<readonly ThreadComment[], GitHubApiError>
+	} = {}
 	const author = { __typename: 'Bot', login: identity.login }
 	const addThread = (input: ReviewCommentInput) => {
 		threads.push({
@@ -192,6 +199,7 @@ export function githubApiFake(
 				reads.push(`listThreadComments:${id}`)
 				const error = failures.listThreadComments.shift()
 				if (error) return yield* error
+				if (threadReader.read) return yield* threadReader.read(id)
 				const thread = threads.find(entry => entry.id === id)
 				const latest =
 					thread && thread.comments.totalCount > 1
@@ -376,6 +384,7 @@ export function githubApiFake(
 		pullRequestSnapshots,
 		command,
 		threadComments,
+		threadReader,
 		beforeReply,
 	}
 }

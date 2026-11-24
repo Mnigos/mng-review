@@ -6,8 +6,9 @@ export const COMMENT_EDITS_BOT = 'coderabbitai'
 /**
  * Two pages of a real edited conversation comment's `userContentEdits`, read three edits per page
  * from pull request 48 of this repository on 2026-11-24. Only the body and each version's text
- * (`diff`, the whole text after that edit) are replaced. GitHub listed the edits newest first, the
- * created version last, and gave the same `totalCount` on both pages.
+ * (`diff`, the whole text after that edit) are replaced, each by its own placeholder; the newest
+ * edit's text was the body and has the body's placeholder. GitHub listed the edits newest first,
+ * the created version last, and gave the same `totalCount` on both pages.
  */
 export const EDITED_COMMENT_PAGES = [
 	{
@@ -31,13 +32,13 @@ export const EDITED_COMMENT_PAGES = [
 							id: 'UCE_lALOVyWi7M8AAAABqDBpac8AAAABbyIg4g',
 							editedAt: '2026-11-23T23:20:31Z',
 							editor: { __typename: 'Bot', login: COMMENT_EDITS_BOT },
-							diff: 'marker',
+							diff: 'marker version 3',
 						},
 						{
 							id: 'UCE_lALOVyWi7M8AAAABqDBpac8AAAABbyIUjw',
 							editedAt: '2026-11-23T23:20:23Z',
 							editor: { __typename: 'Bot', login: COMMENT_EDITS_BOT },
-							diff: 'marker',
+							diff: 'marker version 2',
 						},
 					],
 				},
@@ -59,7 +60,7 @@ export const EDITED_COMMENT_PAGES = [
 							id: 'UCE_lALOVyWi7M8AAAABqDBpac8AAAABbyIUhg',
 							editedAt: '2026-11-23T23:13:56Z',
 							editor: { __typename: 'Bot', login: COMMENT_EDITS_BOT },
-							diff: 'marker',
+							diff: 'marker version 1',
 						},
 					],
 				},
