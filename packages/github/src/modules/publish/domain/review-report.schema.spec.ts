@@ -423,3 +423,32 @@ describe('judgement edit decoding', () => {
 		).toThrow()
 	})
 })
+
+describe('unread files and the reading cap', () => {
+	const unreadFiles = [
+		{ path: 'src/store.ts', reason: 'partial' },
+		{ path: 'docs/notes.md', reason: 'deletions' },
+	] as const
+	test('round trips each unread file with its reason and the cap', () => {
+		const reviewed = reviewReport()
+		const decoded = roundTrip({
+			...reviewed,
+			agents: reviewed.agents.map(agent => ({ ...agent, unreadFiles })),
+			capped: { needed: 1_600_000, cap: 1_400_000 },
+		})
+		expect(decoded.agents[0]?.unreadFiles).toEqual(unreadFiles)
+		expect(decoded.capped).toEqual({ needed: 1_600_000, cap: 1_400_000 })
+	})
+	test('rejects an unread reason the engine does not give', () => {
+		const reviewed = reviewReport()
+		expect(() =>
+			roundTrip({
+				...reviewed,
+				agents: reviewed.agents.map(agent => ({
+					...agent,
+					unreadFiles: [{ path: 'src/store.ts', reason: 'skimmed' }],
+				})),
+			})
+		).toThrow()
+	})
+})

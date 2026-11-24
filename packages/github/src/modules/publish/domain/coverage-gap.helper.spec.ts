@@ -296,3 +296,20 @@ test('every gap is listed in order, so a quick run over a skipped file names bot
 	])
 	expect(getCoverageGaps(coveredReport(), [])).toStrictEqual([])
 })
+
+test('a run whose reading did not fit the cap names the cap before the unread files', () => {
+	const covered = coveredReport()
+	expect(
+		getCoverageGaps(
+			{
+				...covered,
+				capped: { needed: 1_600_000, cap: 1_400_000 },
+				agents: covered.agents.map(agent => ({ ...agent, unread: 3 })),
+			},
+			[]
+		)
+	).toStrictEqual([
+		{ kind: 'cap', cap: 1_400_000 },
+		{ kind: 'unread', unread: 3 },
+	])
+})

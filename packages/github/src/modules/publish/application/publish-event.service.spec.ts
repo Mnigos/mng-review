@@ -1363,3 +1363,38 @@ layer(APP_MODE_OWNED, { excludeTestServices: true })(
 		)
 	}
 )
+
+layer(APP_MODE_OWNED, { excludeTestServices: true })(
+	'PublishService failed head read',
+	test => {
+		test.effect(
+			'a clean full push whose head read fails says the pull request could not be read again',
+			() =>
+				Effect.gen(function* () {
+					const fixture = publishEventFixture()
+					// The first read decides the run's own head check; the write's read fails.
+					fixture.fake.failures.getPullRequest.push(
+						undefined,
+						new GitHubApiError({
+							operation: 'getPullRequest',
+							reason: 'Denied',
+							status: 403,
+						})
+					)
+					expect(
+						yield* PublishService.use(service =>
+							service.publish(fixture.input)
+						).pipe(Effect.provide(fixture.publisher))
+					).toMatchObject({ event: 'COMMENT' })
+					const review = fixture.fake.writes.find(
+						write => write.method === 'review'
+					)
+					const body = review?.method === 'review' ? review.input.body : ''
+					expect(body.split('\n')[0]).toBe(
+						'**Comment.** Not approved: the pull request could not be read again before the review, so the earlier state stands.'
+					)
+					expect(body).not.toContain('draft')
+				})
+		)
+	}
+)

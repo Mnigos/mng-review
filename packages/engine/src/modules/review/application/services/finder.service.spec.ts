@@ -1391,3 +1391,88 @@ layer(Layer.empty)('finder text limits', test => {
 				)
 		)
 })
+
+/** A unit job of `tokens` that must read the billing file. */
+function sizedJob(user: string, tokens: number) {
+	return {
+		unit: user,
+		system: 'system',
+		user,
+		tools: [],
+		tokens,
+		coverage: [BILLING_PATH],
+	}
+}
+
+layer(Layer.empty)('sized jobs and unread files', test => {
+	test.effect(
+		'runs the jobs it is given with their tokens and names every unread file with why',
+		() =>
+			Effect.gen(function* () {
+				const requests: Omit<LoopRequest<unknown>, 'parse' | 'coverage'>[] = []
+				const unread = [
+					{ path: BILLING_PATH, reason: 'partial' },
+					{ path: 'src/billing/refund.ts', reason: 'deletions' },
+				] as const
+				const run: AgentLoopService['Service']['run'] = request => {
+					requests.push(request)
+					return request.parse({ findings: [] }).pipe(
+						Effect.orDie,
+						Effect.map(value => ({
+							value,
+							turns: 1,
+							toolCalls: 0,
+							spentTokens: 5,
+							unspentTokens: 0,
+							unread: request.user === 'first' ? [unread[0]] : [unread[1]],
+						}))
+					)
+				}
+				const result = yield* FinderService.use(finder =>
+					finder.run(plannedRun(), context({ fanOut: true }), [
+						sizedJob('first', 90_000),
+						sizedJob('second', 70_000),
+					])
+				).pipe(
+					Effect.provide(
+						FinderServiceLive.pipe(
+							Layer.provide(Layer.succeed(AgentLoopService, { run })),
+							Layer.provide(
+								reviewDependencies(() => Effect.die('unexpected model call'))
+							)
+						)
+					)
+				)
+				expect(
+					requests.map(request => request.budget?.conversationTokens)
+				).toEqual([90_000, 70_000])
+				expect(result.report).toMatchObject({
+					units: 2,
+					unread: 2,
+					unreadFiles: unread,
+				})
+			})
+	)
+	test.effect('jobs gives a unit with cut files what reading them needs', () =>
+		Effect.gen(function* () {
+			const jobs = yield* FinderService.use(finder =>
+				finder.jobs(
+					plannedRun({ files: [BILLING_PATH] }),
+					context({ tokens: { allowance: 40_000, runTokens: 200_000 } })
+				)
+			).pipe(
+				Effect.provide(
+					finderLayer(
+						() => Effect.die('unexpected model call'),
+						gitFixture({
+							readDiff: () => Effect.succeed(unifiedDiff(BILLING_PATH, 20_000)),
+						})
+					)
+				)
+			)
+			expect(jobs).toHaveLength(1)
+			expect(jobs[0]?.coverage).toEqual([BILLING_PATH])
+			expect(jobs[0]?.need).toBeGreaterThan(jobs[0]?.tokens ?? 0)
+		})
+	)
+})

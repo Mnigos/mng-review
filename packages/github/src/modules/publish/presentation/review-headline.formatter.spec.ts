@@ -260,3 +260,53 @@ test('each write replaces the headline an earlier write put first', () => {
 	expect(toBodyWithoutHeadline(second)).toBe('**Verdict: ready**\nDetails')
 	expect(toBodyWithoutHeadline('**Verdict: ready**')).toBe('**Verdict: ready**')
 })
+
+describe('reading caps and unknown heads', () => {
+	test('a run over its cap names the cap in the reason', () => {
+		expect(
+			formatReviewHeadline({
+				event: 'COMMENT',
+				evidence: {
+					...COVERED_REVIEW,
+					gap: { kind: 'cap', cap: 1_400_000 },
+					more: [{ kind: 'unread', unread: 4 }],
+				},
+				keep: false,
+			})
+		).toBe(
+			'**Comment.** Not approved: reading every changed file needs more than the 1,400,000 tokens `limits.tokens_per_run` lets the finders plan, so the review read only what fit; the main reviewer answered without reading 4 changed file(s).'
+		)
+	})
+	for (const evidence of [
+		{ ...COVERED_REVIEW, onHead: false, headUnknown: true, open: true },
+		{ ...REPLIED, current: false, onHead: false, headUnknown: true },
+	] as const)
+		test(`a ${evidence.kind} run whose last read of the pull request failed says so`, () => {
+			expect(
+				formatReviewHeadline({ event: 'COMMENT', evidence, keep: false })
+			).toBe(
+				'**Comment.** Not approved: the pull request could not be read again before the review, so the earlier state stands.'
+			)
+		})
+})
+
+describe('a failed head read under a blocking verdict', () => {
+	for (const verdict of ['needs fixes', 'needs owner'] as const)
+		test(`${verdict} still says the pull request could not be read again`, () => {
+			expect(
+				formatReviewHeadline({
+					event: 'COMMENT',
+					evidence: {
+						...COVERED_REVIEW,
+						verdict,
+						openBugs: 2,
+						onHead: false,
+						headUnknown: true,
+					},
+					keep: true,
+				})
+			).toBe(
+				'**Comment.** Not approved: the pull request could not be read again before the review, so the earlier state stands.'
+			)
+		})
+})
