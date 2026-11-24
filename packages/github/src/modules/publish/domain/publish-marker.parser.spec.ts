@@ -1,13 +1,16 @@
+import { toAnswerDigest } from '@mng-review/domain'
 import {
 	botThread,
 	SUMMARY_MARKER,
 } from '../../../shared/mocks/publish-test.helper'
 import { toMarkerComment } from '../presentation/thread-comment.formatter'
 import {
-	parseFindingMarker,
-	parseSummaryMarker,
-	parseRiskMarker,
 	hasRiskMarker,
+	parseAnswerMarker,
+	parseFindingMarker,
+	parseReplyMarker,
+	parseRiskMarker,
+	parseSummaryMarker,
 } from './publish-marker.parser'
 
 describe('publish markers', () => {
@@ -67,6 +70,57 @@ test('summary markers without a completely reviewed head still decode', () => {
 	expect(
 		parseSummaryMarker(toMarkerComment('summary', { ...marker, head: 12 }))
 	).toBeUndefined()
+})
+
+describe('answer markers', () => {
+	const entry = {
+		run: 7,
+		kind: 'deny',
+		ids: [
+			{ id: 42, at: '2026-01-01T12:00:00Z', digest: toAnswerDigest('command') },
+		],
+	} as const
+	test('decodes the new answer marker and answer entries in a reply and summary', () => {
+		expect(
+			parseAnswerMarker(toMarkerComment('answer', { v: 1, answers: [entry] }))
+				?.answers
+		).toEqual([entry])
+		expect(
+			parseReplyMarker(
+				toMarkerComment('reply', {
+					v: 1,
+					action: 'seen',
+					commit: 'head',
+					answers: [entry],
+				})
+			)?.answers
+		).toEqual([entry])
+		expect(
+			parseSummaryMarker(
+				toMarkerComment('summary', { v: 1, runs: 1, answers: [entry] })
+			)?.answers
+		).toEqual([entry])
+	})
+	for (const separator of ['\n', ' '])
+		test(`only the last marker counts with separator ${JSON.stringify(separator)}`, () => {
+			const first = toMarkerComment('answer', { v: 1, answers: [entry] })
+			const last = toMarkerComment('summary', { v: 1, runs: 2 })
+			expect(parseAnswerMarker(`${first}${separator}${last}`)).toBeUndefined()
+			expect(parseSummaryMarker(`${first}${separator}${last}`)).toEqual({
+				v: 1,
+				runs: 2,
+			})
+		})
+	test('an invalid answer entry is rejected at the model-output boundary', () => {
+		expect(
+			parseAnswerMarker(
+				toMarkerComment('answer', {
+					v: 1,
+					answers: [{ ...entry, ids: [{ ...entry.ids[0], digest: 'bad' }] }],
+				})
+			)
+		).toBeUndefined()
+	})
 })
 
 describe('risk marker boundary', () => {

@@ -86,6 +86,8 @@ export function githubApiFake(
 		permission: undefined,
 	}
 	const failures = toApiFailures()
+	/** Run just before the next thread reply lands, like a person acting first. */
+	const beforeReply: (() => void)[] = []
 	/** Every comment of a thread by id; unset, a thread shows its first and latest comment. */
 	const threadComments = new Map<string, ThreadComment[]>()
 	const author = { __typename: 'Bot', login: identity.login }
@@ -124,6 +126,7 @@ export function githubApiFake(
 		replyToThread: (id, body) =>
 			Effect.gen(function* () {
 				writes.push({ method: 'reply', id, body })
+				beforeReply.shift()?.()
 				const error = failures.reply.shift()
 				if (error) return yield* error
 				const index = threads.findIndex(thread => thread.id === id)
@@ -373,5 +376,6 @@ export function githubApiFake(
 		pullRequestSnapshots,
 		command,
 		threadComments,
+		beforeReply,
 	}
 }

@@ -21,6 +21,7 @@ import {
 	getNewestStatus,
 	getStatusesHighest,
 	hasAppHistory,
+	getCommentsSinceHead,
 } from './risk-history.helper'
 
 const PREVIOUS_APP = toBotIdentity('old-review')
@@ -209,5 +210,36 @@ describe('risk history', () => {
 				17
 			)
 		).toEqual([])
+	})
+})
+
+describe('comments since a head arrived', () => {
+	test('starts after the last arrival of the head, including a force push back', () => {
+		expect([
+			...getCommentsSinceHead(
+				[
+					{ __typename: 'PullRequestCommit', commit: { oid: 'head' } },
+					{ __typename: 'IssueComment', databaseId: 1 },
+					{
+						__typename: 'HeadRefForcePushedEvent',
+						beforeCommit: { oid: 'other' },
+						afterCommit: { oid: 'head' },
+					},
+					{ __typename: 'IssueComment', databaseId: 2 },
+				],
+				'head'
+			),
+		]).toEqual([2])
+	})
+	test('keeps all comment ids when the timeline has no arrival', () => {
+		expect([
+			...getCommentsSinceHead(
+				[
+					{ __typename: 'IssueComment', databaseId: 1 },
+					{ __typename: 'IssueComment', databaseId: null },
+				],
+				'head'
+			),
+		]).toEqual([1])
 	})
 })

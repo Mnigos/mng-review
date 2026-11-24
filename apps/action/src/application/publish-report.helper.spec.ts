@@ -43,6 +43,28 @@ describe('failsRating', () => {
 			},
 			true,
 		],
+		...([0, 1] as const).map(
+			unsettled =>
+				[
+					`a reply run leaving ${unsettled} answer unsettled`,
+					{
+						status: 'replied',
+						result: {
+							verdict: 'needs owner',
+							event: 'COMMENT',
+							dismissal: { dismissed: 0, failed: 0 },
+							openBugs: 0,
+							answered: { 'needs-owner': 1 },
+							waiting: 1,
+							label: 'added',
+							run: 2,
+							status: true,
+							unsettled,
+						},
+					},
+					unsettled > 0,
+				] as const
+		),
 	] as const satisfies readonly (readonly [string, PublishReport, boolean])[])
 		test(`${name} fails the job: ${expected}`, () => {
 			expect(failsRating(report)).toBe(expected)

@@ -28,9 +28,11 @@ import {
 	agentReport,
 	report,
 	RULES,
+	reviewAnswers,
 	reviewThread,
 	threadReply,
 	SUMMARY_MARKER,
+	summaryReview,
 	TOKEN_MODE_OWNED,
 } from '../../../shared/mocks/publish-test.helper'
 import {
@@ -40,6 +42,7 @@ import {
 	ownerReviewThread,
 	decidedReply,
 	pendingReviewThread,
+	unsettledBugThread,
 } from '../../../shared/mocks/thread-reply-test.helper'
 import {
 	StatusReportService,
@@ -59,7 +62,10 @@ import {
 	parseReplyMarker,
 	parseSummaryMarker,
 } from '../domain/publish-marker.parser'
-import { THREAD_PLACE_LINES } from '../domain/publish.constants'
+import {
+	MAX_ANSWER_ENTRIES,
+	THREAD_PLACE_LINES,
+} from '../domain/publish.constants'
 import { PublishIncompleteError } from '../domain/publish.errors'
 import type { ThreadReplyDecision } from '../domain/thread-reply.schema'
 import {
@@ -2666,6 +2672,47 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 	'PublishService author replies',
 	test => {
+		test.effect(
+			'a held answer that reopens a resolved bug thread counts it open after a failed second read',
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup()
+					fixture.fake.threads.push({
+						...pendingReviewThread(),
+						isResolved: true,
+						resolvedBy: { login: 'contributor' },
+					})
+					fixture.fake.threadComments.set('thread', [
+						threadReply({
+							databaseId: 42,
+							body: pendingReviewThread().latest?.nodes[0]?.body ?? '',
+							createdAt: '2026-01-01T12:00:00Z',
+							author: { __typename: 'User', login: 'contributor' },
+						}),
+					])
+					fixture.fake.failures.listThreads.push(undefined, error())
+					expect(
+						yield* PublishService.use(service =>
+							service.publish({
+								...fixture.input,
+								report: { ...fixture.input.report, bugs: [] },
+								run: 7,
+								held: 42,
+								replies: {
+									tokens: {},
+									base: fixture.base,
+									decisions: [
+										decidedReply({
+											action: 'still-found',
+											reason: 'The write repeats.',
+										}),
+									],
+								},
+							})
+						).pipe(Effect.provide(fixture.publisher))
+					).toMatchObject({ answered: { 'still-found': 1 }, openBugs: 1 })
+				})
+		)
 		for (const touched of [false, true])
 			test.effect(
 				`resolved applies only after the finding file was touched: ${touched}`,
@@ -4202,6 +4249,129 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 )
 
 layer(APP_MODE_OWNED, { excludeTestServices: true })(
+	'PublishService command answer markers',
+	test => {
+		for (const kind of ['review', 'run'] as const)
+			test.effect(
+				`a ${kind} review publishes its answered commands in the summary marker`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = setup(undefined, APP_IDENTITY)
+						const answers = [
+							{
+								run: 7,
+								kind,
+								...(kind === 'run' ? { agent: 'auth' } : {}),
+								ids: [
+									{
+										id: 42,
+										at: '2026-01-01T12:00:00Z',
+										digest: 'a'.repeat(16),
+									},
+								],
+							},
+						] as const
+						yield* PublishService.use(service =>
+							service.publish({
+								...fixture.input,
+								answers,
+								...(kind === 'review'
+									? {
+											rating: {
+												status: 'rated',
+												level: 'low',
+												floors: [],
+												reasons: [],
+												reused: false,
+											} as const,
+										}
+									: { command: { agentOnly: true, agent: 'auth' } }),
+							})
+						).pipe(Effect.provide(fixture.publisher))
+						expect(
+							parseSummaryMarker(reviewBody(fixture.fake) ?? '')?.answers
+						).toEqual(answers)
+						if (kind === 'review')
+							expect(
+								parseSummaryMarker(reviewBody(fixture.fake) ?? '')?.risk
+							).toBe('low')
+					})
+			)
+		test.effect(
+			'a run whose head moved and posts nothing still records its answers, not its rating',
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup(undefined, APP_IDENTITY)
+					const prior = {
+						...SUMMARY_MARKER,
+						head: 'new-full-review-head',
+						finished: true,
+						answers: reviewAnswers(1),
+					}
+					fixture.fake.reviews.push(
+						summaryReview(prior, {
+							author: { __typename: 'Bot', login: APP_IDENTITY.login },
+						})
+					)
+					fixture.fake.command.pullRequest = {
+						...fixture.fake.command.pullRequest,
+						head: {
+							...fixture.fake.command.pullRequest.head,
+							sha: 'moved-head',
+						},
+					}
+					const answers = reviewAnswers(1, 2)
+					yield* PublishService.use(service =>
+						service.publish({
+							...fixture.input,
+							command: { agentOnly: false },
+							report: { ...fixture.input.report, bugs: [] },
+							answers,
+							rating: {
+								status: 'rated',
+								level: 'low',
+								floors: [],
+								reasons: [],
+								reused: false,
+							},
+						})
+					).pipe(Effect.provide(fixture.publisher))
+					const marker = parseSummaryMarker(reviewBody(fixture.fake) ?? '')
+					expect(marker?.answers).toEqual([...prior.answers, ...answers])
+					expect(marker?.risk).toBeUndefined()
+				})
+		)
+		test.effect(
+			'an answer past the cap fails the publish and leaves the summary as it was',
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup(undefined, APP_IDENTITY)
+					const existing = summaryReview(
+						{ ...SUMMARY_MARKER, answers: reviewAnswers(MAX_ANSWER_ENTRIES) },
+						{ author: { __typename: 'Bot', login: APP_IDENTITY.login } }
+					)
+					fixture.fake.reviews.push(existing)
+					expect(
+						yield* PublishService.use(service =>
+							service.publish({
+								...fixture.input,
+								answers: reviewAnswers(1, MAX_ANSWER_ENTRIES + 1),
+							})
+						).pipe(Effect.provide(fixture.publisher), Effect.flip)
+					).toMatchObject({
+						_tag: 'PublishIncompleteError',
+						error: {
+							_tag: 'SummaryMarkerError',
+							answers: MAX_ANSWER_ENTRIES + 1,
+						},
+					})
+					expect(fixture.fake.reviews).toEqual([existing])
+				})
+		)
+	}
+)
+
+layer(APP_MODE_OWNED, { excludeTestServices: true })(
 	'published rating block marker',
 	test => {
 		for (const status of ['rated', 'unrated', 'absent'] as const)
@@ -4242,5 +4412,53 @@ layer(APP_MODE_OWNED, { excludeTestServices: true })(
 							expect(body).toContain('**Risk: not rated**')
 					})
 			)
+	}
+)
+
+/** The fixture's publish input with no bug of its own, so only the threads count. */
+function withoutBugs(input: ReturnType<typeof setup>['input']) {
+	return { ...input, report: { ...input.report, bugs: [] } }
+}
+
+layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
+	'PublishService unsettled bug threads',
+	test => {
+		for (const place of ['window', 'outside'] as const)
+			test.effect(
+				`counts a resolved bug whose unsettled answer is ${place} its window as open`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = setup()
+						const { thread, comments } = unsettledBugThread(place)
+						fixture.fake.threads.push(thread)
+						fixture.fake.threadComments.set(thread.id, [...comments])
+						fixture.fake.failures.unresolve.push(error(503))
+						expect(
+							yield* PublishService.use(service =>
+								service.publish(withoutBugs(fixture.input))
+							).pipe(Effect.provide(fixture.publisher))
+						).toMatchObject({ openBugs: 1, unsettled: 1 })
+					})
+			)
+		test.effect(
+			'counts a resolved bug as open when its whole thread cannot be read',
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup()
+					const { thread } = unsettledBugThread('outside')
+					fixture.fake.threads.push(thread)
+					fixture.fake.failures.listThreadComments.push(
+						error(503),
+						error(503),
+						error(503),
+						error(503)
+					)
+					expect(
+						yield* PublishService.use(service =>
+							service.publish(withoutBugs(fixture.input))
+						).pipe(Effect.provide(fixture.publisher))
+					).toMatchObject({ openBugs: 1 })
+				})
+		)
 	}
 )

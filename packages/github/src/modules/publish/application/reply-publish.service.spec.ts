@@ -1,29 +1,43 @@
 import { layer } from '@effect/vitest'
 import { Effect, Layer, Redacted } from 'effect'
 import { GITHUB_ACTIONS_IDENTITY } from '../../../platform/bot-identity.helper'
+import { GitHubApiService } from '../../../platform/github-api.service'
 import { GitHubConfig } from '../../../platform/github.config'
 import { GitHubApiError } from '../../../platform/github.errors'
+import { OwnedIdentities } from '../../../platform/owned-identities.context'
 import {
 	cleanupRepos,
 	createRepo,
 	gitLayer,
 } from '../../../shared/mocks/git-test.helper'
 import { githubApiFake } from '../../../shared/mocks/github-api-fake.helper'
-import { githubStatusFake } from '../../../shared/mocks/github-status-fake.helper'
+import {
+	githubStatusFake,
+	openPullRequest,
+} from '../../../shared/mocks/github-status-fake.helper'
 import {
 	ACCEPTING_RULES,
 	summaryReview,
 	SUMMARY_MARKER,
 	RULES,
 	TOKEN_MODE_OWNED,
+	threadReply,
 } from '../../../shared/mocks/publish-test.helper'
 import {
 	ACCEPTED_DECISION,
 	decidedReply,
 	pendingReviewThread,
+	unsettledBugThread,
 } from '../../../shared/mocks/thread-reply-test.helper'
+import {
+	StatusSweepService,
+	StatusSweepServiceLive,
+} from '../../status/application/status-sweep.service'
+import { toCommitStatus } from '../../status/domain/status.helper'
+import { toBodyDigest, toBotThread } from '../domain/bot-thread.helper'
 import { parseReplyMarker } from '../domain/publish-marker.parser'
 import type { ThreadReplyDecision } from '../domain/thread-reply.schema'
+import { toMarkerComment } from '../presentation/thread-comment.formatter'
 import {
 	ReplyPublishService,
 	ReplyPublishServiceLive,
@@ -311,6 +325,393 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 								: []
 						)
 						expect(fixture.status.checks).toEqual([])
+					})
+			)
+	}
+)
+
+layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
+	'ReplyPublishService resolved held confirmations',
+	test => {
+		for (const severity of ['high', 'critical'] as const)
+			test.effect(
+				`a held reply confirming a ${severity} bug is counted as open after its answer`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = setup()
+						const original = threadAtCommit(fixture.base)
+						const root = original.comments.nodes.map(comment => ({
+							...comment,
+							body: comment.body.replace(
+								'"severity":"high"',
+								`"severity":"${severity}"`
+							),
+						}))
+						const reply = threadReply({
+							databaseId: 42,
+							body: 'confirmed',
+							createdAt: '2026-01-01T12:00:00Z',
+							author: { __typename: 'User', login: 'contributor' },
+						})
+						const answer = threadReply({
+							databaseId: 50,
+							createdAt: '2026-01-02T12:00:00Z',
+							body: toMarkerComment('reply', {
+								v: 1,
+								action: 'resolved',
+								commit: fixture.head,
+								reply: 41,
+							}),
+						})
+						fixture.fake.threads.push({
+							...original,
+							isResolved: true,
+							comments: { ...original.comments, nodes: root, totalCount: 3 },
+							latest: { nodes: [reply, answer] },
+						})
+						fixture.fake.threadComments.set('thread', [...root, reply, answer])
+						expect(
+							yield* ReplyPublishService.use(service =>
+								service.publish({
+									...fixture.input,
+									run: 7,
+									held: 42,
+									replies: {
+										...fixture.input.replies,
+										decisions: [
+											decidedReply(
+												{
+													action: 'still-found',
+													reason: 'The writer confirms the bug.',
+												},
+												{ digest: toBodyDigest('confirmed') }
+											),
+										],
+									},
+								})
+							).pipe(Effect.provide(fixture.publisher))
+						).toMatchObject({
+							answered: { 'still-found': 1 },
+							openBugs: 1,
+							verdict: 'needs fixes',
+						})
+					})
+			)
+		for (const confirmed of [true, false])
+			test.effect(
+				`a held reply keeps a resolved bug open, reporting it to the raise only when confirmed=${confirmed}`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = setup()
+						const original = threadAtCommit(fixture.base)
+						const root = original.comments.nodes.map(comment => ({
+							...comment,
+							body: comment.body
+								.replace(',"confirmed":true', '')
+								.replace(
+									'"severity":"high"',
+									confirmed
+										? '"severity":"high","confirmed":true'
+										: '"severity":"high"'
+								),
+						}))
+						const reply = threadReply({
+							databaseId: 42,
+							body: 'confirmed',
+							createdAt: '2026-01-01T12:00:00Z',
+							author: { __typename: 'User', login: 'contributor' },
+						})
+						const answer = threadReply({
+							databaseId: 50,
+							createdAt: '2026-01-02T12:00:00Z',
+							body: toMarkerComment('reply', {
+								v: 1,
+								action: 'resolved',
+								commit: fixture.head,
+								reply: 41,
+							}),
+						})
+						fixture.fake.threads.push({
+							...original,
+							isResolved: true,
+							comments: { ...original.comments, nodes: root, totalCount: 3 },
+							latest: { nodes: [reply, answer] },
+						})
+						fixture.fake.threadComments.set('thread', [...root, reply, answer])
+						const result = yield* ReplyPublishService.use(service =>
+							service.publish({
+								...fixture.input,
+								run: 7,
+								held: 42,
+								replies: {
+									...fixture.input.replies,
+									decisions: [
+										decidedReply(
+											{
+												action: 'still-found',
+												reason: 'The writer confirms the bug.',
+											},
+											{ digest: toBodyDigest('confirmed') }
+										),
+									],
+								},
+							})
+						).pipe(Effect.provide(fixture.publisher))
+						expect(result).toMatchObject({
+							answered: { 'still-found': 1 },
+							openBugs: 1,
+						})
+						expect(result.reopened).toEqual(confirmed ? ['high'] : undefined)
+						const { identities } = yield* OwnedIdentities
+						const next = yield* GitHubApiService.use(api =>
+							api.listReviewThreads(17)
+						).pipe(Effect.provide(fixture.fake.api))
+						expect(
+							next
+								.flatMap(thread => toBotThread(thread, identities) ?? [])
+								.filter(
+									thread => !thread.resolved && thread.marker.kind === 'bug'
+								)
+						).toHaveLength(1)
+					})
+			)
+	}
+)
+
+/** A resolved thread with a held writer reply the run sends to the owner. */
+function heldOwnerThread(fixture: ReturnType<typeof setup>) {
+	const original = threadAtCommit(fixture.base)
+	const reply = threadReply({
+		databaseId: 42,
+		body: 'disputed',
+		createdAt: '2026-01-01T12:00:00Z',
+		author: { __typename: 'User', login: 'contributor' },
+	})
+	fixture.fake.threads.push({
+		...original,
+		isResolved: true,
+		resolvedBy: { login: 'contributor' },
+		comments: { ...original.comments, totalCount: 2 },
+		latest: { nodes: [reply] },
+	})
+	fixture.fake.threadComments.set('thread', [...original.comments.nodes, reply])
+	return {
+		...fixture.input,
+		rules: RULES,
+		run: 7,
+		held: 42,
+		replies: {
+			...fixture.input.replies,
+			decisions: [
+				decidedReply(
+					{ action: 'needs-owner', reason: 'An owner must decide.' },
+					{ digest: toBodyDigest('disputed') }
+				),
+			],
+		},
+	} satisfies ReplyPublishInput
+}
+
+/** Marks the fixture's thread resolved by the admin `contributor`. */
+function resolveByOwner(fixture: ReturnType<typeof setup>) {
+	const index = fixture.fake.threads.findIndex(thread => thread.id === 'thread')
+	const thread = fixture.fake.threads[index]
+	if (thread)
+		fixture.fake.threads[index] = {
+			...thread,
+			isResolved: true,
+			resolvedBy: { login: 'contributor' },
+		}
+}
+
+layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
+	'ReplyPublishService owner waits',
+	test => {
+		test.effect(
+			'a failed second thread read keeps a wait the first read showed resolved',
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup()
+					fixture.fake.reviews.splice(
+						0,
+						1,
+						summaryReview(
+							{
+								...SUMMARY_MARKER,
+								head: fixture.head,
+								finished: true,
+								needsOwner: ['thread'],
+							},
+							{
+								author: {
+									__typename: 'Bot',
+									login: GITHUB_ACTIONS_IDENTITY.login,
+								},
+							}
+						)
+					)
+					fixture.fake.threads.push({
+						...threadAtCommit(fixture.base),
+						isResolved: true,
+						resolvedBy: { login: 'contributor' },
+					})
+					fixture.fake.failures.listThreads.push(
+						undefined,
+						new GitHubApiError({ operation: 'threads', reason: 'unavailable' })
+					)
+					expect(
+						yield* ReplyPublishService.use(service =>
+							service.publish(fixture.input)
+						).pipe(Effect.provide(fixture.publisher))
+					).toMatchObject({ waiting: 1 })
+				})
+		)
+		for (const reopened of [true, false])
+			test.effect(
+				`an owner resolving between the reopen and the answer keeps the wait, reopened after=${reopened}`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = setup()
+						const input = heldOwnerThread(fixture)
+						fixture.fake.beforeReply.push(() => resolveByOwner(fixture))
+						if (!reopened)
+							fixture.fake.failures.unresolve.push(
+								undefined,
+								new GitHubApiError({
+									operation: 'unresolve',
+									reason: 'unavailable',
+								})
+							)
+						expect(
+							yield* ReplyPublishService.use(service =>
+								service.publish(input)
+							).pipe(Effect.provide(fixture.publisher))
+						).toMatchObject({ answered: { 'needs-owner': 1 }, waiting: 1 })
+						expect(
+							fixture.fake.writes
+								.map(write => write.method)
+								.filter(method => method !== 'updateReview')
+								.slice(0, 3)
+						).toEqual(['unresolve', 'reply', 'unresolve'])
+					})
+			)
+		test.effect(
+			'a failed reopen after the answer keeps the wait and the bug through a sweep and later publishes',
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup()
+					const input = heldOwnerThread(fixture)
+					fixture.fake.beforeReply.push(() => resolveByOwner(fixture))
+					fixture.fake.failures.unresolve.push(
+						undefined,
+						new GitHubApiError({
+							operation: 'unresolve',
+							reason: 'unavailable',
+						})
+					)
+					expect(
+						yield* ReplyPublishService.use(service =>
+							service.publish(input)
+						).pipe(Effect.provide(fixture.publisher))
+					).toMatchObject({ waiting: 1, unsettled: 1 })
+					const { identities } = yield* OwnedIdentities
+					const [thread] = fixture.fake.threads
+					expect(thread && toBotThread(thread, identities)).toMatchObject({
+						resolved: true,
+						unsettled: true,
+					})
+					const sweepStatus = githubStatusFake({
+						listOpenPullRequests: () =>
+							Effect.succeed([openPullRequest(17, fixture.head)]),
+						getStatus: () =>
+							Effect.succeed({
+								id: 1,
+								state: 'success',
+								description: 'stale',
+								context: 'MNG Review',
+								creator: null,
+							}),
+					})
+					yield* StatusSweepService.use(service => service.sweep([])).pipe(
+						Effect.provide(
+							StatusSweepServiceLive.pipe(
+								Layer.provide(Layer.merge(sweepStatus.layer, fixture.fake.api))
+							)
+						)
+					)
+					expect(sweepStatus.statuses).toEqual([
+						{ sha: fixture.head, ...toCommitStatus('needs owner', 1, true) },
+					])
+					// A later run cannot reopen it either: the wait stays.
+					fixture.fake.failures.unresolve.push(
+						new GitHubApiError({
+							operation: 'unresolve',
+							reason: 'unavailable',
+						})
+					)
+					const later = { ...fixture.input, rules: RULES }
+					expect(
+						yield* ReplyPublishService.use(service =>
+							service.publish(later)
+						).pipe(Effect.provide(fixture.publisher))
+					).toMatchObject({ waiting: 1, unsettled: 1 })
+					// The next run reopens and settles it: open now, so it still waits.
+					expect(
+						yield* ReplyPublishService.use(service =>
+							service.publish(later)
+						).pipe(Effect.provide(fixture.publisher))
+					).toMatchObject({ waiting: 1, unsettled: 0 })
+					// Only a resolution after that clears the wait.
+					resolveByOwner(fixture)
+					expect(
+						yield* ReplyPublishService.use(service =>
+							service.publish(later)
+						).pipe(Effect.provide(fixture.publisher))
+					).toMatchObject({ waiting: 0, unsettled: 0 })
+					expect(
+						fixture.fake.writes.map(write => write.method).includes('unlabel')
+					).toBeTruthy()
+				})
+		)
+		test.effect('a resolution after the answer clears the wait', () =>
+			Effect.gen(function* () {
+				const fixture = setup()
+				const input = heldOwnerThread(fixture)
+				fixture.fake.threadSnapshots.push([...fixture.fake.threads])
+				fixture.fake.beforeReply.push(() => {
+					resolveByOwner(fixture)
+					fixture.fake.threadSnapshots.push([...fixture.fake.threads])
+				})
+				expect(
+					yield* ReplyPublishService.use(service =>
+						service.publish(input)
+					).pipe(Effect.provide(fixture.publisher))
+				).toMatchObject({ answered: { 'needs-owner': 1 }, waiting: 0 })
+			})
+		)
+	}
+)
+
+layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
+	'ReplyPublishService unsettled bug threads',
+	test => {
+		for (const place of ['window', 'outside'] as const)
+			test.effect(
+				`counts a resolved bug whose unsettled answer is ${place} its window as open`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = setup()
+						const { thread, comments } = unsettledBugThread(place)
+						fixture.fake.threads.push(thread)
+						fixture.fake.threadComments.set(thread.id, [...comments])
+						fixture.fake.failures.unresolve.push(
+							new GitHubApiError({ operation: 'unresolve', reason: 'down' })
+						)
+						expect(
+							yield* ReplyPublishService.use(service =>
+								service.publish(fixture.input)
+							).pipe(Effect.provide(fixture.publisher))
+						).toMatchObject({ openBugs: 1, unsettled: 1 })
 					})
 			)
 	}

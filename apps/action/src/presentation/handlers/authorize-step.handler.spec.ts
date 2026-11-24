@@ -3,6 +3,9 @@ import { ConfigError } from '@mng-review/domain'
 import { GitError, RulesService } from '@mng-review/engine'
 import {
 	CommandAuthorizeServiceLive,
+	CommandAnswerServiceLive,
+	AnswerReadService,
+	GitHubApiError,
 	GitHubConfig,
 	GitHubReadConfigLive,
 } from '@mng-review/github'
@@ -170,6 +173,176 @@ layer(FileSystemLayer)('authorize step', test => {
 				expect(fixture.api.reads).toEqual([])
 				expect(fixture.api.writes).toEqual([])
 				expect(fixture.loads).toEqual([])
+			})
+	)
+})
+
+layer(FileSystemLayer)('authorize risk command answers', test => {
+	for (const scenario of [
+		'cap',
+		'owner denial',
+		'edited',
+		'off',
+		'job token',
+	] as const)
+		test.effect(
+			`${scenario} writes only the authorized or answer outputs`,
+			() =>
+				Effect.gen(function* () {
+					const appMode = scenario !== 'job token'
+					const fixture = stepFixture([], appMode, true)
+					fixture.api.command.role =
+						scenario === 'owner denial' ? 'write' : 'admin'
+					if (scenario === 'job token')
+						fixture.api.command.comment = {
+							...fixture.api.command.comment,
+							body: '@github-actions review',
+						}
+					const action = scenario === 'edited' ? 'edited' : 'created'
+					fixture.repo.write(
+						'event.json',
+						JSON.stringify({
+							action,
+							comment: fixture.api.command.comment,
+							issue: { number: 17, pull_request: {} },
+						})
+					)
+					const rules = {
+						...fixture.rules,
+						config: {
+							...fixture.rules.config,
+							risk: {
+								...fixture.rules.config.risk,
+								enabled: scenario !== 'off',
+								reviews_per_head: 3,
+							},
+						},
+					}
+					const getCountedReviewsSpy = vi.fn(() =>
+						Effect.succeed(
+							[1, 2, 3, fixture.api.command.comment.id].map(id => ({
+								id,
+								at: '2026-01-01T12:00:00Z',
+								body: '@mng-review review',
+								review: true,
+								actedOn: true,
+							}))
+						)
+					)
+					const answers = Layer.succeed(AnswerReadService, {
+						getCountedReviews: getCountedReviewsSpy,
+						readCommands: () => Effect.die('unused'),
+						getCommandEntry: () => Effect.die('unused'),
+					})
+					yield* runAuthorizeStep.pipe(
+						Effect.provide(
+							CommandAnswerServiceLive.pipe(
+								Layer.provideMerge(answers),
+								Layer.provideMerge(fixture.publisherLayer)
+							)
+						),
+						Effect.provide(
+							CommandAuthorizeServiceLive.pipe(
+								Layer.provide(fixture.publisherLayer)
+							)
+						),
+						Effect.provide(
+							Layer.succeed(RulesService, { load: () => Effect.succeed(rules) })
+						),
+						Effect.provide(
+							fixture.envLayer({
+								GITHUB_EVENT_NAME: 'issue_comment',
+								...(appMode
+									? { MNG_REVIEW_APP_SLUG: 'mng-review' }
+									: { MNG_REVIEW_HANDLE: 'github-actions' }),
+							})
+						)
+					)
+					const output = yield* (yield* FileSystem.FileSystem).readFileString(
+						fixture.paths.output
+					)
+					if (scenario === 'off' || scenario === 'job token') {
+						expect(output).toContain('authorized=true')
+						expect(output).not.toContain('answer=')
+						expect(getCountedReviewsSpy).not.toHaveBeenCalled()
+					} else {
+						expect(output).toContain('authorized=false')
+						expect(output).toContain(
+							`answer=${scenario === 'cap' ? 'cap' : 'deny'}`
+						)
+						expect(output).toContain('answer_pull=17')
+						expect(output).toContain(
+							`answer_comment=${fixture.api.command.comment.id}`
+						)
+						if (scenario === 'edited')
+							expect(output).toContain(
+								'the comment changed; post a new command'
+							)
+					}
+					expect(fixture.api.writes).toEqual([])
+				})
+		)
+	test.effect(
+		'a failed cap read fails the decide job and writes no decision',
+		() =>
+			Effect.gen(function* () {
+				const fixture = stepFixture([], true, true)
+				fixture.api.command.role = 'admin'
+				fixture.repo.write(
+					'event.json',
+					JSON.stringify({
+						action: 'created',
+						comment: fixture.api.command.comment,
+						issue: { number: 17, pull_request: {} },
+					})
+				)
+				const rules = {
+					...fixture.rules,
+					config: {
+						...fixture.rules.config,
+						risk: { ...fixture.rules.config.risk, enabled: true },
+					},
+				}
+				const answers = Layer.succeed(AnswerReadService, {
+					getCountedReviews: () =>
+						Effect.fail(
+							new GitHubApiError({
+								operation: 'timeline',
+								status: 502,
+								reason: 'unavailable',
+							})
+						),
+					readCommands: () => Effect.die('unused'),
+					getCommandEntry: () => Effect.die('unused'),
+				})
+				const error = yield* Effect.flip(
+					runAuthorizeStep.pipe(
+						Effect.provide(
+							CommandAnswerServiceLive.pipe(
+								Layer.provideMerge(answers),
+								Layer.provideMerge(fixture.publisherLayer)
+							)
+						),
+						Effect.provide(
+							CommandAuthorizeServiceLive.pipe(
+								Layer.provide(fixture.publisherLayer)
+							)
+						),
+						Effect.provide(
+							Layer.succeed(RulesService, { load: () => Effect.succeed(rules) })
+						),
+						Effect.provide(
+							fixture.envLayer({
+								GITHUB_EVENT_NAME: 'issue_comment',
+								MNG_REVIEW_APP_SLUG: 'mng-review',
+							})
+						)
+					)
+				)
+				expect(error).toMatchObject({ _tag: 'GitHubApiError', status: 502 })
+				expect(
+					yield* (yield* FileSystem.FileSystem).exists(fixture.paths.output)
+				).toBeFalsy()
 			})
 	)
 })
