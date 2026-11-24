@@ -19,6 +19,11 @@ import {
 } from '../../../shared/mocks/publish-test.helper'
 import type { ReviewEvidence } from '../domain/review-event.helper'
 import { toBodyWithoutHeadline } from '../presentation/review-headline.formatter'
+import {
+	toOutlivedReviewMessage,
+	toReplacedApprovalMessage,
+	toStaleApprovalMessage,
+} from '../presentation/summary-status.formatter'
 import { toMarkerComment } from '../presentation/thread-comment.formatter'
 import {
 	SummaryReviewService,
@@ -351,6 +356,35 @@ layer(APP_MODE_OWNED)('SummaryReviewService review events', test => {
 				expect(fixture.fake.reviews[0]?.state).toBe('CHANGES_REQUESTED')
 			})
 	)
+	test.effect(
+		'offline on a pull request the bot opened comments under its standing change request',
+		() =>
+			Effect.gen(function* () {
+				const fixture = setup()
+				fixture.fake.command.pullRequest = {
+					...fixture.fake.command.pullRequest,
+					user: { login: APP_IDENTITY.restLogin },
+				}
+				fixture.fake.reviews.push(
+					own({ state: 'CHANGES_REQUESTED', isMinimized: true })
+				)
+				expect(
+					yield* SummaryReviewService.use(service =>
+						service.publishStatus({
+							pullNumber: 17,
+							head: 'reviewed-head',
+							engineCommit: 'engine',
+							status: 'offline',
+						})
+					).pipe(Effect.provide(fixture.service))
+				).toMatchObject({ created: true, event: 'COMMENT' })
+				expect(fixture.fake.writes[0]).toMatchObject({
+					method: 'review',
+					input: { event: 'COMMENT' },
+				})
+				expect(fixture.fake.reviews[0]?.state).toBe('CHANGES_REQUESTED')
+			})
+	)
 	test.effect('a failed review write leaves change requests untouched', () =>
 		Effect.gen(function* () {
 			const fixture = setup()
@@ -385,5 +419,478 @@ layer(APP_MODE_OWNED)('SummaryReviewService review events', test => {
 			expect(dismissals).toHaveLength(1)
 			expect(dismissals[0]?.body).toContain('reviewed-head')
 		})
+	)
+})
+
+layer(APP_MODE_OWNED)('SummaryReviewService commit ownership', test => {
+	for (const state of ['APPROVED', 'CHANGES_REQUESTED', 'COMMENTED'] as const)
+		for (const commit of ['older-head', undefined])
+			test.effect(
+				`offline ${state} with commit=${commit} ${state === 'COMMENTED' ? 'edits' : 'posts a new review'}`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = setup()
+						fixture.fake.reviews.push(
+							own({
+								state,
+								commit: commit === undefined ? undefined : { oid: commit },
+							})
+						)
+						expect(
+							yield* SummaryReviewService.use(service =>
+								service.publishStatus({
+									pullNumber: 17,
+									head: 'reviewed-head',
+									engineCommit: 'engine',
+									status: 'offline',
+								})
+							).pipe(Effect.provide(fixture.service))
+						).toMatchObject({
+							created: state !== 'COMMENTED',
+							// An offline run has no evidence for a change request, so a new review comments.
+							event: 'COMMENT',
+							dismissal: { dismissed: state === 'APPROVED' ? 1 : 0, failed: 0 },
+						})
+						expect(fixture.fake.writes[0]).toMatchObject(
+							state === 'COMMENTED'
+								? { method: 'updateReview', id: 101 }
+								: { method: 'review', input: { commitId: 'reviewed-head' } }
+						)
+						expect(fixture.fake.reviews[0]?.state).toBe(
+							state === 'APPROVED' ? 'DISMISSED' : state
+						)
+						expect(fixture.fake.reviewCommitReads).toEqual([true])
+					})
+			)
+	for (const event of [
+		'APPROVE',
+		'COMMENT',
+		'REQUEST_CHANGES',
+		undefined,
+	] as const)
+		test.effect(
+			`after ${event} a previous identity approval is dismissed even on the same head`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup()
+					fixture.fake.reviews.push(
+						own({
+							databaseId: 101,
+							id: 'old-own',
+							state: 'APPROVED',
+							commit: { oid: 'older-head' },
+						}),
+						own({ databaseId: 102, id: 'same-own', state: 'APPROVED' }),
+						summaryReview(SUMMARY_MARKER, {
+							databaseId: 103,
+							id: 'previous',
+							state: 'APPROVED',
+							commit: { oid: 'reviewed-head' },
+						}),
+						own({
+							databaseId: 104,
+							id: 'foreign',
+							state: 'APPROVED',
+							commit: { oid: 'older-head' },
+							author: { __typename: 'Bot', login: 'foreign' },
+						}),
+						own({ databaseId: 105, id: 'latest' })
+					)
+					const written = yield* SummaryReviewService.use(service =>
+						service.write(17, draft(event))
+					).pipe(Effect.provide(fixture.service))
+					const ids = event === 'APPROVE' ? [103] : [101, 103]
+					expect(
+						fixture.fake.writes
+							.filter(write => write.method === 'dismissReview')
+							.map(write => write.id)
+					).toEqual(ids)
+					expect(written.dismissal).toEqual({
+						dismissed: ids.length,
+						failed: 0,
+					})
+					expect(
+						fixture.fake.reviews.find(review => review.databaseId === 102)
+							?.state
+					).toBe('APPROVED')
+					expect(
+						fixture.fake.reviews.find(review => review.databaseId === 104)
+							?.state
+					).toBe('APPROVED')
+				})
+		)
+	for (const event of ['APPROVE', 'COMMENT'] as const)
+		test.effect(
+			`after ${event} a previous identity approval on the head is dismissed as replaced, never as unapproved`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup()
+					fixture.fake.reviews.push(
+						own({
+							databaseId: 101,
+							id: 'old-own',
+							state: 'APPROVED',
+							commit: { oid: 'older-head' },
+						}),
+						summaryReview(SUMMARY_MARKER, {
+							databaseId: 103,
+							id: 'previous',
+							state: 'APPROVED',
+							commit: { oid: 'reviewed-head' },
+						}),
+						own({ databaseId: 105, id: 'latest' })
+					)
+					yield* SummaryReviewService.use(service =>
+						service.write(17, draft(event))
+					).pipe(Effect.provide(fixture.service))
+					expect(
+						fixture.fake.writes.filter(
+							write => write.method === 'dismissReview'
+						)
+					).toEqual([
+						...(event === 'APPROVE'
+							? []
+							: [
+									{
+										method: 'dismissReview',
+										id: 101,
+										body: toStaleApprovalMessage('reviewed-head'),
+									},
+								]),
+						{
+							method: 'dismissReview',
+							id: 103,
+							body: toReplacedApprovalMessage('reviewed-head'),
+						},
+					])
+				})
+		)
+	test.effect(
+		'offline status-only counts a refused stale-approval dismissal and keeps the change request',
+		() =>
+			Effect.gen(function* () {
+				const fixture = setup()
+				fixture.fake.reviews.push(
+					own({
+						id: 'approval',
+						databaseId: 100,
+						state: 'APPROVED',
+						commit: { oid: 'older-head' },
+					}),
+					own({ state: 'CHANGES_REQUESTED' })
+				)
+				fixture.fake.failures.dismissReview.push(
+					new GitHubApiError({
+						operation: 'dismissReview',
+						reason: 'Denied',
+						status: 403,
+					})
+				)
+				expect(
+					yield* SummaryReviewService.use(service =>
+						service.publishStatus({
+							pullNumber: 17,
+							head: 'reviewed-head',
+							engineCommit: 'engine',
+							status: 'offline',
+						})
+					).pipe(Effect.provide(fixture.service))
+				).toMatchObject({
+					created: false,
+					event: 'REQUEST_CHANGES',
+					dismissal: { dismissed: 0, failed: 1 },
+				})
+				expect(
+					fixture.fake.writes
+						.filter(write => write.method === 'dismissReview')
+						.map(write => write.id)
+				).toEqual([100])
+				expect(fixture.fake.reviews[1]?.state).toBe('CHANGES_REQUESTED')
+			})
+	)
+	test.effect(
+		'readPrior, readWaiting and reservation do not request review commits',
+		() =>
+			Effect.gen(function* () {
+				const fixture = setup()
+				fixture.fake.reviews.push(
+					own({ state: 'APPROVED', commit: { oid: 'older-head' } })
+				)
+				const service = yield* SummaryReviewService.pipe(
+					Effect.provide(fixture.service)
+				)
+				expect(yield* service.readPrior(17)).toEqual(SUMMARY_MARKER)
+				expect(yield* service.readWaiting(17)).toEqual([])
+				expect(
+					yield* service.reserveManualRun({
+						pullNumber: 17,
+						head: 'reviewed-head',
+						engineCommit: 'engine',
+						handle: 'mng-review',
+						maxRuns: 10,
+					})
+				).toBeTruthy()
+				expect(fixture.fake.reviewCommitReads).toEqual([
+					undefined,
+					undefined,
+					false,
+				])
+				expect(fixture.fake.writes.map(write => write.method)).toEqual([
+					'updateReview',
+				])
+				expect(fixture.fake.reviews[0]?.commit?.oid).toBe('older-head')
+				expect(fixture.fake.reviews[0]?.state).toBe('APPROVED')
+			})
+	)
+	for (const changesRequested of [false, true])
+		test.effect(
+			`new threads on a run without evidence post a comment, changesRequested=${changesRequested}`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup()
+					fixture.fake.reviews.push(
+						own({ state: changesRequested ? 'CHANGES_REQUESTED' : 'COMMENTED' })
+					)
+					expect(
+						yield* SummaryReviewService.use(service =>
+							service.write(17, {
+								...draft(),
+								comments: [{ path: 'src/store.ts', line: 10, body: 'Finding' }],
+							})
+						).pipe(Effect.provide(fixture.service))
+					).toMatchObject({
+						created: true,
+						event: 'COMMENT',
+						dismissal: { dismissed: 0, failed: 0 },
+					})
+					expect(fixture.fake.reviews[0]?.state).toBe(
+						changesRequested ? 'CHANGES_REQUESTED' : 'COMMENTED'
+					)
+					expect(fixture.fake.writes[0]).toMatchObject({
+						method: 'review',
+						input: {
+							event: 'COMMENT',
+							comments: [{ line: 10 }],
+						},
+					})
+				})
+		)
+	for (const event of ['APPROVE', 'REQUEST_CHANGES'] as const)
+		test.effect(
+			`matching ${event} on an older commit still posts a new review`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup()
+					fixture.fake.reviews.push(
+						own({
+							state: REVIEW_STATE_BY_EVENT[event],
+							commit: { oid: 'older-head' },
+						})
+					)
+					expect(
+						yield* SummaryReviewService.use(service =>
+							service.write(17, draft(event))
+						).pipe(Effect.provide(fixture.service))
+					).toMatchObject({ created: true, event })
+					expect(fixture.fake.writes[0]).toMatchObject({
+						method: 'review',
+						input: { event, commitId: 'reviewed-head' },
+					})
+					expect(
+						fixture.fake.writes.filter(write => write.method === 'updateReview')
+					).toEqual([])
+				})
+		)
+	for (const event of REVIEW_EVENTS)
+		test.effect(`a new ${event} review opens with the state it carries`, () =>
+			Effect.gen(function* () {
+				const fixture = setup()
+				const written = yield* SummaryReviewService.use(service =>
+					service.write(17, draft(event))
+				).pipe(Effect.provide(fixture.service))
+				const label = {
+					APPROVE: '**Approved.**',
+					REQUEST_CHANGES: '**Changes requested.**',
+					COMMENT: '**Comment.**',
+				}[event]
+				expect(written.body.startsWith(label)).toBeTruthy()
+				expect(fixture.fake.writes[0]).toMatchObject({
+					method: 'review',
+					input: { event, body: written.body },
+				})
+				expect(written.body.includes('Not approved:')).toBe(event !== 'APPROVE')
+			})
+		)
+	for (const event of REVIEW_EVENTS)
+		test.effect(
+			`a push after the write ${event === 'COMMENT' ? 'leaves' : 'dismisses'} the ${event} review it just posted`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup()
+					const pr = fixture.fake.command.pullRequest
+					const next = { ...pr, head: { ...pr.head, sha: 'next-head' } }
+					// Before the review, then after it: before the cleanup and before the dismissals.
+					fixture.fake.pullRequestSnapshots.push(pr, next, next)
+					const verdict = event !== 'COMMENT'
+					expect(
+						yield* SummaryReviewService.use(service =>
+							service.write(17, draft(event))
+						).pipe(Effect.provide(fixture.service))
+					).toMatchObject({
+						created: true,
+						dismissal: { dismissed: verdict ? 1 : 0, failed: 0 },
+						outlived: verdict,
+					})
+					expect(
+						fixture.fake.writes.filter(
+							write => write.method === 'dismissReview'
+						)
+					).toEqual(
+						verdict
+							? [
+									{
+										method: 'dismissReview',
+										id: 1,
+										body: toOutlivedReviewMessage('next-head'),
+									},
+								]
+							: []
+					)
+					expect(fixture.fake.reviews[0]?.state).toBe(
+						verdict ? 'DISMISSED' : 'COMMENTED'
+					)
+				})
+		)
+	for (const event of ['APPROVE', 'REQUEST_CHANGES'] as const)
+		test.effect(
+			`a push after the write ${event === 'APPROVE' ? 'dismisses once' : 'leaves'} the ${event} review it only edited`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup()
+					fixture.fake.reviews.push(
+						own({ state: REVIEW_STATE_BY_EVENT[event] })
+					)
+					const pr = fixture.fake.command.pullRequest
+					const next = { ...pr, head: { ...pr.head, sha: 'next-head' } }
+					// Before the review, then after it: before the cleanup and before the dismissals.
+					fixture.fake.pullRequestSnapshots.push(pr, next, next)
+					const approve = event === 'APPROVE'
+					expect(
+						yield* SummaryReviewService.use(service =>
+							service.write(17, draft(event))
+						).pipe(Effect.provide(fixture.service))
+					).toMatchObject({
+						created: false,
+						dismissal: { dismissed: approve ? 1 : 0, failed: 0 },
+						outlived: approve,
+					})
+					expect(
+						fixture.fake.writes.filter(
+							write => write.method === 'dismissReview'
+						)
+					).toEqual(
+						approve
+							? [
+									{
+										method: 'dismissReview',
+										id: 101,
+										body: toOutlivedReviewMessage('next-head'),
+									},
+								]
+							: []
+					)
+				})
+		)
+	test.effect(
+		'with the second head read failing, a verdict review on another commit stays visible',
+		() =>
+			Effect.gen(function* () {
+				const fixture = setup()
+				fixture.fake.reviews.push(
+					own({
+						databaseId: 100,
+						id: 'next-approval',
+						state: 'APPROVED',
+						commit: { oid: 'next-head' },
+					}),
+					own({ databaseId: 101, id: 'comment' })
+				)
+				fixture.fake.failures.getPullRequest.push(
+					undefined,
+					new GitHubApiError({
+						operation: 'getPullRequest',
+						reason: 'Unavailable',
+						status: 503,
+					})
+				)
+				expect(
+					yield* SummaryReviewService.use(service =>
+						service.write(17, draft('APPROVE'))
+					).pipe(Effect.provide(fixture.service))
+				).toMatchObject({ event: 'APPROVE' })
+				expect(
+					fixture.fake.writes.filter(write => write.method === 'minimize')
+				).toEqual([{ method: 'minimize', id: 'comment' }])
+			})
+	)
+	test.effect(
+		"a run on an older head leaves the previous identity's approval of the current head",
+		() =>
+			Effect.gen(function* () {
+				const fixture = setup('next-head')
+				fixture.fake.reviews.push(
+					summaryReview(SUMMARY_MARKER, {
+						databaseId: 103,
+						id: 'previous-on-head',
+						state: 'APPROVED',
+						commit: { oid: 'next-head' },
+					}),
+					summaryReview(SUMMARY_MARKER, {
+						databaseId: 104,
+						id: 'previous-older',
+						state: 'APPROVED',
+						commit: { oid: 'older-head' },
+					}),
+					own({ databaseId: 105, id: 'latest' })
+				)
+				expect(
+					yield* SummaryReviewService.use(service =>
+						service.write(17, draft('COMMENT'))
+					).pipe(Effect.provide(fixture.service))
+				).toMatchObject({ dismissal: { dismissed: 1, failed: 0 } })
+				expect(
+					fixture.fake.writes
+						.filter(write => write.method === 'dismissReview')
+						.map(write => write.id)
+				).toEqual([104])
+				expect(fixture.fake.reviews[0]?.state).toBe('APPROVED')
+			})
+	)
+	test.effect(
+		'an offline edit of a change request on its head is headed by that state and replaces the old headline',
+		() =>
+			Effect.gen(function* () {
+				const fixture = setup()
+				fixture.fake.reviews.push(
+					own({
+						state: 'CHANGES_REQUESTED',
+						body: `**Comment.** Not approved: stale.\n\n${toMarkerComment('summary', SUMMARY_MARKER)}`,
+					})
+				)
+				yield* SummaryReviewService.use(service =>
+					service.publishStatus({
+						pullNumber: 17,
+						head: 'reviewed-head',
+						engineCommit: 'engine',
+						status: 'offline',
+					})
+				).pipe(Effect.provide(fixture.service))
+				const body = fixture.fake.reviews[0]?.body ?? ''
+				expect(body).toMatch(
+					/^\*\*Changes requested\.\*\* Not approved: the reviewer was offline/u
+				)
+				expect(body).not.toContain('stale.')
+				expect(body.match(/Not approved:/gu)).toHaveLength(1)
+			})
 	)
 })

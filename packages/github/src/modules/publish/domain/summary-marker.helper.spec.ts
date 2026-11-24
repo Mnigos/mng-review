@@ -443,6 +443,45 @@ describe('toNextSummaryMarker waiting threads', () => {
 	})
 })
 
+describe('toNextSummaryMarker failed runs', () => {
+	const update = {
+		head: 'head',
+		finished: true,
+		partial: false,
+		unthreadedBugs: 0,
+	} as const
+	test('a finished full run with a failed run records it', () => {
+		expect(
+			toNextSummaryMarker(SUMMARY_MARKER, { ...update, failed: true })
+		).toMatchObject({ head: 'head', finished: true, failed: true })
+	})
+	test('a finished full run with none failed clears an earlier failed flag', () => {
+		expect(
+			toNextSummaryMarker(
+				{ ...SUMMARY_MARKER, failed: true },
+				{ ...update, failed: false }
+			)
+		).not.toHaveProperty('failed')
+	})
+	test('an unfinished full run records no failed flag', () => {
+		expect(
+			toNextSummaryMarker(SUMMARY_MARKER, {
+				...update,
+				finished: false,
+				failed: true,
+			})
+		).not.toHaveProperty('failed')
+	})
+	test('a partial run keeps the last full run failed flag', () => {
+		expect(
+			toNextSummaryMarker(
+				{ ...SUMMARY_MARKER, head: 'head', finished: true, failed: true },
+				{ ...update, partial: true, failed: false }
+			)
+		).toMatchObject({ finished: true, failed: true })
+	})
+})
+
 describe('toRepliedMarker', () => {
 	test.each([false, true])(
 		'changes only the waiting list with finished=%s',

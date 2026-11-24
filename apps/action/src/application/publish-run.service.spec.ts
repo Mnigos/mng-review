@@ -114,7 +114,9 @@ function setup(
 				)
 			: Effect.succeed(PUBLISHED)
 	)
-	const publishStatusSpy = vi.fn(() =>
+	const publishStatusSpy = vi.fn<
+		SummaryReviewService['Service']['publishStatus']
+	>(() =>
 		fail
 			? Effect.fail(
 					new GitHubApiError({ operation: 'status', reason: 'offline' })
@@ -728,4 +730,58 @@ layer(Layer.empty)('PublishRunService independent run gates', test => {
 			})
 		)
 	}
+})
+
+layer(Layer.empty)('PublishRunService dismissal outcomes', test => {
+	test.effect(
+		'preserves failed dismissals from a published review in the result',
+		() =>
+			Effect.gen(function* () {
+				const fixture = setup()
+				fixture.publishSpy.mockReturnValueOnce(
+					Effect.succeed({
+						...PUBLISHED,
+						dismissal: { dismissed: 1, failed: 2 },
+					})
+				)
+				expect(
+					yield* PublishRunService.use(service =>
+						service.run(
+							outcomeFile({ status: 'reviewed', report: reviewReport() }),
+							CONTEXT
+						)
+					).pipe(Effect.provide(fixture.service))
+				).toMatchObject({
+					status: 'published',
+					result: { dismissal: { dismissed: 1, failed: 2 } },
+				})
+			})
+	)
+	for (const created of [false, true])
+		test.effect(
+			`preserves failed dismissals from an offline summary with created=${created}`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup()
+					fixture.publishStatusSpy.mockReturnValueOnce(
+						Effect.succeed({
+							...OFFLINE_WRITTEN,
+							created,
+							dismissal: { dismissed: 1, failed: 2 },
+						})
+					)
+					expect(
+						yield* PublishRunService.use(service =>
+							service.run(
+								outcomeFile({ status: 'offline', reason: 'unavailable' }),
+								CONTEXT
+							)
+						).pipe(Effect.provide(fixture.service))
+					).toMatchObject({
+						status: 'status-only',
+						posted: created,
+						dismissal: { dismissed: 1, failed: 2 },
+					})
+				})
+		)
 })

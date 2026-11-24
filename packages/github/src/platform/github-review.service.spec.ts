@@ -14,6 +14,7 @@ import {
 	MAX_PAGES,
 	PAGE_SIZE,
 	PULL_REQUEST_REVIEWS_QUERY,
+	PULL_REQUEST_REVIEWS_WITH_COMMITS_QUERY,
 	READ_RETRIES,
 } from './github-api.constants'
 import { GitHubReviewService, REVIEW_EVENTS } from './github-review.service'
@@ -272,4 +273,34 @@ layer(Layer.empty)('GitHubReviewService', test => {
 			expect(fixture.requests).toHaveLength(MAX_PAGES)
 		})
 	)
+})
+
+layer(Layer.empty)('GitHubReviewService commit query', test => {
+	for (const withCommits of [false, true])
+		test.effect(
+			`listReviews withCommits=${withCommits} selects the appropriate GraphQL query`,
+			() =>
+				Effect.gen(function* () {
+					const review = summaryReview(undefined, {
+						commit: { oid: 'reviewed-head' },
+					})
+					const fixture = makeGitHubHttp(() =>
+						Effect.succeed(Response.json(toGitHubPage('reviews', [review])))
+					)
+					expect(
+						yield* GitHubReviewService.use(service =>
+							service.listReviews(17, withCommits)
+						).pipe(Effect.provide(fixture.reviewLayer))
+					).toEqual([review])
+					expect(getGitHubRequestBody(fixture.requests[0])).toMatchObject({
+						query: withCommits
+							? PULL_REQUEST_REVIEWS_WITH_COMMITS_QUERY
+							: PULL_REQUEST_REVIEWS_QUERY,
+					})
+					expect(PULL_REQUEST_REVIEWS_WITH_COMMITS_QUERY).toMatch(
+						/commit\s*\{\s*oid\s*\}/u
+					)
+					expect(PULL_REQUEST_REVIEWS_QUERY).not.toMatch(/\bcommit\b/u)
+				})
+		)
 })

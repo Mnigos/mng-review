@@ -1,15 +1,19 @@
-import { DEFAULT_PRESET } from '@mng-review/domain'
+import { buildPlan, DEFAULT_PRESET } from '@mng-review/domain'
 import { GITHUB_ACTIONS_IDENTITY } from '../../../platform/bot-identity.helper'
+import { planInput } from '../../../shared/mocks/domain-test.helper'
 import {
 	agentReport,
 	APP_IDENTITY,
 	botThread,
+	COVERED_REVIEW,
 	report,
+	SUMMARY_MARKER,
 } from '../../../shared/mocks/publish-test.helper'
 import { getCoverageGap } from './coverage-gap.helper'
 import {
 	getApproval,
 	getReviewDecision,
+	toDecidedSummary,
 	type ReviewDecision,
 	type ReviewEventInput,
 } from './review-event.helper'
@@ -197,10 +201,143 @@ const CASES = [
 		input: { kind: 'offline', authored: false, changesRequested: true },
 		expected: KEEPS_COMMENT,
 	},
+	{
+		name: 'finished ready push with a failed run',
+		input: { ...REVIEWED, failed: true, gap: FINDINGS_GAP },
+		expected: KEEPS_COMMENT,
+	},
+	{
+		name: 'finished ready push with a failed run under a change request',
+		input: {
+			...REVIEWED,
+			failed: true,
+			gap: FINDINGS_GAP,
+			changesRequested: true,
+		},
+		expected: KEEPS_COMMENT,
+	},
+	{
+		name: 'reply-only run ready after a full review with a failed run',
+		input: { ...REPLIED, failed: true, changesRequested: true },
+		expected: KEEPS_COMMENT,
+	},
+	{
+		name: 'reply-only run whose head moved, with a bug under a change request',
+		input: {
+			...REPLIED,
+			current: false,
+			onHead: false,
+			verdict: 'needs fixes',
+			changesRequested: true,
+		},
+		expected: KEEPS_COMMENT,
+	},
+	{
+		name: 'reply-only run with a bug on a pull request the bot opened',
+		input: { ...REPLIED, verdict: 'needs fixes', authored: true },
+		expected: { ...REQUESTS, event: 'COMMENT' },
+	},
+	{
+		name: 'offline run on a pull request the bot opened under a change request',
+		input: { kind: 'offline', authored: true, changesRequested: true },
+		expected: KEEPS_COMMENT,
+	},
+	{
+		name: 'covered run on a draft or closed pull request keeps the state',
+		input: { ...REVIEWED, open: false },
+		expected: KEEPS_COMMENT,
+	},
+	{
+		name: 'covered run on a draft or closed pull request under a change request keeps it',
+		input: { ...REVIEWED, open: false, changesRequested: true },
+		expected: KEEPS_COMMENT,
+	},
+	{
+		name: 'uncovered run on a draft or closed pull request still comments and clears',
+		input: { ...REVIEWED, open: false, gap: FINDINGS_GAP },
+		expected: CLEARS,
+	},
 ] as const satisfies readonly DecisionCase[]
 
 test.each(CASES)('$name', scenario => {
 	expect(getReviewDecision(scenario.input)).toStrictEqual(scenario.expected)
+})
+
+/** True when `getCoverageGap` finds nothing missing. */
+function isCoveredBy(...input: Parameters<typeof getCoverageGap>): boolean {
+	return getCoverageGap(...input) === undefined
+}
+
+describe('toDecidedSummary', () => {
+	const rendered = { body: 'Summary', marker: SUMMARY_MARKER } as const
+	const onHead = { current: 'head', authored: false } as const
+	test('a review whose head is no longer the pull request head keeps the state', () => {
+		expect(
+			toDecidedSummary(
+				{ ...rendered, evidence: COVERED_REVIEW },
+				false,
+				{ ...onHead, current: 'next-head' },
+				'head'
+			)
+		).toStrictEqual({
+			rendered: {
+				...rendered,
+				evidence: { ...COVERED_REVIEW, onHead: false, open: true },
+			},
+			decision: KEEPS_COMMENT,
+		})
+	})
+	test('a head the latest read could not read keeps the state', () => {
+		expect(
+			toDecidedSummary(
+				{ ...rendered, evidence: COVERED_REVIEW },
+				false,
+				{ ...onHead, current: undefined },
+				'head'
+			).decision
+		).toStrictEqual(KEEPS_COMMENT)
+	})
+	test('a covered review the latest read finds a draft or closed keeps the state', () => {
+		expect(
+			toDecidedSummary(
+				{ ...rendered, evidence: COVERED_REVIEW },
+				false,
+				{ ...onHead, open: false },
+				'head'
+			)
+		).toStrictEqual({
+			rendered: { ...rendered, evidence: { ...COVERED_REVIEW, open: false } },
+			decision: KEEPS_COMMENT,
+		})
+	})
+	test('a covered review on the latest head approves', () => {
+		expect(
+			toDecidedSummary(
+				{ ...rendered, evidence: COVERED_REVIEW },
+				false,
+				onHead,
+				'head'
+			).decision
+		).toStrictEqual(APPROVES)
+	})
+	test('a reply-only run on a head that moved since its own read keeps the state', () => {
+		expect(
+			toDecidedSummary(
+				{ ...rendered, evidence: { ...REPLIED, verdict: 'needs fixes' } },
+				true,
+				{ ...onHead, current: 'next-head' },
+				'head'
+			).decision
+		).toStrictEqual(KEEPS_COMMENT)
+	})
+	test('an offline render on a pull request the latest read shows the bot opened comments', () => {
+		expect(
+			toDecidedSummary(rendered, true, { ...onHead, authored: true }, 'head')
+		).toStrictEqual({
+			rendered: { ...rendered, evidence: { kind: 'offline', authored: true } },
+			decision: KEEPS_COMMENT,
+		})
+	})
 })
 
 /** A report whose plan ran and reported the main reviewer and found nothing. */
@@ -263,4 +400,150 @@ test('the preset permits an app to approve a covered review by default', () => {
 	expect(DEFAULT_PRESET.verdict.mode).toBe('approve')
 	expect(getApproval(DEFAULT_PRESET, APP_IDENTITY)).toBe('allowed')
 	expect(getApproval(DEFAULT_PRESET, GITHUB_ACTIONS_IDENTITY)).toBe('token')
+})
+
+for (const condition of [
+	'quick',
+	'no-report',
+	'incomplete-agent',
+	'failed-agent',
+	'unit-error',
+	'agent-endpoint-error',
+	'report-endpoint-error',
+	'incomplete-report',
+	'binary-plan',
+	'too-large-plan',
+	'binary-change',
+	'too-large-change',
+] as const)
+	test(`${condition} cannot supply approval coverage`, () => {
+		const covered = coveredReport()
+		const { plan } = covered.planReport
+		const withSkip = (files: typeof plan.files) =>
+			files.map(
+				file =>
+					({
+						...file,
+						skipped: condition.startsWith('binary') ? 'binary' : 'too_large',
+					}) as const
+			)
+		const reviewed = {
+			...covered,
+			agents:
+				condition === 'no-report'
+					? []
+					: covered.agents.map(agent => ({
+							...agent,
+							...(condition === 'incomplete-agent'
+								? { status: 'incomplete' as const }
+								: {}),
+							...(condition === 'failed-agent'
+								? { status: 'failed' as const }
+								: {}),
+							...(condition === 'unit-error'
+								? { error: '1 of 2 units did not finish: LoopError' }
+								: {}),
+							...(condition === 'agent-endpoint-error'
+								? { endpointError: true }
+								: {}),
+						})),
+			...(condition === 'report-endpoint-error'
+				? { endpointError: 'Unavailable' }
+				: {}),
+			...(condition === 'incomplete-report'
+				? { incomplete: { reason: 'budget spent', unfinished: ['reviewer'] } }
+				: {}),
+			planReport: {
+				...covered.planReport,
+				plan: {
+					...plan,
+					...(condition === 'quick'
+						? {
+								depth: 'quick' as const,
+								runs: plan.runs.filter(run => run.role !== 'reviewer'),
+							}
+						: {}),
+					...(condition.endsWith('-plan')
+						? { files: withSkip(plan.files) }
+						: {}),
+				},
+				change: {
+					...covered.planReport.change,
+					...(condition.endsWith('-change')
+						? { files: withSkip(covered.planReport.change.files) }
+						: {}),
+				},
+			},
+		}
+		expect(isCoveredBy(reviewed, [])).toBe(false)
+	})
+
+for (const kind of ['unverified', 'nit', 'bug'] as const)
+	for (const resolved of [false, true])
+		test(`coverage reads ${resolved ? 'resolved' : 'open'} ${kind} threads`, () => {
+			expect(
+				isCoveredBy(coveredReport(), [
+					botThread({ resolved, marker: { ...botThread().marker, kind } }),
+				])
+			).toBe(resolved || kind === 'bug')
+		})
+
+test('files excluded by skip.paths still allow approval coverage', () => {
+	const covered = coveredReport()
+	expect(
+		isCoveredBy(
+			{
+				...covered,
+				planReport: {
+					...covered.planReport,
+					plan: {
+						...covered.planReport.plan,
+						files: covered.planReport.plan.files.map(file => ({
+							...file,
+							skipped: 'skip.paths',
+						})),
+					},
+					change: {
+						...covered.planReport.change,
+						files: covered.planReport.change.files.map(file => ({
+							...file,
+							skipped: 'skip.paths',
+						})),
+					},
+				},
+			},
+			[]
+		)
+	).toBeTruthy()
+})
+
+test('a deep plan cannot cover a planned reviewer model with no agent report', () => {
+	const covered = coveredReport()
+	const plan = buildPlan(
+		planInput({
+			config: {
+				...DEFAULT_PRESET,
+				depth: 'deep',
+				models: {
+					...DEFAULT_PRESET.models,
+					reviewer: [
+						{ model: 'model-a', effort: 'high' },
+						{ model: 'model-b', effort: 'high' },
+					],
+				},
+			},
+		}),
+		{ status: 'ok', risk: 'normal', added: [] }
+	)
+	expect(plan.runs.filter(run => run.role === 'reviewer')).toHaveLength(2)
+	expect(
+		isCoveredBy(
+			{
+				...covered,
+				agents: [agentReport()],
+				planReport: { ...covered.planReport, plan },
+			},
+			[]
+		)
+	).toBe(false)
 })

@@ -668,3 +668,19 @@ test.each(['added', 'removed', 'failed', 'none'] as const)(
 		expect(formatPublishLogLine(publish)).toContain(line)
 	}
 )
+
+for (const posted of [false, true])
+	test(`offline posted=${posted} exposes dismissal failures in both log and summary`, () => {
+		const report = {
+			status: 'status-only',
+			reason: 'offline',
+			posted,
+			dismissal: { dismissed: 2, failed: 3 },
+		} as const
+		expect(formatPublishLogLine(report)).toContain(
+			'2 stale review(s) dismissed, 3 not dismissed'
+		)
+		expect(formatPublishSummary(report, 'engine')).toContain(
+			escapeMarkdown('2 stale review(s) dismissed, 3 not dismissed')
+		)
+	})
