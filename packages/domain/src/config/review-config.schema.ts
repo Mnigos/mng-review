@@ -8,6 +8,7 @@ import {
 	FLOOR_NAME_PATTERN,
 	LABEL_MAX_LENGTH,
 	RESERVED_LABELS,
+	VALIDATOR_RISK_MODEL,
 } from '../risk/risk.constants'
 import {
 	BOT_SLUG_PATTERN,
@@ -137,6 +138,11 @@ export const riskConfigSchema = Schema.Struct({
 	assets: nameListSchema,
 	/** `review` commands that rate one head. */
 	reviews_per_head: positiveIntSchema,
+	/** The rater's model; `validator` rates on the validator's model. */
+	model: Schema.Union([
+		Schema.Literal(VALIDATOR_RISK_MODEL),
+		modelSettingSchema,
+	]),
 })
 export type RiskConfig = typeof riskConfigSchema.Type
 

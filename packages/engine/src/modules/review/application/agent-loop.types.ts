@@ -6,6 +6,7 @@ import type { ToolResult } from './repo-tools.types'
 import type { RepoToolName } from './repo.toolkit'
 import type { ReportFindingsTool } from './report-findings.tool'
 import type { ReportReplyTool } from './report-reply.tool'
+import type { ReportRiskTool } from './report-risk.tool'
 import type { ReportVerdictTool } from './report-verdict.tool'
 import type { RepoScope } from './services/repo-tools.service'
 
@@ -13,6 +14,7 @@ export type FinishToolName =
 	| typeof ReportFindingsTool.name
 	| typeof ReportVerdictTool.name
 	| typeof ReportReplyTool.name
+	| typeof ReportRiskTool.name
 
 /**
  * A repository call of a turn and the output the agent received; a refused one starts `error:`.
@@ -76,6 +78,8 @@ export interface LoopResult<TValue> extends SpentTokens {
 	readonly continued?: boolean
 	/** Files of the request's coverage the agent did not receive whole (`isWholeRead`); unset without coverage. */
 	readonly unread?: readonly string[]
+	/** The token budget forced an answer this result holds, the first one of a continuation included. */
+	readonly budgetStopped?: true
 }
 
 /** Where a loop stands between turns. */
@@ -92,4 +96,6 @@ export interface LoopState {
 	readonly spentTokens: number
 	/** Estimated input of the next call; see `ConversationTokens`. */
 	readonly nextInputTokens: number
+	/** The token budget forced a turn; it stays set through corrections, so a later answer keeps it. */
+	readonly budgetForced?: true
 }

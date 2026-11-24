@@ -2,6 +2,7 @@ import {
 	DEFAULT_REVIEWS_PER_HEAD,
 	DEFAULT_RISK_ASSETS,
 	DEFAULT_RISK_LABELS,
+	VALIDATOR_RISK_MODEL,
 } from '../risk/risk.constants'
 import type { ReviewConfig } from './review-config.schema'
 
@@ -70,6 +71,7 @@ export const DEFAULT_PRESET = {
 		floors: [],
 		assets: DEFAULT_RISK_ASSETS,
 		reviews_per_head: DEFAULT_REVIEWS_PER_HEAD,
+		model: VALIDATOR_RISK_MODEL,
 	},
 } as const satisfies ReviewConfig
 

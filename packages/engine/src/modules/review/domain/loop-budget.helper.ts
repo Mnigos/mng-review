@@ -215,3 +215,16 @@ export function toAffordableOutputs(
 		{ kept: [], used: 0 }
 	).kept
 }
+
+/** Whether a turn was forced by the token budget; once set it stays, so a corrected answer keeps it. */
+interface BudgetMark {
+	readonly budgetForced?: true
+}
+
+/** The budget mark a turn carries: set when this turn or an earlier one was forced by the budget. */
+export function toBudgetMark(
+	earlier: BudgetMark['budgetForced'],
+	spent: boolean
+): BudgetMark {
+	return earlier || spent ? { budgetForced: true } : {}
+}

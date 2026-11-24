@@ -26,6 +26,7 @@ describe('risk digests', () => {
 		const risk = { ...DEFAULT_PRESET.risk, floors: [floor] }
 		expect(
 			toRulesDigest(RUBRIC, {
+				model: risk.model,
 				reviews_per_head: risk.reviews_per_head,
 				assets: risk.assets,
 				floors: [

@@ -6,6 +6,7 @@ import {
 	type CallStop,
 	makeConversationBudget,
 	toAffordableOutputs,
+	toBudgetMark,
 	toEstimatedTokens,
 } from '../../domain/loop-budget.helper'
 import {
@@ -43,12 +44,11 @@ function refuse(output: string) {
 /**
  * Runs one agent as a tool loop on `effect/ai` `Chat`: one model call per turn, the turn's tool
  * calls resolved in parallel by the loop, until the agent calls its finish tool or answers with
- * plain JSON. Tool calls are bounded by `maxToolCalls` (calls in one turn never exceed what is
- * left), wall time by `maxWallTime`; past either, the agent gets only the finish tool and is told to
- * answer; the same happens when the request's `budget` runs out for the run or the conversation.
- * Repository calls a model returns after the wall time are refused. Every model call,
- * corrections included, ends by one fixed deadline: the wall time plus one grace period. An invalid answer gets a correction
- * turn; after `MAX_CORRECTIONS` the agent fails with a `LoopError`.
+ * plain JSON. Tool calls are bounded by `maxToolCalls`, wall time by `maxWallTime`; past either,
+ * or once the request's `budget` runs out, the agent gets only the finish tool and must answer; an
+ * answer after a budget-forced turn, corrections included, is `budgetStopped`. Repository calls after
+ * the wall time are refused, and every model call ends by the wall time plus one grace period. An
+ * invalid answer gets a correction turn; after `MAX_CORRECTIONS` the agent fails with a `LoopError`.
  */
 export class AgentLoopService extends Context.Service<
 	AgentLoopService,
@@ -127,6 +127,7 @@ export const AgentLoopServiceLive = Layer.effect(
 							...answer,
 							value: coverage.merge(first.value, answer.value),
 							continued: true,
+							...(first.budgetStopped ? { budgetStopped: true } : {}),
 						})
 					const unread = yield* getUnread(next, answer.value)
 					if (unread.length === 0) return yield* withUnread(answer)
@@ -219,11 +220,9 @@ export const AgentLoopServiceLive = Layer.effect(
 					// Decided once the call holds a concurrency slot, so time spent queued counts.
 					const turn = Effect.gen(function* () {
 						const now = yield* Clock.currentTimeMillis
-						const overBudget = yield* isSpent(state)
+						const spent = yield* isSpent(state)
 						const wrapUp =
-							state.toolCalls >= limits.maxToolCalls ||
-							now >= deadline ||
-							overBudget
+							state.toolCalls >= limits.maxToolCalls || now >= deadline || spent
 						const prompt = [
 							...state.pending,
 							...(wrapUp && !state.wrapUpSent
@@ -244,7 +243,7 @@ export const AgentLoopServiceLive = Layer.effect(
 							toolCallValidation: 'deferred',
 						})
 						const expired = (yield* Clock.currentTimeMillis) >= deadline
-						return { usage: response.usage, response, wrapUp, expired }
+						return { usage: response.usage, response, wrapUp, expired, spent }
 					})
 					const attempt = yield* Effect.result(
 						health.run(request.model, turn).pipe(
@@ -272,7 +271,7 @@ export const AgentLoopServiceLive = Layer.effect(
 							])
 						return yield* Effect.fail(error)
 					}
-					const { response, wrapUp, expired } = attempt.success
+					const { response, wrapUp, expired, spent } = attempt.success
 					const inputTokens = response.usage.inputTokens.total ?? 0
 					const outputTokens = response.usage.outputTokens.total ?? 0
 					const firstMessageTokens = state.firstMessageTokens ?? inputTokens
@@ -290,6 +289,7 @@ export const AgentLoopServiceLive = Layer.effect(
 						firstMessageTokens,
 						spentTokens: state.spentTokens + inputTokens + outputTokens,
 						nextInputTokens: inputTokens + outputTokens,
+						...toBudgetMark(state.budgetForced, spent),
 					}
 					const calls: readonly ToolCall[] = response.toolCalls
 					const finishCall = calls.find(call => call.name === finish)
@@ -319,6 +319,7 @@ export const AgentLoopServiceLive = Layer.effect(
 									turns: state.turn,
 									spentTokens: sent.spentTokens,
 									unspentTokens: 0,
+									...(sent.budgetForced ? { budgetStopped: true } : {}),
 								},
 								{ ...sent, turn: state.turn + 1 },
 								text => reply(text, text)
@@ -385,10 +386,8 @@ export const AgentLoopServiceLive = Layer.effect(
 				nextInputTokens: toEstimatedTokens(request.system + request.user),
 			}).pipe(
 				Effect.catch(error =>
-					Ref.get(kept).pipe(
-						Effect.flatMap(first =>
-							first ? Effect.succeed(first) : Effect.fail(error)
-						)
+					Effect.flatMap(Ref.get(kept), first =>
+						first ? Effect.succeed(first) : Effect.fail(error)
 					)
 				),
 				Effect.flatMap(tokens.settle)
