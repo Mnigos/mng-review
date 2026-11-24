@@ -5,9 +5,21 @@ import type {
 	OutcomeFile,
 	OutcomeReplies,
 } from '../infrastructure/outcome-file.schema'
+import type { RiskRunSettings } from '../infrastructure/risk-run.config'
 import type { PublishContext, PublishReport } from './publish-run.service'
 import type { RiskGate } from './risk-gate.helper'
 import type { RiskReport } from './risk-run.service'
+
+/** No environment and no default branch: the rating refuses. */
+const NO_RISK_SETTINGS = {
+	environment: '',
+	defaultBranch: '',
+} as const satisfies RiskRunSettings
+
+/** The rating's settings from the job, or none, which the gate refuses. */
+export function toRiskSettings(context: PublishContext): RiskRunSettings {
+	return context.risk ?? NO_RISK_SETTINGS
+}
 
 /** The report's `risk` field; absent while `risk.enabled` is off, so nothing changes then. */
 export function toRiskField(risk: RiskReport): { readonly risk?: RiskReport } {
@@ -24,10 +36,16 @@ export function toFailed(reason: string, gate: RiskGate): PublishReport {
 }
 
 /**
- * True when the report fails the job: a failed rating, or a grant that may still stand because
- * its revocation was refused, which the cleanup step then writes again.
+ * True when the report fails the job: a failed rating, a grant that may still stand because its
+ * revocation was refused, which the cleanup step then writes again, or an answer left unsettled
+ * (its thread could not be reopened after it), so the run hold applies.
  */
 export function failsRating(report: PublishReport): boolean {
+	if (
+		(report.status === 'published' || report.status === 'replied') &&
+		report.result.unsettled > 0
+	)
+		return true
 	const risk = 'risk' in report ? report.risk : undefined
 	if (risk?.status === 'failed') return true
 	return risk?.status === 'written' && risk.result.grantStands === true

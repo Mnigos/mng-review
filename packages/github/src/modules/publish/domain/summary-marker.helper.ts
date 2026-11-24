@@ -1,5 +1,12 @@
-import type { SummaryMarker } from './publish-marker.schema'
+import type { AnswerEntry } from '@mng-review/domain'
+import { Schema } from 'effect'
+import type { RatingBlock } from '../../risk/domain/risk.types'
+import {
+	summaryMarkerSchema,
+	type SummaryMarker,
+} from './publish-marker.schema'
 import { MARKER_VERSION } from './publish.constants'
+import { SummaryMarkerError } from './publish.errors'
 
 /** What one publish run tells the next summary marker. */
 export interface MarkerUpdate {
@@ -122,4 +129,54 @@ export function getCarriedBugs(
 ): number {
 	if (isReplacing(update) || marker?.head !== update.head) return 0
 	return Math.max(0, (marker.unthreadedBugs ?? 0) - update.unthreadedBugs)
+}
+
+/** What a review's marker records besides the run: the published rating and the commands answered. */
+export interface MarkerAnswers {
+	readonly rating?: RatingBlock
+	readonly answers?: readonly AnswerEntry[]
+}
+
+/**
+ * The marker with the level a rated block published, which makes the pull request's app history,
+ * and the entries of the commands this review answers after those the marker already carried, so
+ * an edited summary never drops an earlier answer.
+ */
+export function toAnsweredMarker(
+	marker: SummaryMarker,
+	input: MarkerAnswers
+): SummaryMarker {
+	const answers = [...(marker.answers ?? []), ...(input.answers ?? [])]
+	return {
+		...marker,
+		...(input.rating?.status === 'rated' ? { risk: input.rating.level } : {}),
+		...(answers.length > 0 ? { answers } : {}),
+	}
+}
+
+/**
+ * The failure of a summary write whose marker no read decodes, such as one past
+ * `MAX_ANSWER_ENTRIES` answer entries; `undefined` when it decodes. Such a marker would lose the
+ * pull request's runs and answers for good, so the write fails instead.
+ */
+export function getMarkerError(
+	marker: SummaryMarker
+): SummaryMarkerError | undefined {
+	const answers = marker.answers?.length ?? 0
+	return Schema.is(summaryMarkerSchema)(marker)
+		? undefined
+		: new SummaryMarkerError({ answers })
+}
+
+/**
+ * The marker a summary read keeps: a summary the current identity did not write loses its answer
+ * entries, so carrying it into the current app's summary never makes them the app's answers.
+ */
+export function toReadMarker(
+	marker: SummaryMarker,
+	mine: boolean
+): SummaryMarker {
+	if (mine) return marker
+	const { answers: _answers, ...rest } = marker
+	return rest
 }

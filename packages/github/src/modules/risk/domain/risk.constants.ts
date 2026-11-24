@@ -10,6 +10,8 @@ export const HIGH_STATE = 'failure'
 export const ERROR_STATE = 'error'
 /** Reply answers that close a thread; any other answer keeps it open for the thread raise. */
 export const CLOSING_REPLY_ACTIONS = ['resolved', 'accepted'] as const
+/** The answers the denial job posts: a refused command, or a `review` past the cap. */
+export const REFUSAL_KINDS = ['deny', 'cap'] as const
 /** Bytes of randomness in a nonce: 16 hex characters. */
 export const NONCE_BYTES = 8
 /** Timeline item types that bring a head and that carry a label change. */
@@ -18,4 +20,5 @@ export const TIMELINE_TYPES = {
 	FORCE_PUSH: 'HeadRefForcePushedEvent',
 	LABELED: 'LabeledEvent',
 	UNLABELED: 'UnlabeledEvent',
+	COMMENT: 'IssueComment',
 } as const

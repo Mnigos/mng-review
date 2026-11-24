@@ -532,6 +532,7 @@ test.each(['published', 'failed', 'status-only', 'not-published'] as const)(
 							waiting: 0,
 							label: 'none',
 							cleanup: 'none',
+							unsettled: 0,
 						},
 					} as const)
 				: status === 'status-only'
@@ -628,6 +629,7 @@ test.each(['none', 'minimized', 'deleted', 'kept'] as const)(
 					run: 1,
 					finished: true,
 					cleanup,
+					unsettled: 0,
 				},
 			})
 		).toContain(`earlier summaries: ${cleanup}`)
@@ -659,6 +661,7 @@ test.each(['added', 'removed', 'failed', 'none'] as const)(
 				run: 1,
 				finished: true,
 				cleanup: 'none',
+				unsettled: 0,
 			},
 		} as const
 		const line = `${publish.result.waiting} thread(s) wait for the owner, label ${label}`

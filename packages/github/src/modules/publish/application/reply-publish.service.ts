@@ -4,15 +4,16 @@ import { GitHubApiService } from '../../../platform/github-api.service'
 import type { ReviewEvent } from '../../../platform/github-review.service'
 import { GitHubStatusService } from '../../../platform/github-status.service'
 import { GitHubConfig } from '../../../platform/github.config'
-import type { GitHubApiError } from '../../../platform/github.errors'
 import { OwnedIdentities } from '../../../platform/owned-identities.context'
 import { toCommitStatus } from '../../status/domain/status.helper'
 import {
 	getOwnerAnswered,
 	getStandingVerdict,
+	isOpenBug,
 	toBotThread,
 } from '../domain/bot-thread.helper'
 import type { SummaryMarker } from '../domain/publish-marker.schema'
+import { CLOSING_ACTIONS, LIMITED_ACTIONS } from '../domain/publish.constants'
 import type {
 	AnswerCounts,
 	DismissalOutcome,
@@ -21,7 +22,7 @@ import type {
 import { toRepliedMarker } from '../domain/summary-marker.helper'
 import {
 	toAnswerCounts,
-	toResolvers,
+	toFreshResolvers,
 } from '../domain/thread-conversation.helper'
 import type { Verdict } from '../presentation/summary-comment.formatter'
 import { formatRepliedSummary } from '../presentation/summary-reply.formatter'
@@ -29,6 +30,7 @@ import { toBlobLinks } from '../presentation/thread-comment.formatter'
 import type { PublishReplies, PublishTarget } from './publish.service.types'
 import { ReplyCheckService, ReplyCheckServiceLive } from './reply-check.service'
 import { SummaryReviewService } from './summary-review.service'
+import type { SummaryWriteError } from './summary-review.service.types'
 import {
 	ThreadPlaceService,
 	ThreadPlaceServiceLive,
@@ -37,14 +39,6 @@ import {
 	ThreadReplyService,
 	ThreadReplyServiceLive,
 } from './thread-reply.service'
-
-/** Answers after which a thread counts as closed. */
-const CLOSING_ACTIONS: ReadonlySet<string> = new Set(['resolved', 'accepted'])
-/** Answers that stand only within the limit, which needs the change read from git. */
-const LIMITED_ACTIONS: ReadonlySet<string> = new Set([
-	'accepted',
-	'needs-owner',
-])
 
 /** A reply-only run to publish: the review's decisions and the rules at the base commit. */
 export interface ReplyPublishInput extends PublishTarget {
@@ -62,6 +56,12 @@ export interface ReplyPublishResult {
 	/** The run's own review was dismissed after a push landed right after the write; unset is `false`. */
 	readonly outlived?: boolean
 	readonly openBugs: number
+	/**
+	 * Severities of the resolved, confirmed bug threads a dispatched reply kept open (a non-closing
+	 * answer): they count as open, and the thread raise reads them since GitHub may still show them
+	 * resolved.
+	 */
+	readonly reopened?: readonly string[]
 	readonly answered: AnswerCounts
 	/** Threads that wait for the owner after the run. */
 	readonly waiting: number
@@ -70,6 +70,8 @@ export interface ReplyPublishResult {
 	readonly run: number
 	/** Whether the `MNG Review` status was set. */
 	readonly status: boolean
+	/** Threads whose newest app answer is still unsettled after the run; any fails the job. */
+	readonly unsettled: number
 }
 
 /** What a reply-only run whose summary write failed still writes: the status and the label. */
@@ -111,7 +113,7 @@ export class ReplyPublishService extends Context.Service<
 	{
 		readonly publish: (
 			input: ReplyPublishInput
-		) => Effect.Effect<ReplyPublishResult, GitHubApiError, OwnedIdentities>
+		) => Effect.Effect<ReplyPublishResult, SummaryWriteError, OwnedIdentities>
 	}
 >()('mng-review/ReplyPublishService') {}
 
@@ -196,20 +198,32 @@ export const ReplyPublishServiceLive = Layer.effect(
 				waiting,
 				config: input.rules.config,
 				change,
+				...(input.run === undefined ? {} : { run: input.run }),
+				...(input.held === undefined ? {} : { held: input.held }),
 			})
 			const closed = new Set(
 				answered
 					.filter(entry => CLOSING_ACTIONS.has(entry.decision.action))
 					.map(entry => entry.thread.id)
 			)
+			const unsettled = yield* conversation.settle(first.raw, answered)
 			// The answers are posted, so a failed read keeps the first one, but the run clears nothing.
 			const second = yield* readAll(pullNumber).pipe(
 				Effect.map(read => ({ ...read, reread: true })),
 				Effect.orElseSucceed(() => ({ ...first, reread: false }))
 			)
-			const latest = second.threads.map(thread =>
-				closed.has(thread.id) ? { ...thread, resolved: true } : thread
+			// A dispatched reply in a resolved thread is answered as if open; unless it closed it, it is.
+			const reopened = answered.filter(
+				entry =>
+					entry.thread.resolved && !CLOSING_ACTIONS.has(entry.decision.action)
 			)
+			const reopenedIds = new Set(reopened.map(entry => entry.thread.id))
+			const latest = second.threads.map(thread => {
+				if (closed.has(thread.id)) return { ...thread, resolved: true }
+				return reopenedIds.has(thread.id)
+					? { ...thread, resolved: false, closedByBot: false }
+					: thread
+			})
 			// Answers this run or one alongside it sent to the owner wait, even if the summary write failed.
 			const all = [
 				...new Set([
@@ -222,13 +236,15 @@ export const ReplyPublishServiceLive = Layer.effect(
 			]
 			const cleared = yield* conversation.getCleared({
 				waiting: all,
-				resolvers: toResolvers(second.raw),
+				resolvers: toFreshResolvers(second, answered),
+				threads: second.raw,
 				allow: input.rules.config.commands.allow,
 			})
 			const update = { added: all.filter(id => !cleared.has(id)), cleared }
-			const threadBugs = latest.filter(
-				thread => !thread.resolved && thread.marker.kind === 'bug'
-			).length
+			const threadBugs = (yield* conversation.resolveUnsettled(
+				latest,
+				second.raw
+			)).filter(isOpenBug).length
 			// The head is read again, as a push run does; a failed read keeps the state.
 			const pr = yield* api
 				.getPullRequest(pullNumber)
@@ -292,7 +308,16 @@ export const ReplyPublishServiceLive = Layer.effect(
 				waiting.length,
 				owner
 			)
+			// Only a bug validation confirmed raises, as in the thread read.
+			const reopenedBugs = reopened
+				.filter(
+					entry =>
+						entry.thread.marker.kind === 'bug' &&
+						entry.thread.marker.confirmed === true
+				)
+				.map(entry => entry.thread.marker.severity)
 			return {
+				...(reopenedBugs.length > 0 ? { reopened: reopenedBugs } : {}),
 				verdict: standing.verdict,
 				event: written.event,
 				dismissal: written.dismissal,
@@ -303,6 +328,7 @@ export const ReplyPublishServiceLive = Layer.effect(
 				label,
 				run: written.marker.runs,
 				status,
+				unsettled: unsettled.size,
 			} satisfies ReplyPublishResult
 		})
 

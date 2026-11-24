@@ -1,4 +1,9 @@
-import type { AuthorFixture, CommandFixture, DigestFixture } from './risk.types'
+import type {
+	AuthorFixture,
+	CommandFixture,
+	DigestFixture,
+	ThreadFixture,
+} from './risk.types'
 
 /**
  * The fixture table the engine and the merge sweep both run, so they read commands, digests and
@@ -261,3 +266,44 @@ export const AUTHOR_FIXTURES = [
 		actedOn: false,
 	},
 ] as const satisfies readonly AuthorFixture[]
+
+/**
+ * Thread-state cases: whether the converse answers a reply in the app's thread, read the engine's
+ * way (`isAnswerableThread` in the github package) and by the merge sweep's unanswered-comment
+ * hold. A resolved thread counts only for the reply a dispatched converse was sent for.
+ */
+export const THREAD_FIXTURES = [
+	{ name: 'open bug', state: { kind: 'bug' }, answered: true },
+	{ name: 'open unverified', state: { kind: 'unverified' }, answered: true },
+	{ name: 'open nit', state: { kind: 'nit' }, answered: false },
+	{
+		name: 'resolved on GitHub',
+		state: { kind: 'bug', resolved: true },
+		answered: false,
+	},
+	{
+		name: 'closed by the bot',
+		state: { kind: 'bug', resolved: true, closedByBot: true },
+		answered: false,
+	},
+	{
+		name: 'resolved, holding the dispatched reply',
+		state: { kind: 'bug', resolved: true, held: true },
+		answered: true,
+	},
+	{
+		name: 'closed by the bot, holding the dispatched reply',
+		state: { kind: 'bug', resolved: true, closedByBot: true, held: true },
+		answered: true,
+	},
+	{
+		name: 'waiting for the owner',
+		state: { kind: 'bug', waiting: true },
+		answered: false,
+	},
+	{
+		name: 'sent to the owner',
+		state: { kind: 'bug', sentToOwner: true },
+		answered: false,
+	},
+] as const satisfies readonly ThreadFixture[]

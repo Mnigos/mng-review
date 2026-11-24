@@ -12,6 +12,8 @@ import { RUN_TRIGGERS } from './command-run.config'
 
 /** Bumped when a field of the outcome file changes meaning or goes away. */
 export const OUTCOME_VERSION = 1
+/** A time as GitHub writes it, in whole seconds. */
+const GITHUB_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u
 /** The outcome file's largest size; a longer text is refused before it is parsed. */
 export const MAX_OUTCOME_BYTES = 4 * 1024 * 1024
 export const OUTCOME_STATUSES = [
@@ -72,6 +74,13 @@ export type OutcomeReplies = typeof outcomeRepliesSchema.Type
 export const outcomeFileSchema = Schema.Struct({
 	version: Schema.Literal(OUTCOME_VERSION),
 	binding: outcomeBindingSchema,
+	/**
+	 * When the review step started, as GitHub writes times. Publishing names only the commands
+	 * from before it, which the run could have seen; without it, it names none.
+	 */
+	startedAt: Schema.optionalKey(
+		Schema.String.check(Schema.isPattern(GITHUB_TIME))
+	),
 	status: Schema.Literals(OUTCOME_STATUSES),
 	reason: Schema.optionalKey(textSchema),
 	source: Schema.optionalKey(textSchema),

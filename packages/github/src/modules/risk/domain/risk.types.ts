@@ -12,6 +12,7 @@ import type {
 	ThreadReplyDecision,
 } from '../../publish/domain/thread-reply.schema'
 import type { RiskMarker } from './risk-marker.schema'
+import type { REFUSAL_KINDS } from './risk.constants'
 
 /** Why the checks before the grant, or the read after it, stopped the grant. */
 export interface GrantStop {
@@ -140,4 +141,17 @@ export type RatingBlock =
 /** A decided reply as the thread raise reads it: its thread and the answer's action. */
 export interface AnsweredReply extends Pick<DecidedThreadReply, 'threadId'> {
 	readonly decision: Pick<ThreadReplyDecision, 'action'>
+}
+
+/** An answer the denial job posts. */
+export type RefusalKind = (typeof REFUSAL_KINDS)[number]
+
+/** What the decide job hands the denial job: the comment, the answer and why. */
+export interface Refusal {
+	readonly pullNumber: number
+	readonly commentId: number
+	readonly kind: RefusalKind
+	readonly reason: string
+	/** The workflow run id the answer's marker names. */
+	readonly run: number
 }

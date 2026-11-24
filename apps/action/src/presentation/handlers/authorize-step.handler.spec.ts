@@ -11,6 +11,7 @@ import {
 	cleanupRepos,
 	FileSystemLayer,
 } from '../../shared/mocks/git-test.helper'
+import { CommandAnswerOffLayer } from '../../shared/mocks/risk-run.helper'
 import { stepFixture } from '../../shared/mocks/step-test.helper'
 import { denyAuthorizeConfig, runAuthorizeStep } from './authorize-step.handler'
 
@@ -40,7 +41,8 @@ layer(FileSystemLayer)('authorize step', test => {
 					yield* runAuthorizeStep.pipe(
 						Effect.provide(
 							CommandAuthorizeServiceLive.pipe(
-								Layer.provideMerge(fixture.publisherLayer)
+								Layer.provideMerge(fixture.publisherLayer),
+								Layer.merge(CommandAnswerOffLayer)
 							)
 						),
 						Effect.provide(fixture.rulesLayer),
@@ -107,7 +109,8 @@ layer(FileSystemLayer)('authorize step', test => {
 				yield* runAuthorizeStep.pipe(
 					Effect.provide(
 						CommandAuthorizeServiceLive.pipe(
-							Layer.provideMerge(fixture.publisherLayer)
+							Layer.provideMerge(fixture.publisherLayer),
+							Layer.merge(CommandAnswerOffLayer)
 						)
 					),
 					Effect.provide(rulesLayer),
@@ -147,7 +150,8 @@ layer(FileSystemLayer)('authorize step', test => {
 						runAuthorizeStep.pipe(
 							Effect.provide(
 								CommandAuthorizeServiceLive.pipe(
-									Layer.provideMerge(fixture.publisherLayer)
+									Layer.provideMerge(fixture.publisherLayer),
+									Layer.merge(CommandAnswerOffLayer)
 								)
 							),
 							Effect.provide(fixture.rulesLayer)

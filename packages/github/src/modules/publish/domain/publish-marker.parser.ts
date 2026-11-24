@@ -4,6 +4,8 @@ import {
 	riskMarkerSchema,
 } from '../../risk/domain/risk-marker.schema'
 import {
+	type AnswerMarker,
+	answerMarkerSchema,
 	type FindingMarker,
 	findingMarkerSchema,
 	type ReplyMarker,
@@ -15,7 +17,7 @@ import { MARKER_PREFIX } from './publish.constants'
 
 /** The marker comment that ends a body: `<!-- mng-review:<name> <json> -->`, its JSON on one line. */
 const MARKER_PATTERN = new RegExp(
-	String.raw`<!-- ${MARKER_PREFIX}(finding|summary|reply|risk) (\{[^\n]*\}) -->\s*$`,
+	String.raw`<!-- ${MARKER_PREFIX}(finding|summary|reply|risk|answer) (\{(?:(?!-->)[^\n])*\}) -->\s*$`,
 	'u'
 )
 const decodeFinding = Schema.decodeUnknownOption(
@@ -27,12 +29,15 @@ const decodeSummary = Schema.decodeUnknownOption(
 const decodeReply = Schema.decodeUnknownOption(
 	Schema.fromJsonString(replyMarkerSchema)
 )
+const decodeAnswer = Schema.decodeUnknownOption(
+	Schema.fromJsonString(answerMarkerSchema)
+)
 const decodeRisk = Schema.decodeUnknownOption(
 	Schema.fromJsonString(riskMarkerSchema)
 )
 
 /** The kinds of hidden marker the bot writes. */
-export type MarkerName = 'finding' | 'summary' | 'reply' | 'risk'
+export type MarkerName = 'finding' | 'summary' | 'reply' | 'risk' | 'answer'
 
 /** The JSON of the marker of that name that ends the body; the bot always writes its marker last. */
 function getLastMarkerJson(body: string, name: MarkerName): string | undefined {
@@ -80,4 +85,12 @@ export function parseRiskMarker(body: string): RiskMarker | undefined {
 	return json === undefined
 		? undefined
 		: Option.getOrUndefined(decodeRisk(json))
+}
+
+/** The answer marker of a denial or cap reply, or `undefined` when it has none or it does not decode. */
+export function parseAnswerMarker(body: string): AnswerMarker | undefined {
+	const json = getLastMarkerJson(body, 'answer')
+	return json === undefined
+		? undefined
+		: Option.getOrUndefined(decodeAnswer(json))
 }

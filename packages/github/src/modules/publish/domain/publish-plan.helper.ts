@@ -9,6 +9,7 @@ import {
 	type ReviewOutcome,
 	SAME_TITLE_OVERLAP,
 } from '@mng-review/domain'
+import { isOpenBug } from './bot-thread.helper'
 import type { ThreadKind } from './publish-marker.schema'
 import type {
 	BotThread,
@@ -218,22 +219,26 @@ export function countUnthreadedBugs(
 }
 
 /**
- * Open bug threads after the run: the bot's unresolved ones, plus each new bug of this run that no
- * open thread holds by fingerprint, wherever it went. Read after posting, `threads` holds what this
- * run and any run alongside it posted; read before, every new bug is counted from the plan.
+ * Open bug threads after the run: the bot's open ones (`isOpenBug`), plus each new bug of this run
+ * that no open thread holds by fingerprint, wherever it went. Read after posting, `threads` holds
+ * what this run and any run alongside it posted; read before, every new bug is counted from the
+ * plan.
  */
 export function countOpenBugs(
 	plan: PublishPlan,
 	threads: readonly BotThread[]
 ): number {
 	const held = getHeldFingerprints(threads)
-	const open = threads.filter(
-		thread => !thread.resolved && thread.marker.kind === 'bug'
-	).length
+	const open = threads.filter(isOpenBug).length
 	return (
 		open +
 		plan.threads.filter(
 			thread => thread.kind === 'bug' && !held.has(thread.finding.fingerprint)
 		).length
 	)
+}
+
+/** A line thread moved into the summary after GitHub refused the review's inline comments. */
+export function toSummaryPlace(thread: PlannedThread): PlannedThread {
+	return thread.place === 'line' ? { ...thread, place: 'summary' } : thread
 }

@@ -16,7 +16,9 @@ import {
 	countOpenBugs,
 	countUnthreadedBugs,
 	planPublish,
+	toSummaryPlace,
 } from '../domain/publish-plan.helper'
+import { CLOSING_ACTIONS, LIMITED_ACTIONS } from '../domain/publish.constants'
 import { PublishIncompleteError } from '../domain/publish.errors'
 import type {
 	BotThread,
@@ -27,11 +29,12 @@ import { getApproval } from '../domain/review-event.helper'
 import {
 	getCarriedBugs,
 	type MarkerUpdate,
+	toAnsweredMarker,
 	toNextSummaryMarker,
 } from '../domain/summary-marker.helper'
 import {
 	toAnswerCounts,
-	toResolvers,
+	toFreshResolvers,
 } from '../domain/thread-conversation.helper'
 import {
 	formatSummaryComment,
@@ -59,30 +62,16 @@ import {
 } from './thread-reply.service'
 import { ThreadResolutionService } from './thread-resolution.service'
 
-/** Answers that close a thread for the bot's counts; publishing checks them against git first. */
-const CLOSING_ACTIONS: ReadonlySet<string> = new Set(['resolved', 'accepted'])
-/** Answers checked against the change read from git: the owner's limit, and an `accepted` one's evidence. */
-const LIMITED_ACTIONS: ReadonlySet<string> = new Set([
-	'accepted',
-	'needs-owner',
-])
-
-/** A line thread moved into the summary after GitHub refused the review's inline comments. */
-function toSummaryPlace(thread: PlannedThread): PlannedThread {
-	return thread.place === 'line' ? { ...thread, place: 'summary' } : thread
-}
-
 /**
- * Posts a run's findings on its pull request as the token's bot: a comment per finding whose line
- * is outside the diff, then one review whose body is the summary and whose comments are the new
- * inline threads, through `SummaryReviewService`. A finding that already has an open thread of an
- * owned identity, or only resolved ones whose code did not change, is not posted again. A comment
- * the bot wrote but someone else edited no longer counts as the bot's. A review that fails after
- * file comments may have been posted fails with `PublishIncompleteError`. Before planning it
- * applies the re-check's proposals and the review's reply decisions that pass its own git check
- * (`ReplyCheckService`, then `ThreadReplyService`), so a thread they close counts as resolved; it
- * keeps the threads that wait for the owner in the summary marker, drops those an owner cleared,
- * and adds or removes the `needs-owner` label.
+ * Posts a run's findings as the token's bot: a comment per finding whose line is outside the diff,
+ * then one review whose body is the summary and whose comments are the new inline threads
+ * (`SummaryReviewService`). A finding an owned identity's open thread covers, or only resolved
+ * ones whose code did not change, is not posted again; a comment someone else edited is no longer
+ * the bot's. A review that fails after file comments may have been posted fails with
+ * `PublishIncompleteError`. First it applies the re-check's proposals and the reply decisions that
+ * pass its own git check (`ReplyCheckService`, `ThreadReplyService`) and settles earlier
+ * unsettled answers; it keeps the owner's waiting threads in the summary marker, drops those an
+ * owner cleared, and adds or removes the `needs-owner` label.
  */
 export class PublishService extends Context.Service<
 	PublishService,
@@ -205,6 +194,8 @@ export const PublishServiceLive = Layer.effect(
 				waiting,
 				config: input.rules.config,
 				change,
+				...(input.run === undefined ? {} : { run: input.run }),
+				...(input.held === undefined ? {} : { held: input.held }),
 			})
 			const resolvedIds = new Set([
 				...resolved.map(entry => entry.thread.id),
@@ -212,8 +203,12 @@ export const PublishServiceLive = Layer.effect(
 					.filter(entry => CLOSING_ACTIONS.has(entry.decision.action))
 					.map(entry => entry.thread.id),
 			])
+			// An answer that keeps a thread open reopened it, so a failed second read counts it open.
+			const answeredIds = new Set(answered.map(entry => entry.thread.id))
 			const threads = found.map(thread =>
-				resolvedIds.has(thread.id) ? { ...thread, resolved: true } : thread
+				resolvedIds.has(thread.id) || answeredIds.has(thread.id)
+					? { ...thread, resolved: resolvedIds.has(thread.id) }
+					: thread
 			)
 			const lines = yield* places.readCommentableLines(report, input.head)
 			// A thread this run closed was judged at this head, so its finding is dismissed, not posted.
@@ -230,17 +225,17 @@ export const PublishServiceLive = Layer.effect(
 			const onLine = filed.filter(thread => thread.place === 'line')
 			const posting =
 				onLine.length > 0 || filed.some(thread => thread.place === 'file')
-			// Read again after the answers, so the ones this run sent to the owner are among them. A
-			// failed read keeps the first for the run's work, but a thread reopened meanwhile goes unseen.
+			const unsettled = yield* conversation.settle(first.raw, answered)
+			// Read again after the answers; a failed read keeps the first, unseen reopened threads too.
 			const second = yield* readAll(pullNumber).pipe(
 				Effect.map(read => ({ ...read, reread: true })),
 				Effect.orElseSucceed(() => ({ ...first, reread: false }))
 			)
-			// A successful read decides: a thread is closed only while the bot's closing reply is its
-			// latest comment (`toBotThread`). A failed one leaves the first with this run's closures.
+			// A successful read decides (`toBotThread`); a failed one keeps the first with this run's.
 			const latest = second.reread ? second.threads : threads
-			// Every new bug counts from the plan, wherever the review puts it.
-			const threadBugs = countOpenBugs(planned, latest)
+			// Every new bug counts from the plan; an unsettled resolved bug counts open too.
+			const known = yield* conversation.resolveUnsettled(latest, second.raw)
+			const threadBugs = countOpenBugs(planned, known)
 			const run = yield* checkRun(input)
 			// Publishing's own read of the bot's threads, after this run's answers and file threads.
 			const [gap, ...more] = [
@@ -259,7 +254,8 @@ export const PublishServiceLive = Layer.effect(
 			]
 			const cleared = yield* conversation.getCleared({
 				waiting: all,
-				resolvers: toResolvers(second.raw),
+				resolvers: toFreshResolvers(second, answered),
+				threads: second.raw,
 				allow: input.rules.config.commands.allow,
 			})
 			/** The plan with its line threads inline, or in the summary when GitHub refused them. */
@@ -318,18 +314,20 @@ export const PublishServiceLive = Layer.effect(
 							approval,
 							authored: run.authored,
 						} as const
-						// The summary describes the head; a run whose head moved and posts nothing only counts itself.
-						if (prior && checked.moved && !posting)
+						// The summary describes the head; a run whose head moved and posts nothing only counts
+						// itself and the commands it answered, never its rating of the old head.
+						const kept = prior && checked.moved && !posting
+						const rated = toAnsweredMarker(
+							marker,
+							kept ? { answers: input.answers ?? [] } : input
+						)
+						if (kept)
 							return {
-								body: toSummaryWithMarker(prior.body, marker),
-								marker,
+								body: toSummaryWithMarker(prior.body, rated),
+								marker: rated,
 								evidence,
 								standing: judged,
 							}
-						const rated =
-							input.rating?.status === 'rated'
-								? { ...marker, risk: input.rating.level }
-								: marker
 						const body = formatSummaryComment({
 							report,
 							...(input.rating ? { rating: input.rating } : {}),
@@ -383,6 +381,7 @@ export const PublishServiceLive = Layer.effect(
 				run: written.marker.runs,
 				finished,
 				cleanup: written.cleanup,
+				unsettled: unsettled.size,
 			} satisfies PublishResult
 		})
 

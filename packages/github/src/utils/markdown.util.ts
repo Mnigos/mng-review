@@ -73,7 +73,9 @@ export function escapeMarkdown(text: string): string {
  * Markdown or HTML, and its text cannot be shown in another order.
  */
 export function toCodeSpan(text: string): string {
-	const flat = text.replace(FORMAT_CHARACTERS, '').replace(LINE_BREAKS, ' ')
+	const flat = escapeCommentOpen(
+		text.replace(FORMAT_CHARACTERS, '').replace(LINE_BREAKS, ' ')
+	)
 	const longest = Math.max(
 		0,
 		...Array.from(flat.matchAll(BACKTICK_RUN), match => match[0].length)
@@ -81,6 +83,14 @@ export function toCodeSpan(text: string): string {
 	const fence = '`'.repeat(longest + 1)
 	const padding = flat.startsWith('`') || flat.endsWith('`') ? ' ' : ''
 	return `${fence}${padding}${flat}${padding}${fence}`
+}
+
+/**
+ * Text with every `<!--` broken by an invisible word joiner, so model text can neither open an
+ * HTML comment that hides what follows nor end a body with a marker of its own.
+ */
+export function escapeCommentOpen(text: string): string {
+	return text.replaceAll('<!--', '<\u2060!--')
 }
 
 /** Text cut to `max` characters, with an ellipsis when cut. */

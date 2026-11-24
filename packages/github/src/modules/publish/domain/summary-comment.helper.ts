@@ -6,6 +6,7 @@ import type { PullRequestComment } from '../../../platform/github-api.schema'
 import { isBotComment } from './bot-thread.helper'
 import { parseSummaryMarker } from './publish-marker.parser'
 import type { SummaryCleanup, SummaryComment } from './publish.types'
+import { toReadMarker } from './summary-marker.helper'
 
 /** The order a cleanup reports its worst outcome in. */
 const CLEANUP_RANK = {
@@ -34,13 +35,14 @@ export function toSummaryComments(
 			return []
 		const marker = parseSummaryMarker(comment.body)
 		if (!marker) return []
+		const mine = isIdentity(comment.author, current)
 		return [
 			{
 				id: comment.databaseId,
 				nodeId: comment.id,
-				marker,
+				marker: toReadMarker(marker, mine),
 				body: comment.body,
-				mine: isIdentity(comment.author, current),
+				mine,
 			},
 		]
 	})

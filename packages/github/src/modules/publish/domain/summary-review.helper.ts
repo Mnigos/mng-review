@@ -13,6 +13,7 @@ import { parseSummaryMarker } from './publish-marker.parser'
 import type { SummaryComment, SummaryReview } from './publish.types'
 import type { ReviewDecision } from './review-event.helper'
 import { getSummary } from './summary-comment.helper'
+import { toReadMarker } from './summary-marker.helper'
 
 /** States that block or approve; a review in one of them stands for its own commit only. */
 const VERDICT_STATES: ReadonlySet<ReviewState> = new Set([
@@ -37,13 +38,14 @@ export function toSummaryReviews(
 		if (review.databaseId === null || !isBotComment(review, owned)) return []
 		const marker = parseSummaryMarker(review.body)
 		if (!marker) return []
+		const mine = isIdentity(review.author, current)
 		return [
 			{
 				id: review.databaseId,
 				nodeId: review.id,
-				marker,
+				marker: toReadMarker(marker, mine),
 				body: review.body,
-				mine: isIdentity(review.author, current),
+				mine,
 				state: review.state,
 				commit: review.commit?.oid,
 				minimized: review.isMinimized,

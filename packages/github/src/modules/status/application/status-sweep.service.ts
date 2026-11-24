@@ -17,7 +17,7 @@ import {
 	ThreadReplyService,
 	ThreadReplyServiceLive,
 } from '../../publish/application/thread-reply.service'
-import { toBotThread } from '../../publish/domain/bot-thread.helper'
+import { isOpenBug, toBotThread } from '../../publish/domain/bot-thread.helper'
 import type { SummaryMarker } from '../../publish/domain/publish-marker.schema'
 import type { DismissalOutcome } from '../../publish/domain/publish.types'
 import {
@@ -194,9 +194,11 @@ export const StatusSweepServiceLive = Layer.effect(
 			const threads = raw.flatMap(
 				thread => toBotThread(thread, identities) ?? []
 			)
-			const openBugs = threads.filter(
-				thread => !thread.resolved && thread.marker.kind === 'bug'
-			).length
+			// Reads only: a resolved bug with an unsettled answer counts open, read whole when unknown.
+			const openBugs = (yield* conversation.resolveUnsettled(
+				threads,
+				raw
+			)).filter(isOpenBug).length
 			const summaryReviews = toSummaryReviews(reviews, identities, current)
 			const summaries = toSummaryComments(comments, identities, current)
 			// With two old sticky comments of the current identity, the oldest may be a stale finished one.
@@ -224,6 +226,7 @@ export const StatusSweepServiceLive = Layer.effect(
 			const cleared = yield* conversation.getCleared({
 				waiting,
 				resolvers: toResolvers(raw),
+				threads: raw,
 				allow,
 			})
 			const owner = waiting.filter(id => !cleared.has(id)).length

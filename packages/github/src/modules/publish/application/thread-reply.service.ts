@@ -1,14 +1,9 @@
 import type { Change, ReviewConfig } from '@mng-review/domain'
 import { Context, Effect, Layer, Option } from 'effect'
-import type {
-	CollaboratorRole,
-	ReviewThread,
-	ThreadComment,
-} from '../../../platform/github-api.schema'
+import type { ReviewThread } from '../../../platform/github-api.schema'
 import { GitHubApiService } from '../../../platform/github-api.service'
 import type { GitHubApiError } from '../../../platform/github.errors'
 import { OwnedIdentities } from '../../../platform/owned-identities.context'
-import { hasWriteAccess } from '../../command/domain/command-access.helper'
 import {
 	getOwnerAnswered,
 	getUnreadOwnerThreads,
@@ -19,6 +14,7 @@ import {
 	MAX_REPLY_CHARS,
 	MAX_REPLY_THREADS,
 	NEEDS_OWNER_LABEL,
+	CLOSING_ACTIONS,
 } from '../domain/publish.constants'
 import type {
 	AppliedReply,
@@ -28,9 +24,9 @@ import type {
 import {
 	countDisputes,
 	getApplicableReplies,
-	getOwnerCleared,
 	getPendingReply,
 	isPastLimit,
+	toUnsettledIds,
 	type ReplyRef,
 } from '../domain/thread-conversation.helper'
 import { getRotated } from '../domain/thread-recheck.helper'
@@ -40,10 +36,17 @@ import type {
 } from '../domain/thread-reply.schema'
 import type { BlobLinks } from '../presentation/thread-comment.formatter'
 import { formatReplyAnswer } from '../presentation/thread-reply.formatter'
+import {
+	ReplyNamingService,
+	ReplyNamingServiceLive,
+} from './reply-naming.service'
+import {
+	type ClearedInput,
+	ThreadSettleService,
+	ThreadSettleServiceLive,
+} from './thread-settle.service'
 
 const NOT_FOUND_STATUS = 404
-/** Answers after which the bot also asks GitHub to resolve the thread. */
-const CLOSING_ACTIONS: ReadonlySet<string> = new Set(['resolved', 'accepted'])
 
 /** What the prepare step collects replies from. */
 export interface ReplyCollectInput {
@@ -54,6 +57,13 @@ export interface ReplyCollectInput {
 	readonly rotation: number
 	/** Thread ids the summary marker says wait for the owner. */
 	readonly waiting: readonly string[]
+	/** A dispatched converse's reply: a resolved thread holding it is answered as if open. */
+	readonly held?: number
+	/**
+	 * With a rating: also pick threads whose older reply by a writer no app answer names at its
+	 * current version, so every reply that can hold the pull request gets an answer.
+	 */
+	readonly naming?: boolean
 }
 
 /** The review's decisions and the publisher's fresh read of the bot's threads. */
@@ -66,18 +76,14 @@ export interface ReplyApplyInput {
 	readonly config: ReviewConfig
 	/** The reviewed change as publishing read it from git; `undefined` when the read failed. */
 	readonly change: Pick<Change, 'files'> | undefined
-}
-
-/** The waiting threads and who resolved each resolved thread of a fresh read (`toResolvers`). */
-export interface ClearedInput {
-	readonly waiting: readonly string[]
-	readonly resolvers: ReadonlyMap<string, string>
-	/** `commands.allow` of the rules in force. */
-	readonly allow: readonly string[]
+	/** The run id the answers' markers name; without it an answer names no replies. */
+	readonly run?: number
+	/** A dispatched converse's reply, answered in a resolved thread too. */
+	readonly held?: number
 }
 
 /** A pending reply found in a thread, before its comments are read. */
-interface PendingThread {
+export interface PendingThread {
 	readonly thread: BotThread
 	readonly ref: ReplyRef
 }
@@ -118,10 +124,21 @@ export class ThreadReplyService extends Context.Service<
 		readonly getSentToOwner: (
 			threads: readonly ReviewThread[]
 		) => Effect.Effect<readonly string[], GitHubApiError, OwnedIdentities>
-		/** Ids of waiting threads an admin or an allowed login resolved on GitHub. */
+		/** Ids of waiting threads an owner's resolution cleared (`ThreadSettleService.getCleared`). */
 		readonly getCleared: (
 			input: ClearedInput
-		) => Effect.Effect<ReadonlySet<string>>
+		) => Effect.Effect<ReadonlySet<string>, never, OwnedIdentities>
+		/** The threads with every resolved bug's unsettled state known (`resolveUnsettled`). */
+		readonly resolveUnsettled: ThreadSettleService['Service']['resolveUnsettled']
+		/**
+		 * Settles the threads' unsettled app answers (`ThreadSettleService.settle`), except in the
+		 * threads this run answered, whose own answer decided them and which the read predates; the
+		 * ids still unsettled after it, with those this run's `answered` left so.
+		 */
+		readonly settle: (
+			threads: readonly ReviewThread[],
+			answered: readonly AppliedReply[]
+		) => Effect.Effect<ReadonlySet<string>, never, OwnedIdentities>
 		/** Adds the label while threads wait, removes it when the last one was cleared. */
 		readonly syncLabel: (
 			pullNumber: number,
@@ -135,50 +152,47 @@ export const ThreadReplyServiceLive = Layer.effect(
 	ThreadReplyService,
 	Effect.gen(function* () {
 		const api = yield* GitHubApiService
+		const naming = yield* ReplyNamingService
+		const settling = yield* ThreadSettleService
+		const { reopen } = settling
+		const {
+			getWriters,
+			readNamed,
+			hasLaterReply,
+			getNamedVersions,
+			findOlderReplies,
+		} = naming
 
-		/** A login's access, or `undefined` when GitHub does not answer. */
-		const readRole = Effect.fn('ThreadReplyService.readRole')(function* (
-			login: string
-		) {
-			return yield* api.getCollaboratorRole(login).pipe(
-				Effect.map((access): CollaboratorRole | undefined => access),
-				Effect.orElseSucceed(() => undefined)
-			)
-		})
-
-		/** The logins, lowercased, that have write access; one lookup per login, a failed one counts as none. */
-		const getWriters = Effect.fn('ThreadReplyService.getWriters')(function* (
-			logins: readonly string[]
-		) {
-			const distinct = [...new Set(logins.map(login => login.toLowerCase()))]
-			const writers = yield* Effect.filter(
-				distinct,
-				login =>
-					readRole(login).pipe(
-						Effect.map(access => access !== undefined && hasWriteAccess(access))
-					),
-				{ concurrency: 1 }
-			)
-			return new Set(writers)
-		})
-
-		/** The reply as the thread's comments show it now; none once another comment followed it. */
+		/**
+		 * The reply as the thread's comments show it now. Without naming, none once another comment
+		 * followed it, as before the rating. With naming, none while a later writer's reply waits for
+		 * an answer at its current version (`hasLaterReply`, the check `readNamed` makes), so an older
+		 * reply edited after a later one was answered is still collected.
+		 */
 		const readReply = Effect.fn('ThreadReplyService.readReply')(function* (
-			pending: PendingThread
+			pending: PendingThread,
+			named: boolean
 		) {
 			const { identities } = yield* OwnedIdentities
 			const comments = yield* api.listThreadComments(pending.thread.id)
-			const last = comments.at(-1)
-			if (last?.databaseId !== pending.ref.commentId)
-				return Option.none<PendingReply>()
+			const index = comments.findLastIndex(
+				comment => comment.databaseId === pending.ref.commentId
+			)
+			const reply = comments[index]
+			if (!reply) return Option.none<PendingReply>()
+			const later = named
+				? yield* hasLaterReply(comments, index)
+				: index !== comments.length - 1
+			if (later) return Option.none<PendingReply>()
 			return Option.some({
 				threadId: pending.thread.id,
 				fingerprint: pending.thread.marker.fingerprint,
 				commentId: pending.ref.commentId,
-				digest: toBodyDigest(last.body),
+				digest: toBodyDigest(reply.body),
 				author: pending.ref.author,
-				body: last.body.slice(0, MAX_REPLY_CHARS),
+				body: reply.body.slice(0, MAX_REPLY_CHARS),
 				disputes: countDisputes(comments, identities),
+				...(named ? { named: yield* getNamedVersions(comments) } : {}),
 			} satisfies PendingReply)
 		})
 
@@ -193,55 +207,63 @@ export const ThreadReplyServiceLive = Layer.effect(
 			const counting = pending.filter(entry =>
 				writers.has(entry.ref.author.toLowerCase())
 			)
+			const older =
+				input.naming === true && counting.length < MAX_REPLY_THREADS
+					? yield* findOlderReplies(input, counting)
+					: []
 			const batch = getRotated(
-				counting,
+				[...counting, ...older],
 				input.rotation,
 				MAX_REPLY_THREADS
 			).slice(0, MAX_REPLY_THREADS)
 			const replies = yield* Effect.forEach(
 				batch,
-				entry => readReply(entry).pipe(Effect.orElseSucceed(Option.none)),
+				entry =>
+					readReply(entry, input.naming === true).pipe(
+						Effect.orElseSucceed(Option.none)
+					),
 				{ concurrency: 1 }
 			)
 			return replies.flatMap(Option.toArray)
 		})
 
 		/**
-		 * True when the thread's latest comment is still the decided reply with the digest it was
-		 * decided on; a failed read is false. The reply mutation has no precondition, so this read
-		 * right before it narrows the window for an edit or a newer comment but cannot close it.
+		 * Answers one decision after the answer's own read of the thread. A resolved thread that a
+		 * non-closing answer keeps open is reopened first, so the next thread read counts it; when it
+		 * cannot be reopened, nothing is posted. GitHub gives no resolution time, so such a thread and
+		 * every thread sent to the owner is reopened again after the answer, which is posted
+		 * `unsettled` and settled by an edit once that reopen lands (`ThreadSettleService`): only a
+		 * resolution after it then stands (`getCleared`). An answer left unsettled stays so marked.
 		 */
-		const isStillLatest = Effect.fn('ThreadReplyService.isStillLatest')(
-			function* (applied: AppliedReply) {
-				const comments = yield* api
-					.listThreadComments(applied.thread.id)
-					.pipe(Effect.orElseSucceed((): readonly ThreadComment[] => []))
-				const last = comments.at(-1)
-				return (
-					last !== undefined &&
-					last.databaseId === applied.commentId &&
-					toBodyDigest(last.body) === applied.thread.latestDigest
-				)
-			}
-		)
-
 		const answer = Effect.fn('ThreadReplyService.answer')(function* (
 			applied: AppliedReply,
-			links: BlobLinks
+			links: BlobLinks,
+			input: Pick<ReplyApplyInput, 'run' | 'held'>
 		) {
 			const { thread, decision } = applied
 			// Someone edited the reply or answered it since the first read: a later run decides again.
-			if (!(yield* isStillLatest(applied))) return []
-			const body = formatReplyAnswer(decision, links, applied.commentId)
-			return yield* api.replyToThread(thread.id, body).pipe(
-				Effect.tap(() =>
-					CLOSING_ACTIONS.has(decision.action)
-						? api.resolveThread(thread.id).pipe(Effect.ignore)
-						: Effect.void
-				),
-				Effect.as([applied]),
-				Effect.orElseSucceed((): AppliedReply[] => [])
+			const named = yield* readNamed(applied, input.run, input.held)
+			if (!named) return []
+			const closing = CLOSING_ACTIONS.has(decision.action)
+			const reopens = thread.resolved && !closing
+			if (reopens && !(yield* reopen(thread.id))) return []
+			const settles = reopens || decision.action === 'needs-owner'
+			const body = formatReplyAnswer(
+				decision,
+				links,
+				applied.commentId,
+				named.entry,
+				settles
 			)
+			const posted = yield* api.replyToThread(thread.id, body).pipe(
+				Effect.map(databaseId => ({ databaseId: databaseId ?? null, body })),
+				Effect.orElseSucceed(() => undefined)
+			)
+			if (!posted) return []
+			if (closing) yield* api.resolveThread(thread.id).pipe(Effect.ignore)
+			if (!settles) return [applied]
+			const settled = yield* settling.settleAnswer(thread.id, posted)
+			return [settled ? applied : { ...applied, unsettled: true as const }]
 		})
 
 		/**
@@ -279,7 +301,9 @@ export const ThreadReplyServiceLive = Layer.effect(
 			const applicable = getApplicableReplies(
 				input.decisions,
 				input.threads,
-				input.waiting
+				input.waiting,
+				input.held,
+				input.run !== undefined
 			).filter(
 				entry =>
 					entry.decision.action !== 'accepted' ||
@@ -288,9 +312,12 @@ export const ThreadReplyServiceLive = Layer.effect(
 			const writers = yield* getWriters(
 				applicable.flatMap(entry => entry.thread.latestAuthor?.login ?? [])
 			)
-			// A review job could name a reader's reply, or the author lost access since prepare.
-			const allowed = applicable.filter(entry =>
-				writers.has(entry.thread.latestAuthor?.login.toLowerCase() ?? '')
+			// A review job could name a reader's reply, or the author lost access since prepare. An
+			// older reply's author is checked against the answer's own read of the thread.
+			const allowed = applicable.filter(
+				entry =>
+					entry.thread.latestCommentId !== entry.commentId ||
+					writers.has(entry.thread.latestAuthor?.login.toLowerCase() ?? '')
 			)
 			const standing = yield* Effect.filter(
 				allowed,
@@ -299,7 +326,7 @@ export const ThreadReplyServiceLive = Layer.effect(
 			)
 			const answered = yield* Effect.forEach(
 				standing,
-				entry => answer(entry, input.links),
+				entry => answer(entry, input.links, input),
 				{ concurrency: 1 }
 			)
 			return answered.flat()
@@ -325,32 +352,6 @@ export const ThreadReplyServiceLive = Layer.effect(
 			}
 		)
 
-		const getCleared = Effect.fn('ThreadReplyService.getCleared')(function* (
-			input: ClearedInput
-		) {
-			const resolved = input.waiting.flatMap(id => {
-				const resolver = input.resolvers.get(id)
-				return resolver === undefined ? [] : [{ id, resolver }]
-			})
-			const logins = [
-				...new Set(resolved.map(entry => entry.resolver.toLowerCase())),
-			]
-			const entries = yield* Effect.forEach(
-				logins,
-				login =>
-					readRole(login).pipe(
-						Effect.map(access => (access ? [[login, access] as const] : []))
-					),
-				{ concurrency: 1 }
-			)
-			const roles = new Map(entries.flat())
-			return new Set(
-				resolved
-					.filter(entry => getOwnerCleared(entry.resolver, roles, input.allow))
-					.map(entry => entry.id)
-			)
-		})
-
 		const syncLabel = Effect.fn('ThreadReplyService.syncLabel')(function* (
 			pullNumber: number,
 			before: number,
@@ -372,6 +373,27 @@ export const ThreadReplyServiceLive = Layer.effect(
 			)
 		})
 
-		return { collect, apply, getSentToOwner, getCleared, syncLabel }
+		const settle = Effect.fn('ThreadReplyService.settle')(function* (
+			threads: readonly ReviewThread[],
+			answered: readonly AppliedReply[]
+		) {
+			const ids = new Set(answered.map(entry => entry.thread.id))
+			const left = yield* settling.settle(
+				threads.filter(thread => !ids.has(thread.id))
+			)
+			return toUnsettledIds(answered, left)
+		})
+
+		return {
+			collect,
+			apply,
+			getSentToOwner,
+			getCleared: settling.getCleared,
+			resolveUnsettled: settling.resolveUnsettled,
+			settle,
+			syncLabel,
+		}
 	})
+).pipe(
+	Layer.provide(Layer.mergeAll(ReplyNamingServiceLive, ThreadSettleServiceLive))
 )

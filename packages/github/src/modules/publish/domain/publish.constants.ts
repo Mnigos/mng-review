@@ -4,6 +4,13 @@ import type { Severity } from '@mng-review/domain'
 export const MARKER_PREFIX = 'mng-review:'
 export const MARKER_VERSION = 1
 /**
+ * Entries one answer marker carries; one run writes one entry per kind. An entry naming one comment
+ * encodes to about 120 characters (160 for a `run` entry with a 32-character agent), so a full list
+ * leaves the summary text at least 15,000 of GitHub's 65,536. A write past it fails, never trims: a
+ * dropped entry would make its command unanswered again.
+ */
+export const MAX_ANSWER_ENTRIES = 300
+/**
  * Characters of a trigger, impact, premise, fix or evidence line a comment keeps, so it stays far
  * below GitHub's 65,536 characters even after escaping and with the marker.
  */
@@ -32,3 +39,13 @@ export const SEVERITY_MARKERS = {
 } as const satisfies Record<Severity, string>
 /** The marker of an unverified finding, which never blocks, in place of its severity's marker. */
 export const UNVERIFIED_MARKER = '❔'
+/** Reply actions that close a thread for the bot's counts; the bot also asks GitHub to resolve it. */
+export const CLOSING_ACTIONS: ReadonlySet<string> = new Set([
+	'resolved',
+	'accepted',
+])
+/** Reply actions that stand only within the limit, which needs the change read from git. */
+export const LIMITED_ACTIONS: ReadonlySet<string> = new Set([
+	'accepted',
+	'needs-owner',
+])

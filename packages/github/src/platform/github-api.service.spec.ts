@@ -167,7 +167,7 @@ layer(Layer.empty)('GitHubApiService reads', test => {
 					})
 					expect(REVIEW_THREADS_QUERY).toMatch(
 						new RegExp(
-							String.raw`latest:\s*comments\(last: ${RECENT_COMMENTS}\)\s*\{\s*nodes\s*\{\s*databaseId body author \{ __typename login \} editor \{ __typename login \} originalCommit \{ oid \}`,
+							String.raw`latest:\s*comments\(last: ${RECENT_COMMENTS}\)\s*\{\s*nodes\s*\{\s*databaseId body createdAt lastEditedAt author \{ __typename login \} editor \{ __typename login \} originalCommit \{ oid \}`,
 							'u'
 						)
 					)

@@ -10,6 +10,7 @@ import {
 	commentEditsAnswerSchema,
 	type RiskCommitStatus,
 	riskCommitStatusSchema,
+	runCreatedSchema,
 	type TimelineItem,
 	timelineAnswerSchema,
 } from './github-risk.schema'
@@ -23,13 +24,13 @@ export interface RiskStatusInput {
 }
 
 /**
- * The pull request's commits, both sides of every force push and its label events, in the order
- * they happened.
+ * The pull request's commits, both sides of every force push, its label events and its
+ * conversation comments, in the order they happened.
  */
 export const TIMELINE_QUERY = `query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
-      timelineItems(first: ${PAGE_SIZE}, after: $cursor, itemTypes: [PULL_REQUEST_COMMIT, HEAD_REF_FORCE_PUSHED_EVENT, LABELED_EVENT, UNLABELED_EVENT]) {
+      timelineItems(first: ${PAGE_SIZE}, after: $cursor, itemTypes: [PULL_REQUEST_COMMIT, HEAD_REF_FORCE_PUSHED_EVENT, LABELED_EVENT, UNLABELED_EVENT, ISSUE_COMMENT]) {
         pageInfo { hasNextPage endCursor }
         nodes {
           __typename
@@ -37,6 +38,7 @@ export const TIMELINE_QUERY = `query($owner: String!, $name: String!, $number: I
           ... on HeadRefForcePushedEvent { beforeCommit { oid } afterCommit { oid } }
           ... on LabeledEvent { actor { __typename login } label { name } }
           ... on UnlabeledEvent { actor { __typename login } label { name } }
+          ... on IssueComment { databaseId }
         }
       }
     }
@@ -94,6 +96,10 @@ export class GitHubRiskService extends Context.Service<
 		readonly readCommentEdits: (
 			nodeId: string
 		) => Effect.Effect<CommentEdits, GitHubApiError>
+		/** When the workflow run was created, as GitHub gives it. */
+		readonly getRunCreated: (
+			runId: number
+		) => Effect.Effect<string, GitHubApiError>
 	}
 >()('mng-review/GitHubRiskService') {}
 
@@ -170,6 +176,19 @@ export const GitHubRiskServiceLive = Layer.effect(
 				createdSchema
 			).pipe(Effect.asVoid)
 		})
+
+		const getRunCreated = Effect.fn('GitHubRiskService.getRunCreated')(
+			function* (runId: number) {
+				const run = yield* read(
+					sendJson(
+						'getRunCreated',
+						HttpClientRequest.get(`${repo}/actions/runs/${runId}`),
+						runCreatedSchema
+					)
+				)
+				return run.created_at
+			}
+		)
 
 		const listTimeline = Effect.fn('GitHubRiskService.listTimeline')(function* (
 			pullNumber: number
@@ -253,6 +272,12 @@ export const GitHubRiskServiceLive = Layer.effect(
 			}
 		)
 
-		return { listStatuses, createStatus, listTimeline, readCommentEdits }
+		return {
+			listStatuses,
+			createStatus,
+			listTimeline,
+			readCommentEdits,
+			getRunCreated,
+		}
 	})
 )

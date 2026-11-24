@@ -12,6 +12,8 @@ import {
 	TokenLedgerLive,
 } from '@mng-review/engine'
 import {
+	AnswerReadServiceLive,
+	CommandAnswerServiceLive,
 	CommandAuthorizeServiceLive,
 	GitHubApiServiceLive,
 	GitHubReviewServiceLive,
@@ -60,6 +62,10 @@ import {
 	denyAuthorizeConfig,
 	runAuthorizeStep,
 } from './presentation/handlers/authorize-step.handler'
+import {
+	failDenyConfig,
+	runDenyStep,
+} from './presentation/handlers/deny-step.handler'
 import {
 	failFindConfig,
 	runFindStep,
@@ -168,7 +174,11 @@ const PrepareLive = Layer.mergeAll(
  */
 const RiskLive = RiskRunServiceLive.pipe(
 	Layer.provide(
-		Layer.mergeAll(RiskStartServiceLive, RiskFinishServiceLive).pipe(
+		Layer.mergeAll(
+			RiskStartServiceLive,
+			RiskFinishServiceLive,
+			AnswerReadServiceLive
+		).pipe(
 			Layer.provideMerge(RiskReadServiceLive),
 			Layer.provide(FloorDiffServiceLive)
 		)
@@ -182,8 +192,16 @@ const PublishLive = PublishRunServiceLive.pipe(
 	Layer.provideMerge(RulesLive)
 )
 
+/** The cap and denial rules over a token, with the answer reads they need. */
+const toCommandAnswerLive = (config: Layer.Layer<GitHubConfig, ConfigError>) =>
+	CommandAnswerServiceLive.pipe(
+		Layer.provide(AnswerReadServiceLive),
+		Layer.provideMerge(toGitHubLive(config))
+	)
+
 /** The authorize step: the comment checks over the read token and the default branch's rules. */
 const AuthorizeLive = CommandAuthorizeServiceLive.pipe(
+	Layer.provideMerge(toCommandAnswerLive(GitHubReadConfigLive)),
 	Layer.provideMerge(SummaryReviewServiceLive),
 	Layer.provideMerge(toGitHubLive(GitHubReadConfigLive)),
 	Layer.provideMerge(RulesLive)
@@ -217,6 +235,11 @@ const RiskCleanupLive = RiskFinishServiceLive.pipe(
 	Layer.provideMerge(RulesLive)
 )
 
+/** The denial job: the answer over the write token and the default branch's rules. */
+const DenyLive = toCommandAnswerLive(GitHubWriteConfigLive).pipe(
+	Layer.provideMerge(RulesLive)
+)
+
 /** An unknown `MNG_REVIEW_MODE`: reported as an invalid configuration before anything else runs. */
 const runInvalidMode = Effect.gen(function* () {
 	const startedAt = yield* Clock.currentTimeMillis
@@ -226,7 +249,7 @@ const runInvalidMode = Effect.gen(function* () {
 		status: 'invalid-config',
 		source: MODE_VARIABLE,
 		reason:
-			'must be shadow, prepare, review, publish, sweep, authorize, reserve, find or risk-cleanup',
+			'must be shadow, prepare, review, publish, sweep, authorize, reserve, find, risk-cleanup or deny',
 	}
 	yield* Console.log(formatLogLine(invalid))
 	yield* writeSummary(
@@ -260,6 +283,11 @@ const runAction = Effect.gen(function* () {
 		return yield* maskAppToken().pipe(
 			Effect.andThen(runRiskCleanupStep.pipe(Effect.provide(RiskCleanupLive))),
 			Effect.catchTag('ConfigError', failRiskCleanupConfig)
+		)
+	if (mode.value === 'deny')
+		return yield* maskAppToken().pipe(
+			Effect.andThen(runDenyStep.pipe(Effect.provide(DenyLive))),
+			Effect.catchTag('ConfigError', failDenyConfig)
 		)
 	if (mode.value === 'authorize')
 		return yield* runAuthorizeStep.pipe(

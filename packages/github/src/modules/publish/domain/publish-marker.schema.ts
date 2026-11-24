@@ -1,13 +1,19 @@
 import {
+	answerEntrySchema,
 	countSchema,
 	REPLY_ACTIONS,
 	riskLevelSchema,
 	severitySchema,
 } from '@mng-review/domain'
 import { Schema } from 'effect'
-import { MARKER_VERSION } from './publish.constants'
+import { MARKER_VERSION, MAX_ANSWER_ENTRIES } from './publish.constants'
 
 export const THREAD_KINDS = ['bug', 'unverified', 'nit'] as const
+
+/** The entries an app answer carries; each names comments it handled at the version it read. */
+const answerListSchema = Schema.Array(answerEntrySchema).check(
+	Schema.isMaxLength(MAX_ANSWER_ENTRIES)
+)
 
 /**
  * The hidden marker at the end of each finding comment: who reported what, so a later run finds
@@ -71,6 +77,8 @@ export const summaryMarkerSchema = Schema.Struct({
 	 * history: the pull request had a real rating, so a lost risk comment never resets it.
 	 */
 	risk: Schema.optionalKey(riskLevelSchema),
+	/** The commands this review answered: a `review` or `run <agent>` answer, or a rating review. */
+	answers: Schema.optionalKey(answerListSchema),
 })
 export type SummaryMarker = typeof summaryMarkerSchema.Type
 
@@ -83,6 +91,8 @@ export const replyMarkerSchema = Schema.Struct({
 	action: Schema.Literals(REPLY_ACTIONS),
 	commit: Schema.String,
 	reply: Schema.optionalKey(Schema.Int),
+	/** Every acted-on reply in the thread this answer names, at the version its read saw. */
+	answers: Schema.optionalKey(answerListSchema),
 	/**
 	 * Set while the app has not reopened the thread after this answer: GitHub gives no resolution
 	 * time, so until a later write drops it, a resolution GitHub shows may predate the answer.
@@ -92,3 +102,10 @@ export const replyMarkerSchema = Schema.Struct({
 	unsettled: Schema.optionalKey(Schema.Literal(true)),
 })
 export type ReplyMarker = typeof replyMarkerSchema.Type
+
+/** The hidden marker of a denial or cap reply: the command it refuses. */
+export const answerMarkerSchema = Schema.Struct({
+	v: Schema.Literal(MARKER_VERSION),
+	answers: answerListSchema,
+})
+export type AnswerMarker = typeof answerMarkerSchema.Type

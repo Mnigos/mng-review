@@ -17,6 +17,7 @@ import type {
 	TimelineItem,
 } from '../../../platform/github-risk.schema'
 import { parseSummaryMarker } from '../../publish/domain/publish-marker.parser'
+import { bringsHead } from './risk-label.helper'
 import { RATED_STATES, TIMELINE_TYPES } from './risk.constants'
 import type { AppRiskStatus } from './risk.types'
 
@@ -152,5 +153,25 @@ export function hasAppHistory(
 				apps.some(app => isAppAuthored(review, app)) &&
 				parseSummaryMarker(review.body)?.risk !== undefined
 		)
+	)
+}
+
+/**
+ * Ids of the conversation comments posted since `head` arrived, in timeline order: after the last
+ * commit or force push that brought it. A head the timeline does not show leaves every comment.
+ */
+export function getCommentsSinceHead(
+	items: readonly TimelineItem[],
+	head: string
+): Set<number> {
+	const from = items.findLastIndex(item => bringsHead(item, head))
+	return new Set(
+		items
+			.slice(from + 1)
+			.flatMap(item =>
+				item.__typename === TIMELINE_TYPES.COMMENT && item.databaseId
+					? [item.databaseId]
+					: []
+			)
 	)
 }

@@ -1,5 +1,6 @@
 import { RulesService } from '@mng-review/engine'
 import {
+	CommandAnswerService,
 	CommandAuthorizeService,
 	type CommandDecision,
 	GitHubConfig,
@@ -48,14 +49,20 @@ const decide = Effect.gen(function* () {
 		service.load(AUTHORIZE_RULES_REF)
 	)
 	const { identity } = yield* GitHubConfig
-	return yield* CommandAuthorizeService.use(service =>
+	const owned = provideOwnedIdentities(identity, rules.config.identity.previous)
+	const decision = yield* CommandAuthorizeService.use(service =>
 		service.authorize({ comment, handles, rules })
-	).pipe(provideOwnedIdentities(identity, rules.config.identity.previous))
+	).pipe(owned)
+	// With a rating: a refused command gets a denial answer, a review past the cap a cap reply.
+	return yield* CommandAnswerService.use(service =>
+		service.check({ comment, decision, config: rules.config })
+	).pipe(owned)
 })
 
 /**
  * The authorize job's step: checks a comment without any secret, over the read token, and writes
- * the outputs the later jobs start from. Every failure is a denial and the step passes.
+ * the outputs the later jobs start from. A failure is a denial and the step passes, except a
+ * failed role or cap read of the rating's checks, which fails the job with no outputs.
  */
 export const runAuthorizeStep = Effect.gen(function* () {
 	const decision = yield* decide.pipe(
