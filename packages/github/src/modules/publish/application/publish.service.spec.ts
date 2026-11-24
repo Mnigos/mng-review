@@ -4583,5 +4583,49 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 						).toMatchObject({ openBugs: complete ? 1 : 0 })
 					})
 			)
+		for (const complete of [true, false])
+			test.effect(
+				`an owner's resolution clears a wait beside a null node only while the rating is off (${complete})`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = setup()
+						fixture.fake.command.role = 'admin'
+						fixture.fake.threads.push(
+							reviewThread(undefined, {
+								isResolved: true,
+								resolvedBy: { login: 'contributor' },
+							})
+						)
+						const waiting = {
+							...summary(),
+							body: toMarkerComment('summary', {
+								...SUMMARY_MARKER,
+								head: fixture.head,
+								finished: true,
+								needsOwner: ['thread'],
+							}),
+						}
+						fixture.fake.reviews.push(waiting)
+						fixture.fake.nullNodes.comments = 1
+						const publishing = PublishService.use(service =>
+							service.publish(withoutBugs(fixture.input))
+						).pipe(
+							Effect.provide(fixture.publisher),
+							provideListCompleteness(complete)
+						)
+						if (complete) {
+							expect(yield* Effect.flip(publishing)).toMatchObject({
+								_tag: 'GitHubApiError',
+							})
+							expect(fixture.fake.writes).toEqual([])
+							expect(fixture.fake.reviews).toEqual([waiting])
+							return
+						}
+						expect(yield* publishing).toMatchObject({ waiting: 0 })
+						expect(
+							parseSummaryMarker(reviewBody(fixture.fake) ?? '')?.needsOwner
+						).toBeUndefined()
+					})
+			)
 	}
 )

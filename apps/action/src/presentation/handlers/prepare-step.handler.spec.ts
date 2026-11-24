@@ -4,8 +4,11 @@ import {
 	GitHubApiError,
 	GitHubConfig,
 	GitHubReadConfigLive,
+	ListCompleteness,
 	MAX_REPLY_THREADS,
 	ReplyFindService,
+	SummaryReviewService,
+	ThreadReplyService,
 } from '@mng-review/github'
 import { ConfigProvider, Effect, FileSystem, Layer } from 'effect'
 // oxlint-disable-next-line no-restricted-imports -- The test brief requires these existing unexported GitHub fixtures.
@@ -585,4 +588,112 @@ layer(FileSystemLayer)('prepare step null nodes', test => {
 						)
 				})
 		)
+})
+
+layer(FileSystemLayer)('prepare step list completeness', test => {
+	for (const riskEnabled of [false, true])
+		for (const converse of [false, true])
+			test.effect(
+				`${converse ? 'a converse run reads the prior run and its pending replies' : 'a review run reads the prior run and the replies'} with complete lists only while the rules rate: ${riskEnabled}`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = stepFixture(
+							undefined,
+							false,
+							false,
+							undefined,
+							undefined,
+							undefined,
+							riskEnabled
+						)
+						const pr = fixture.api.command.pullRequest
+						fixture.api.command.pullRequest = {
+							...pr,
+							base: { ...pr.base, sha: fixture.base },
+							head: { ...pr.head, sha: fixture.head },
+						}
+						fixture.api.command.role = 'write'
+						const seen: boolean[] = []
+						const readPriorSpy = vi.fn(() =>
+							ListCompleteness.pipe(
+								Effect.map(reading => {
+									seen.push(reading.complete)
+									return undefined
+								})
+							)
+						)
+						const collectSpy = vi.fn(() =>
+							ListCompleteness.pipe(
+								Effect.map(reading => {
+									seen.push(reading.complete)
+									return []
+								})
+							)
+						)
+						const readPendingSpy = vi.fn(() =>
+							ListCompleteness.pipe(
+								Effect.map(reading => {
+									seen.push(reading.complete)
+									return { threads: [], replies: [] }
+								})
+							)
+						)
+						yield* runPrepareStep.pipe(
+							Effect.provide(
+								PrepareRunServiceLive.pipe(Layer.provide(fixture.rulesLayer))
+							),
+							Effect.provide(
+								Layer.mergeAll(
+									Layer.succeed(SummaryReviewService, {
+										write: () => Effect.die('the prepare step never publishes'),
+										readPrior: readPriorSpy,
+										publishStatus: () =>
+											Effect.die('the prepare step writes no status'),
+										readWaiting: () =>
+											Effect.die('the prepare step reads no waiting list'),
+										reserveManualRun: () =>
+											Effect.die('the prepare step reserves no run'),
+									}),
+									Layer.succeed(ThreadReplyService, {
+										collect: collectSpy,
+										apply: () => Effect.die('the prepare step never answers'),
+										getSentToOwner: () =>
+											Effect.die('the prepare step reads no owner list'),
+										getCleared: () =>
+											Effect.die('the prepare step clears no wait'),
+										resolveUnsettled: () =>
+											Effect.die('the prepare step settles no answer'),
+										settle: () =>
+											Effect.die('the prepare step settles no answer'),
+										syncLabel: () =>
+											Effect.die('the prepare step sets no label'),
+									}),
+									Layer.succeed(ReplyFindService, {
+										find: () => Effect.die('the prepare step finds no batch'),
+										readPending: readPendingSpy,
+									})
+								)
+							),
+							Effect.provide(fixture.publisherLayer),
+							Effect.provide(
+								fixture.envLayer(
+									converse
+										? {
+												GITHUB_EVENT_NAME: 'schedule',
+												MNG_REVIEW_TRIGGER: 'converse',
+												MNG_REVIEW_TARGET_PR: '17',
+												MNG_REVIEW_TARGET_BASE: fixture.base,
+												MNG_REVIEW_TARGET_HEAD: fixture.head,
+											}
+										: {}
+								)
+							)
+						)
+						expect(readPriorSpy).toHaveBeenCalledOnce()
+						expect(
+							converse ? readPendingSpy : collectSpy
+						).toHaveBeenCalledOnce()
+						expect(seen).toEqual([riskEnabled, riskEnabled])
+					})
+			)
 })

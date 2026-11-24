@@ -4,6 +4,8 @@ import {
 	GitHubApiError,
 	GitHubConfig,
 	GitHubWriteConfigLive,
+	ListCompleteness,
+	SummaryReviewService,
 } from '@mng-review/github'
 import { Effect, FileSystem, Layer } from 'effect'
 // oxlint-disable-next-line no-restricted-imports -- The summary's count is asserted at the real marker boundary.
@@ -209,4 +211,66 @@ layer(FileSystemLayer)('reserve step', test => {
 			).toBe('reserved=false\n')
 		})
 	)
+})
+
+layer(FileSystemLayer)('reserve step list completeness', test => {
+	for (const riskEnabled of [false, true])
+		test.effect(
+			`the count reads complete lists only while the rules rate: ${riskEnabled}`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = stepFixture(
+						[],
+						true,
+						false,
+						undefined,
+						undefined,
+						undefined,
+						riskEnabled
+					)
+					const pr = fixture.api.command.pullRequest
+					fixture.api.command.pullRequest = {
+						...pr,
+						base: { ...pr.base, sha: fixture.base },
+						head: { ...pr.head, sha: fixture.head },
+					}
+					const seen: boolean[] = []
+					const reserveManualRunSpy = vi.fn(() =>
+						ListCompleteness.pipe(
+							Effect.map(reading => {
+								seen.push(reading.complete)
+								return true
+							})
+						)
+					)
+					yield* runReserveStep.pipe(
+						Effect.provide(
+							PrepareRunServiceLive.pipe(Layer.provide(fixture.rulesLayer))
+						),
+						Effect.provide(
+							Layer.succeed(SummaryReviewService, {
+								write: () => Effect.die('the reserve step never publishes'),
+								readPrior: () =>
+									Effect.die('the reserve step reads no prior run'),
+								publishStatus: () =>
+									Effect.die('the reserve step writes no status'),
+								readWaiting: () =>
+									Effect.die('the reserve step reads no waiting list'),
+								reserveManualRun: reserveManualRunSpy,
+							})
+						),
+						Effect.provide(fixture.publisherLayer),
+						Effect.provide(
+							fixture.envLayer({
+								MNG_REVIEW_APP_SLUG: 'mng-review',
+								MNG_REVIEW_TARGET_PR: '17',
+								MNG_REVIEW_TARGET_BASE: fixture.base,
+								MNG_REVIEW_TARGET_HEAD: fixture.head,
+							})
+						)
+					)
+					expect(reserveManualRunSpy).toHaveBeenCalledOnce()
+					expect(seen).toEqual([riskEnabled])
+				})
+		)
 })
