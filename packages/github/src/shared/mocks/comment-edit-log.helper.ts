@@ -43,13 +43,15 @@ function toEditTime(index: number) {
 
 /**
  * The edit history GitHub keeps for a comment, newest first: every update the app made and every
- * person's edit in the order they landed, over the created version once the comment is edited.
- * Each edit's text is the whole text it left, so the newest one's is the body.
+ * person's edit in the order they landed, over the created version once the comment is edited,
+ * and `nulls` edits GitHub lists as null nodes at the oldest end. Each edit's text is the whole
+ * text it left, so the newest one's is the body.
  */
 export function toCommentEdits(
 	comment: PullRequestComment | undefined,
 	writes: readonly ApiWrite[],
-	people: readonly PersonEdit[]
+	people: readonly PersonEdit[],
+	nulls = 0
 ): CommentEdits {
 	const updates = writes.flatMap((write, index) =>
 		write.method === 'update' && write.id === comment?.databaseId
@@ -67,7 +69,8 @@ export function toCommentEdits(
 			})),
 	].toSorted((first, second) => first.at - second.at)
 	const body = comment?.body ?? ''
-	if (edits.length === 0) return { body, total: 0, edits: [] }
+	const unknown = Array.from({ length: nulls }, () => null)
+	if (edits.length === 0) return { body, total: nulls, edits: unknown }
 	const listed = [{ editor: APP_EDITOR, text: '' }, ...edits].map(
 		(edit, index): CommentEdit => ({
 			id: `edit-${index}`,
@@ -76,7 +79,11 @@ export function toCommentEdits(
 			diff: edit.text,
 		})
 	)
-	return { body, total: listed.length, edits: listed.toReversed() }
+	return {
+		body,
+		total: listed.length + nulls,
+		edits: [...listed.toReversed(), ...unknown],
+	}
 }
 
 /** A person's edit of the risk comment: its text becomes the edit's and its editor the person. */

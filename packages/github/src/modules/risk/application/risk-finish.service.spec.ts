@@ -25,6 +25,7 @@ import {
 } from '../../../shared/mocks/publish-test.helper'
 import { parseRiskMarker } from '../../publish/domain/publish-marker.parser'
 import { toMarkerComment } from '../../publish/presentation/thread-comment.formatter'
+import { MARKER_NULL_STOP } from '../domain/grant-stop.constants'
 import { EMPTY_RISK_MARKER } from '../domain/risk-marker.helper'
 import { EDIT_LAG_RETRIES } from '../domain/risk.constants'
 import { formatRiskComment } from '../presentation/rating-block.formatter'
@@ -1284,6 +1285,21 @@ function retainedEdits(body: string, newest: readonly string[]) {
 	}
 }
 
+/** The risk comment history with a person's High that `apps` app edits overwrote, newest first. */
+function overwrittenHigh(body: string, apps: readonly string[]) {
+	const high = toMarkerComment('risk', {
+		...EMPTY_RISK_MARKER,
+		highest: 'high',
+	})
+	const read = riskEdits(body, [...apps, 'writer', APP_IDENTITY.login])
+	return {
+		...read,
+		edits: read.edits.map(edit =>
+			edit.editor.login === 'writer' ? { ...edit, diff: high } : edit
+		),
+	}
+}
+
 layer(APP_MODE_OWNED)('risk marker edits during the update', test => {
 	test.effect(
 		'only the app editing the marker since the read lets the grant through',
@@ -1499,6 +1515,113 @@ layer(APP_MODE_OWNED)('risk marker edits during the update', test => {
 					state: 'success',
 					level: 'low',
 				})
+			})
+	)
+	test.effect(
+		'repeated full runs over a history with a null node rate High and write the marker',
+		() =>
+			Effect.gen(function* () {
+				const fake = riskFixture()
+				const first = yield* RiskStartService.use(service =>
+					service.startFull(riskInput())
+				).pipe(Effect.provide(fake.services))
+				yield* RiskFinishService.use(service => service.finish(first)).pipe(
+					Effect.provide(fake.services)
+				)
+				fake.editNulls.count = 1
+				const from = fake.api.writes.length
+				for (const _round of [1, 2]) {
+					const run = yield* RiskStartService.use(service =>
+						service.startFull(riskInput())
+					).pipe(Effect.provide(fake.services))
+					expect(run.decision).toMatchObject({ status: 'rated', level: 'high' })
+					expect(
+						yield* RiskFinishService.use(service => service.finish(run)).pipe(
+							Effect.provide(fake.services)
+						)
+					).toMatchObject({ state: 'failure', level: 'high' })
+				}
+				expect(
+					getApiWritesAfter(fake, from).filter(method => method === 'update')
+				).toHaveLength(2)
+				expect(parseRiskMarker(fake.api.comments[0]?.body ?? '')?.highest).toBe(
+					'high'
+				)
+			})
+	)
+	test.effect(
+		'a null node the history lists only after the update stops the grant',
+		() =>
+			Effect.gen(function* () {
+				const fake = riskFixture()
+				const run = yield* RiskStartService.use(service =>
+					service.startFull(riskInput())
+				).pipe(Effect.provide(fake.services))
+				const body = fake.api.comments[0]?.body ?? ''
+				const after = riskEdits(body, [APP_IDENTITY.login])
+				fake.editSnapshots.push(riskEdits(body, []), {
+					...after,
+					total: after.total + 1,
+					edits: [...after.edits, null],
+				})
+				expect(
+					yield* RiskFinishService.use(service => service.finish(run)).pipe(
+						Effect.provide(fake.services)
+					)
+				).toMatchObject({ state: 'error', ...MARKER_NULL_STOP })
+				expect(fake.writes.map(write => write.state)).toEqual(['error'])
+			})
+	)
+	test.effect(
+		"a person's High the history shows only by the update stops a lower grant",
+		() =>
+			Effect.gen(function* () {
+				const fake = riskFixture()
+				const first = yield* RiskStartService.use(service =>
+					service.startFull(riskInput())
+				).pipe(Effect.provide(fake.services))
+				yield* RiskFinishService.use(service => service.finish(first)).pipe(
+					Effect.provide(fake.services)
+				)
+				const body = fake.api.comments[0]?.body ?? ''
+				// GitHub's history lags at the start read and shows only the app's edits.
+				fake.editSnapshots.push(
+					riskEdits(body, [APP_IDENTITY.login]),
+					overwrittenHigh(body, [APP_IDENTITY.login]),
+					overwrittenHigh(body, [APP_IDENTITY.login, APP_IDENTITY.login])
+				)
+				const writesBefore = fake.writes.length
+				const run = yield* RiskStartService.use(service =>
+					service.startFull(riskInput())
+				).pipe(Effect.provide(fake.services))
+				expect(run.decision).toMatchObject({ status: 'rated', level: 'low' })
+				expect(
+					yield* RiskFinishService.use(service => service.finish(run)).pipe(
+						Effect.provide(fake.services)
+					)
+				).toMatchObject({ state: 'error', reason: 'marker-edited' })
+				expect(
+					fake.writes.slice(writesBefore).map(write => write.state)
+				).toEqual(['error'])
+			})
+	)
+	test.effect(
+		'a trusted marker without a node id has no edit history read',
+		() =>
+			Effect.gen(function* () {
+				const fake = riskFixture()
+				const body = formatRiskComment(EMPTY_RISK_MARKER)
+				expect(
+					yield* RiskReadService.use(service =>
+						service.readEditedLevel({
+							status: 'trusted',
+							id: 1,
+							body,
+							marker: EMPTY_RISK_MARKER,
+						})
+					).pipe(Effect.provide(fake.services))
+				).toBeUndefined()
+				expect(fake.reads.filter(read => read.startsWith('edits:'))).toEqual([])
 			})
 	)
 })

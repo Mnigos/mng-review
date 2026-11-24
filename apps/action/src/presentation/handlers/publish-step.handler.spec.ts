@@ -20,8 +20,14 @@ import {
 	decidedReply,
 	pendingReviewThread,
 } from '../../../../../packages/github/src/shared/mocks/thread-reply-test.helper'
-import { PublishRunService } from '../../application/publish-run.service'
-import { RiskRunServiceLive } from '../../application/risk-run.service'
+import {
+	PublishRunService,
+	type PublishReport,
+} from '../../application/publish-run.service'
+import {
+	RiskRunServiceLive,
+	type RiskReport,
+} from '../../application/risk-run.service'
 import {
 	MAX_OUTCOME_BYTES,
 	type OutcomeBinding,
@@ -975,6 +981,167 @@ layer(FileSystemLayer)('publish converse', test => {
 				})
 		)
 })
+
+/** The converse step's environment for the fixture's pull request. */
+function converseEnv(fixture: ReturnType<typeof stepFixture>) {
+	return fixture.envLayer({
+		MNG_REVIEW_TRIGGER: 'converse',
+		MNG_REVIEW_TARGET_PR: '17',
+		MNG_REVIEW_TARGET_BASE: fixture.base,
+		MNG_REVIEW_TARGET_HEAD: fixture.head,
+	})
+}
+
+/** A converse outcome whose one reply the model sent to the owner. */
+function needsOwnerOutcome(fixture: ReturnType<typeof stepFixture>) {
+	return JSON.stringify({
+		version: 1,
+		binding: { ...fixture.file.binding, trigger: 'converse' },
+		status: 'replied',
+		replies: {
+			decided: [
+				decidedReply({
+					action: 'needs-owner',
+					reason: 'An owner must decide.',
+				}),
+			],
+			tokens: {},
+		},
+	})
+}
+
+/** A reply run that left one answer unsettled, with the rating it carried while the gate was on. */
+function unsettledReport(risk?: RiskReport): PublishReport {
+	return {
+		status: 'replied',
+		result: {
+			verdict: 'needs owner',
+			event: 'REQUEST_CHANGES',
+			dismissal: { dismissed: 0, failed: 0 },
+			openBugs: 0,
+			answered: { 'needs-owner': 1 },
+			waiting: 1,
+			label: 'added',
+			run: 2,
+			status: true,
+			unsettled: 1,
+		},
+		...(risk ? { risk } : {}),
+	}
+}
+
+layer(FileSystemLayer, { excludeTestServices: true })(
+	'publish unsettled answers',
+	test => {
+		test.effect(
+			'an unsettled answer with risk.enabled off keeps the wait and exits 0',
+			() =>
+				Effect.gen(function* () {
+					const fixture = stepFixture(undefined, false, false, undefined, {
+						accept_intentional_up_to: 'medium',
+						max_rounds: 1,
+					})
+					const fs = yield* FileSystem.FileSystem
+					const pr = fixture.api.command.pullRequest
+					fixture.api.command.pullRequest = {
+						...pr,
+						base: { ...pr.base, sha: fixture.base },
+						head: { ...pr.head, sha: fixture.head },
+					}
+					fixture.api.threads.push(pendingReviewThread())
+					const marker = { ...SUMMARY_MARKER, head: fixture.head }
+					fixture.api.reviews.push(
+						summaryReview(marker, {
+							author: { __typename: 'Bot', login: 'github-actions' },
+						})
+					)
+					// The owner resolves the thread right after the answer, and its reopen fails.
+					fixture.api.beforeReply.push(() => {
+						const [thread] = fixture.api.threads
+						if (thread)
+							fixture.api.threads[0] = {
+								...thread,
+								isResolved: true,
+								resolvedBy: { login: 'contributor' },
+							}
+					})
+					fixture.api.failures.unresolve.push(
+						new GitHubApiError({
+							operation: 'unresolve',
+							reason: 'unavailable',
+						})
+					)
+					yield* fs.writeFileString(
+						fixture.paths.outcome,
+						needsOwnerOutcome(fixture)
+					)
+					yield* fs.writeFileString(
+						fixture.paths.result,
+						JSON.stringify({ version: 1 })
+					)
+					expect(
+						(yield* runPublishStep.pipe(
+							Effect.provide(fixture.publishRunLayer),
+							Effect.provide(converseEnv(fixture)),
+							Effect.result
+						))._tag
+					).toBe('Success')
+					expect(
+						JSON.parse(yield* fs.readFileString(fixture.paths.result))
+					).toMatchObject({
+						publish: {
+							status: 'replied',
+							result: { waiting: 1, unsettled: 1 },
+						},
+					})
+					expect(
+						parseSummaryMarker(fixture.api.reviews.at(-1)?.body ?? '')
+							?.needsOwner
+					).toEqual(['thread'])
+					expect(fixture.status.statuses).toMatchObject([
+						{ sha: fixture.head, state: 'failure' },
+					])
+				})
+		)
+		for (const [gate, risk, exit] of [
+			['off', undefined, 0],
+			['refused', { status: 'refused', reason: 'no app' }, 0],
+			['on', { status: 'none' }, 1],
+		] as const)
+			test.effect(
+				`an unsettled answer with the gate ${gate} exits ${exit}`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = stepFixture()
+						const fs = yield* FileSystem.FileSystem
+						const pr = fixture.api.command.pullRequest
+						fixture.api.command.pullRequest = {
+							...pr,
+							base: { ...pr.base, sha: fixture.base },
+							head: { ...pr.head, sha: fixture.head },
+						}
+						yield* fs.writeFileString(
+							fixture.paths.outcome,
+							needsOwnerOutcome(fixture)
+						)
+						const runSpy = vi.fn(() => Effect.succeed(unsettledReport(risk)))
+						const completed = yield* runPublishStep.pipe(
+							Effect.provideService(PublishRunService, { run: runSpy }),
+							Effect.provide(fixture.api.api),
+							Effect.provide(converseEnv(fixture)),
+							Effect.result
+						)
+						expect(runSpy).toHaveBeenCalledTimes(1)
+						if (exit === 0) expect(completed._tag).toBe('Success')
+						else
+							expect(completed).toMatchObject({
+								_tag: 'Failure',
+								failure: { _tag: 'ActionExit', code: 1 },
+							})
+					})
+			)
+	}
+)
 
 layer(FileSystemLayer, { excludeTestServices: true })(
 	'publish risk step-one failure',

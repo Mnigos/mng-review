@@ -213,6 +213,8 @@ export function riskFixture() {
 	}
 	/** The edit history each read returns in turn; `undefined` reads it from the comments. */
 	const editSnapshots: (CommentEdits | undefined)[] = []
+	/** Edits every history read lists as null nodes under the created version, as GitHub can. */
+	const editNulls = { count: 0 }
 	/** Run just before the next status create stores, like another writer landing first. */
 	const beforeCreate: (() => void)[] = []
 	/** Run just after the next timeline read returns, like a person acting right after it. */
@@ -281,7 +283,8 @@ export function riskFixture() {
 				return toCommentEdits(
 					api.comments.find(entry => entry.id === nodeId),
 					api.writes,
-					personEdits
+					personEdits,
+					editNulls.count
 				)
 			}),
 	})
@@ -360,6 +363,7 @@ export function riskFixture() {
 		editMarker,
 		statusSnapshots,
 		editSnapshots,
+		editNulls,
 		gitState,
 		risk,
 		readLayer,

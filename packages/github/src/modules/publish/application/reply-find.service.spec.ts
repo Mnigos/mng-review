@@ -166,6 +166,30 @@ layer(TOKEN_MODE_OWNED)('ReplyFindService', test => {
 				expect(fixture.fake.writes).toEqual([])
 			})
 		)
+	test.effect(
+		'keeps a reply waiting when its longer thread cannot be read whole',
+		() =>
+			Effect.gen(function* () {
+				const fixture = setup([openPullRequest(17, 'a'.repeat(40))])
+				const thread = ownerReviewThread(RECENT_COMMENTS + 1, {
+					id: 'thread-17',
+				})
+				fixture.fake.threads.splice(0, 1, thread)
+				fixture.fake.threadSnapshots.splice(0, 1, [thread])
+				fixture.fake.failures.listThreadComments.push(
+					new GitHubApiError({
+						operation: 'listThreadComments',
+						reason: 'unavailable',
+					})
+				)
+				expect(
+					yield* ReplyFindService.use(service =>
+						service.find({ max: 5, rotation: 0 })
+					).pipe(Effect.provide(fixture.service))
+				).toEqual({ candidates: [], read: 1, failed: 0 })
+				expect(fixture.fake.reads).toContain(`listThreadComments:${thread.id}`)
+			})
+	)
 	for (const failures of [0, 1, 2])
 		test.effect(
 			`counts ${failures} failed reads among eligible pull requests`,

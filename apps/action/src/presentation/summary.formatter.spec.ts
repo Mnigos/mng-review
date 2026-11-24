@@ -19,6 +19,7 @@ import {
 import {
 	formatLogLine,
 	formatPublishLogLine,
+	formatUnsettledLine,
 	formatSweepLine,
 	formatSweepSummary,
 	formatPublishSummary,
@@ -687,3 +688,14 @@ for (const posted of [false, true])
 			escapeMarkdown('2 stale review(s) dismissed, 3 not dismissed')
 		)
 	})
+
+describe('formatUnsettledLine', () => {
+	for (const rated of [false, true])
+		test(`names the unsettled count and whether the step fails, rated=${rated}`, () => {
+			const line = formatUnsettledLine(2, rated)
+			expect(line).toContain('2 answer(s) left unsettled')
+			expect(line).toContain(
+				rated ? 'the rating fails the step' : 'the step passes'
+			)
+		})
+})

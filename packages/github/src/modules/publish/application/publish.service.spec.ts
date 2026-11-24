@@ -40,6 +40,7 @@ import {
 	ACCEPTED_DECISION,
 	editedOwnerReviewThread,
 	markedThreadReply,
+	longOwnerThreads,
 	ownerReviewThread,
 	decidedReply,
 	pendingReviewThread,
@@ -3869,6 +3870,39 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 							read.startsWith('listThreadComments:')
 						)
 					).toEqual(Array.from({ length: 3 }, () => 'listThreadComments:long'))
+				})
+		)
+		test.effect(
+			'holds the longer threads of a failed whole-thread read for that run only, then keeps only a real wait',
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup()
+					const { unanswered, answered, answeredComments } = longOwnerThreads()
+					fixture.fake.threads.push(unanswered, answered)
+					fixture.fake.threadComments.set(answered.id, [...answeredComments])
+					fixture.fake.failures.listThreadComments.push(error(503))
+					const run = PublishService.use(service =>
+						service.publish({
+							...fixture.input,
+							report: { ...fixture.input.report, bugs: [] },
+						})
+					).pipe(Effect.provide(fixture.publisher))
+					expect(yield* run).toMatchObject({
+						verdict: 'needs owner',
+						waiting: 2,
+						label: 'none',
+					})
+					expect(
+						parseSummaryMarker(reviewBody(fixture.fake) ?? '')?.needsOwner
+					).toBeUndefined()
+					expect(yield* run).toMatchObject({
+						verdict: 'needs owner',
+						waiting: 1,
+						label: 'added',
+					})
+					expect(
+						parseSummaryMarker(reviewBody(fixture.fake) ?? '')?.needsOwner
+					).toEqual([answered.id])
 				})
 		)
 	}

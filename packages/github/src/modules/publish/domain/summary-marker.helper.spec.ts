@@ -11,6 +11,7 @@ import {
 	type MarkerUpdate,
 	toNextSummaryMarker,
 	toAnsweredMarker,
+	toJudgedMarker,
 	toRepliedMarker,
 } from './summary-marker.helper'
 
@@ -525,6 +526,24 @@ describe('toRepliedMarker', () => {
 		expect(
 			toRepliedMarker(undefined, { added: ['new'], cleared: new Set() })
 		).toEqual({ v: MARKER_VERSION, runs: 0, needsOwner: ['new'] })
+	})
+})
+
+describe('toJudgedMarker', () => {
+	test('adds the held threads to the waiting list once, leaving the marker as it was', () => {
+		const marker = { ...PREVIOUS, needsOwner: ['kept'] }
+		const snapshot = structuredClone(marker)
+		expect(toJudgedMarker(marker, ['held', 'kept'])).toEqual({
+			...marker,
+			needsOwner: ['kept', 'held'],
+		})
+		expect(marker).toEqual(snapshot)
+	})
+	test('returns the same marker when nothing is held', () => {
+		expect(toJudgedMarker(PREVIOUS, [])).toBe(PREVIOUS)
+	})
+	test('holds threads on a marker that stored none', () => {
+		expect(toJudgedMarker(PREVIOUS, ['held']).needsOwner).toEqual(['held'])
 	})
 })
 

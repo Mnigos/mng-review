@@ -22,6 +22,7 @@ import {
 import { toMarkerComment } from '../presentation/thread-comment.formatter'
 import {
 	getOwnerAnswered,
+	getOwnerWaiting,
 	getUnreadOwnerThreads,
 	hasOwnerAnswer,
 	getVerdict,
@@ -769,6 +770,14 @@ describe('raw owner thread discovery', () => {
 				OWNED
 			)
 		).toEqual([])
+	})
+	test('getOwnerWaiting sends the window answers and holds the longer threads it could not read', () => {
+		const recent = ownerReviewThread(1, { id: 'recent' })
+		const long = ownerReviewThread(RECENT_COMMENTS + 1, { id: 'long' })
+		expect(getOwnerWaiting([recent, long], OWNED)).toEqual({
+			sent: ['recent'],
+			held: ['long'],
+		})
 	})
 })
 

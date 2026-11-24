@@ -372,6 +372,41 @@ layer(Layer.empty)('GitHubRiskService HTTP boundary', test => {
 				])
 			})
 	)
+	test.effect(
+		'keeps an edit GitHub lists as a null node, on any page, as an unknown entry',
+		() =>
+			Effect.gen(function* () {
+				const fake = makeGitHubHttp((_request, attempt) => {
+					const page = editsPage(3, attempt === 1, 'next')
+					const { userContentEdits } = page.data.node
+					return Effect.succeed(
+						Response.json({
+							data: {
+								node: {
+									...page.data.node,
+									userContentEdits: {
+										...userContentEdits,
+										nodes:
+											attempt === 1
+												? [...userContentEdits.nodes, null]
+												: [null],
+									},
+								},
+							},
+						})
+					)
+				})
+				const read = yield* GitHubRiskService.use(service =>
+					service.readCommentEdits('comment-node')
+				).pipe(Effect.provide(fake.riskLayer))
+				expect(read.total).toBe(3)
+				expect(read.edits).toEqual([
+					editsPage(3, false, null).data.node.userContentEdits.nodes[0],
+					null,
+					null,
+				])
+			})
+	)
 	for (const [name, answer] of [
 		['longer than the page bound', () => editsPage(900, true, 'next')],
 		[
