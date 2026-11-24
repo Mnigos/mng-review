@@ -408,3 +408,105 @@ layer(Layer.empty)('mention command config', test => {
 			})
 		)
 })
+
+layer(Layer.empty)('risk config', test => {
+	test.effect('inherits risk defaults when absent or empty', () =>
+		Effect.gen(function* () {
+			expect((yield* parseReviewConfig('{}')).risk).toEqual(DEFAULT_PRESET.risk)
+			expect((yield* parseReviewConfig('risk: {}')).risk).toEqual(
+				DEFAULT_PRESET.risk
+			)
+		})
+	)
+	test.effect(
+		'defaults a floor exclude and level without replacing other risk defaults',
+		() =>
+			Effect.gen(function* () {
+				expect(
+					(yield* parseReviewConfig(
+						'risk: {enabled: true, floors: [{name: critical-area, paths: [src/**]}]}'
+					)).risk
+				).toEqual({
+					...DEFAULT_PRESET.risk,
+					enabled: true,
+					floors: [
+						{
+							name: 'critical-area',
+							paths: ['src/**'],
+							exclude: [],
+							level: 'medium',
+						},
+					],
+				})
+			})
+	)
+	test.effect('preserves explicit floor settings and partial labels', () =>
+		Effect.gen(function* () {
+			expect(
+				(yield* parseReviewConfig(
+					'risk: {labels: {high: Owner Review}, floors: [{name: critical, paths: [src/**], exclude: [src/generated/**], level: high}], assets: [], reviews_per_head: 1}'
+				)).risk
+			).toEqual({
+				...DEFAULT_PRESET.risk,
+				labels: { ...DEFAULT_PRESET.risk.labels, high: 'Owner Review' },
+				floors: [
+					{
+						name: 'critical',
+						paths: ['src/**'],
+						exclude: ['src/generated/**'],
+						level: 'high',
+					},
+				],
+				assets: [],
+				reviews_per_head: 1,
+			})
+		})
+	)
+	for (const [yaml, path] of [
+		[
+			'{floors: [{name: duplicate, paths: [a]}, {name: duplicate, paths: [b]}]}',
+			'risk.floors',
+		],
+		...[
+			'',
+			'Upper',
+			'with_space',
+			'-edge',
+			'edge-',
+			'a'.repeat(41),
+			'built-in:github',
+		].map(name => [
+			`{floors: [{name: "${name}", paths: [src/**]}]}`,
+			'risk.floors.0.name',
+		]),
+		['{floors: [{name: area, paths: []}]}', 'risk.floors.0.paths'],
+		[
+			'{floors: [{name: area, paths: [src/**], level: low}]}',
+			'risk.floors.0.level',
+		],
+		['{labels: {low: Same, medium: same}}', 'risk.labels'],
+		['{labels: {low: "  Same  ", high: SAME}}', 'risk.labels'],
+		...['low', 'medium', 'high'].map(level => [
+			`{labels: {${level}: Blocked}}`,
+			`risk.labels.${level}`,
+		]),
+		['{labels: {high: bLoCkEd}}', 'risk.labels.high'],
+		['{unknown: true}', 'risk.unknown'],
+		['{labels: {unknown: label}}', 'risk.labels.unknown'],
+		[
+			'{floors: [{name: area, paths: [src/**], unknown: true}]}',
+			'risk.floors.0.unknown',
+		],
+		...['0', '-1', '1.5', 'null', '"3"'].map(value => [
+			`{reviews_per_head: ${value}}`,
+			'risk.reviews_per_head',
+		]),
+	])
+		test.effect(`rejects risk ${yaml}`, () =>
+			Effect.gen(function* () {
+				const error = yield* Effect.flip(parseReviewConfig(`risk: ${yaml}`))
+				expect(error).toBeInstanceOf(ConfigError)
+				expect(error.reason).toContain(path)
+			})
+		)
+})
