@@ -15,13 +15,17 @@ import type { GitHubApiError } from '../../platform/github.errors'
 /** When a fixture run was created unless `created` says otherwise: after every fixture command. */
 const RUN_CREATED = '2026-01-01T12:15:00Z'
 
-/** True when GitHub would list the run for the query: each filter set must match. */
+/**
+ * True when GitHub would list the run for the query: each filter set must match. A workflow's runs
+ * list holds its file's runs whether their `path` carries an `@<ref>` or not.
+ */
 function isListed(run: WorkflowRun, query: RunsQuery): boolean {
 	return (
 		(query.status === undefined || run.status === query.status) &&
 		(query.event === undefined || run.event === query.event) &&
 		(query.branch === undefined || run.head_branch === query.branch) &&
-		(query.workflow === undefined || run.path.endsWith(`/${query.workflow}`)) &&
+		(query.workflow === undefined ||
+			run.path.replace(/@.*$/u, '').endsWith(`/${query.workflow}`)) &&
 		(query.since === undefined || run.created_at >= query.since)
 	)
 }
