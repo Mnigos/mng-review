@@ -441,10 +441,10 @@ layer(FileSystemLayer, { excludeTestServices: true })(
 								check => check.headSha === fixture.head
 							)
 						).toBeTruthy()
-						expect(fixture.api.reads).toEqual([
-							'getPullRequest:17',
-							'getPullRequest:17',
-						])
+						// The command's own read, the head check, and the summary write's three reads.
+						expect(fixture.api.reads).toEqual(
+							Array.from({ length: 5 }, () => 'getPullRequest:17')
+						)
 					})
 			)
 
@@ -835,13 +835,12 @@ layer(FileSystemLayer)('publish converse', test => {
 					expect(
 						fixture.api.writes.filter(write => write.method === 'comment')
 					).toEqual([])
+					// Ready comments and never approves; a thread sent to the owner requests changes.
 					expect(
-						fixture.api.writes.filter(write => write.method === 'review')
-					).toMatchObject(
-						action === 'needs-owner'
-							? [{ input: { event: 'REQUEST_CHANGES', comments: [] } }]
-							: []
-					)
+						fixture.api.writes
+							.filter(write => write.method === 'review')
+							.map(write => write.input.event)
+					).toEqual(action === 'accepted' ? [] : ['REQUEST_CHANGES'])
 					expect(
 						fixture.api.writes.filter(write => write.method === 'reply')
 					).toHaveLength(1)

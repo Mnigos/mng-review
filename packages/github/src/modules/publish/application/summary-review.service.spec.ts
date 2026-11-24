@@ -19,6 +19,7 @@ import {
 	APP_IDENTITY,
 	APP_MODE_OWNED,
 	appSummary,
+	COVERED_REVIEW,
 	SUMMARY_MARKER,
 	summaryReview,
 	TOKEN_MODE_OWNED,
@@ -36,6 +37,7 @@ import {
 } from './summary-review.service'
 import type { SummaryDraft } from './summary-review.service.types'
 
+const NO_DISMISSAL = { dismissed: 0, failed: 0 } as const
 const TARGET = { pullNumber: 17, head: 'head', engineCommit: 'engine' } as const
 const RESERVE = { ...TARGET, maxRuns: 5, handle: 'review-bot' } as const
 const INLINE = [{ path: 'src/example.ts', line: 7, body: 'Finding' }] as const
@@ -53,7 +55,7 @@ function draft(overrides: Partial<SummaryDraft> = {}): SummaryDraft {
 			return {
 				marker,
 				body: `${inline ? 'Review' : 'Not in the diff'}\n${toMarkerComment('summary', marker)}`,
-				event: 'COMMENT',
+				evidence: { ...COVERED_REVIEW, gap: { kind: 'findings', findings: 1 } },
 			}
 		},
 		...overrides,
@@ -66,6 +68,10 @@ function setup(
 	identity: BotIdentity = GITHUB_ACTIONS_IDENTITY
 ) {
 	const fake = githubApiFake(identity, options)
+	fake.command.pullRequest = {
+		...fake.command.pullRequest,
+		head: { ...fake.command.pullRequest.head, sha: TARGET.head },
+	}
 	return {
 		fake,
 		layer: SummaryReviewServiceLive.pipe(
@@ -134,7 +140,9 @@ layer(TOKEN_MODE_OWNED)('SummaryReviewService', test => {
 				expect(fixture.fake.writes.map(write => write.method)).toEqual([
 					'review',
 					'minimize',
-					...(state === 'CHANGES_REQUESTED' ? ['dismissReview'] : []),
+					...(state === 'CHANGES_REQUESTED' || state === 'APPROVED'
+						? ['dismissReview']
+						: []),
 				])
 			})
 		)
@@ -264,7 +272,7 @@ layer(TOKEN_MODE_OWNED)('SummaryReviewService', test => {
 		test.effect(`unknown create does not accept a ${mismatch} review`, () =>
 			Effect.gen(function* () {
 				const fixture = setup()
-				const { body } = draft().render(undefined, true)
+				const { body } = draft().render(undefined, true, false)
 				const candidate = summaryReview(SUMMARY_MARKER, {
 					body,
 					...(mismatch === 'foreign'
@@ -573,7 +581,7 @@ layer(TOKEN_MODE_OWNED)('SummaryReviewService', test => {
 					yield* SummaryReviewService.use(service =>
 						service.publishStatus({ ...TARGET, status: 'offline' })
 					).pipe(Effect.provide(fixture.layer))
-				).toBe(false)
+				).toMatchObject({ created: false })
 				expect(parseSummaryMarker(fixture.fake.reviews[0]?.body ?? '')).toEqual(
 					{ ...SUMMARY_MARKER, finished: false }
 				)
@@ -736,7 +744,12 @@ layer(TOKEN_MODE_OWNED)('Summary review status sweep', test => {
 								)
 							)
 						)
-					).toEqual({ checked: 1, updated: 1, failed: 0 })
+					).toEqual({
+						checked: 1,
+						updated: 1,
+						failed: 0,
+						dismissal: NO_DISMISSAL,
+					})
 					expect(statuses.statuses).toEqual([
 						{
 							sha: 'head',

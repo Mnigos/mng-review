@@ -13,8 +13,11 @@ import {
 	toBotThread,
 } from '../domain/bot-thread.helper'
 import type { SummaryMarker } from '../domain/publish-marker.schema'
-import type { AnswerCounts, LabelOutcome } from '../domain/publish.types'
-import { canApprove, getReviewEvent } from '../domain/review-event.helper'
+import type {
+	AnswerCounts,
+	DismissalOutcome,
+	LabelOutcome,
+} from '../domain/publish.types'
 import { toRepliedMarker } from '../domain/summary-marker.helper'
 import {
 	toAnswerCounts,
@@ -52,8 +55,12 @@ export interface ReplyPublishInput extends PublishTarget {
 /** What a reply-only run did. */
 export interface ReplyPublishResult {
 	readonly verdict: Verdict
-	/** The state of the summary review after the run. */
+	/** The state the summary review was posted or edited in, before any dismissal. */
 	readonly event: ReviewEvent
+	/** Stale owned change requests and approvals dismissed after the write, and those that failed. */
+	readonly dismissal: DismissalOutcome
+	/** The run's own review was dismissed after a push landed right after the write; unset is `false`. */
+	readonly outlived?: boolean
 	readonly openBugs: number
 	readonly answered: AnswerCounts
 	/** Threads that wait for the owner after the run. */
@@ -195,9 +202,10 @@ export const ReplyPublishServiceLive = Layer.effect(
 					.filter(entry => CLOSING_ACTIONS.has(entry.decision.action))
 					.map(entry => entry.thread.id)
 			)
-			// The answers are posted, so a failed read keeps the first one.
+			// The answers are posted, so a failed read keeps the first one, but the run clears nothing.
 			const second = yield* readAll(pullNumber).pipe(
-				Effect.orElseSucceed(() => first)
+				Effect.map(read => ({ ...read, reread: true })),
+				Effect.orElseSucceed(() => ({ ...first, reread: false }))
 			)
 			const latest = second.threads.map(thread =>
 				closed.has(thread.id) ? { ...thread, resolved: true } : thread
@@ -221,11 +229,11 @@ export const ReplyPublishServiceLive = Layer.effect(
 			const threadBugs = latest.filter(
 				thread => !thread.resolved && thread.marker.kind === 'bug'
 			).length
-			// Open threads that never block still keep a reply-only run from approving.
-			const concerns = latest.filter(
-				thread => !thread.resolved && thread.marker.kind !== 'bug'
-			).length
-			const approve = canApprove(input.rules.config, current)
+			// The head is read again, as a push run does; a failed read keeps the state.
+			const pr = yield* api
+				.getPullRequest(pullNumber)
+				.pipe(Effect.orElseSucceed(() => undefined))
+			const authored = pr?.user?.login.toLowerCase() === current.restLogin
 			const written = yield* summaries
 				.write(pullNumber, {
 					head: input.head,
@@ -240,14 +248,17 @@ export const ReplyPublishServiceLive = Layer.effect(
 							marker,
 							links,
 						})
-						const event = getReviewEvent({
+						const onCurrent = pr?.head.sha === input.head
+						const evidence = {
 							kind: 'reply',
 							verdict: judged.verdict,
-							partial: false,
-							findings: concerns,
-							approve,
-						})
-						return { body, marker, event }
+							openBugs: judged.openBugs,
+							current: onCurrent,
+							onHead: onCurrent && marker.head === input.head,
+							failed: marker.failed === true || !second.reread,
+							authored,
+						} as const
+						return { body, marker, evidence }
 					},
 				})
 				.pipe(
@@ -283,7 +294,9 @@ export const ReplyPublishServiceLive = Layer.effect(
 			)
 			return {
 				verdict: standing.verdict,
-				event: written.event ?? 'COMMENT',
+				event: written.event,
+				dismissal: written.dismissal,
+				outlived: written.outlived,
 				openBugs: standing.openBugs,
 				answered: toAnswerCounts(answered),
 				waiting: owner,

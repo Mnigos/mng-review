@@ -8,6 +8,7 @@ for (const status of ['published', 'replied'] as const)
 			const standing = {
 				verdict: event === 'REQUEST_CHANGES' ? 'needs fixes' : 'ready',
 				event,
+				dismissal: { dismissed: 0, failed: 0 },
 				openBugs: event === 'REQUEST_CHANGES' ? 1 : 0,
 				answered: {},
 				waiting: 0,

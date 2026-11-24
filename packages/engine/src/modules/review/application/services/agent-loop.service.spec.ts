@@ -50,6 +50,7 @@ import {
 	WRAP_UP_GRACE,
 } from '../../domain/review.constants'
 import type { LoopRequest, ToolOutput } from '../agent-loop.types'
+import { getDiffParts } from '../read-coverage.helper'
 import type { ShownLines } from '../repo-tools.types'
 import { ReviewLimits } from '../review-limits.context'
 import { AgentLoopService, AgentLoopServiceLive } from './agent-loop.service'
@@ -1410,6 +1411,7 @@ const COVERED_REQUEST = {
 	tools: ['read_file', 'diff', 'blame'],
 	coverage: {
 		paths: [BILLING_PATH],
+		changed: new Map(),
 		answered: (value: ParsedFindings) =>
 			value.findings.map(entry => entry.path),
 		merge: addLaterFindings,
@@ -1452,6 +1454,7 @@ layer(Layer.empty)('coverage continuation', test => {
 								})
 							)
 						).toEqual({
+							unread: paths,
 							value: { ...first, dropped: 0 },
 							turns: 1,
 							spentTokens,
@@ -1477,8 +1480,9 @@ layer(Layer.empty)('coverage continuation', test => {
 	test.effect('a pathless diff covering every file needs no continuation', () =>
 		Effect.gen(function* () {
 			const paths = [BILLING_PATH, 'src/other.ts']
-			const callSpy = vi.fn(() =>
-				Effect.succeed(paths.map(path => unifiedDiff(path)).join('\n'))
+			const output = paths.map(path => unifiedDiff(path)).join('\n')
+			const callSpy = vi.fn<RepoToolsService['Service']['call']>(() =>
+				Effect.succeed(output)
 			)
 			yield* Effect.gen(function* () {
 				expect(
@@ -1489,6 +1493,7 @@ layer(Layer.empty)('coverage continuation', test => {
 						})
 					)
 				).toEqual({
+					unread: [],
 					value: { findings: [], dropped: 0 },
 					turns: 2,
 					spentTokens: 10,
@@ -1505,7 +1510,14 @@ layer(Layer.empty)('coverage continuation', test => {
 								index === 0 ? [toolCall('diff'), FINISH] : answer()
 							),
 						{},
-						callSpy
+						callSpy,
+						(scope, name, params) =>
+							callSpy(scope, name, params).pipe(
+								Effect.map(text => ({
+									output: text,
+									diff: getDiffParts(text, 0, text.length),
+								}))
+							)
 					)
 				)
 			)
@@ -1538,6 +1550,7 @@ layer(Layer.empty)('coverage continuation', test => {
 								})
 							)
 						).toEqual({
+							unread: paths,
 							value: { findings: [], dropped: 0 },
 							continued: true,
 							turns: 3,
@@ -1581,47 +1594,56 @@ layer(Layer.empty)('coverage continuation', test => {
 				})
 		)
 	for (const name of ['read_file', 'diff', 'blame'] as const)
-		test.effect(`successful ${name} counts as reading a normalized path`, () =>
+		test.effect(
+			`successful ${name} of a normalized path needs no continuation`,
+			() =>
+				Effect.gen(function* () {
+					expect(
+						yield* AgentLoopService.use(loop => loop.run(COVERED_REQUEST))
+					).toEqual({
+						// The scripted tool reports no diff parts or lines, so the file was not received whole.
+						unread: [BILLING_PATH],
+						value: { findings: [], dropped: 0 },
+						turns: 2,
+						spentTokens: 10,
+						unspentTokens: 0,
+						toolCalls: 1,
+					})
+					expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(2)
+				}).pipe(
+					Effect.provide(
+						loopLayer((_call, index) =>
+							Effect.succeed(
+								index === 0
+									? [toolCall(name, { path: `./${BILLING_PATH}` }), FINISH]
+									: answer()
+							)
+						)
+					)
+				)
+		)
+	test.effect(
+		'a finding on the covered file needs no continuation but leaves it unread',
+		() =>
 			Effect.gen(function* () {
 				expect(
 					yield* AgentLoopService.use(loop => loop.run(COVERED_REQUEST))
 				).toEqual({
-					value: { findings: [], dropped: 0 },
-					turns: 2,
-					spentTokens: 10,
+					unread: [BILLING_PATH],
+					value: rawParsed(),
+					turns: 1,
+					toolCalls: 0,
+					spentTokens: 5,
 					unspentTokens: 0,
-					toolCalls: 1,
 				})
-				expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(2)
+				expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(1)
 			}).pipe(
 				Effect.provide(
-					loopLayer((_call, index) =>
-						Effect.succeed(
-							index === 0
-								? [toolCall(name, { path: `./${BILLING_PATH}` }), FINISH]
-								: answer()
-						)
+					loopLayer(() =>
+						Effect.succeed(answer('report_findings', rawParsed()))
 					)
 				)
 			)
-		)
-	test.effect('a finding on the covered file counts as answered', () =>
-		Effect.gen(function* () {
-			expect(
-				yield* AgentLoopService.use(loop => loop.run(COVERED_REQUEST))
-			).toEqual({
-				value: rawParsed(),
-				turns: 1,
-				toolCalls: 0,
-				spentTokens: 5,
-				unspentTokens: 0,
-			})
-			expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(1)
-		}).pipe(
-			Effect.provide(
-				loopLayer(() => Effect.succeed(answer('report_findings', rawParsed())))
-			)
-		)
 	)
 	test.effect(
 		'an error tool output leaves the path unread and returns continuation as the finish result',
@@ -1630,6 +1652,7 @@ layer(Layer.empty)('coverage continuation', test => {
 				expect(
 					yield* AgentLoopService.use(loop => loop.run(COVERED_REQUEST))
 				).toEqual({
+					unread: [BILLING_PATH],
 					value: { findings: [], dropped: 0 },
 					continued: true,
 					toolCalls: 1,
@@ -1675,6 +1698,7 @@ layer(Layer.empty)('coverage continuation', test => {
 					expect(
 						yield* AgentLoopService.use(loop => loop.run(COVERED_REQUEST))
 					).toEqual({
+						unread: [BILLING_PATH],
 						value: { findings: [first, second], dropped: 0 },
 						continued: true,
 						turns: 2,

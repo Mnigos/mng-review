@@ -9,7 +9,7 @@ import {
 import { Context, Effect, Layer, Predicate, Result, Schema } from 'effect'
 import { GitService } from '../../../../platform/git/git.service'
 import { truncateText } from '../../../../utils/fence.util'
-import { toOutputPart } from '../../domain/output-part.helper'
+import { toOutputPage } from '../../domain/output-part.helper'
 import {
 	BYTES_PER_KB,
 	MAX_GREP_PER_FILE,
@@ -20,6 +20,7 @@ import {
 	addGrepMatch,
 	addNumberedLine,
 } from '../../infrastructure/tool-output.parser'
+import { getDiffParts } from '../read-coverage.helper'
 import type { ToolRef, ToolResult } from '../repo-tools.types'
 import {
 	BlameTool,
@@ -98,6 +99,13 @@ function requireGlob(glob: string | undefined) {
 			new ToolError({ reason: 'glob must be a repository-relative pattern' })
 		)
 	return Effect.succeed(glob)
+}
+
+/** A part of a diff and the characters of each file's section it holds. */
+function toDiffResult(text: string, offset: number | undefined): ToolResult {
+	if (text === '') return { output: '(no changes)' }
+	const page = toOutputPage(text, offset)
+	return { output: page.output, diff: getDiffParts(text, page.start, page.end) }
 }
 
 /** The commit a tool ref names: the head, or the merge base for `base`. */
@@ -243,10 +251,7 @@ export const RepoToolsServiceLive = Layer.effect(
 			if (params.path === undefined || params.path === '') {
 				const files = getReviewableFiles(change.files)
 				if (files.length === 0) return '(no reviewable files)'
-				return toOutputPart(
-					(yield* git.readDiff(change, files)) || '(no changes)',
-					params.offset
-				)
+				return toDiffResult(yield* git.readDiff(change, files), params.offset)
 			}
 			const path = yield* requirePath(params.path, false)
 			const file = change.files.find(
@@ -257,10 +262,7 @@ export const RepoToolsServiceLive = Layer.effect(
 					reason: `${path} is left out of the review (${file.skipped})`,
 				})
 			if (!file) return '(no changes)'
-			return toOutputPart(
-				(yield* git.readDiff(change, [file])) || '(no changes)',
-				params.offset
-			)
+			return toDiffResult(yield* git.readDiff(change, [file]), params.offset)
 		})
 
 		const blame = Effect.fn('RepoToolsService.blame')(function* (

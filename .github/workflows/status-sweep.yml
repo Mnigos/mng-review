@@ -1,6 +1,7 @@
 # Reusable status sweep: refreshes the MNG Review commit status of open pull requests whose head
-# already carries it, from the bot's open bug threads, so a thread resolved by hand counts. It runs
-# no model and needs no endpoint; the caller runs it on a schedule and after a reply's signal. With app-slug and the app's two
+# already carries it, from the bot's open bug threads, so a thread resolved by hand counts, and
+# dismisses the bot's change request on a head that no longer has one to stand for (pull requests
+# write). It runs no model and needs no endpoint; the caller runs it on a schedule and after a reply's signal. With app-slug and the app's two
 # secrets it writes as the app. The rules, identity.previous included, come from the default
 # branch. See README.md.
 name: MNG Review status sweep
@@ -30,7 +31,7 @@ on:
 
 permissions:
   contents: read
-  pull-requests: read
+  pull-requests: write
   statuses: write
 
 jobs:
@@ -40,7 +41,7 @@ jobs:
     timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
       contents: read
-      pull-requests: read
+      pull-requests: write
       statuses: write
     steps:
       # Without these (GitHub Enterprise Server), checkout would fall back to the caller's repository.
@@ -93,7 +94,7 @@ jobs:
           client-id: ${{ secrets.app-client-id }}
           private-key: ${{ secrets.app-private-key }}
           permission-statuses: write
-          permission-pull-requests: read
+          permission-pull-requests: write
           # Review threads read through GraphQL name each comment's commit, which needs contents read.
           permission-contents: read
 

@@ -1,6 +1,7 @@
 import { RulesService } from '@mng-review/engine'
 import {
 	type CommandRun,
+	type DismissalOutcome,
 	GitHubConfig,
 	provideOwnedIdentities,
 	type PublishResult,
@@ -50,6 +51,8 @@ export type PublishReport =
 			readonly reason: string
 			/** `false` when an existing summary review was edited instead of a new one posted. */
 			readonly posted: boolean
+			/** Owned approvals that outlived their head, dismissed or not. */
+			readonly dismissal: DismissalOutcome
 	  }
 	| {
 			readonly status: 'replied'
@@ -203,7 +206,7 @@ export const PublishRunServiceLive = Layer.effect(
 			}
 			if (outcome.status === 'offline') {
 				const reason = `Reviewer offline: ${outcome.reason ?? 'no reason given'}. Nothing was reviewed.`
-				const posted = yield* summaries
+				const written = yield* summaries
 					.publishStatus({
 						pullNumber: context.pullNumber,
 						status: reason,
@@ -212,7 +215,12 @@ export const PublishRunServiceLive = Layer.effect(
 					})
 					.pipe(owned)
 				yield* statuses.reportOffline(context.head)
-				return { status: 'status-only', reason, posted } satisfies PublishReport
+				return {
+					status: 'status-only',
+					reason,
+					posted: written.created,
+					dismissal: written.dismissal,
+				} satisfies PublishReport
 			}
 			return {
 				status: 'not-published',

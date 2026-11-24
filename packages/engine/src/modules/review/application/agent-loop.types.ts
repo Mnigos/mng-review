@@ -54,10 +54,14 @@ export interface LoopRequest<TValue> {
 /**
  * A finder that answers without reading some of `paths` (with `read_file`, `diff` or `blame`, or a
  * finding on them) gets one continuation turn naming them, while its budget, tool calls and time
- * allow. The first answer is kept, and `merge` adds what the continuation finds.
+ * allow. The first answer is kept, and `merge` adds what the continuation finds. The files it
+ * leaves unread in the result are stricter: only every page of a file's diff, or `read_file` at the
+ * head showing every line of `changed`, counts (`isWholeRead`).
  */
 export interface LoopCoverage<TValue> {
 	readonly paths: readonly string[]
+	/** The head lines each path changes (`getChangedLines`). */
+	readonly changed: ReadonlyMap<string, readonly number[]>
 	/** Paths the answer itself shows the agent looked at, such as its findings' paths. */
 	readonly answered: (value: TValue) => readonly string[]
 	readonly merge: (first: TValue, next: TValue) => TValue
@@ -70,6 +74,8 @@ export interface LoopResult<TValue> extends SpentTokens {
 	readonly turns: number
 	/** The agent got a continuation turn for files it had not read. */
 	readonly continued?: boolean
+	/** Files of the request's coverage the agent did not receive whole (`isWholeRead`); unset without coverage. */
+	readonly unread?: readonly string[]
 }
 
 /** Where a loop stands between turns. */

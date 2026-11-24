@@ -42,6 +42,8 @@ import {
 	StatusSweepServiceLive,
 } from './status-sweep.service'
 
+const NO_DISMISSAL = { dismissed: 0, failed: 0 } as const
+
 layer(TOKEN_MODE_OWNED)('StatusSweepService', test => {
 	test.effect(
 		'heads without a bot status are skipped without reading their threads',
@@ -72,7 +74,12 @@ layer(TOKEN_MODE_OWNED)('StatusSweepService', test => {
 							)
 						)
 					)
-				).toEqual({ checked: 0, updated: 0, failed: 0 })
+				).toEqual({
+					checked: 0,
+					updated: 0,
+					failed: 0,
+					dismissal: NO_DISMISSAL,
+				})
 				expect(listReviewThreadsSpy).not.toHaveBeenCalled()
 				expect(fake.statuses).toEqual([])
 			})
@@ -158,7 +165,12 @@ layer(TOKEN_MODE_OWNED)('StatusSweepService', test => {
 							)
 						)
 					)
-				).toEqual({ checked: 1, updated: 1, failed: 0 })
+				).toEqual({
+					checked: 1,
+					updated: 1,
+					failed: 0,
+					dismissal: NO_DISMISSAL,
+				})
 				expect(fake.statuses).toContainEqual(
 					expect.objectContaining({
 						sha: 'head',
@@ -211,7 +223,12 @@ layer(TOKEN_MODE_OWNED)('StatusSweepService', test => {
 								)
 							)
 						)
-					).toEqual({ checked: 2, updated: 1, failed: 1 })
+					).toEqual({
+						checked: 2,
+						updated: 1,
+						failed: 1,
+						dismissal: NO_DISMISSAL,
+					})
 					expect(fake.statuses).toContainEqual(
 						expect.objectContaining({ sha: 'second', state: 'success' })
 					)
@@ -264,6 +281,7 @@ layer(TOKEN_MODE_OWNED)('StatusSweepService latest status', test => {
 						checked: 1,
 						updated: latest === 'same' ? 1 : 0,
 						failed: latest === 'read-failed' ? 1 : 0,
+						dismissal: NO_DISMISSAL,
 					})
 					expect(getStatusSpy.mock.calls).toEqual([['head'], ['head']])
 					expect(api.threadReads).toEqual([17])
@@ -306,7 +324,12 @@ layer(TOKEN_MODE_OWNED)('StatusSweepService latest status', test => {
 							)
 						)
 					)
-				).toEqual({ checked: 1, updated: 1, failed: 0 })
+				).toEqual({
+					checked: 1,
+					updated: 1,
+					failed: 0,
+					dismissal: NO_DISMISSAL,
+				})
 				expect(fake.statuses).toEqual([
 					{
 						sha: 'head',
@@ -373,7 +396,12 @@ layer(TOKEN_MODE_OWNED)('StatusSweepService summary marker', test => {
 							)
 						)
 					)
-				).toEqual({ checked: 1, updated: 1, failed: 0 })
+				).toEqual({
+					checked: 1,
+					updated: 1,
+					failed: 0,
+					dismissal: NO_DISMISSAL,
+				})
 				expect(fake.statuses).toEqual([
 					{
 						sha: 'head',
@@ -439,12 +467,14 @@ layer(TOKEN_MODE_OWNED)('StatusSweepService summary marker', test => {
 							checked: 1,
 							updated: 1,
 							failed: 0,
+							dismissal: NO_DISMISSAL,
 						})
 						expect(fake.statuses).toEqual([{ sha: 'head', ...repaired }])
 						expect(yield* sweeper.sweep()).toEqual({
 							checked: 1,
 							updated: 0,
 							failed: 0,
+							dismissal: NO_DISMISSAL,
 						})
 						expect(getStatusSpy.mock.calls).toEqual([
 							['head'],
@@ -520,7 +550,12 @@ layer(TOKEN_MODE_OWNED)('StatusSweepService summary marker', test => {
 							)
 						)
 					)
-				).toEqual({ checked: 1, updated: 0, failed: 0 })
+				).toEqual({
+					checked: 1,
+					updated: 0,
+					failed: 0,
+					dismissal: NO_DISMISSAL,
+				})
 				expect(fake.statuses).toEqual([])
 				expect(api.writes).toEqual([])
 			})
@@ -582,7 +617,12 @@ layer(APP_MODE_OWNED)('StatusSweepService app mode', test => {
 							)
 						)
 					)
-				).toEqual({ checked: 1, updated: 1, failed: 0 })
+				).toEqual({
+					checked: 1,
+					updated: 1,
+					failed: 0,
+					dismissal: NO_DISMISSAL,
+				})
 				const write = http.requests.find(request => request.method === 'POST')
 				expect(write?.url).toContain('/statuses/head')
 				expect(write?.headers.authorization).toBe('Bearer app-fixture')
@@ -647,7 +687,7 @@ layer(APP_MODE_OWNED)('StatusSweepService after an identity switch', test => {
 								status: 'offline',
 							})
 						).pipe(Effect.provide(summaryLayer))
-					).toBe(true)
+					).toMatchObject({ created: true })
 					expect(
 						parseSummaryMarker(
 							api.reviews.find(
@@ -674,7 +714,12 @@ layer(APP_MODE_OWNED)('StatusSweepService after an identity switch', test => {
 								)
 							)
 						)
-					).toEqual({ checked: 1, updated: 0, failed: 0 })
+					).toEqual({
+						checked: 1,
+						updated: 0,
+						failed: 0,
+						dismissal: NO_DISMISSAL,
+					})
 					expect(statuses.statuses).toEqual([])
 					expect(statuses.statuses.at(-1)?.state ?? previous.state).toBe(
 						'error'
@@ -773,7 +818,12 @@ layer(APP_MODE_OWNED)('StatusSweepService after an identity switch', test => {
 							)
 						)
 					)
-				).toEqual({ checked: 1, updated: 1, failed: 0 })
+				).toEqual({
+					checked: 1,
+					updated: 1,
+					failed: 0,
+					dismissal: NO_DISMISSAL,
+				})
 				expect(statuses.statuses).toEqual([
 					{
 						sha: 'head',
@@ -825,7 +875,12 @@ layer(APP_MODE_OWNED)(
 										)
 									)
 								)
-							).toEqual({ checked: 1, updated: hidden ? 1 : 0, failed: 0 })
+							).toEqual({
+								checked: 1,
+								updated: hidden ? 1 : 0,
+								failed: 0,
+								dismissal: NO_DISMISSAL,
+							})
 							expect(statuses.statuses).toEqual(
 								hidden
 									? [{ sha: 'head', ...toCommitStatus('ready', 0, finished) }]
@@ -877,7 +932,12 @@ layer(TOKEN_MODE_OWNED)('StatusSweepService review head', test => {
 								)
 							)
 						)
-					).toEqual({ checked: 1, updated: 1, failed: 0 })
+					).toEqual({
+						checked: 1,
+						updated: 1,
+						failed: 0,
+						dismissal: NO_DISMISSAL,
+					})
 					expect(fake.statuses).toEqual([
 						{ sha: 'head', ...toCommitStatus('incomplete', 0, false) },
 					])
@@ -922,7 +982,12 @@ layer(TOKEN_MODE_OWNED)('StatusSweepService review head', test => {
 								)
 							)
 						)
-					).toEqual({ checked: 1, updated: 0, failed: 0 })
+					).toEqual({
+						checked: 1,
+						updated: 0,
+						failed: 0,
+						dismissal: NO_DISMISSAL,
+					})
 					expect(getStatusSpy).toHaveBeenCalledExactlyOnceWith('head')
 					expect(fake.statuses).toEqual([])
 					expect(api.writes).toEqual([])
@@ -988,7 +1053,12 @@ layer(TOKEN_MODE_OWNED)('StatusSweepService unthreaded bugs', test => {
 								)
 							)
 						)
-					).toEqual({ checked: 1, updated: 0, failed: 0 })
+					).toEqual({
+						checked: 1,
+						updated: 0,
+						failed: 0,
+						dismissal: NO_DISMISSAL,
+					})
 					expect(api.threads).toEqual([])
 					expect(api.threadReads).toEqual([17])
 					expect(fake.statuses).toEqual([])
@@ -1047,6 +1117,7 @@ layer(TOKEN_MODE_OWNED)('StatusSweepService unthreaded bugs', test => {
 							checked: 1,
 							updated: markerHead === 'head' ? 0 : 1,
 							failed: 0,
+							dismissal: NO_DISMISSAL,
 						})
 						expect(fake.statuses).toEqual(
 							markerHead === 'head'
@@ -1101,7 +1172,12 @@ layer(TOKEN_MODE_OWNED)('StatusSweepService unthreaded bugs', test => {
 							)
 						)
 					)
-				).toEqual({ checked: 1, updated: 1, failed: 0 })
+				).toEqual({
+					checked: 1,
+					updated: 1,
+					failed: 0,
+					dismissal: NO_DISMISSAL,
+				})
 				expect(fake.statuses).toEqual([
 					{ sha: 'head', ...toCommitStatus('needs fixes', 1, true) },
 				])
@@ -1161,7 +1237,12 @@ layer(TOKEN_MODE_OWNED)('StatusSweepService owner escalation', test => {
 								)
 							)
 						)
-					).toEqual({ checked: 1, updated: 1, failed: 0 })
+					).toEqual({
+						checked: 1,
+						updated: 1,
+						failed: 0,
+						dismissal: NO_DISMISSAL,
+					})
 					expect(fake.statuses).toEqual([
 						{
 							sha: SUMMARY_MARKER.head,
@@ -1261,6 +1342,7 @@ layer(APP_MODE_OWNED)('StatusSweepService recovered owner state', test => {
 							checked: 1,
 							updated: 1,
 							failed: 0,
+							dismissal: NO_DISMISSAL,
 						})
 						expect(statuses.statuses).toEqual([
 							{
@@ -1276,6 +1358,7 @@ layer(APP_MODE_OWNED)('StatusSweepService recovered owner state', test => {
 							checked: 1,
 							updated: 0,
 							failed: 0,
+							dismissal: NO_DISMISSAL,
 						})
 						expect(statuses.statuses).toHaveLength(1)
 						expect(api.writes).toEqual([])
@@ -1334,7 +1417,12 @@ layer(APP_MODE_OWNED)('StatusSweepService recovered owner state', test => {
 							)
 						)
 					)
-				).toEqual({ checked: 1, updated: 0, failed: 1 })
+				).toEqual({
+					checked: 1,
+					updated: 0,
+					failed: 1,
+					dismissal: NO_DISMISSAL,
+				})
 				expect(getStatusSpy).toHaveBeenCalledTimes(1)
 				expect(statuses.statuses).toEqual([])
 				expect(api.writes).toEqual([])
@@ -1399,7 +1487,12 @@ layer(TOKEN_MODE_OWNED)('StatusSweepService edited waiting threads', test => {
 										)
 									)
 								)
-							).toEqual({ checked: 1, updated: 1, failed: 0 })
+							).toEqual({
+								checked: 1,
+								updated: 1,
+								failed: 0,
+								dismissal: NO_DISMISSAL,
+							})
 							expect(statuses.statuses).toEqual([
 								{
 									sha: 'head',
@@ -1462,7 +1555,12 @@ layer(TOKEN_MODE_OWNED)('StatusSweepService edited waiting threads', test => {
 							)
 						)
 					)
-				).toEqual({ checked: 1, updated: 1, failed: 0 })
+				).toEqual({
+					checked: 1,
+					updated: 1,
+					failed: 0,
+					dismissal: NO_DISMISSAL,
+				})
 				expect(statuses.statuses).toEqual([
 					{ sha: 'head', ...toCommitStatus('needs owner', 0, true) },
 				])

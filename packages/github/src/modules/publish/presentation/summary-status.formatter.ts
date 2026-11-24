@@ -1,3 +1,4 @@
+import { toCodeSpan } from '../../../utils/markdown.util'
 import type { SummaryMarker } from '../domain/publish-marker.schema'
 import { MARKER_VERSION } from '../domain/publish.constants'
 import type { RenderedSummary, SummaryComment } from '../domain/publish.types'
@@ -66,4 +67,27 @@ export function toReservedStatus(
 		),
 		marker,
 	}
+}
+
+/** The reason a stale change request is dismissed with: fixed text and the head, never model output. */
+export function toClearedMessage(head: string): string {
+	return `MNG Review no longer finds an open bug thread or a thread waiting for the owner at ${toCodeSpan(head)}.`
+}
+
+/** The reason a review this run just posted is dismissed with when a push landed right after it. */
+export function toOutlivedReviewMessage(head: string): string {
+	return `MNG Review has not reviewed ${toCodeSpan(head)}; this review was for an earlier commit.`
+}
+
+/**
+ * The reason an approval on another commit is dismissed with; it claims nothing about `head`, which
+ * the current identity may have approved.
+ */
+export function toStaleApprovalMessage(head: string): string {
+	return `This approval was for another commit than ${toCodeSpan(head)}, so it no longer stands.`
+}
+
+/** The reason another owned identity's approval is dismissed with once the current identity's replaces it. */
+export function toReplacedApprovalMessage(head: string): string {
+	return `MNG Review's current identity reviewed ${toCodeSpan(head)}; its review replaces this approval.`
 }

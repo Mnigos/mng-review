@@ -79,6 +79,10 @@ export const pullRequestReviewSchema = Schema.Struct({
 	body: Schema.String,
 	author: Schema.NullOr(commentAuthorSchema),
 	editor: commentEditorSchema,
+	/** The commit the review is on; read only with `withCommits`, `null` when GitHub lost it. */
+	commit: Schema.optionalKey(
+		Schema.NullOr(Schema.Struct({ oid: Schema.String }))
+	),
 })
 export type PullRequestReview = typeof pullRequestReviewSchema.Type
 export type ReviewState = PullRequestReview['state']

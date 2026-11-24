@@ -1,11 +1,11 @@
-import { toOutputPart } from './output-part.helper'
+import { toOutputPage } from './output-part.helper'
 import { MAX_TOOL_OUTPUT_CHARS } from './review.constants'
 
-describe('toOutputPart', () => {
+describe('toOutputPage', () => {
 	test.each(['', 'short diff', 'x'.repeat(MAX_TOOL_OUTPUT_CHARS)])(
 		'keeps output within the cap unchanged',
 		text => {
-			expect(toOutputPart(text)).toBe(text)
+			expect(toOutputPage(text).output).toBe(text)
 		}
 	)
 	test.each([
@@ -14,13 +14,15 @@ describe('toOutputPart', () => {
 		Number.POSITIVE_INFINITY,
 		Number.NEGATIVE_INFINITY,
 	])('clamps offset %s to zero', offset => {
-		expect(toOutputPart('first\nsecond\n', offset)).toBe('first\nsecond\n')
+		expect(toOutputPage('first\nsecond\n', offset).output).toBe(
+			'first\nsecond\n'
+		)
 	})
 	test('floors fractional offsets and reads from that character', () => {
-		expect(toOutputPart('first\nsecond\n', 6.9)).toBe('second\n')
+		expect(toOutputPage('first\nsecond\n', 6.9).output).toBe('second\n')
 	})
 	test.each([5, 50])('reports no more output at offset %i', offset => {
-		expect(toOutputPart('hello', offset)).toBe(
+		expect(toOutputPage('hello', offset).output).toBe(
 			'(no more output; it ends at offset 5)'
 		)
 	})
@@ -31,7 +33,7 @@ describe('toOutputPart', () => {
 		).join('')
 		const parts: string[] = []
 		for (let offset = 0; offset < text.length;) {
-			const part = toOutputPart(text, offset)
+			const part = toOutputPage(text, offset).output
 			expect(part.length).toBeLessThanOrEqual(MAX_TOOL_OUTPUT_CHARS)
 			const marker = /\n\[more: call diff again with offset=(\d+)\]$/u.exec(
 				part
@@ -50,7 +52,7 @@ describe('toOutputPart', () => {
 	})
 	test('a line longer than the cap still advances within the cap', () => {
 		const text = 'x'.repeat(MAX_TOOL_OUTPUT_CHARS * 2)
-		const part = toOutputPart(text)
+		const part = toOutputPage(text).output
 		const marker = /\n\[more: call diff again with offset=(\d+)\]$/u.exec(part)
 		expect(marker).not.toBeNull()
 		expect(part.length).toBeLessThanOrEqual(MAX_TOOL_OUTPUT_CHARS)

@@ -323,6 +323,7 @@ export function githubApiFake(
 					body: input.body,
 					author,
 					editor: null,
+					commit: { oid: input.commitId },
 				})
 				if (error) return yield* error
 				return id

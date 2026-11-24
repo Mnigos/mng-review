@@ -6,6 +6,8 @@ export interface MarkerUpdate {
 	readonly head: string
 	/** Every finder answered. */
 	readonly finished: boolean
+	/** A planned run or unit failed or never reported (`hasFailedRuns`). */
+	readonly failed?: boolean
 	/**
 	 * The run does not stand for a full review of `head`: a command named one agent, or the pull
 	 * request moved to another head while it reviewed.
@@ -36,10 +38,10 @@ function isReplacing(
 /**
  * The summary marker after a run: one more run, and the head, finished flag and unthreaded bugs of
  * the last full review. A run that does not replace it (a partial run, or a full run that did not
- * finish) keeps the previous head; a partial run keeps the previous finished flag as well, so it
- * never stands for a full review. Such a run adds its own unthreaded bugs to those already on the
- * same head, so they keep blocking until the next full review replaces the count; a bug it found
- * again is counted twice until then. The threads waiting for the owner lose those an owner cleared
+ * finish) keeps the previous head; a partial run keeps the previous finished and failed flags as
+ * well, so it never stands for a full review. Such a run adds its own unthreaded bugs to those
+ * already on the same head, so they keep blocking until the next full review replaces the count; a
+ * bug it found again is counted twice until then. The threads waiting for the owner lose those an owner cleared
  * and gain this run's, whatever the head. Every other field of the previous marker, such as the
  * manual runs, is carried as it was.
  */
@@ -51,6 +53,7 @@ export function toNextSummaryMarker(
 		head: previousHead,
 		unthreadedBugs: previousBugs,
 		needsOwner: previousWaiting,
+		failed: previousFailed,
 		...carried
 	} = previous ?? { v: MARKER_VERSION, runs: 0 }
 	const needsOwner = toNextWaiting(previousWaiting, update.waiting)
@@ -58,6 +61,10 @@ export function toNextSummaryMarker(
 	const finished = update.partial
 		? (carried.finished ?? false)
 		: update.finished
+	// Like the finished flag, a partial run keeps the last full run's; only a finished run needs it.
+	const failed = update.partial
+		? previousFailed
+		: update.finished && update.failed === true
 	const head = reviewed ? update.head : previousHead
 	const added = previousHead === update.head ? update.unthreadedBugs : 0
 	const unthreadedBugs = reviewed
@@ -68,6 +75,7 @@ export function toNextSummaryMarker(
 		v: MARKER_VERSION,
 		runs: carried.runs + 1,
 		finished,
+		...(failed === true ? { failed } : {}),
 		...(head === undefined ? {} : { head }),
 		...(unthreadedBugs > 0 ? { unthreadedBugs } : {}),
 		...(needsOwner.length > 0 ? { needsOwner } : {}),

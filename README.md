@@ -149,7 +149,7 @@ On a public repository anyone can read the job summary and download the artifact
 
 ### Publish mode
 
-`review-publish.yml` also reviews the pull request as `github-actions[bot]`: one review per run whose body is the summary with the verdict and whose comments are the new threads, one per bug with its evidence, unverified findings marked as such, and nits. A run that posts nothing new edits the body of the bot's last review instead, so it notifies no one, and each new review hides the bot's earlier ones as outdated. A finding already in an open thread is not posted twice. The review's state carries the verdict: it requests changes while a confirmed bug thread is open or a thread waits for the owner, approves a full, finished review that found nothing, and comments otherwise. A later run dismisses a change request whose findings are gone. It takes the same inputs and secrets as `review.yml`; grant the job `pull-requests`, `checks` and `statuses` write:
+`review-publish.yml` also reviews the pull request as `github-actions[bot]`: one review per run whose body is the summary with the verdict and whose comments are the new threads, one per bug with its evidence, unverified findings marked as such, and nits. A run that posts nothing new edits the body of the bot's last review instead, so it notifies no one, and each new review hides the bot's earlier ones as outdated. A finding already in an open thread is not posted twice. The review's state carries the verdict: it requests changes while a confirmed bug thread is open or a thread waits for the owner and comments otherwise; `github-actions[bot]` never approves (see below). A run that cannot tell, such as one whose head moved, one that reviewed with one agent or did not finish and found nothing blocking, or one where a review run failed, keeps the state and only comments. The one exception is a reply-only run on the current head that finds something blocking while the bot's change request stands: it keeps requesting changes. A later full run that finds the pull request ready with every review run finished, or the status sweep once no open bug thread and nothing waiting is left on the head, dismisses the bot's change request. It takes the same inputs and secrets as `review.yml`; grant the job `pull-requests`, `checks` and `statuses` write:
 
 ```yaml
 jobs:
@@ -169,9 +169,11 @@ Each run shows two jobs. `MNG Review (review)` holds the endpoint secrets and a 
 
 `review.yml` never gets write access, whatever the caller grants. On every run the bot checks its open threads again whose file changed and replies in the ones the validator no longer finds, which closes them for the bot (GitHub lets the job token resolve a thread only with `contents: write`, which the workflow does not ask for, so you resolve it on GitHub), writes a check run per agent, and sets the commit status `MNG Review`: `failure` while bug threads of the bot are open, `success` when none are, `error` when the run did not finish. Require that status in branch protection to gate merges on it. After `limits.max_runs_per_pr` runs, pushes are no longer reviewed. Declared agents with `input: incremental` review only what changed since the last finished run; the main reviewer always sees the whole change. ADRs 0007 and 0008 record the rules.
 
-Approvals need a GitHub App (see Posting as a GitHub App): GitHub does not let the job token approve, so `github-actions[bot]` comments where the app would approve. Set `verdict.mode: preview` in `.mng/review.yml` to turn approvals off. Consider it wherever a branch rule requires approving reviews: the bot's approval may count toward that rule, and the reviewed change is text a model reads, which can talk it into finding nothing. The repositories that run MNG Review today have no branch protection, so its approval gates nothing there yet. Require the `MNG Review` status rather than an approval to gate merges on the bot.
+Approvals need a GitHub App (see Posting as a GitHub App): GitHub does not let the job token approve, so `github-actions[bot]` comments where the app would approve. The app approves only a push, or a command that named no agent, that finished on the current head and covered the whole change: the main reviewer ran (a quick review never approves) and received every changed file whole (its whole diff, every part of a long diff, or, for a file that deletes no line, every added line through `read_file`), no file was skipped as too large or binary, the token budget stopped nothing, no run failed, and no finding at all was kept, so unverified findings and nits alone leave a comment. A later write dismisses an approval whose head is gone; a run that reviewed an older head never touches an approval or change request on the current one. The review body opens with the state in words (`Approved.`, `Changes requested.` or `Comment.`) and, when the bot did not approve, one sentence that says why, such as "Not approved: 3 of 41 changed files were too large to review." Set `verdict.mode: preview` in `.mng/review.yml` to turn approvals off. Consider it wherever a branch rule requires approving reviews: the bot's approval may count toward that rule, and the reviewed change is text a model reads, which can talk it into finding nothing. Require the `MNG Review` status rather than an approval to gate merges on the bot.
 
-To count threads resolved by hand without waiting for the next push, run the status sweep on a schedule. It runs no model and needs no endpoint secret:
+`approve` is the default by the owner's choice. All three council reviewers recommended `preview` instead: a forged or model-fooled empty outcome would approve, and the app's approvals, which do not count toward a pull request's review decision today, would start to count if the app's access changed. The owner kept `approve` because an approval now requires a finished full run on the current head that covered the whole change.
+
+To count threads resolved by hand without waiting for the next push, run the status sweep on a schedule. It runs no model and needs no endpoint secret. When the last thread is resolved and nothing waits for the owner, it also dismisses the bot's change request, which is why it needs `pull-requests: write`:
 
 ```yaml
 # .github/workflows/mng-review-sweep.yml
@@ -189,7 +191,7 @@ jobs:
     uses: Mnigos/mng-review/.github/workflows/status-sweep.yml@<commit-sha>
     permissions:
       contents: read
-      pull-requests: read
+      pull-requests: write
       statuses: write
 ```
 
@@ -228,7 +230,7 @@ jobs:
     uses: Mnigos/mng-review/.github/workflows/status-sweep.yml@<commit-sha>
     permissions:
       contents: read
-      pull-requests: read
+      pull-requests: write
       statuses: write
     with:
       app-slug: your-app-slug
@@ -368,7 +370,7 @@ jobs:
     uses: Mnigos/mng-review/.github/workflows/status-sweep.yml@<commit-sha>
     permissions:
       contents: read
-      pull-requests: read
+      pull-requests: write
       statuses: write
     with:
       app-slug: mng-review

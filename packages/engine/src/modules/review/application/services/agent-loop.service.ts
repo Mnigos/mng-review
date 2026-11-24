@@ -1,5 +1,5 @@
 import { Clock, Context, Duration, Effect, Layer, Ref, Result } from 'effect'
-import { Chat, type Prompt, type Response, Toolkit } from 'effect/ai'
+import { Chat, type Prompt, type Response } from 'effect/ai'
 import { TokenLedger } from '../../../../platform/llm/token-ledger.service'
 import { fenceData } from '../../../../utils/fence.util'
 import {
@@ -9,7 +9,6 @@ import {
 	toEstimatedTokens,
 } from '../../domain/loop-budget.helper'
 import {
-	getReadPaths,
 	toContinuationMessage,
 	toToolMessage,
 	toUserMessage,
@@ -22,21 +21,18 @@ import {
 import { LoopError } from '../../domain/review.errors'
 import { parseAnswerJson } from '../../infrastructure/answer-json.parser'
 import type { LoopRequest, LoopResult, LoopState } from '../agent-loop.types'
-import { DiffTool, REPO_TOOLS } from '../repo.toolkit'
-import { ReportFindingsTool } from '../report-findings.tool'
-import { ReportReplyTool } from '../report-reply.tool'
-import { ReportVerdictTool } from '../report-verdict.tool'
+import { AGENT_TOOLKIT } from '../agent.toolkit'
+import {
+	addToolReads,
+	getUnreadPaths,
+	getUntouchedPaths,
+	NO_READS,
+	type ReadCoverage,
+} from '../read-coverage.helper'
 import { ReviewLimits } from '../review-limits.context'
 import { type ModelCallError, ModelHealthService } from './model-health.service'
 import { RepoToolsService } from './repo-tools.service'
 
-/** Every tool an agent can be offered; each run picks its own with `toolChoice.oneOf`. */
-const AGENT_TOOLKIT = Toolkit.make(
-	...REPO_TOOLS,
-	ReportFindingsTool,
-	ReportVerdictTool,
-	ReportReplyTool
-)
 type ToolCall = Response.ToolCallPart<string, unknown>
 
 /** A call's answer when the tool did not run or did not finish. */
@@ -88,26 +84,30 @@ export const AgentLoopServiceLive = Layer.effect(
 			const deadline = (yield* Clock.currentTimeMillis) + wallMillis
 			const hardDeadline = deadline + graceMillis
 			const { coverage } = request
-			/** Paths the agent read with a tool. */
-			const touched = yield* Ref.make<ReadonlySet<string>>(new Set())
-			/** The answer before a continuation turn, kept if the continuation fails. */
+			/** What the tool outputs the model received showed (`addToolReads`). */
+			const received = yield* Ref.make<ReadCoverage>(NO_READS)
+			/** The answer before a continuation turn with its unread files then, kept if the continuation fails. */
 			const kept = yield* Ref.make<LoopResult<TValue> | undefined>(undefined)
 
 			const tokens = yield* makeConversationBudget(request.budget, health.spent)
 			/** True once the conversation or the whole run is out of tokens, as the turn checks it. */
 			const { isSpent } = tokens
 
-			/** Files of `coverage` the answer leaves unread, when tool calls and time allow a turn. */
+			/** The answer with the files of `coverage` the agent did not receive whole, which the report counts. */
+			const withUnread = (answer: LoopResult<TValue>) =>
+				Effect.gen(function* () {
+					if (!coverage) return answer
+					const reads = yield* Ref.get(received)
+					return { ...answer, unread: getUnreadPaths(reads, coverage) }
+				})
+
+			/** Files of `coverage` the answer leaves untouched, when tool calls and time allow a turn. */
 			const getUnread = (state: LoopState, value: TValue) =>
 				Effect.gen(function* () {
 					if (!coverage || (yield* Ref.get(kept))) return []
 					if (state.toolCalls >= limits.maxToolCalls) return []
 					if ((yield* Clock.currentTimeMillis) >= deadline) return []
-					const read = new Set([
-						...(yield* Ref.get(touched)),
-						...coverage.answered(value),
-					])
-					return coverage.paths.filter(path => !read.has(path))
+					return getUntouchedPaths(yield* Ref.get(received), coverage, value)
 				})
 
 			/**
@@ -123,13 +123,13 @@ export const AgentLoopServiceLive = Layer.effect(
 				Effect.gen(function* () {
 					const first = yield* Ref.get(kept)
 					if (first && coverage)
-						return {
+						return yield* withUnread({
 							...answer,
 							value: coverage.merge(first.value, answer.value),
 							continued: true,
-						}
+						})
 					const unread = yield* getUnread(next, answer.value)
-					if (unread.length === 0) return answer
+					if (unread.length === 0) return yield* withUnread(answer)
 					yield* tokens.openReserve
 					const text = toContinuationMessage(unread, finish)
 					const continued = {
@@ -138,8 +138,11 @@ export const AgentLoopServiceLive = Layer.effect(
 						pending: [reply(text)],
 					}
 					// The continuation must leave room for a call after it, as any turn does.
-					if (yield* isSpent(continued)) return answer
-					yield* Ref.set(kept, { ...answer, continued: true })
+					if (yield* isSpent(continued)) return yield* withUnread(answer)
+					yield* Ref.set(
+						kept,
+						yield* withUnread({ ...answer, continued: true })
+					)
 					return yield* step(continued)
 				})
 
@@ -350,10 +353,9 @@ export const AgentLoopServiceLive = Layer.effect(
 							? { call, output: refusal }
 							: { call, output: '', ...results[index] }
 					)
-					const read = shown.flatMap(({ call, output }) =>
-						getReadPaths(call, output, call.name === DiffTool.name)
+					yield* Ref.update(received, reads =>
+						shown.reduce(addToolReads, reads)
 					)
-					yield* Ref.update(touched, paths => new Set([...paths, ...read]))
 					if (request.onToolOutputs) yield* request.onToolOutputs(shown)
 					const message = toToolMessage(calls, fenced)
 					const next = {

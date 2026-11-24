@@ -7,6 +7,7 @@ export const MAX_PAGES = 20
 export const CLIENT_ERROR_STATUS = 400
 export const SERVER_ERROR_STATUS = 500
 export const TOO_MANY_REQUESTS_STATUS = 429
+export const NOT_FOUND_STATUS = 404
 /** GraphQL error types that mean GitHub read the request and refused it, not that it was throttled. */
 export const DECLINED_GRAPHQL_TYPES: ReadonlySet<string> = new Set([
 	'FORBIDDEN',
@@ -69,17 +70,33 @@ export const PULL_REQUEST_COMMENTS_QUERY = `query($owner: String!, $name: String
   }
 }`
 
-/** The pull request's reviews with their state, author, last editor and whether they are hidden, oldest first. */
-export const PULL_REQUEST_REVIEWS_QUERY = `query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+/** The fields of a review every read takes. */
+const REVIEW_FIELDS =
+	'id databaseId state isMinimized body author { __typename login } editor { __typename login }'
+
+/** The reviews query over `fields`. */
+function toReviewsQuery(fields: string): string {
+	return `query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       reviews(first: ${PAGE_SIZE}, after: $cursor) {
         pageInfo { hasNextPage endCursor }
-        nodes { id databaseId state isMinimized body author { __typename login } editor { __typename login } }
+        nodes { ${fields} }
       }
     }
   }
 }`
+}
+
+/** The pull request's reviews with their state, author, last editor and whether they are hidden, oldest first. */
+export const PULL_REQUEST_REVIEWS_QUERY = toReviewsQuery(REVIEW_FIELDS)
+/**
+ * The same reviews with the commit each one is on. A commit field needs contents read, which the
+ * reservation's token does not have, so only writers that set a review state read it.
+ */
+export const PULL_REQUEST_REVIEWS_WITH_COMMITS_QUERY = toReviewsQuery(
+	`${REVIEW_FIELDS} commit { oid }`
+)
 
 /** Replies in a review thread. */
 export const REPLY_TO_THREAD_MUTATION = `mutation($thread: ID!, $body: String!) {

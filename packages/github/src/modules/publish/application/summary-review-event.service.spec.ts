@@ -13,9 +13,12 @@ import { GITHUB_SETTINGS } from '../../../shared/mocks/github-http.helper'
 import {
 	APP_IDENTITY,
 	APP_MODE_OWNED,
+	COVERED_REVIEW,
 	summaryReview,
 	SUMMARY_MARKER,
 } from '../../../shared/mocks/publish-test.helper'
+import type { ReviewEvidence } from '../domain/review-event.helper'
+import { toBodyWithoutHeadline } from '../presentation/review-headline.formatter'
 import { toMarkerComment } from '../presentation/thread-comment.formatter'
 import {
 	SummaryReviewService,
@@ -26,21 +29,32 @@ import type {
 	SummaryRender,
 } from './summary-review.service.types'
 
-/** A marked body with an explicit event, or no new judgement for offline writes. */
+/** Evidence of a full review on the head that decides `event`. */
+const EVIDENCE_BY_EVENT = {
+	APPROVE: { ...COVERED_REVIEW },
+	COMMENT: { ...COVERED_REVIEW, gap: { kind: 'findings', findings: 1 } },
+	REQUEST_CHANGES: { ...COVERED_REVIEW, verdict: 'needs fixes' },
+} as const satisfies Record<ReviewEvent, ReviewEvidence>
+
+/** A marked body with evidence for an explicit event, or no new judgement for offline writes. */
 function draft(event?: ReviewEvent): SummaryDraft {
 	return {
 		head: 'reviewed-head',
 		render: () => ({
 			body: toMarkerComment('summary', SUMMARY_MARKER),
 			marker: SUMMARY_MARKER,
-			...(event === undefined ? {} : { event }),
+			...(event === undefined ? {} : { evidence: EVIDENCE_BY_EVENT[event] }),
 		}),
 	}
 }
 
-/** Records review writes and failures without an HTTP client. */
-function setup() {
+/** Records review writes and failures without an HTTP client, on a pull request standing on `head`. */
+function setup(head = 'reviewed-head') {
 	const fake = githubApiFake(APP_IDENTITY)
+	fake.command.pullRequest = {
+		...fake.command.pullRequest,
+		head: { ...fake.command.pullRequest.head, sha: head },
+	}
 	const service = SummaryReviewServiceLive.pipe(
 		Layer.provide(
 			Layer.merge(
@@ -59,6 +73,7 @@ function setup() {
 function own(overrides: Partial<PullRequestReview> = {}) {
 	return summaryReview(SUMMARY_MARKER, {
 		author: { __typename: 'Bot', login: APP_IDENTITY.login },
+		commit: { oid: 'reviewed-head' },
 		...overrides,
 	})
 }
@@ -73,7 +88,11 @@ layer(APP_MODE_OWNED)('SummaryReviewService review events', test => {
 				const written = yield* SummaryReviewService.use(service =>
 					service.write(17, { ...draft(event), render: renderSpy })
 				).pipe(Effect.provide(fixture.service))
-				expect(written).toMatchObject({ event, created: false, dismissed: 0 })
+				expect(written).toMatchObject({
+					event,
+					created: false,
+					dismissal: { dismissed: 0, failed: 0 },
+				})
 				expect(fixture.fake.writes).toEqual([
 					{ method: 'updateReview', id: 101, body: written.body },
 				])
@@ -145,7 +164,10 @@ layer(APP_MODE_OWNED)('SummaryReviewService review events', test => {
 							.filter(write => write.method === 'dismissReview')
 							.map(write => write.id)
 					).toEqual(ids)
-					expect(written.dismissed).toBe(ids.length)
+					expect(written.dismissal).toStrictEqual({
+						dismissed: ids.length,
+						failed: 0,
+					})
 					for (const id of ids)
 						expect(
 							fixture.fake.reviews.find(review => review.databaseId === id)
@@ -185,7 +207,10 @@ layer(APP_MODE_OWNED)('SummaryReviewService review events', test => {
 					yield* SummaryReviewService.use(service =>
 						service.write(17, draft('COMMENT'))
 					).pipe(Effect.provide(fixture.service))
-				).toMatchObject({ dismissed: 1, event: 'COMMENT' })
+				).toMatchObject({
+					dismissal: { dismissed: 1, failed: 1 },
+					event: 'COMMENT',
+				})
 				expect(
 					fixture.fake.reviews.find(review => review.databaseId === 101)?.state
 				).toBe('CHANGES_REQUESTED')
@@ -196,7 +221,7 @@ layer(APP_MODE_OWNED)('SummaryReviewService review events', test => {
 					yield* SummaryReviewService.use(service =>
 						service.write(17, draft('COMMENT'))
 					).pipe(Effect.provide(fixture.service))
-				).toMatchObject({ dismissed: 1 })
+				).toMatchObject({ dismissal: { dismissed: 1, failed: 0 } })
 				expect(
 					fixture.fake.writes
 						.filter(write => write.method === 'dismissReview')
@@ -207,7 +232,7 @@ layer(APP_MODE_OWNED)('SummaryReviewService review events', test => {
 	for (const event of REVIEW_EVENTS)
 		test.effect(`422 inline fallback preserves ${event}`, () =>
 			Effect.gen(function* () {
-				const fixture = setup()
+				const fixture = setup('head')
 				fixture.fake.failures.review.push(
 					new GitHubApiError({
 						operation: 'createReview',
@@ -218,7 +243,7 @@ layer(APP_MODE_OWNED)('SummaryReviewService review events', test => {
 				const renderSpy = vi.fn<SummaryRender>((_prior, inline) => ({
 					body: inline ? 'Inline body' : 'Fallback body',
 					marker: SUMMARY_MARKER,
-					event,
+					evidence: EVIDENCE_BY_EVENT[event],
 				}))
 				const written = yield* SummaryReviewService.use(service =>
 					service.write(17, {
@@ -227,17 +252,18 @@ layer(APP_MODE_OWNED)('SummaryReviewService review events', test => {
 						render: renderSpy,
 					})
 				).pipe(Effect.provide(fixture.service))
-				expect(written).toMatchObject({
-					event,
-					inline: false,
-					body: 'Fallback body',
-				})
-				expect(
-					fixture.fake.writes.filter(write => write.method === 'review')
-				).toMatchObject([
-					{ input: { event, body: 'Inline body', comments: [{ line: 7 }] } },
-					{ input: { event, body: 'Fallback body', comments: [] } },
+				expect(written).toMatchObject({ event, inline: false })
+				expect(toBodyWithoutHeadline(written.body)).toBe('Fallback body')
+				const reviews = fixture.fake.writes.filter(
+					write => write.method === 'review'
+				)
+				expect(reviews).toMatchObject([
+					{ input: { event, comments: [{ line: 7 }] } },
+					{ input: { event, comments: [] } },
 				])
+				expect(
+					reviews.map(write => toBodyWithoutHeadline(write.input.body))
+				).toEqual(['Inline body', 'Fallback body'])
 				expect(renderSpy).toHaveBeenCalledTimes(2)
 			})
 		)
@@ -245,7 +271,7 @@ layer(APP_MODE_OWNED)('SummaryReviewService review events', test => {
 		'422 fallback uses the new event returned by the second render',
 		() =>
 			Effect.gen(function* () {
-				const fixture = setup()
+				const fixture = setup('head')
 				fixture.fake.failures.review.push(
 					new GitHubApiError({
 						operation: 'createReview',
@@ -260,7 +286,8 @@ layer(APP_MODE_OWNED)('SummaryReviewService review events', test => {
 						render: (_prior, inline) => ({
 							body: inline ? 'Inline' : 'Fallback',
 							marker: SUMMARY_MARKER,
-							event: inline ? 'REQUEST_CHANGES' : 'COMMENT',
+							evidence:
+								EVIDENCE_BY_EVENT[inline ? 'REQUEST_CHANGES' : 'COMMENT'],
 						}),
 					})
 				).pipe(Effect.provide(fixture.service))
@@ -283,12 +310,12 @@ layer(APP_MODE_OWNED)('SummaryReviewService review events', test => {
 						yield* SummaryReviewService.use(service =>
 							service.publishStatus({
 								pullNumber: 17,
-								head: 'head',
+								head: 'reviewed-head',
 								engineCommit: 'engine',
 								status: 'offline',
 							})
 						).pipe(Effect.provide(fixture.service))
-					).toBe(false)
+					).toMatchObject({ created: false })
 					expect(fixture.fake.writes).toMatchObject([
 						{ method: 'updateReview', id: 101 },
 					])
@@ -297,7 +324,7 @@ layer(APP_MODE_OWNED)('SummaryReviewService review events', test => {
 				})
 		)
 	test.effect(
-		'offline with no editable review posts COMMENT and leaves old change requests in place',
+		'offline with no editable review comments and leaves an earlier identity change request in place',
 		() =>
 			Effect.gen(function* () {
 				const fixture = setup()
@@ -313,7 +340,7 @@ layer(APP_MODE_OWNED)('SummaryReviewService review events', test => {
 							status: 'offline',
 						})
 					).pipe(Effect.provide(fixture.service))
-				).toBe(true)
+				).toMatchObject({ created: true })
 				expect(fixture.fake.writes[0]).toMatchObject({
 					method: 'review',
 					input: { event: 'COMMENT' },

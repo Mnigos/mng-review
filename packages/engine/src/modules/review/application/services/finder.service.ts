@@ -31,6 +31,7 @@ import {
 import { LoopError } from '../../domain/review.errors'
 import type { FinderContext, FinderJob, FinderResult } from '../finder.types'
 import { toFindingsCoverage } from '../findings-coverage.helper'
+import { getChangedLines } from '../read-coverage.helper'
 import {
 	ALL_REPO_TOOLS,
 	METADATA_REPO_TOOLS,
@@ -123,6 +124,7 @@ export const FinderServiceLive = Layer.effect(
 						tools: ALL_REPO_TOOLS,
 						tokens,
 						coverage: unit.paths.filter(path => !whole.has(path)),
+						changed: getChangedLines(unit.diff),
 					}
 				})
 			}
@@ -143,6 +145,7 @@ export const FinderServiceLive = Layer.effect(
 					coverage: getReviewableFiles(context.scope.change.files)
 						.map(file => file.path)
 						.filter(path => run.files.includes(path) && !whole.has(path)),
+					changed: getChangedLines(diff),
 				},
 			]
 		})
@@ -266,7 +269,7 @@ export const FinderServiceLive = Layer.effect(
 					},
 					source: run.name,
 					...(job.coverage
-						? { coverage: toFindingsCoverage(job.coverage) }
+						? { coverage: toFindingsCoverage(job.coverage, job.changed) }
 						: {}),
 				})
 				.pipe(
@@ -275,6 +278,7 @@ export const FinderServiceLive = Layer.effect(
 						model: model.model,
 						toolCalls: result.toolCalls,
 						continued: result.continued === true,
+						unread: result.unread?.length ?? 0,
 						malformed: result.value.dropped,
 						findings: result.value.findings.map(reported =>
 							toFinding(reported, {
@@ -367,6 +371,9 @@ export const FinderServiceLive = Layer.effect(
 				...(jobs.success.length > 1 ? { units: jobs.success.length } : {}),
 				...(done.some(entry => entry.continued)
 					? { continued: done.filter(entry => entry.continued).length }
+					: {}),
+				...(done.some(entry => entry.unread > 0)
+					? { unread: done.reduce((sum, entry) => sum + entry.unread, 0) }
 					: {}),
 				...(unfinished.length > 0 ? { unfinished } : {}),
 				...(firstFailure === undefined

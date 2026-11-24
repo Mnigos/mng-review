@@ -10,6 +10,7 @@ import {
 	escapeMarkdown,
 	getAgentReport,
 	type PublishResult,
+	type DismissalOutcome,
 	type SweepResult,
 	toCodeSpan,
 	toLogText,
@@ -266,21 +267,37 @@ function toAnswerText(answered: PublishResult['answered']): string {
 	return entries.map(([action, count]) => `${action} ${count}`).join(', ')
 }
 
+/** The state the run's review was written in, and whether a push right after the write dismissed it. */
+function toReviewText(
+	result: Pick<PublishResult, 'event' | 'outlived'>
+): string {
+	return result.outlived === true
+		? `${result.event} (dismissed: a push landed right after it)`
+		: result.event
+}
+
+/** Stale reviews dismissed, and those GitHub did not dismiss, which the next run tries again. */
+function toDismissalText(dismissal: DismissalOutcome): string {
+	return `${dismissal.dismissed} stale review(s) dismissed, ${dismissal.failed} not dismissed`
+}
+
 /** What publish mode did on the pull request, in one line of plain text. */
 function toPublishText(report: PublishReport): string {
 	if (report.status === 'failed') return `publishing failed: ${report.reason}`
 	if (report.status === 'not-published')
 		return `nothing posted: ${report.reason}`
 	if (report.status === 'status-only')
-		return report.posted
-			? 'posted the offline status as a summary review'
-			: 'marked the existing summary unfinished; the reviewer was offline'
+		return `${
+			report.posted
+				? 'posted the offline status as a summary review'
+				: 'marked the existing summary unfinished; the reviewer was offline'
+		}; ${toDismissalText(report.dismissal)}`
 	if (report.status === 'replied') {
 		const { result } = report
-		return `answered replies on run ${result.run}: ${toAnswerText(result.answered)}; verdict ${result.verdict}, review ${result.event}, ${result.openBugs} open bug thread(s); ${result.waiting} thread(s) wait for the owner, label ${result.label}; status ${result.status ? 'set' : 'not set'}`
+		return `answered replies on run ${result.run}: ${toAnswerText(result.answered)}; verdict ${result.verdict}, review ${toReviewText(result)}, ${toDismissalText(result.dismissal)}, ${result.openBugs} open bug thread(s); ${result.waiting} thread(s) wait for the owner, label ${result.label}; status ${result.status ? 'set' : 'not set'}`
 	}
 	const { result, checks } = report
-	return `posted run ${result.run}: verdict ${result.verdict}, review ${result.event}, ${result.openBugs} open bug thread(s); new threads: ${result.onLine} on lines, ${result.onFile} on files, ${result.inSummary} in the summary, ${result.unposted} not posted; ${result.repeated} already had a thread, ${result.dismissed} found again under resolved threads; ${result.resolved} of ${result.rechecked} rechecked thread(s) resolved; ${checks.checks} check run(s), status ${checks.status ? 'set' : 'not set'}; earlier summaries: ${result.cleanup}; replies answered: ${toAnswerText(result.answered)}; ${result.waiting} thread(s) wait for the owner, label ${result.label}`
+	return `posted run ${result.run}: verdict ${result.verdict}, review ${toReviewText(result)}, ${toDismissalText(result.dismissal)}, ${result.openBugs} open bug thread(s); new threads: ${result.onLine} on lines, ${result.onFile} on files, ${result.inSummary} in the summary, ${result.unposted} not posted; ${result.repeated} already had a thread, ${result.dismissed} found again under resolved threads; ${result.resolved} of ${result.rechecked} rechecked thread(s) resolved; ${checks.checks} check run(s), status ${checks.status ? 'set' : 'not set'}; earlier summaries: ${result.cleanup}; replies answered: ${toAnswerText(result.answered)}; ${result.waiting} thread(s) wait for the owner, label ${result.label}`
 }
 
 /** The engine's commit in a sentence. */
@@ -338,7 +355,7 @@ export function formatSummary(
 
 /** What the status sweep did, in words. */
 export function formatSweepLine(result: SweepResult): string {
-	return `status sweep: ${result.checked} pull request(s) carry the status, ${result.updated} updated, ${result.failed} failed`
+	return `status sweep: ${result.checked} pull request(s) carry the status, ${result.updated} updated, ${result.failed} failed; ${result.dismissal.dismissed} change request(s) dismissed, ${result.dismissal.failed} not dismissed`
 }
 
 /** The job summary of a status sweep. */

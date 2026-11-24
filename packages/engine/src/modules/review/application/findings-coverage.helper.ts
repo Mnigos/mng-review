@@ -6,10 +6,12 @@ import type { LoopCoverage } from './agent-loop.types'
  * continuation adds only findings that do not repeat the first answer's.
  */
 export function toFindingsCoverage(
-	paths: readonly string[]
+	paths: readonly string[],
+	changed: ReadonlyMap<string, readonly number[]> = new Map()
 ): LoopCoverage<ParsedFindings> {
 	return {
 		paths,
+		changed,
 		answered: value => value.findings.map(entry => entry.path),
 		merge: addLaterFindings,
 	}

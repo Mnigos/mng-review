@@ -61,9 +61,20 @@ function outcomeFile(
 ): OutcomeFile {
 	return { version: 1, binding: BINDING, ...fields }
 }
+const DISMISSED_ONE = { dismissed: 1, failed: 0 } as const
+const OFFLINE_WRITTEN = {
+	body: '',
+	marker: { v: 1, runs: 0 },
+	event: 'COMMENT',
+	cleanup: 'none',
+	created: true,
+	inline: true,
+	dismissal: DISMISSED_ONE,
+} as const
 const PUBLISHED = {
 	verdict: 'needs fixes',
 	event: 'REQUEST_CHANGES',
+	dismissal: { dismissed: 0, failed: 0 },
 	openBugs: 1,
 	onLine: 1,
 	onFile: 0,
@@ -108,7 +119,7 @@ function setup(
 			? Effect.fail(
 					new GitHubApiError({ operation: 'status', reason: 'offline' })
 				)
-			: Effect.succeed(true)
+			: Effect.succeed(OFFLINE_WRITTEN)
 	)
 	const reportSpy = vi.fn(() => Effect.succeed({ checks: 1, status: true }))
 	const reportOfflineSpy = vi.fn(() => Effect.succeed(true))
@@ -226,6 +237,7 @@ layer(Layer.empty)('PublishRunService', test => {
 					status: 'status-only',
 					reason: 'Reviewer offline: no endpoint. Nothing was reviewed.',
 					posted: true,
+					dismissal: DISMISSED_ONE,
 				})
 				expect(fixture.publishSpy).not.toHaveBeenCalled()
 				expect(fixture.reportOfflineSpy).toHaveBeenCalledExactlyOnceWith(
