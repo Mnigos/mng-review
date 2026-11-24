@@ -13,7 +13,7 @@ import {
 	TOKEN_MODE_OWNED,
 } from '../shared/mocks/publish-test.helper'
 import { GITHUB_ACTIONS_IDENTITY } from './bot-identity.helper'
-import { PAGE_SIZE } from './github-api.constants'
+import { MAX_PAGES, PAGE_SIZE } from './github-api.constants'
 import { GitHubStatusService, STATUS_CONTEXT } from './github-status.service'
 
 const BOT_STATUS = {
@@ -170,6 +170,40 @@ layer(TOKEN_MODE_OWNED)('GitHubStatusService', test => {
 			)
 		})
 	)
+	for (const complete of [false, true])
+		test.effect(
+			`a list of full pages past MAX_PAGES ${complete ? 'fails when it must be complete' : 'stops there'}`,
+			() =>
+				Effect.gen(function* () {
+					const fake = makeGitHubHttp((_request, attempt) =>
+						Effect.succeed(
+							Response.json(
+								Array.from({ length: PAGE_SIZE }, (_, index) =>
+									openPullRequest(attempt * PAGE_SIZE + index, 'head')
+								)
+							)
+						)
+					)
+					const listed = yield* GitHubStatusService.use(service =>
+						service.listOpenPullRequests(complete ? { complete } : undefined)
+					).pipe(Effect.provide(fake.statusLayer), Effect.result)
+					expect(fake.requests).toHaveLength(MAX_PAGES)
+					if (complete) {
+						expect(listed).toMatchObject({
+							_tag: 'Failure',
+							failure: {
+								_tag: 'GitHubApiError',
+								operation: 'listOpenPullRequests',
+							},
+						})
+						return
+					}
+					expect(listed).toMatchObject({ _tag: 'Success' })
+					expect(listed._tag === 'Success' && listed.success).toHaveLength(
+						MAX_PAGES * PAGE_SIZE
+					)
+				})
+		)
 	test.effect('an empty first page returns no pull requests', () =>
 		Effect.gen(function* () {
 			const fake = makeGitHubHttp(() => Effect.succeed(Response.json([])))

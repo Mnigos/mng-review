@@ -217,6 +217,9 @@ layer(Layer.empty)('GitHubRiskService HTTP boundary', test => {
 				expect(TIMELINE_QUERY).toContain(
 					'beforeCommit { oid } afterCommit { oid }'
 				)
+				// The sweep bounds a head's runs by when it arrived.
+				expect(TIMELINE_QUERY).toContain('commit { oid committedDate }')
+				expect(TIMELINE_QUERY).toContain('HeadRefForcePushedEvent { createdAt')
 			})
 	)
 	test.effect(
@@ -424,6 +427,239 @@ layer(Layer.empty)('GitHubRiskService HTTP boundary', test => {
 					})
 				})
 		)
+})
+
+const RUN = {
+	id: 7,
+	display_title: 'mng-review-risk-17',
+	status: 'completed',
+	conclusion: 'success',
+	created_at: '2026-01-01T12:00:00Z',
+	event: 'workflow_dispatch',
+	path: '.github/workflows/review.yml',
+	head_branch: 'main',
+	head_repository: { id: 1 },
+} as const
+const SINCE = '2026-01-01T00:00:00Z'
+const JOB = {
+	name: 'rating',
+	status: 'completed',
+	conclusion: 'success',
+} as const
+
+layer(Layer.empty)('GitHubRiskService workflow calls', test => {
+	test.effect(
+		'lists the review workflow runs from the lower bound with the event and branch filters',
+		() =>
+			Effect.gen(function* () {
+				const http = makeGitHubHttp((_request, attempt) =>
+					Effect.succeed(
+						Response.json({
+							total_count: PAGE_SIZE + 1,
+							workflow_runs:
+								attempt === 1
+									? Array.from(
+											{ length: PAGE_SIZE },
+											(_: unknown, id: number) => ({ ...RUN, id })
+										)
+									: [RUN],
+						})
+					)
+				)
+				expect(
+					yield* GitHubRiskService.use(service =>
+						service.listRuns({
+							workflow: 'review.yml',
+							event: 'workflow_dispatch',
+							branch: 'main',
+							since: SINCE,
+						})
+					).pipe(Effect.provide(http.riskLayer))
+				).toHaveLength(PAGE_SIZE + 1)
+				expect(http.requests.map(request => request.url)).toEqual([
+					`${REPO_URL}/actions/workflows/review.yml/runs`,
+					`${REPO_URL}/actions/workflows/review.yml/runs`,
+				])
+				expect(
+					http.requests.map(request => UrlParams.toRecord(request.urlParams))
+				).toEqual(
+					[1, 2].map(page => ({
+						event: 'workflow_dispatch',
+						branch: 'main',
+						created: `>=${SINCE}`,
+						per_page: String(PAGE_SIZE),
+						page: String(page),
+					}))
+				)
+			})
+	)
+	test.effect(
+		'lists runs in flight across every workflow by status from the lower bound',
+		() =>
+			Effect.gen(function* () {
+				const http = makeGitHubHttp(() =>
+					Effect.succeed(
+						Response.json({ total_count: 1, workflow_runs: [RUN] })
+					)
+				)
+				yield* GitHubRiskService.use(service =>
+					service.listRuns({ status: 'queued', since: SINCE })
+				).pipe(Effect.provide(http.riskLayer))
+				expect(http.requests.map(request => request.url)).toEqual([
+					`${REPO_URL}/actions/runs`,
+				])
+				expect(
+					http.requests.map(request => UrlParams.toRecord(request.urlParams))
+				).toEqual([
+					{
+						status: 'queued',
+						created: `>=${SINCE}`,
+						per_page: String(PAGE_SIZE),
+						page: '1',
+					},
+				])
+			})
+	)
+	test.effect('stops paging at the first run older than the lower bound', () =>
+		Effect.gen(function* () {
+			const older = { ...RUN, id: 99, created_at: '2025-12-01T12:00:00Z' }
+			const http = makeGitHubHttp(() =>
+				Effect.succeed(
+					Response.json({
+						total_count: PAGE_SIZE + 1,
+						workflow_runs: [
+							...Array.from(
+								{ length: PAGE_SIZE - 1 },
+								(_: unknown, id: number) => ({ ...RUN, id })
+							),
+							older,
+						],
+					})
+				)
+			)
+			const runs = yield* GitHubRiskService.use(service =>
+				service.listRuns({ workflow: 'review.yml', since: SINCE })
+			).pipe(Effect.provide(http.riskLayer))
+			expect(runs).toHaveLength(PAGE_SIZE - 1)
+			expect(runs.some(run => run.id === older.id)).toBe(false)
+			expect(http.requests).toHaveLength(1)
+		})
+	)
+	for (const scenario of ['limit', 'page error'] as const)
+		test.effect(`a run listing fails closed at a ${scenario}`, () =>
+			Effect.gen(function* () {
+				const http = makeGitHubHttp((_request, attempt) =>
+					Effect.succeed(
+						scenario === 'page error' && attempt === 2
+							? Response.json({ message: 'denied' }, { status: 403 })
+							: Response.json({
+									total_count: MAX_PAGES * PAGE_SIZE + 1,
+									workflow_runs: Array.from(
+										{ length: PAGE_SIZE },
+										(_: unknown, id: number) => ({ ...RUN, id })
+									),
+								})
+					)
+				)
+				expect(
+					yield* GitHubRiskService.use(service =>
+						service.listRuns({ workflow: 'review.yml', since: SINCE })
+					).pipe(Effect.provide(http.riskLayer), Effect.flip)
+				).toMatchObject({ _tag: 'GitHubApiError', operation: 'listRuns' })
+				expect(http.requests).toHaveLength(scenario === 'limit' ? MAX_PAGES : 2)
+			})
+		)
+	test.effect(
+		'a filtered run list GitHub cut short of its total fails closed',
+		() =>
+			Effect.gen(function* () {
+				// GitHub answers a filtered search with at most 1,000 runs and an empty page after them.
+				const listed = 1000 / PAGE_SIZE
+				const http = makeGitHubHttp((_request, attempt) =>
+					Effect.succeed(
+						Response.json({
+							total_count: 1500,
+							workflow_runs:
+								attempt <= listed
+									? Array.from(
+											{ length: PAGE_SIZE },
+											(_: unknown, id: number) => ({
+												...RUN,
+												id: attempt * PAGE_SIZE + id,
+											})
+										)
+									: [],
+						})
+					)
+				)
+				expect(
+					yield* GitHubRiskService.use(service =>
+						service.listRuns({
+							workflow: 'review.yml',
+							event: 'workflow_dispatch',
+							since: SINCE,
+						})
+					).pipe(Effect.provide(http.riskLayer), Effect.flip)
+				).toMatchObject({ _tag: 'GitHubApiError', operation: 'listRuns' })
+				expect(http.requests).toHaveLength(listed + 1)
+			})
+	)
+	test.effect('lists every page of run jobs without losing decide names', () =>
+		Effect.gen(function* () {
+			const decide = { ...JOB, name: 'decide 42@aaaaaaaaaaaaaaaa bbbbbbb' }
+			const http = makeGitHubHttp((_request, attempt) =>
+				Effect.succeed(
+					Response.json({
+						jobs:
+							attempt === 1
+								? Array.from({ length: PAGE_SIZE }, () => JOB)
+								: [decide],
+					})
+				)
+			)
+			const jobs = yield* GitHubRiskService.use(service =>
+				service.listRunJobs(7)
+			).pipe(Effect.provide(http.riskLayer))
+			expect(jobs).toHaveLength(PAGE_SIZE + 1)
+			expect(jobs.at(-1)).toEqual(decide)
+			expect(
+				http.requests.every(request =>
+					request.url.endsWith('/actions/runs/7/jobs')
+				)
+			).toBe(true)
+		})
+	)
+	test.effect(
+		'dispatches on the default ref with the comment version and accepts an empty response',
+		() =>
+			Effect.gen(function* () {
+				const http = makeGitHubHttp(() =>
+					Effect.succeed(new Response(null, { status: 204 }))
+				)
+				const input = {
+					workflow: 'review.yml',
+					ref: 'main',
+					inputs: {
+						number: '17',
+						kind: 'converse',
+						comment: '42',
+						version: 'a'.repeat(16),
+					},
+				} as const
+				yield* GitHubRiskService.use(service => service.dispatch(input)).pipe(
+					Effect.provide(http.riskLayer)
+				)
+				expect(http.requests).toHaveLength(1)
+				expect(http.requests[0]?.method).toBe('POST')
+				expect(http.requests[0]?.url).toContain(
+					'/actions/workflows/review.yml/dispatches'
+				)
+				expect(getGitHubRequestBody(http.requests[0])).toEqual({
+					ref: input.ref,
+					inputs: input.inputs,
+				})
+			})
+	)
 })
 
 layer(Layer.empty)('GitHubRiskService timeline comments', test => {
