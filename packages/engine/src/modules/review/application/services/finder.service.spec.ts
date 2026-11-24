@@ -1008,6 +1008,55 @@ layer(Layer.empty)('finder coverage jobs', test => {
 					expect(output.report.continued).toBeUndefined()
 				})
 		)
+	for (const unread of [
+		[[], []],
+		[[BILLING_PATH], []],
+		[[BILLING_PATH], ['other.ts']],
+	] as const)
+		test.effect(
+			`sums the files each unit left unread: ${JSON.stringify(unread)}`,
+			() =>
+				Effect.gen(function* () {
+					const left = [...unread]
+					const run: AgentLoopService['Service']['run'] = request =>
+						request.parse({ findings: [] }).pipe(
+							Effect.orDie,
+							Effect.map(value => ({
+								value,
+								turns: 1,
+								toolCalls: 0,
+								spentTokens: 5,
+								unspentTokens: 0,
+								unread: left.shift() ?? [],
+							}))
+						)
+					const output = yield* FinderService.use(finder =>
+						finder.run(
+							plannedRun({ files: [BILLING_PATH, 'other.ts'] }),
+							context({ fanOut: true })
+						)
+					).pipe(
+						Effect.provide(
+							FinderServiceLive.pipe(
+								Layer.provide(Layer.succeed(AgentLoopService, { run })),
+								Layer.provideMerge(
+									reviewDependencies(
+										() => Effect.die('unexpected model call'),
+										{},
+										gitFixture({
+											readDiff: () =>
+												Effect.succeed(DIFF + unifiedDiff('other.ts')),
+										})
+									)
+								)
+							)
+						)
+					)
+					const total = unread.flat().length
+					expect(output.report.unread).toBe(total > 0 ? total : undefined)
+					expect(output.report.status).toBe('ok')
+				})
+		)
 	test.effect(
 		'counts only conversations that actually continued, preserving merged findings',
 		() =>

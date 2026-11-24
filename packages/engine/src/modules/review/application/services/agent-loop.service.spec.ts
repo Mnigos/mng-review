@@ -4,7 +4,7 @@ import {
 	parseFindingsAnswer,
 	type ParsedFindings,
 } from '@mng-review/domain'
-import { Deferred, Duration, Effect, Fiber, Layer } from 'effect'
+import { Deferred, Duration, Effect, Fiber, Layer, Predicate } from 'effect'
 import { AiError } from 'effect/ai'
 import { TestClock } from 'effect/testing'
 import {
@@ -50,7 +50,7 @@ import {
 	WRAP_UP_GRACE,
 } from '../../domain/review.constants'
 import type { LoopRequest, ToolOutput } from '../agent-loop.types'
-import { getDiffParts } from '../read-coverage.helper'
+import { getChangedLines, getDiffParts } from '../read-coverage.helper'
 import type { ShownLines } from '../repo-tools.types'
 import { ReviewLimits } from '../review-limits.context'
 import { AgentLoopService, AgentLoopServiceLive } from './agent-loop.service'
@@ -2265,5 +2265,96 @@ layer(Layer.empty)('agent loop structured tool delivery', test => {
 					)
 				)
 			})
+	)
+})
+
+layer(Layer.empty)('received coverage', test => {
+	const diff = unifiedDiff(BILLING_PATH, 3)
+	const middle = diff.indexOf('+after')
+	/** A run whose `diff` calls return the pages named by their offsets. */
+	const pagedRun: RepoToolsService['Service']['run'] = (_scope, name, params) =>
+		Effect.succeed(
+			name === 'diff'
+				? {
+						output: 'part',
+						diff: getDiffParts(
+							diff,
+							Predicate.hasProperty(params, 'offset') ? middle : 0,
+							Predicate.hasProperty(params, 'offset') ? diff.length : middle
+						),
+					}
+				: { output: 'text' }
+		)
+	const covered = {
+		...COVERED_REQUEST,
+		coverage: { ...COVERED_REQUEST.coverage, changed: getChangedLines(diff) },
+	} as const
+	for (const pages of [1, 2] as const)
+		test.effect(
+			`${pages} of 2 diff pages leave the file read=${pages === 2}`,
+			() =>
+				Effect.gen(function* () {
+					expect(
+						(yield* AgentLoopService.use(loop => loop.run(covered))).unread
+					).toEqual(pages === 2 ? [] : [BILLING_PATH])
+				}).pipe(
+					Effect.provide(
+						loopLayer(
+							(_call, index) =>
+								Effect.succeed(
+									index < pages
+										? [
+												toolCall('diff', {
+													path: BILLING_PATH,
+													...(index === 1 ? { offset: middle } : {}),
+												}),
+												FINISH,
+											]
+										: answer()
+								),
+							{},
+							undefined,
+							pagedRun
+						)
+					)
+				)
+		)
+	test.effect(
+		'a read whose next model call failed does not count for the kept answer',
+		() =>
+			Effect.gen(function* () {
+				const kept = yield* AgentLoopService.use(loop => loop.run(covered))
+				expect(kept).toMatchObject({ continued: true, unread: [BILLING_PATH] })
+				expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(3)
+			}).pipe(
+				Effect.provide(
+					loopLayer(
+						(_call, index) =>
+							index === 0
+								? Effect.succeed(
+										answer('report_findings', {
+											findings: [rawFinding({ path: 'src/other.ts' })],
+										})
+									)
+								: index === 1
+									? Effect.succeed([
+											toolCall('diff', { path: BILLING_PATH }),
+											FINISH,
+										])
+									: Effect.fail(providerError(500)),
+						{},
+						undefined,
+						(_scope, name) =>
+							Effect.succeed(
+								name === 'diff'
+									? {
+											output: diff,
+											diff: getDiffParts(diff, 0, diff.length),
+										}
+									: { output: 'text' }
+							)
+					)
+				)
+			)
 	)
 })

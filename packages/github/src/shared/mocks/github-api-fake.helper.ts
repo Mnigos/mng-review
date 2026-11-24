@@ -64,10 +64,13 @@ export function githubApiFake(
 	const reviews: PullRequestReview[] = []
 	const reviewSnapshots: PullRequestReview[][] = []
 	const reviewReads: number[] = []
+	const reviewCommitReads: (boolean | undefined)[] = []
 	const writes: ApiWrite[] = []
 	const commentReads: number[] = []
 	const commentSnapshots: PullRequestComment[][] = []
 	const reads: string[] = []
+	/** The pull request each read returns in turn, before `command.pullRequest`. */
+	const pullRequestSnapshots: PullRequest[] = []
 	const command: {
 		pullRequest: PullRequest
 		comment: IssueComment
@@ -86,14 +89,17 @@ export function githubApiFake(
 		update: [] as GitHubApiError[],
 		updateReview: [] as GitHubApiError[],
 		dismissReview: [] as GitHubApiError[],
-		listReviews: [] as GitHubApiError[],
+		/** `undefined` lets that call succeed, so a later one can fail. */
+		listReviews: [] as (GitHubApiError | undefined)[],
 		delete: [] as GitHubApiError[],
 		minimize: [] as GitHubApiError[],
 		reply: [] as GitHubApiError[],
 		resolve: [] as GitHubApiError[],
-		listThreads: [] as GitHubApiError[],
+		/** `undefined` lets that call succeed, so a later one can fail. */
+		listThreads: [] as (GitHubApiError | undefined)[],
 		listComments: [] as GitHubApiError[],
-		getPullRequest: [] as GitHubApiError[],
+		/** `undefined` lets that call succeed, so a later one can fail. */
+		getPullRequest: [] as (GitHubApiError | undefined)[],
 		getIssueComment: [] as GitHubApiError[],
 		getCollaboratorRole: [] as GitHubApiError[],
 		listThreadComments: [] as GitHubApiError[],
@@ -222,7 +228,7 @@ export function githubApiFake(
 				reads.push(`getPullRequest:${pullNumber}`)
 				const error = failures.getPullRequest.shift()
 				if (error) return yield* error
-				return command.pullRequest
+				return pullRequestSnapshots.shift() ?? command.pullRequest
 			}),
 		getIssueComment: id =>
 			Effect.gen(function* () {
@@ -300,9 +306,10 @@ export function githubApiFake(
 			}),
 	})
 	const reviewApi = Layer.succeed(GitHubReviewService, {
-		listReviews: pullNumber =>
+		listReviews: (pullNumber, withCommits) =>
 			Effect.gen(function* () {
 				reviewReads.push(pullNumber)
+				reviewCommitReads.push(withCommits)
 				const error = failures.listReviews.shift()
 				if (error) return yield* error
 				return reviewSnapshots.shift() ?? [...reviews]
@@ -354,6 +361,7 @@ export function githubApiFake(
 		reviews,
 		reviewSnapshots,
 		reviewReads,
+		reviewCommitReads,
 		threads,
 		comments,
 		writes,
@@ -363,6 +371,7 @@ export function githubApiFake(
 		commentReads,
 		commentSnapshots,
 		reads,
+		pullRequestSnapshots,
 		command,
 		threadComments,
 	}

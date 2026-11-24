@@ -20,6 +20,7 @@ import {
 	APP_MODE_OWNED,
 	appSummary,
 	reviewThread,
+	summaryReview,
 	botClosedReviewThread,
 	bug,
 	SUMMARY_MARKER,
@@ -35,8 +36,13 @@ import {
 	SummaryReviewServiceLive,
 } from '../../publish/application/summary-review.service'
 import { parseSummaryMarker } from '../../publish/domain/publish-marker.parser'
+import { toClearedMessage } from '../../publish/presentation/summary-status.formatter'
 import { toMarkerComment } from '../../publish/presentation/thread-comment.formatter'
-import { toCommitStatus, UNFINISHED_NOTE } from '../domain/status.helper'
+import {
+	type CommitStatusText,
+	toCommitStatus,
+	UNFINISHED_NOTE,
+} from '../domain/status.helper'
 import {
 	StatusSweepService,
 	StatusSweepServiceLive,
@@ -1568,6 +1574,571 @@ layer(TOKEN_MODE_OWNED)('StatusSweepService edited waiting threads', test => {
 					api.reads.filter(read => read.startsWith('listThreadComments:'))
 				).toEqual(['listThreadComments:thread'])
 				expect(api.writes).toEqual([])
+			})
+	)
+})
+
+/** The in-memory GitHub a sweep spec reads. */
+type ApiFake = ReturnType<typeof githubApiFake>
+
+/** Points the fake's pull request read at `head`, the head the sweep listed. */
+function onListedHead(api: ApiFake, head = 'head'): ApiFake {
+	const { pullRequest } = api.command
+	api.command.pullRequest = {
+		...pullRequest,
+		head: { ...pullRequest.head, sha: head },
+	}
+	return api
+}
+
+/** An open pull request on `head` whose own summary marks it finished, and its status. */
+function sweepSetup(statuses: readonly CommitStatusText[]) {
+	const api = onListedHead(githubApiFake(APP_IDENTITY))
+	const author = { __typename: 'Bot', login: APP_IDENTITY.login } as const
+	api.reviews.push(
+		summaryReview(
+			{ ...SUMMARY_MARKER, head: 'head', finished: true },
+			{ databaseId: 101, author }
+		)
+	)
+	const getStatusSpy = vi.fn((_sha: string) =>
+		Effect.succeed({
+			id: getStatusSpy.mock.calls.length,
+			...(statuses[getStatusSpy.mock.calls.length - 1] ??
+				statuses.at(-1) ??
+				toCommitStatus('ready', 0, true)),
+			context: 'MNG Review',
+			creator: null,
+		})
+	)
+	const status = githubStatusFake({
+		listOpenPullRequests: () => Effect.succeed([openPullRequest(17, 'head')]),
+		getStatus: getStatusSpy,
+	})
+	const request = summaryReview(SUMMARY_MARKER, {
+		databaseId: 102,
+		state: 'CHANGES_REQUESTED',
+		author,
+	})
+	const sweep = StatusSweepService.use(service => service.sweep()).pipe(
+		Effect.provide(
+			StatusSweepServiceLive.pipe(
+				Layer.provide(Layer.merge(api.api, status.layer))
+			)
+		)
+	)
+	return { api, status, request, sweep }
+}
+
+layer(APP_MODE_OWNED)('StatusSweepService review dismissals', test => {
+	for (const standing of ['success', 'failure', 'error'] as const)
+		for (const denied of [false, true])
+			test.effect(
+				`sweep standing=${standing} with dismissal denied=${denied} dismisses only current change requests`,
+				() =>
+					Effect.gen(function* () {
+						// Nothing on the head backs a change request unless a bug thread is open.
+						const unbacked = standing !== 'failure'
+						const api = onListedHead(githubApiFake(APP_IDENTITY))
+						api.reviews.push(
+							summaryReview(
+								{ ...SUMMARY_MARKER, finished: standing !== 'error' },
+								{
+									databaseId: 101,
+									id: 'current-request',
+									state: 'CHANGES_REQUESTED',
+									author: { __typename: 'Bot', login: APP_IDENTITY.login },
+								}
+							),
+							summaryReview(
+								{ ...SUMMARY_MARKER, finished: standing !== 'error' },
+								{
+									databaseId: 102,
+									id: 'previous-request',
+									state: 'CHANGES_REQUESTED',
+								}
+							),
+							summaryReview(
+								{ ...SUMMARY_MARKER, finished: standing !== 'error' },
+								{
+									databaseId: 103,
+									id: 'current-approval',
+									state: 'APPROVED',
+									author: { __typename: 'Bot', login: APP_IDENTITY.login },
+								}
+							)
+						)
+						if (standing === 'failure') api.threads.push(reviewThread())
+						if (denied)
+							api.failures.dismissReview.push(
+								new GitHubApiError({
+									operation: 'dismissReview',
+									reason: 'Denied',
+									status: 403,
+								})
+							)
+						const previous = {
+							id: 1,
+							...toCommitStatus(
+								standing === 'failure'
+									? 'needs fixes'
+									: standing === 'error'
+										? 'incomplete'
+										: 'ready',
+								standing === 'failure' ? 1 : 0,
+								standing !== 'error'
+							),
+							context: 'MNG Review',
+							creator: null,
+						} as const
+						const status = githubStatusFake({
+							listOpenPullRequests: () =>
+								Effect.succeed([openPullRequest(17, 'head')]),
+							getStatus: () => Effect.succeed(previous),
+						})
+						expect(
+							yield* StatusSweepService.use(service => service.sweep()).pipe(
+								Effect.provide(
+									StatusSweepServiceLive.pipe(
+										Layer.provide(Layer.merge(api.api, status.layer))
+									)
+								)
+							)
+						).toMatchObject({
+							checked: 1,
+							failed: 0,
+							dismissal: {
+								dismissed: unbacked && !denied ? 1 : 0,
+								failed: unbacked && denied ? 1 : 0,
+							},
+						})
+						expect(
+							api.writes.filter(write => write.method === 'dismissReview')
+						).toEqual(
+							unbacked
+								? [
+										{
+											method: 'dismissReview',
+											id: 101,
+											body: toClearedMessage('head'),
+										},
+									]
+								: []
+						)
+						expect(api.reviews[1]?.state).toBe('CHANGES_REQUESTED')
+						expect(api.reviews[2]?.state).toBe('APPROVED')
+					})
+			)
+	test.effect(
+		'a change request posted while the sweep read the threads is never dismissed',
+		() =>
+			Effect.gen(function* () {
+				const fixture = sweepSetup([toCommitStatus('ready', 0, true)])
+				// The change request lands while the sweep reads the threads.
+				fixture.api.threadSnapshots.shift = () => {
+					fixture.api.reviews.push(fixture.request)
+					return undefined
+				}
+				expect((yield* fixture.sweep).dismissal).toEqual(NO_DISMISSAL)
+				expect(fixture.api.reviews[1]?.state).toBe('CHANGES_REQUESTED')
+			})
+	)
+	test.effect(
+		'with no status write due, a status that changed since the read keeps the change request',
+		() =>
+			Effect.gen(function* () {
+				const fixture = sweepSetup([
+					toCommitStatus('ready', 0, true),
+					toCommitStatus('needs fixes', 1, true),
+				])
+				fixture.api.reviews.push(fixture.request)
+				expect(yield* fixture.sweep).toMatchObject({
+					updated: 0,
+					dismissal: NO_DISMISSAL,
+				})
+				expect(fixture.api.reviews[1]?.state).toBe('CHANGES_REQUESTED')
+			})
+	)
+	test.effect(
+		'with no status write due and the status unchanged, the change request is dismissed',
+		() =>
+			Effect.gen(function* () {
+				const fixture = sweepSetup([toCommitStatus('ready', 0, true)])
+				fixture.api.reviews.push(fixture.request)
+				expect((yield* fixture.sweep).dismissal).toEqual({
+					dismissed: 1,
+					failed: 0,
+				})
+				expect(fixture.api.reviews[1]?.state).toBe('DISMISSED')
+			})
+	)
+	test.effect(
+		'a status write that fails its freshness check keeps the change request',
+		() =>
+			Effect.gen(function* () {
+				// The previous status is stale, so a write is due; a publish run wrote a newer one meanwhile.
+				const fixture = sweepSetup([toCommitStatus('needs fixes', 1, true)])
+				fixture.api.reviews.push(fixture.request)
+				expect(yield* fixture.sweep).toMatchObject({
+					updated: 0,
+					dismissal: NO_DISMISSAL,
+				})
+				expect(fixture.status.statuses).toEqual([])
+				expect(fixture.api.reviews[1]?.state).toBe('CHANGES_REQUESTED')
+			})
+	)
+	test.effect(
+		'a change request edited between the read and the dismissal is kept',
+		() =>
+			Effect.gen(function* () {
+				const fixture = sweepSetup([toCommitStatus('ready', 0, true)])
+				fixture.api.reviews.push(fixture.request)
+				// The sweep's first read sees the request as it was; it is edited before the dismissal.
+				fixture.api.reviewSnapshots.push([...fixture.api.reviews])
+				fixture.api.reviews[1] = {
+					...fixture.request,
+					body: `New evidence.\n\n${fixture.request.body}`,
+				}
+				expect((yield* fixture.sweep).dismissal).toEqual(NO_DISMISSAL)
+				expect(
+					fixture.api.writes.filter(write => write.method === 'dismissReview')
+				).toEqual([])
+				expect(fixture.api.reviews[1]?.state).toBe('CHANGES_REQUESTED')
+			})
+	)
+	for (const open of [false, true])
+		test.effect(
+			`a marker on another head with open=${open} dismisses only change requests off the head`,
+			() =>
+				Effect.gen(function* () {
+					const api = onListedHead(githubApiFake(APP_IDENTITY))
+					const author = {
+						__typename: 'Bot',
+						login: APP_IDENTITY.login,
+					} as const
+					// An unfinished full run left the marker on the older head.
+					const marker = {
+						...SUMMARY_MARKER,
+						head: 'older-head',
+						finished: false,
+					}
+					api.reviews.push(
+						summaryReview(marker, {
+							databaseId: 101,
+							id: 'older-request',
+							state: 'CHANGES_REQUESTED',
+							commit: { oid: 'older-head' },
+							author,
+						}),
+						summaryReview(marker, {
+							databaseId: 102,
+							id: 'head-request',
+							state: 'CHANGES_REQUESTED',
+							commit: { oid: 'head' },
+							author,
+						}),
+						summaryReview(marker, {
+							databaseId: 103,
+							id: 'previous-request',
+							state: 'CHANGES_REQUESTED',
+							commit: { oid: 'older-head' },
+						}),
+						summaryReview(marker, { databaseId: 104, id: 'summary', author })
+					)
+					if (open) api.threads.push(reviewThread())
+					const previous = {
+						id: 1,
+						...toCommitStatus(
+							open ? 'needs fixes' : 'incomplete',
+							open ? 1 : 0,
+							false
+						),
+						context: 'MNG Review',
+						creator: null,
+					} as const
+					const status = githubStatusFake({
+						listOpenPullRequests: () =>
+							Effect.succeed([openPullRequest(17, 'head')]),
+						getStatus: () => Effect.succeed(previous),
+					})
+					expect(
+						(yield* StatusSweepService.use(service => service.sweep()).pipe(
+							Effect.provide(
+								StatusSweepServiceLive.pipe(
+									Layer.provide(Layer.merge(api.api, status.layer))
+								)
+							)
+						)).dismissal
+					).toEqual(open ? NO_DISMISSAL : { dismissed: 1, failed: 0 })
+					expect(
+						api.writes
+							.filter(write => write.method === 'dismissReview')
+							.map(write => write.id)
+					).toEqual(open ? [] : [101])
+				})
+		)
+	for (const failureAt of ['second-status-read', 'status-write'] as const)
+		test.effect(`sweep dismisses nothing when the ${failureAt} fails`, () =>
+			Effect.gen(function* () {
+				const api = githubApiFake(APP_IDENTITY)
+				api.reviews.push(
+					summaryReview(
+						{ ...SUMMARY_MARKER, finished: true },
+						{
+							state: 'CHANGES_REQUESTED',
+							author: { __typename: 'Bot', login: APP_IDENTITY.login },
+						}
+					)
+				)
+				const failure = new GitHubApiError({
+					operation: failureAt,
+					reason: 'Denied',
+					status: 403,
+				})
+				const previous = {
+					id: 1,
+					state: 'failure',
+					description: 'stale',
+					context: 'MNG Review',
+					creator: null,
+				} as const
+				const getStatusSpy = vi
+					.fn()
+					.mockReturnValueOnce(Effect.succeed(previous))
+					.mockReturnValue(
+						failureAt === 'second-status-read'
+							? Effect.fail(failure)
+							: Effect.succeed(previous)
+					)
+				const status = githubStatusFake({
+					listOpenPullRequests: () =>
+						Effect.succeed([openPullRequest(17, 'head')]),
+					getStatus: getStatusSpy,
+					setStatus: () =>
+						failureAt === 'status-write' ? Effect.fail(failure) : Effect.void,
+				})
+				expect(
+					yield* StatusSweepService.use(service => service.sweep()).pipe(
+						Effect.provide(
+							StatusSweepServiceLive.pipe(
+								Layer.provide(Layer.merge(api.api, status.layer))
+							)
+						)
+					)
+				).toEqual({
+					checked: 1,
+					updated: 0,
+					failed: 1,
+					dismissal: { dismissed: 0, failed: 0 },
+				})
+				expect(
+					api.writes.filter(write => write.method === 'dismissReview')
+				).toEqual([])
+			})
+		)
+})
+
+/**
+ * A finished pull request on `head` with one change request of the current identity and a stale
+ * `failure` status the sweep rewrites to `success`.
+ */
+function rewriteSetup() {
+	const api = onListedHead(githubApiFake(APP_IDENTITY))
+	api.reviews.push(
+		summaryReview(
+			{ ...SUMMARY_MARKER, head: 'head', finished: true },
+			{
+				databaseId: 101,
+				state: 'CHANGES_REQUESTED',
+				author: { __typename: 'Bot', login: APP_IDENTITY.login },
+			}
+		)
+	)
+	const previous = {
+		id: 1,
+		state: 'failure',
+		description: 'stale',
+		context: 'MNG Review',
+		creator: null,
+	} as const
+	const status = githubStatusFake({
+		listOpenPullRequests: () => Effect.succeed([openPullRequest(17, 'head')]),
+		getStatus: () => Effect.succeed(previous),
+	})
+	const sweep = StatusSweepService.use(service => service.sweep()).pipe(
+		Effect.provide(
+			StatusSweepServiceLive.pipe(
+				Layer.provide(Layer.merge(api.api, status.layer))
+			)
+		)
+	)
+	return { api, status, sweep }
+}
+
+layer(APP_MODE_OWNED)('StatusSweepService reads before dismissals', test => {
+	test.effect(
+		'a review re-read that fails after the status update counts as failed and keeps the update',
+		() =>
+			Effect.gen(function* () {
+				const fixture = rewriteSetup()
+				fixture.api.failures.listReviews.push(
+					undefined,
+					new GitHubApiError({
+						operation: 'listReviews',
+						reason: 'Denied',
+						status: 403,
+					})
+				)
+				expect(yield* fixture.sweep).toEqual({
+					checked: 1,
+					updated: 1,
+					failed: 1,
+					dismissal: NO_DISMISSAL,
+				})
+				expect(fixture.status.statuses).toHaveLength(1)
+				expect(fixture.api.reviews[0]?.state).toBe('CHANGES_REQUESTED')
+			})
+	)
+	test.effect(
+		'a head re-read that fails after the status update counts as failed and keeps the update',
+		() =>
+			Effect.gen(function* () {
+				const fixture = rewriteSetup()
+				fixture.api.failures.getPullRequest.push(
+					new GitHubApiError({
+						operation: 'getPullRequest',
+						reason: 'Unavailable',
+						status: 503,
+					})
+				)
+				expect(yield* fixture.sweep).toEqual({
+					checked: 1,
+					updated: 1,
+					failed: 1,
+					dismissal: NO_DISMISSAL,
+				})
+				expect(fixture.api.reviews[0]?.state).toBe('CHANGES_REQUESTED')
+			})
+	)
+	test.effect(
+		'a push after the listing keeps the change request the sweep judged unbacked',
+		() =>
+			Effect.gen(function* () {
+				const fixture = rewriteSetup()
+				onListedHead(fixture.api, 'next-head')
+				expect(yield* fixture.sweep).toEqual({
+					checked: 1,
+					updated: 1,
+					failed: 0,
+					dismissal: NO_DISMISSAL,
+				})
+				expect(
+					fixture.api.writes.filter(write => write.method === 'dismissReview')
+				).toEqual([])
+				expect(fixture.api.reads).toContain('getPullRequest:17')
+			})
+	)
+	test.effect(
+		'with no status write due, a status re-read that fails counts the pull request as failed',
+		() =>
+			Effect.gen(function* () {
+				const fixture = sweepSetup([toCommitStatus('ready', 0, true)])
+				fixture.api.reviews.push(fixture.request)
+				const status = githubStatusFake({
+					listOpenPullRequests: () =>
+						Effect.succeed([openPullRequest(17, 'head')]),
+					getStatus: vi
+						.fn()
+						.mockReturnValueOnce(
+							Effect.succeed({
+								id: 1,
+								...toCommitStatus('ready', 0, true),
+								context: 'MNG Review',
+								creator: null,
+							})
+						)
+						.mockReturnValue(
+							Effect.fail(
+								new GitHubApiError({
+									operation: 'getStatus',
+									reason: 'Denied',
+									status: 403,
+								})
+							)
+						),
+				})
+				expect(
+					yield* StatusSweepService.use(service => service.sweep()).pipe(
+						Effect.provide(
+							StatusSweepServiceLive.pipe(
+								Layer.provide(Layer.merge(fixture.api.api, status.layer))
+							)
+						)
+					)
+				).toEqual({
+					checked: 1,
+					updated: 0,
+					failed: 1,
+					dismissal: NO_DISMISSAL,
+				})
+				expect(fixture.api.writes).toEqual([])
+				expect(fixture.api.reviews[1]?.state).toBe('CHANGES_REQUESTED')
+			})
+	)
+	test.effect(
+		'a marker on another head keeps a change request whose commit is unknown',
+		() =>
+			Effect.gen(function* () {
+				const api = onListedHead(githubApiFake(APP_IDENTITY))
+				const author = { __typename: 'Bot', login: APP_IDENTITY.login } as const
+				const marker = {
+					...SUMMARY_MARKER,
+					head: 'older-head',
+					finished: false,
+				}
+				api.reviews.push(
+					summaryReview(marker, {
+						databaseId: 101,
+						id: 'lost-commit-request',
+						state: 'CHANGES_REQUESTED',
+						commit: null,
+						author,
+					}),
+					summaryReview(marker, {
+						databaseId: 102,
+						id: 'older-request',
+						state: 'CHANGES_REQUESTED',
+						commit: { oid: 'older-head' },
+						author,
+					}),
+					summaryReview(marker, { databaseId: 103, id: 'summary', author })
+				)
+				const previous = {
+					id: 1,
+					...toCommitStatus('incomplete', 0, false),
+					context: 'MNG Review',
+					creator: null,
+				} as const
+				const status = githubStatusFake({
+					listOpenPullRequests: () =>
+						Effect.succeed([openPullRequest(17, 'head')]),
+					getStatus: () => Effect.succeed(previous),
+				})
+				expect(
+					(yield* StatusSweepService.use(service => service.sweep()).pipe(
+						Effect.provide(
+							StatusSweepServiceLive.pipe(
+								Layer.provide(Layer.merge(api.api, status.layer))
+							)
+						)
+					)).dismissal
+				).toEqual({ dismissed: 1, failed: 0 })
+				expect(
+					api.writes
+						.filter(write => write.method === 'dismissReview')
+						.map(write => write.id)
+				).toEqual([102])
+				expect(api.reviews[0]?.state).toBe('CHANGES_REQUESTED')
 			})
 	)
 })

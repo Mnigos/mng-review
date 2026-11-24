@@ -85,6 +85,7 @@ export function reviewReport(): ReviewReport {
 				...agentReport('incomplete'),
 				units: 2,
 				continued: 1,
+				unread: 3,
 				unfinished: ['unit-2'],
 				error: 'Budget exhausted.',
 				endpointError: false,
