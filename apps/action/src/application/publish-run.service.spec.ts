@@ -1340,7 +1340,7 @@ layer(Layer.empty)('PublishRunService list completeness', test => {
 			RISK_RULES,
 			OUTSIDE_CONTEXT,
 			APP_IDENTITY,
-			false,
+			true,
 		],
 		['the rating on', RISK_RULES, RATED_CONTEXT, APP_IDENTITY, true],
 	] as const)

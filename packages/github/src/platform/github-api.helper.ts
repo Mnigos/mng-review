@@ -83,7 +83,7 @@ export function getGraphqlErrors(
  * fails, so a partial list is never taken for the whole. A node GitHub lists as `null` fails too
  * when `complete` is set, since a thread, comment, review or timeline item GitHub could not
  * resolve may be the one that holds a level or an answer; otherwise it is left out. The caller
- * passes `complete` from the risk gate (`ListCompleteness`), never from the data.
+ * passes `complete` from the run's rules (`ListCompleteness`), never from the data.
  */
 export function collect<TNode>(
 	operation: string,
