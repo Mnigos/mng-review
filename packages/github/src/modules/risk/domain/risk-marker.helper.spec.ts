@@ -17,6 +17,7 @@ import {
 } from '../../../shared/mocks/publish-test.helper'
 import { toMarkerComment } from '../../publish/presentation/thread-comment.formatter'
 import {
+	MARKER_NULL_STOP,
 	MARKER_PARTIAL_STOP,
 	MARKER_RACE_STOP,
 	MARKER_UNSEEN_STOP,
@@ -115,8 +116,8 @@ function listed(
 	return order === 'newest first' ? edits : edits.toReversed()
 }
 
-/** A complete edit history: every edit GitHub counts is listed. */
-function history(edits: readonly CommentEdit[]) {
+/** A complete edit history: every edit GitHub counts is listed, `null` for a null node. */
+function history(edits: readonly (CommentEdit | null)[]) {
 	return { total: edits.length, edits }
 }
 
@@ -292,6 +293,40 @@ describe('risk marker', () => {
 				APP_IDENTITY
 			)
 		).toEqual(MARKER_PARTIAL_STOP)
+	})
+	test('a null node both reads list does not stop the grant', () => {
+		const older = [appEdit(2), appEdit(1), null]
+		expect(
+			getMarkerEditStop(
+				history(older),
+				history([appEdit(3), ...older]),
+				APP_IDENTITY
+			)
+		).toBeUndefined()
+		expect(
+			getMarkerEditStop(
+				history([null]),
+				history([appEdit(3), null]),
+				APP_IDENTITY
+			)
+		).toBeUndefined()
+	})
+	test('a null node the read after the update adds stops the grant', () => {
+		const older = [appEdit(2), appEdit(1), null]
+		expect(
+			getMarkerEditStop(
+				history(older),
+				history([appEdit(3), null, ...older]),
+				APP_IDENTITY
+			)
+		).toEqual(MARKER_NULL_STOP)
+		expect(
+			getMarkerEditStop(
+				history([appEdit(2), appEdit(1)]),
+				history([null, appEdit(3), appEdit(2), appEdit(1)]),
+				APP_IDENTITY
+			)
+		).toEqual(MARKER_NULL_STOP)
 	})
 	for (const order of ['newest first', 'oldest first'] as const)
 		test(`picks the edits since the read by their id, listed ${order}`, () => {
@@ -491,6 +526,29 @@ describe("the level a person's edits of the risk comment named", () => {
 		expect(
 			getEditedLevel(
 				history([appEdit(4), { ...personEdit(3), diff: null }, ...older]),
+				APP_IDENTITY
+			)
+		).toBe('high')
+	})
+	test('an edit GitHub lists as a null node counts as High', () => {
+		expect(
+			getEditedLevel(history([appEdit(4), null, ...older]), APP_IDENTITY)
+		).toBe('high')
+	})
+	test('a null original never lowers what the edits after it name', () => {
+		const original = null
+		expect(
+			getEditedLevel(history([appEdit(4), ...older, original]), APP_IDENTITY)
+		).toBe('high')
+		expect(
+			getEditedLevel(
+				history([personEdit(3, namedText('high')), ...older, original]),
+				APP_IDENTITY
+			)
+		).toBe('high')
+		expect(
+			getEditedLevel(
+				history([original, personEdit(3, namedText('medium')), ...older]),
 				APP_IDENTITY
 			)
 		).toBe('high')

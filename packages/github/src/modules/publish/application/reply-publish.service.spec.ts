@@ -1,6 +1,7 @@
 import { layer } from '@effect/vitest'
 import { Effect, Layer, Redacted } from 'effect'
 import { GITHUB_ACTIONS_IDENTITY } from '../../../platform/bot-identity.helper'
+import { RECENT_COMMENTS } from '../../../platform/github-api.constants'
 import { GitHubApiService } from '../../../platform/github-api.service'
 import { GitHubConfig } from '../../../platform/github.config'
 import { GitHubApiError } from '../../../platform/github.errors'
@@ -26,6 +27,8 @@ import {
 import {
 	ACCEPTED_DECISION,
 	decidedReply,
+	longOwnerThreads,
+	ownerReviewThread,
 	pendingReviewThread,
 	unsettledBugThread,
 } from '../../../shared/mocks/thread-reply-test.helper'
@@ -35,7 +38,10 @@ import {
 } from '../../status/application/status-sweep.service'
 import { toCommitStatus } from '../../status/domain/status.helper'
 import { toBodyDigest, toBotThread } from '../domain/bot-thread.helper'
-import { parseReplyMarker } from '../domain/publish-marker.parser'
+import {
+	parseReplyMarker,
+	parseSummaryMarker,
+} from '../domain/publish-marker.parser'
 import type { ThreadReplyDecision } from '../domain/thread-reply.schema'
 import { toMarkerComment } from '../presentation/thread-comment.formatter'
 import {
@@ -564,6 +570,65 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 							service.publish(fixture.input)
 						).pipe(Effect.provide(fixture.publisher))
 					).toMatchObject({ waiting: 1 })
+				})
+		)
+		test.effect(
+			'a longer owner thread that cannot be read whole keeps waiting',
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup()
+					fixture.fake.threads.push(
+						ownerReviewThread(RECENT_COMMENTS + 1, { id: 'long' })
+					)
+					fixture.fake.failures.listThreadComments.push(
+						new GitHubApiError({
+							operation: 'listThreadComments',
+							reason: 'unavailable',
+						})
+					)
+					expect(
+						yield* ReplyPublishService.use(service =>
+							service.publish(fixture.input)
+						).pipe(Effect.provide(fixture.publisher))
+					).toMatchObject({ waiting: 1 })
+				})
+		)
+		test.effect(
+			'holds the longer threads of a failed whole-thread read for that run only, then keeps only a real wait',
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup()
+					const { unanswered, answered, answeredComments } = longOwnerThreads()
+					fixture.fake.threads.push(unanswered, answered)
+					fixture.fake.threadComments.set(answered.id, [...answeredComments])
+					fixture.fake.failures.listThreadComments.push(
+						new GitHubApiError({
+							operation: 'listThreadComments',
+							reason: 'unavailable',
+						})
+					)
+					const run = ReplyPublishService.use(service =>
+						service.publish(fixture.input)
+					).pipe(Effect.provide(fixture.publisher))
+					expect(yield* run).toMatchObject({
+						verdict: 'needs owner',
+						waiting: 2,
+						label: 'none',
+					})
+					expect(fixture.status.statuses.at(-1)?.state).toBe('failure')
+					expect(
+						parseSummaryMarker(fixture.fake.reviews.at(-1)?.body ?? '')
+							?.needsOwner
+					).toBeUndefined()
+					expect(yield* run).toMatchObject({
+						verdict: 'needs owner',
+						waiting: 1,
+						label: 'added',
+					})
+					expect(
+						parseSummaryMarker(fixture.fake.reviews.at(-1)?.body ?? '')
+							?.needsOwner
+					).toEqual([answered.id])
 				})
 		)
 		for (const reopened of [true, false])

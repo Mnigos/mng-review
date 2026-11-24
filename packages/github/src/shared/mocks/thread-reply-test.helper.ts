@@ -217,3 +217,34 @@ export function unsettledBugThread(place: AnswerPlace): UnsettledBugThread {
 		comments,
 	}
 }
+
+/** Two resolved bot threads longer than the latest comments a thread read brings. */
+export interface LongOwnerThreads {
+	/** Holds no `needs-owner` answer when read whole. */
+	readonly unanswered: ReviewThread
+	/** Holds a `needs-owner` answer before its latest comments. */
+	readonly answered: ReviewThread
+	/** Every comment of `answered`, as a whole-thread read returns them. */
+	readonly answeredComments: readonly ThreadComment[]
+}
+
+/** A thread that never waited and one that does, both read whole only by `listThreadComments`. */
+export function longOwnerThreads(): LongOwnerThreads {
+	const unanswered = ownerReviewThread(RECENT_COMMENTS + 1, {
+		id: 'unanswered',
+		isResolved: true,
+	})
+	const answered = ownerReviewThread(RECENT_COMMENTS + 1, {
+		id: 'answered',
+		isResolved: true,
+	})
+	return {
+		unanswered,
+		answered,
+		answeredComments: [
+			...answered.comments.nodes,
+			markedThreadReply(),
+			...(answered.latest?.nodes ?? []),
+		],
+	}
+}
