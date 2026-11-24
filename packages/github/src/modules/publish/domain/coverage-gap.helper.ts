@@ -1,3 +1,4 @@
+import { getFingerprints } from '@mng-review/domain'
 import type { ReviewReport } from '@mng-review/engine'
 import type { BotThread } from './publish.types'
 
@@ -82,9 +83,9 @@ function isBudgetStopped(report: ReviewReport): boolean {
  * choice), the budget stopped nothing, every planned run reported `ok` with no failed unit, the
  * main reviewer read every changed file, the run kept no finding (unverified, below the floor or
  * nit), and `threads`, publishing's own read of the bot's threads, holds no open unverified or nit
- * thread. The findings count adds the open threads no kept finding matches by fingerprint; the
- * unread count is the most any one run left unread. A report with an endpoint error counts as
- * failed.
+ * thread. The findings count adds the open threads no kept finding matches by one of its
+ * fingerprints (`getFingerprints`); the unread count is the most any one run left unread. A report
+ * with an endpoint error counts as failed.
  */
 export function getCoverageGaps(
 	report: ReviewReport,
@@ -108,7 +109,9 @@ export function getCoverageGaps(
 	// most any one run left unread is the count of distinct files that is known.
 	const unread = Math.max(0, ...report.agents.map(agent => agent.unread ?? 0))
 	const kept = [...report.bugs, ...report.nits]
-	const fingerprints = new Set(kept.map(finding => finding.fingerprint))
+	const fingerprints = new Set(
+		kept.flatMap(finding => getFingerprints(finding))
+	)
 	// A thread the run's own finding matches counts once, as that finding.
 	const open = threads.filter(
 		thread =>

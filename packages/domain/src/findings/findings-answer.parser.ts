@@ -3,18 +3,15 @@ import { normalizeRepoPath } from '../utils/repo-path.util'
 import { toWithinTextLimits } from './finding-text.helper'
 import { FindingsAnswerError } from './finding.errors'
 import { toFingerprint } from './finding.helper'
-import {
-	findingsAnswerSchema,
-	type ReportedFinding,
-	reportedFindingSchema,
-} from './finding.schema'
+import { findingsAnswerSchema, reportedFindingSchema } from './finding.schema'
+import type { ParsedFinding } from './finding.types'
 
 const decodeAnswer = Schema.decodeUnknownEffect(findingsAnswerSchema)
 const decodeReportedFinding = Schema.decodeUnknownOption(reportedFindingSchema)
 
 /** The findings of an answer and how many malformed entries were dropped. */
 export interface ParsedFindings {
-	readonly findings: readonly ReportedFinding[]
+	readonly findings: readonly ParsedFinding[]
 	readonly dropped: number
 }
 
@@ -22,7 +19,7 @@ export interface ParsedFindings {
  * Decodes one entry, its text cut to the limits (`toWithinTextLimits`); `undefined` for a
  * malformed entry or a path outside the repository.
  */
-function toReportedFinding(entry: unknown): ReportedFinding | undefined {
+function toReportedFinding(entry: unknown): ParsedFinding | undefined {
 	const finding = decodeReportedFinding(entry)
 	if (Option.isNone(finding)) return undefined
 	const path = normalizeRepoPath(finding.value.path)
@@ -55,7 +52,7 @@ export function parseFindingsAnswer(
 
 /**
  * A finder's first answer plus the reports of its continuation answer that do not repeat one of
- * them (same path and title fingerprint), so a finding reported twice is kept once.
+ * them (same path and fingerprint of the uncut title), so a finding reported twice is kept once.
  */
 export function addLaterFindings(
 	first: ParsedFindings,

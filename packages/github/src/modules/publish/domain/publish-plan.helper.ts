@@ -1,6 +1,7 @@
 import {
 	type AgentsByName,
 	type Finding,
+	getFingerprints,
 	getSeverityFloor,
 	getTitleWords,
 	isAtLeast,
@@ -68,14 +69,15 @@ function getTitleOverlap(a: string, b: string): number {
 }
 
 /**
- * True when the thread describes the finding's problem: the same fingerprint; for an open thread,
- * the same path and line (its original line when outdated) whatever the title, since the model
- * rewords titles between runs; or, for a thread on a line of the head, the same path, a line at
- * most `NEAR_LINES` away and similar titles. A thread on a file, and a resolved outdated one,
- * match by fingerprint only, so a fixed bug that comes back on a changed line is posted again.
+ * True when the thread describes the finding's problem: one of the finding's fingerprints
+ * (`getFingerprints`); for an open thread, the same path and line (its original line when
+ * outdated) whatever the title, since the model rewords titles between runs; or, for a thread on a
+ * line of the head, the same path, a line at most `NEAR_LINES` away and similar titles. A thread on
+ * a file, and a resolved outdated one, match by fingerprint only, so a fixed bug that comes back on
+ * a changed line is posted again.
  */
 export function isSameProblem(finding: Finding, thread: BotThread): boolean {
-	if (thread.marker.fingerprint === finding.fingerprint) return true
+	if (getFingerprints(finding).includes(thread.marker.fingerprint)) return true
 	if (thread.onFile || thread.path !== finding.path) return false
 	if (!thread.resolved && (thread.line ?? thread.originalLine) === finding.line)
 		return true
@@ -201,9 +203,18 @@ function getHeldFingerprints(
 	)
 }
 
+/** True when an open bug thread holds one of the finding's fingerprints. */
+function isHeld(
+	finding: Pick<Finding, 'fingerprint' | 'cutTitleFingerprint'>,
+	held: ReadonlySet<string>
+): boolean {
+	return getFingerprints(finding).some(fingerprint => held.has(fingerprint))
+}
+
 /**
  * The run's new bugs that got no thread: in the summary, or unposted, and held by no open bug
- * thread of the bot by fingerprint, since a write with no answer may still have stored its thread.
+ * thread of the bot by any of their fingerprints, since a write with no answer may still have
+ * stored its thread.
  */
 export function countUnthreadedBugs(
 	plan: PublishPlan,
@@ -214,7 +225,7 @@ export function countUnthreadedBugs(
 		thread =>
 			thread.kind === 'bug' &&
 			!THREAD_PLACES.some(place => place === thread.place) &&
-			!held.has(thread.finding.fingerprint)
+			!isHeld(thread.finding, held)
 	).length
 }
 
@@ -233,7 +244,7 @@ export function countOpenBugs(
 	return (
 		open +
 		plan.threads.filter(
-			thread => thread.kind === 'bug' && !held.has(thread.finding.fingerprint)
+			thread => thread.kind === 'bug' && !isHeld(thread.finding, held)
 		).length
 	)
 }
