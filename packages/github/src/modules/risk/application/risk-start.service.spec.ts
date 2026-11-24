@@ -35,6 +35,7 @@ import { parseRiskMarker } from '../../publish/domain/publish-marker.parser'
 import { MARKER_VERSION } from '../../publish/domain/publish.constants'
 import { toMarkerComment } from '../../publish/presentation/thread-comment.formatter'
 import { EMPTY_RISK_MARKER } from '../domain/risk-marker.helper'
+import { RiskFinishService } from './risk-finish.service'
 import { RiskReadService } from './risk-read.service'
 import { RiskStartService } from './risk-start.service'
 
@@ -613,6 +614,12 @@ function seedEditedMarker(
 	fake.editMarker(namedText(level))
 }
 
+/** A status write GitHub refuses. */
+const STATUS_REFUSED = new GitHubApiError({
+	operation: 'status',
+	reason: 'unavailable',
+})
+
 layer(APP_MODE_OWNED)('risk marker rebuild after a later edit', test => {
 	test.effect(
 		'an edit made after step one read the marker is not overwritten by the rebuild',
@@ -644,6 +651,70 @@ layer(APP_MODE_OWNED)('risk marker rebuild after a later edit', test => {
 		})
 	)
 	test.effect(
+		"a person's edit the rebuild overwrote holds the next rating at its level after a failed write",
+		() =>
+			Effect.gen(function* () {
+				const fake = riskFixture()
+				seedEditedMarker(fake, 'medium')
+				fake.beforeUpdate.push(() => fake.editMarker(namedText('high')))
+				fake.failures.create.push(undefined, STATUS_REFUSED)
+				yield* RiskStartService.use(service =>
+					service.startFull(riskInput())
+				).pipe(Effect.provide(fake.services), Effect.exit)
+				fake.failures.create.length = 0
+				const run = yield* RiskStartService.use(service =>
+					service.startFull(riskInput())
+				).pipe(Effect.provide(fake.services))
+				expect(run.decision).toMatchObject({ status: 'rated', level: 'high' })
+				expect(run.description.level).toBe('high')
+				expect(
+					yield* RiskFinishService.use(service => service.finish(run)).pipe(
+						Effect.provide(fake.services)
+					)
+				).toMatchObject({ state: 'failure', level: 'high' })
+			})
+	)
+	test.effect(
+		"a person's edit a rebuild overwrote with a lost answer holds the next rating at its level",
+		() =>
+			Effect.gen(function* () {
+				const fake = riskFixture()
+				seedEditedMarker(fake, 'medium')
+				fake.beforeUpdate.push(() => fake.editMarker(namedText('high')))
+				fake.failures.updateStored.push(
+					new GitHubApiError({ operation: 'update', reason: 'timed out' })
+				)
+				yield* RiskStartService.use(service =>
+					service.startFull(riskInput())
+				).pipe(Effect.provide(fake.services))
+				const run = yield* RiskStartService.use(service =>
+					service.startFull(riskInput())
+				).pipe(Effect.provide(fake.services))
+				expect(run.decision).toMatchObject({ status: 'rated', level: 'high' })
+			})
+	)
+	test.effect(
+		'the rebuild writes step one once and reads no edit history after its update',
+		() =>
+			Effect.gen(function* () {
+				const fake = riskFixture()
+				seedEditedMarker(fake, 'medium')
+				fake.beforeUpdate.push(() => fake.editMarker(namedText('high')))
+				const run = yield* RiskStartService.use(service =>
+					service.startFull(riskInput())
+				).pipe(Effect.provide(fake.services))
+				expect(fake.writes.map(write => write.state)).toEqual(['error'])
+				expect(run.description.level).toBe('medium')
+				expect(run.decision).toMatchObject({
+					status: 'unrated',
+					reason: 'marker-edited',
+				})
+				expect(
+					fake.reads.filter(read => read.startsWith('edits:'))
+				).toHaveLength(2)
+			})
+	)
+	test.effect(
 		'an edit history that cannot be read before the rebuild leaves the edited marker',
 		() =>
 			Effect.gen(function* () {
@@ -662,6 +733,71 @@ layer(APP_MODE_OWNED)('risk marker rebuild after a later edit', test => {
 			})
 	)
 })
+
+layer(APP_MODE_OWNED)(
+	"risk start reads every person's edit of the marker",
+	test => {
+		test.effect(
+			'a High a person named in an edit the app overwrote holds a trusted marker at High',
+			() =>
+				Effect.gen(function* () {
+					const fake = riskFixture()
+					const run = yield* RiskStartService.use(service =>
+						service.startFull(riskInput())
+					).pipe(Effect.provide(fake.services))
+					fake.beforeUpdate.push(() => fake.editMarker(namedText('high')))
+					yield* RiskFinishService.use(service => service.finish(run)).pipe(
+						Effect.provide(fake.services)
+					)
+					const next = yield* RiskStartService.use(service =>
+						service.startFull(riskInput())
+					).pipe(Effect.provide(fake.services))
+					expect(next.decision).toMatchObject({
+						status: 'rated',
+						level: 'high',
+					})
+				})
+		)
+		test.effect(
+			'a trusted marker whose edit history cannot be read leaves the run unrated',
+			() =>
+				Effect.gen(function* () {
+					const fake = riskFixture()
+					fake.api.comments.push(
+						appSummary(undefined, {
+							body: toMarkerComment('risk', EMPTY_RISK_MARKER),
+						})
+					)
+					fake.failures.edits.push(
+						new GitHubApiError({ operation: 'edits', reason: 'unavailable' })
+					)
+					const run = yield* RiskStartService.use(service =>
+						service.startFull(riskInput())
+					).pipe(Effect.provide(fake.services))
+					expect(run.decision).toMatchObject({
+						status: 'unrated',
+						reason: 'marker-read-failed',
+						stepOne: 'none',
+					})
+				})
+		)
+		test.effect('a thread run reads no edit history', () =>
+			Effect.gen(function* () {
+				const fake = riskFixture()
+				fake.api.comments.push(
+					appSummary(undefined, {
+						body: toMarkerComment('risk', EMPTY_RISK_MARKER),
+					})
+				)
+				fake.threads.push(confirmedThread())
+				yield* RiskStartService.use(service =>
+					service.startThread(riskInput())
+				).pipe(Effect.provide(fake.services))
+				expect(fake.reads.filter(read => read.startsWith('edits:'))).toEqual([])
+			})
+		)
+	}
+)
 
 const OLD_HEAD = 'd'.repeat(40)
 

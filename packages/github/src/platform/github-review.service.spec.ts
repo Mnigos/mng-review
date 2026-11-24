@@ -171,6 +171,29 @@ layer(Layer.empty)('GitHubReviewService', test => {
 				).toBe(true)
 			})
 	)
+	test.effect(
+		'listReviews fails on a review GitHub lists as a null node, since it may hold a rating',
+		() =>
+			Effect.gen(function* () {
+				const fixture = makeGitHubHttp((_request, attempt) =>
+					Effect.succeed(
+						Response.json(
+							toGitHubPage(
+								'reviews',
+								attempt === 1 ? [summaryReview()] : [null],
+								attempt === 1,
+								attempt === 1 ? 'next' : null
+							)
+						)
+					)
+				)
+				expect(
+					yield* GitHubReviewService.use(service =>
+						service.listReviews(42)
+					).pipe(Effect.provide(fixture.reviewLayer), Effect.flip)
+				).toMatchObject({ _tag: 'GitHubApiError', operation: 'listReviews' })
+			})
+	)
 	for (const status of [403, 404, 422, 429])
 		test.effect(`listReviews preserves HTTP ${status} without retrying`, () =>
 			Effect.gen(function* () {

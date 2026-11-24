@@ -6,7 +6,6 @@ import {
 	decideThreadRating,
 	getAnsweredOpenThreads,
 } from './risk-rating.helper'
-import { CLOSING_REPLY_ACTIONS } from './risk.constants'
 import type { FullRatingFacts } from './risk.types'
 
 const FACTS = {
@@ -52,11 +51,7 @@ describe('risk rating decisions', () => {
 					decision: { action },
 				}))
 			)
-		).toEqual(
-			REPLY_ACTIONS.filter(
-				action => !CLOSING_REPLY_ACTIONS.some(closing => closing === action)
-			)
-		)
+		).toEqual(['still-found', 'disputed', 'needs-owner', 'seen'])
 	})
 	for (const severity of ['high', 'critical'])
 		test(`${severity} confirmed threads raise full and thread runs to High`, () => {
@@ -83,6 +78,42 @@ describe('risk rating decisions', () => {
 					body: '',
 					named: 'high',
 				},
+			})
+		).toMatchObject({
+			status: 'unrated',
+			reason: 'marker-edited',
+			stepOne: 'high',
+		})
+	})
+	for (const level of ['medium', 'high'] as const)
+		test(`a level a person's edit in the history named holds the rating at ${level}`, () => {
+			expect(decideFullRating({ ...FACTS, edits: level })).toMatchObject({
+				status: 'rated',
+				level,
+				stepOne: level,
+			})
+		})
+	test('an edit history that cannot be read leaves the run unrated at the held level', () => {
+		expect(
+			decideFullRating({ ...FACTS, held: 'medium', edits: undefined })
+		).toMatchObject({
+			status: 'unrated',
+			reason: 'marker-read-failed',
+			stepOne: 'medium',
+		})
+	})
+	test("an edited marker's step one carries what the history named", () => {
+		expect(
+			decideFullRating({
+				...FACTS,
+				marker: {
+					status: 'edited',
+					id: 1,
+					nodeId: 'comment-1',
+					body: '',
+					named: 'medium',
+				},
+				edits: 'high',
 			})
 		).toMatchObject({
 			status: 'unrated',

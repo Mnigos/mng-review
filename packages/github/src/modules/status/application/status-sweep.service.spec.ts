@@ -10,6 +10,7 @@ import {
 	makeGitHubHttp,
 	getGitHubRequestBody,
 	GITHUB_SETTINGS,
+	readThreadOverHttp,
 } from '../../../shared/mocks/github-http.helper'
 import {
 	githubStatusFake,
@@ -36,7 +37,10 @@ import {
 	SummaryReviewService,
 	SummaryReviewServiceLive,
 } from '../../publish/application/summary-review.service'
-import { parseSummaryMarker } from '../../publish/domain/publish-marker.parser'
+import {
+	parseReplyMarker,
+	parseSummaryMarker,
+} from '../../publish/domain/publish-marker.parser'
 import { toClearedMessage } from '../../publish/presentation/summary-status.formatter'
 import { toMarkerComment } from '../../publish/presentation/thread-comment.formatter'
 import {
@@ -2154,6 +2158,7 @@ layer(TOKEN_MODE_OWNED)('StatusSweepService unsettled bug threads', test => {
 		['window', false],
 		['outside', false],
 		['outside', true],
+		['outside', 'null node'],
 	] as const)
 		test.effect(
 			`a resolved bug with its unsettled answer ${place} the window is open, read fails=${readFails}`,
@@ -2163,13 +2168,19 @@ layer(TOKEN_MODE_OWNED)('StatusSweepService unsettled bug threads', test => {
 					const { thread, comments } = unsettledBugThread(place)
 					api.threads.push(thread)
 					api.threadComments.set(thread.id, [...comments])
-					if (readFails)
+					if (readFails === true)
 						api.failures.listThreadComments.push(
 							new GitHubApiError({
 								operation: 'listThreadComments',
 								reason: 'unavailable',
 								status: 503,
 							})
+						)
+					if (readFails === 'null node')
+						api.threadReader.read = readThreadOverHttp(
+							comments.map(comment =>
+								parseReplyMarker(comment.body)?.unsettled ? null : comment
+							)
 						)
 					const fake = githubStatusFake({
 						listOpenPullRequests: () =>
@@ -2183,16 +2194,23 @@ layer(TOKEN_MODE_OWNED)('StatusSweepService unsettled bug threads', test => {
 								creator: { login: 'github-actions[bot]', type: 'Bot' },
 							}),
 					})
-					yield* StatusSweepService.use(service => service.sweep()).pipe(
+					const swept = yield* StatusSweepService.use(service =>
+						service.sweep()
+					).pipe(
 						Effect.provide(
 							StatusSweepServiceLive.pipe(
 								Layer.provide(Layer.merge(fake.layer, api.api))
 							)
 						)
 					)
-					expect(fake.statuses).toEqual([
-						expect.objectContaining({ sha: 'head', state: 'failure' }),
-					])
+					// A whole thread GitHub keeps listing a null node in fails the pull request.
+					if (readFails === 'null node') {
+						expect(swept).toMatchObject({ updated: 0, failed: 1 })
+						expect(fake.statuses).toEqual([])
+					} else
+						expect(fake.statuses).toEqual([
+							expect.objectContaining({ sha: 'head', state: 'failure' }),
+						])
 					expect(api.writes).toEqual([])
 				})
 		)

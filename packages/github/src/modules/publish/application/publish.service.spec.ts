@@ -14,6 +14,7 @@ import {
 	gitLayer,
 } from '../../../shared/mocks/git-test.helper'
 import { githubApiFake } from '../../../shared/mocks/github-api-fake.helper'
+import { readThreadOverHttp } from '../../../shared/mocks/github-http.helper'
 import {
 	githubStatusFake,
 	openPullRequest,
@@ -4452,6 +4453,25 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 						error(503),
 						error(503),
 						error(503)
+					)
+					expect(
+						yield* PublishService.use(service =>
+							service.publish(withoutBugs(fixture.input))
+						).pipe(Effect.provide(fixture.publisher))
+					).toMatchObject({ openBugs: 1 })
+				})
+		)
+		test.effect(
+			'counts a resolved bug as open when GitHub lists its unsettled answer as a null node',
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup()
+					const { thread, comments } = unsettledBugThread('outside')
+					fixture.fake.threads.push(thread)
+					fixture.fake.threadReader.read = readThreadOverHttp(
+						comments.map(comment =>
+							parseReplyMarker(comment.body)?.unsettled ? null : comment
+						)
 					)
 					expect(
 						yield* PublishService.use(service =>
