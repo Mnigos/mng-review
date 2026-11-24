@@ -109,7 +109,7 @@ export interface PublishResult {
 	readonly resolved: number
 	/** Authors' replies this run answered, by action. */
 	readonly answered: AnswerCounts
-	/** Threads that wait for the owner after the run. */
+	/** Threads that wait for the owner after the run, those it held for itself only included. */
 	readonly waiting: number
 	readonly label: LabelOutcome
 	readonly run: number

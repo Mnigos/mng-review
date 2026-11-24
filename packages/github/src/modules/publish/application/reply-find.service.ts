@@ -5,8 +5,8 @@ import { GitHubApiService } from '../../../platform/github-api.service'
 import { GitHubStatusService } from '../../../platform/github-status.service'
 import type { GitHubApiError } from '../../../platform/github.errors'
 import { OwnedIdentities } from '../../../platform/owned-identities.context'
-import { getOwnerAnswered, toBotThread } from '../domain/bot-thread.helper'
-import type { BotThread } from '../domain/publish.types'
+import { getOwnerWaiting, toBotThread } from '../domain/bot-thread.helper'
+import type { BotThread, OwnerWaits } from '../domain/publish.types'
 import { getPendingReply } from '../domain/thread-conversation.helper'
 import { getRotated } from '../domain/thread-recheck.helper'
 import type { PendingReply } from '../domain/thread-reply.schema'
@@ -137,16 +137,16 @@ export const ReplyFindServiceLive = Layer.effect(
 			if (open.size === 0 && !input.naming && input.held === undefined)
 				return { threads, replies: [] }
 			const candidates = raw.filter(thread => open.has(thread.id))
-			// A failed whole-thread read leaves the latest comments the read brought, as at publish.
-			const sent = yield* conversation
-				.getSentToOwner(candidates)
-				.pipe(
-					Effect.orElseSucceed(() => getOwnerAnswered(candidates, identities))
-				)
+			// A failed whole-thread read holds every longer owner thread for this read, as at publish.
+			const waits = yield* conversation.getSentToOwner(candidates).pipe(
+				Effect.map((sent): OwnerWaits => ({ sent, held: [] })),
+				Effect.orElseSucceed(() => getOwnerWaiting(candidates, identities))
+			)
 			const waiting = [
 				...new Set([
 					...(yield* summaries.readWaiting(input.pullNumber)),
-					...sent,
+					...waits.sent,
+					...waits.held,
 				]),
 			]
 			const replies = yield* conversation.collect({

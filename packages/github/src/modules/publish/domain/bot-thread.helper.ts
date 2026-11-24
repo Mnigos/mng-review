@@ -23,7 +23,7 @@ import {
 } from './publish-marker.parser'
 import type { SummaryMarker } from './publish-marker.schema'
 import { CLOSING_ACTIONS } from './publish.constants'
-import type { BotThread } from './publish.types'
+import type { BotThread, OwnerWaits } from './publish.types'
 import type { MarkedRun } from './summary-marker.helper'
 
 /** The status GitHub answers when it refuses a comment's place, such as a line outside the diff. */
@@ -93,6 +93,21 @@ export function getUnreadOwnerThreads(
 			!hasOwnerAnswer(thread.latest?.nodes ?? [], owned)
 		)
 	})
+}
+
+/**
+ * The owner's threads when the whole-thread read failed: the answers among the latest comments the
+ * read brought (`getOwnerAnswered`) are sent; every longer thread whose answer may sit before them
+ * (`getUnreadOwnerThreads`) is held for this run only, and the next read that succeeds decides.
+ */
+export function getOwnerWaiting(
+	threads: readonly ReviewThread[],
+	owned: readonly BotIdentity[]
+): OwnerWaits {
+	return {
+		sent: getOwnerAnswered(threads, owned),
+		held: getUnreadOwnerThreads(threads, owned).map(thread => thread.id),
+	}
 }
 
 /**

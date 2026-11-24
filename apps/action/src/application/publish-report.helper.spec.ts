@@ -43,27 +43,36 @@ describe('failsRating', () => {
 			},
 			true,
 		],
-		...([0, 1] as const).map(
-			unsettled =>
+		...([0, 1] as const).flatMap(unsettled =>
+			(
 				[
-					`a reply run leaving ${unsettled} answer unsettled`,
-					{
-						status: 'replied',
-						result: {
-							verdict: 'needs owner',
-							event: 'COMMENT',
-							dismissal: { dismissed: 0, failed: 0 },
-							openBugs: 0,
-							answered: { 'needs-owner': 1 },
-							waiting: 1,
-							label: 'added',
-							run: 2,
-							status: true,
-							unsettled,
-						},
-					},
-					unsettled > 0,
+					['off', undefined, false],
+					['refused', { status: 'refused', reason: 'no app' }, false],
+					['on', { status: 'none' }, true],
 				] as const
+			).map(
+				([gate, risk, rated]) =>
+					[
+						`a reply run leaving ${unsettled} answer unsettled with the gate ${gate}`,
+						{
+							status: 'replied',
+							result: {
+								verdict: 'needs owner',
+								event: 'COMMENT',
+								dismissal: { dismissed: 0, failed: 0 },
+								openBugs: 0,
+								answered: { 'needs-owner': 1 },
+								waiting: 1,
+								label: 'added',
+								run: 2,
+								status: true,
+								unsettled,
+							},
+							...(risk ? { risk } : {}),
+						},
+						rated && unsettled > 0,
+					] as const
+			)
 		),
 	] as const satisfies readonly (readonly [string, PublishReport, boolean])[])
 		test(`${name} fails the job: ${expected}`, () => {

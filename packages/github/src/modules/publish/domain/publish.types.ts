@@ -200,3 +200,12 @@ export interface DecidedSummary {
 	readonly rendered: RenderedSummary
 	readonly decision: ReviewDecision
 }
+
+/**
+ * The threads the bot sent to the owner, which the summary keeps waiting, and those a run holds
+ * waiting for itself only, since a failed whole-thread read left their answer unknown.
+ */
+export interface OwnerWaits {
+	readonly sent: readonly string[]
+	readonly held: readonly string[]
+}

@@ -2,6 +2,7 @@ import {
 	getCombinedLevel,
 	getHigherLevel,
 	getStepOneLevel,
+	type RiskLevel,
 	type StatusLevel,
 	THREAD_RAISE_SEVERITIES,
 	type UnratedReason,
@@ -10,6 +11,7 @@ import { CLOSING_REPLY_ACTIONS } from './risk.constants'
 import type {
 	AnsweredReply,
 	FullRatingFacts,
+	GrantStop,
 	MarkerRead,
 	RatingDecision,
 	ThreadRatingFacts,
@@ -27,10 +29,14 @@ function getMarkerNamed(marker: MarkerRead): StatusLevel {
 	return marker.status === 'edited' ? marker.named : 'none'
 }
 
-/** Why a full run is not rated when the risk comment's edit history could not be read. */
+/**
+ * Why a full run is not rated when the risk comment's edit history could not be read in full (a
+ * page failed, the count changed between pages, it ran past the bound) or the comment has no node
+ * id to read it by. A null node there reads as High, not as a gap.
+ */
 const EDITS_GAP = {
 	reason: 'marker-read-failed',
-	detail: "the risk comment's edit history could not be read",
+	detail: "the risk comment's edit history could not be read in full",
 } as const satisfies Unrated
 
 /** Why the marker or the history keeps the run unrated, or `undefined` when they allow a rating. */
@@ -126,6 +132,18 @@ export function decideFullRating(facts: FullRatingFacts): WritingDecision {
 		level,
 		floor,
 		stepOne: getStepOneLevel(facts.held, level),
+	}
+}
+
+/** A stop when a held level is above the level the run would grant. */
+export function getHeldStop(
+	held: StatusLevel,
+	level: RiskLevel
+): GrantStop | undefined {
+	if (getHigherLevel(held, level) === level) return undefined
+	return {
+		reason: 'publish-failed',
+		detail: `the held level ${held} is above ${level}`,
 	}
 }
 
