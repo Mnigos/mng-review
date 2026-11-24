@@ -2,12 +2,16 @@ import { layer } from '@effect/vitest'
 import { ConfigError } from '@mng-review/domain'
 import { GitError, RulesService } from '@mng-review/engine'
 import {
+	CommandAnswerService,
+	CommandAuthorizeService,
 	CommandAuthorizeServiceLive,
 	CommandAnswerServiceLive,
 	AnswerReadService,
+	type CommandDecision,
 	GitHubApiError,
 	GitHubConfig,
 	GitHubReadConfigLive,
+	ListCompleteness,
 } from '@mng-review/github'
 import { Effect, FileSystem, Layer } from 'effect'
 import {
@@ -345,4 +349,76 @@ layer(FileSystemLayer)('authorize risk command answers', test => {
 				).toBeFalsy()
 			})
 	)
+})
+
+layer(FileSystemLayer)('authorize step list completeness', test => {
+	const DENIED = {
+		status: 'denied',
+		reason: 'fixture',
+	} as const satisfies CommandDecision
+	for (const riskEnabled of [false, true])
+		test.effect(
+			`the authorize and answer checks read complete lists only while the rules rate: ${riskEnabled}`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = stepFixture(
+						[],
+						true,
+						true,
+						undefined,
+						undefined,
+						undefined,
+						riskEnabled
+					)
+					fixture.repo.write(
+						'event.json',
+						JSON.stringify({
+							action: 'created',
+							comment: fixture.api.command.comment,
+							issue: { number: 17, pull_request: {} },
+						})
+					)
+					const seen: boolean[] = []
+					const authorizeSpy = vi.fn(() =>
+						ListCompleteness.pipe(
+							Effect.map(reading => {
+								seen.push(reading.complete)
+								return DENIED
+							})
+						)
+					)
+					const checkSpy = vi.fn(() =>
+						ListCompleteness.pipe(
+							Effect.map(reading => {
+								seen.push(reading.complete)
+								return DENIED
+							})
+						)
+					)
+					yield* runAuthorizeStep.pipe(
+						Effect.provide(
+							Layer.mergeAll(
+								Layer.succeed(CommandAuthorizeService, {
+									authorize: authorizeSpy,
+								}),
+								Layer.succeed(CommandAnswerService, {
+									check: checkSpy,
+									post: () => Effect.die('the authorize step never posts'),
+								})
+							)
+						),
+						Effect.provide(fixture.publisherLayer),
+						Effect.provide(fixture.rulesLayer),
+						Effect.provide(
+							fixture.envLayer({
+								GITHUB_EVENT_NAME: 'issue_comment',
+								MNG_REVIEW_APP_SLUG: 'mng-review',
+							})
+						)
+					)
+					expect(authorizeSpy).toHaveBeenCalledOnce()
+					expect(checkSpy).toHaveBeenCalledOnce()
+					expect(seen).toEqual([riskEnabled, riskEnabled])
+				})
+		)
 })

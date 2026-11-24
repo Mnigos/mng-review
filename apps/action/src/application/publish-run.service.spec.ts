@@ -1328,12 +1328,26 @@ layer(Layer.empty)('PublishRunService fails closed while rating', test => {
 	)
 })
 
+/** A spy body that records the run's list reading in `seen`, then runs `value`. */
+function recording<TValue, TError>(
+	seen: boolean[],
+	value: Effect.Effect<TValue, TError>
+) {
+	return () =>
+		ListCompleteness.pipe(
+			Effect.flatMap(reading => {
+				seen.push(reading.complete)
+				return value
+			})
+		)
+}
+
 layer(Layer.empty)('PublishRunService list completeness', test => {
 	const OUTSIDE_CONTEXT = {
 		...RATED_CONTEXT,
 		event: { ...EVENT, pr: { ...EVENT.pr, target: 'release' } },
 	} as const satisfies PublishContext
-	for (const [name, rules, context, identity, complete] of [
+	const READINGS = [
 		['the rating off', RULES, CONTEXT, GITHUB_ACTIONS_IDENTITY, false],
 		[
 			'rules that rate a pull request outside the default branch',
@@ -1343,7 +1357,12 @@ layer(Layer.empty)('PublishRunService list completeness', test => {
 			true,
 		],
 		['the rating on', RISK_RULES, RATED_CONTEXT, APP_IDENTITY, true],
-	] as const)
+	] as const
+	const NULL_NODE = new GitHubApiError({
+		operation: 'listThreads',
+		reason: 'GitHub listed an entry as a null node',
+	})
+	for (const [name, rules, context, identity, complete] of READINGS)
 		test.effect(
 			`with ${name}, the prior read and the publish read complete lists: ${complete}`,
 			() =>
@@ -1358,17 +1377,11 @@ layer(Layer.empty)('PublishRunService list completeness', test => {
 						identity
 					)
 					const seen: boolean[] = []
-					fixture.readPriorSpy.mockImplementation(() =>
-						Effect.gen(function* () {
-							seen.push((yield* ListCompleteness).complete)
-							return undefined
-						})
+					fixture.readPriorSpy.mockImplementation(
+						recording(seen, Effect.succeed(undefined))
 					)
-					fixture.publishSpy.mockImplementation(() =>
-						Effect.gen(function* () {
-							seen.push((yield* ListCompleteness).complete)
-							return PUBLISHED
-						})
+					fixture.publishSpy.mockImplementation(
+						recording(seen, Effect.succeed(PUBLISHED))
 					)
 					expect(
 						yield* PublishRunService.use(service =>
@@ -1378,4 +1391,122 @@ layer(Layer.empty)('PublishRunService list completeness', test => {
 					expect(seen).toEqual([complete, complete])
 				})
 		)
+	for (const [name, rules, context, identity, complete] of READINGS)
+		test.effect(
+			`with ${name}, the reply publish and its thread raise read complete lists: ${complete}`,
+			() =>
+				Effect.gen(function* () {
+					const seen: boolean[] = []
+					const risk = riskSpyLayer()
+					risk.rateThreadSpy.mockImplementation(
+						recording(seen, Effect.succeed({ status: 'none' } as const))
+					)
+					const fixture = setup(
+						false,
+						undefined,
+						rules,
+						undefined,
+						undefined,
+						risk.spyLayer,
+						identity,
+						recording(seen, Effect.fail(UNAVAILABLE))
+					)
+					expect(
+						yield* PublishRunService.use(service =>
+							service.run(
+								{
+									version: 1,
+									binding: { ...BINDING, trigger: 'converse' },
+									status: 'replied',
+									replies: {
+										decided: [
+											{
+												fingerprint: 'fingerprint',
+												commentId: 1,
+												digest: 'digest',
+												threadId: 'kept',
+												decision: { action: 'seen' },
+											},
+										],
+										tokens: {},
+									},
+								},
+								{ ...context, converse: true }
+							)
+						).pipe(Effect.provide(fixture.service))
+					).toMatchObject({ status: 'failed' })
+					expect(seen).toEqual([complete, complete])
+				})
+		)
+	for (const [name, rules, context, identity, complete] of READINGS)
+		test.effect(
+			`with ${name}, an agent-only run's publish and thread raise read complete lists: ${complete}`,
+			() =>
+				Effect.gen(function* () {
+					const seen: boolean[] = []
+					const risk = riskSpyLayer()
+					risk.rateThreadSpy.mockImplementation(
+						recording(seen, Effect.succeed({ status: 'none' } as const))
+					)
+					const fixture = setup(
+						false,
+						undefined,
+						rules,
+						undefined,
+						undefined,
+						risk.spyLayer,
+						identity
+					)
+					fixture.publishSpy.mockImplementation(
+						recording(seen, Effect.succeed(PUBLISHED))
+					)
+					expect(
+						yield* PublishRunService.use(service =>
+							service.run(boundOutcomeFile(), {
+								...context,
+								event: {
+									...context.event,
+									pr: { ...context.event.pr, trigger: 'manual' },
+								},
+								command: { agentOnly: true, agent: 'auth' },
+							})
+						).pipe(Effect.provide(fixture.service))
+					).toMatchObject({ status: 'published' })
+					expect(risk.rateThreadSpy).toHaveBeenCalledOnce()
+					expect(seen).toEqual([complete, complete])
+				})
+		)
+	test.effect(
+		'a refused-gate publish in a rating-on repository fails on a null node and clears no wait',
+		() =>
+			Effect.gen(function* () {
+				const fixture = setup(
+					false,
+					undefined,
+					RISK_RULES,
+					undefined,
+					undefined,
+					riskSpyLayer().spyLayer,
+					APP_IDENTITY
+				)
+				// The adapter fails a complete read on a null node; a lenient read leaves it out, and
+				// the owner's resolution then clears the wait.
+				fixture.publishSpy.mockImplementation(() =>
+					ListCompleteness.pipe(
+						Effect.flatMap(reading =>
+							reading.complete
+								? Effect.fail(NULL_NODE)
+								: Effect.succeed({ ...PUBLISHED, waiting: 0 })
+						)
+					)
+				)
+				expect(
+					yield* PublishRunService.use(service =>
+						service.run(boundOutcomeFile(), OUTSIDE_CONTEXT)
+					).pipe(Effect.provide(fixture.service))
+				).toMatchObject({ status: 'failed', reason: NULL_NODE.message })
+				expect(fixture.publishSpy).toHaveBeenCalledOnce()
+				expect(fixture.reportSpy).not.toHaveBeenCalled()
+			})
+	)
 })
