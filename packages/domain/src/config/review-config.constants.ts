@@ -1,3 +1,8 @@
+import {
+	DEFAULT_REVIEWS_PER_HEAD,
+	DEFAULT_RISK_ASSETS,
+	DEFAULT_RISK_LABELS,
+} from '../risk/risk.constants'
 import type { ReviewConfig } from './review-config.schema'
 
 /** Severities from the least to the most severe; the order ranks findings and floors. */
@@ -59,6 +64,13 @@ export const DEFAULT_PRESET = {
 		validator: CROSS_VALIDATOR,
 	},
 	identity: { previous: [GITHUB_ACTIONS_SLUG] },
+	risk: {
+		enabled: false,
+		labels: DEFAULT_RISK_LABELS,
+		floors: [],
+		assets: DEFAULT_RISK_ASSETS,
+		reviews_per_head: DEFAULT_REVIEWS_PER_HEAD,
+	},
 } as const satisfies ReviewConfig
 
 /** Presets `extends` may name. */

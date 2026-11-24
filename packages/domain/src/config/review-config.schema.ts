@@ -1,4 +1,14 @@
-import { Schema, SchemaGetter } from 'effect'
+import { Effect, Schema, SchemaGetter } from 'effect'
+import {
+	floorLevelSchema,
+	type RiskLevel,
+} from '../risk/risk-description.schema'
+import {
+	DEFAULT_FLOOR_LEVEL,
+	FLOOR_NAME_PATTERN,
+	LABEL_MAX_LENGTH,
+	RESERVED_LABELS,
+} from '../risk/risk.constants'
 import {
 	BOT_SLUG_PATTERN,
 	CROSS_VALIDATOR,
@@ -76,6 +86,60 @@ export const commentsOverrideSchema = commentsSchema.mapFields(fields => ({
 	summary: Schema.optionalKey(fields.summary),
 }))
 
+/** A label name GitHub accepts that is not one the bot must leave alone. */
+const riskLabelSchema = Schema.Trim.check(
+	Schema.isNonEmpty(),
+	Schema.isMaxLength(LABEL_MAX_LENGTH),
+	Schema.makeFilter(
+		(name: string) =>
+			!RESERVED_LABELS.some(label => label === name.toLowerCase()) ||
+			`the bot never sets or removes "${name}"`
+	)
+)
+
+/** One label per level; three different names, so removing one never removes another level's. */
+const riskLabelsSchema = Schema.Struct({
+	low: riskLabelSchema,
+	medium: riskLabelSchema,
+	high: riskLabelSchema,
+}).check(
+	Schema.makeFilter(
+		(labels: Readonly<Record<RiskLevel, string>>) =>
+			new Set(Object.values(labels).map(name => name.toLowerCase())).size ===
+				Object.keys(labels).length || 'each level needs its own label'
+	)
+)
+
+/** A critical area: changes under `paths` and outside `exclude` rate at least `level`. */
+export const riskFloorSchema = Schema.Struct({
+	name: Schema.String.check(Schema.isPattern(FLOOR_NAME_PATTERN)),
+	paths: Schema.NonEmptyArray(Schema.NonEmptyString),
+	exclude: nameListSchema.pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+	level: floorLevelSchema.pipe(
+		Schema.withDecodingDefault(Effect.succeed(DEFAULT_FLOOR_LEVEL))
+	),
+})
+export type RiskFloor = typeof riskFloorSchema.Type
+
+/** Floor names show in the review body, so each names one floor. */
+const isDistinctFloors = Schema.makeFilter(
+	(floors: readonly RiskFloor[]) =>
+		new Set(floors.map(floor => floor.name)).size === floors.length ||
+		'each floor name may appear once'
+)
+
+/** The risk rating: off by default, the labels it sets, the floors, the binaries it may leave unread. */
+export const riskConfigSchema = Schema.Struct({
+	enabled: Schema.Boolean,
+	labels: riskLabelsSchema,
+	floors: Schema.Array(riskFloorSchema).check(isDistinctFloors),
+	/** Binaries the rater may leave unread; any other binary change leaves the pull request unrated. */
+	assets: nameListSchema,
+	/** `review` commands that rate one head. */
+	reviews_per_head: positiveIntSchema,
+})
+export type RiskConfig = typeof riskConfigSchema.Type
+
 /** `review.yml` after merging over its preset; every key is present. */
 export const reviewConfigSchema = Schema.Struct({
 	extends: Schema.Literal(DEFAULT_PRESET_NAME),
@@ -141,5 +205,6 @@ export const reviewConfigSchema = Schema.Struct({
 	}),
 	/** Bot accounts whose earlier comments still count as the bot's, besides the one posting now. */
 	identity: Schema.Struct({ previous: Schema.Array(botSlugSchema) }),
+	risk: riskConfigSchema,
 })
 export type ReviewConfig = typeof reviewConfigSchema.Type

@@ -132,6 +132,13 @@ models:
 
 identity:
   previous: [github-actions]     # bots whose earlier comments still count as the bot's
+
+risk:                            # the risk rating; see Risk rating
+  enabled: false
+  labels: {low: Low Risk, medium: Medium Risk, high: High Risk}   # one at a time, display only
+  floors: []                     # [{name, paths, exclude: [], level: medium | high}]
+  assets: ['*.png', '*.jpg', …, '*.pdf']   # binaries the rater may leave unread
+  reviews_per_head: 3            # `review` commands that rate one head
 ```
 
 ## Pipeline
@@ -159,6 +166,17 @@ Finders rate a bug by what goes wrong when its trigger happens, and the validato
 | `low` | cosmetic, or nothing a user can reach: only logs, metrics or developer tooling change |
 
 How often the trigger happens does not change the level, and neither does how many users it reaches: a defect on one platform, browser, locale, user setting or assistive technology rates the same as one that hits everyone. A trigger that cannot happen is a reason to reject, not to lower. The validator starts from the reported severity and may raise it; it lowers it only by naming, in `lowered_because`, the reported level and the part of its criterion the impact does not meet. Nits are always `low`.
+
+## Risk rating
+
+With `risk.enabled` and the app in an environment (`app-slug` and `app-environment`), publish rates how much a pull request into the default branch needs its owner. ADR 0012.
+
+- **The status.** The app writes `MNG Review risk` on the head: `success` at Low and Medium, `failure` at High, `error` when not rated. The description has one form, `v1 pr=<n> <low|medium|high|none> floor=<yes|-> base=<merge base> rules=<12 hex> nonce=<16 hex>`; `rules` is a sha256 prefix over the built-in floor version, the resolved rubric (`.mng/risk.md` and its imports) and the merged `risk` keys. Readers take only the app's statuses for their own pull request number and reject any other text. Only `success` at `low` or `medium` grants. The label (`risk.labels`) is display only, and the bot never sets or removes `Blocked`.
+- **Floors.** Publish reads `git diff --no-renames --raw --numstat -z` from the merge base itself; a rename counts at its old and its new path. The built-in floor sets High and `floor=yes` for every added, changed or deleted file under `.github/**` or `.mng/**`, `CODEOWNERS` at the root or in `docs/`, `.gitattributes` at any path and every file the rules resolve to, and for any submodule, symlink or mode change; paths compare without case and no config removes it. `risk.floors[]` adds named critical areas (`paths`, `exclude`, `level`, Medium by default); names are lowercase letters, digits and hyphens, each used once. A binary outside `risk.assets` leaves the pull request unrated, and a count that does not parse, or output that does not parse whole, means High.
+- **The level** is the highest of the rater's level (or the stored level of a rated head with the same tree and base), every floor, Medium for a router `risky`, High for an open or carried confirmed High or Critical bug, the marker's highest and the held level, the highest level on any app status for the pull request, `error` included. Nothing lowers it.
+- **Write order.** Every writer runs in the job-level group `mng-review-risk-<number>`. A publish writes `error` at the higher of the held level and its own level and reads it back, posts the review, updates the marker and the label, re-reads the head, the nonce and the marker, and writes the grant last. A failure after that first write leaves `error` at that level; a failed read or write before it fails the job.
+- **Runs.** A full run (push, `review`, a dispatched `review`) publishes the combined level, or `error` when it failed, a coverage gap or an opaque binary left it unrated, a thread or marker read failed, the marker was edited by someone else, the head moved or the nonce was lost. A `run <agent>`, reply-only, converse or sweep run only raises to High for a confirmed High or Critical bug. A `review` over `risk.reviews_per_head` on one head, a refused command and a bridge run write no status. A run with no app environment, a gate skip, an invalid `.mng/`, a fork or another base writes nothing, and the label job removes risk labels on every push.
+- **Comments.** Comments count only from a person, not posted through an app and not an owned bot or `github-actions[bot]`, whose collaborator role has write access. The review workflows start on `issue_comment` `created` and `edited`: an edited conversation comment starts a named run, and an edited command gets a denial instead of running (this amends ADR 0009). Every app answer's marker names the comments it handled with their id, edit time and the first 16 hex characters of the body's sha256.
 
 ## Running it
 
