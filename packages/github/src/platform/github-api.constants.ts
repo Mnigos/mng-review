@@ -72,7 +72,7 @@ export const PULL_REQUEST_COMMENTS_QUERY = `query($owner: String!, $name: String
 
 /** The fields of a review every read takes. */
 const REVIEW_FIELDS =
-	'id databaseId state isMinimized body createdAt lastEditedAt author { __typename login } editor { __typename login }'
+	'id databaseId state isMinimized body createdAt submittedAt lastEditedAt author { __typename login } editor { __typename login }'
 
 /** The reviews query over `fields`. */
 function toReviewsQuery(fields: string): string {

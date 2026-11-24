@@ -89,6 +89,7 @@ export const pullRequestReviewSchema = Schema.Struct({
 	isMinimized: Schema.Boolean,
 	body: Schema.String,
 	...commentTimeFields,
+	submittedAt: Schema.optionalKey(Schema.NullOr(Schema.String)),
 	author: Schema.NullOr(commentAuthorSchema),
 	editor: commentEditorSchema,
 	/** The commit the review is on; read only with `withCommits`, `null` when GitHub lost it. */
@@ -257,6 +258,8 @@ export const openPullRequestSchema = Schema.Struct({
 	draft: Schema.optionalKey(Schema.Boolean),
 	base: Schema.Struct({
 		sha: Schema.String,
+		/** The base branch; the risk sweep dispatches only for the default branch. */
+		ref: Schema.optionalKey(Schema.String),
 		repo: Schema.Struct({ full_name: Schema.String }),
 	}),
 	head: Schema.Struct({
@@ -296,6 +299,8 @@ export const pullRequestSchema = Schema.Struct({
 		sha: Schema.String,
 		repo: Schema.NullOr(Schema.Struct({ full_name: Schema.String })),
 	}),
+	/** When it was opened; the risk sweep lists no run older than this. */
+	created_at: Schema.optionalKey(Schema.String),
 })
 export type PullRequest = typeof pullRequestSchema.Type
 

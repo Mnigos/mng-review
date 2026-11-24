@@ -1,4 +1,4 @@
-import { CommandAnswerService } from '@mng-review/github'
+import { CommandAnswerService, GitHubStatusService } from '@mng-review/github'
 import { Effect, Layer } from 'effect'
 import { RiskRunService } from '../../application/risk-run.service'
 
@@ -19,4 +19,12 @@ export const RiskRunOffLayer = Layer.succeed(RiskRunService, {
 export const CommandAnswerOffLayer = Layer.succeed(CommandAnswerService, {
 	check: input => Effect.succeed(input.decision),
 	post: () => Effect.succeed(false),
+})
+
+/** The sweep's pull request list with `risk.enabled` off: never asked, so every call dies. */
+export const RiskSweepOffLayer = Layer.succeed(GitHubStatusService, {
+	createCheckRun: () => Effect.die('the risk pass is off'),
+	setStatus: () => Effect.die('the risk pass is off'),
+	getStatus: () => Effect.die('the risk pass is off'),
+	listOpenPullRequests: () => Effect.die('the risk pass is off'),
 })

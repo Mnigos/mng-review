@@ -29,6 +29,8 @@ import {
 	RiskFinishServiceLive,
 	RiskReadServiceLive,
 	RiskStartServiceLive,
+	RiskSweepServiceLive,
+	ReplyNamingServiceLive,
 	StatusReportServiceLive,
 	StatusSweepServiceLive,
 	SummaryReviewServiceLive,
@@ -88,6 +90,10 @@ import {
 	failRiskCleanupConfig,
 	runRiskCleanupStep,
 } from './presentation/handlers/risk-cleanup-step.handler'
+import {
+	failRiskSweepConfig,
+	runRiskSweepStep,
+} from './presentation/handlers/risk-sweep-step.handler'
 import {
 	failSweepConfig,
 	runSweepStep,
@@ -227,6 +233,20 @@ const SweepLive = StatusSweepServiceLive.pipe(
 	Layer.provideMerge(RulesLive)
 )
 
+/**
+ * The sweep's risk job for one pull request over the write token: the thread raise and the
+ * dispatches, with the rules of the default branch checkout.
+ */
+const RiskSweepLive = Layer.mergeAll(
+	RiskLive,
+	RiskSweepServiceLive.pipe(Layer.provide(ReplyNamingServiceLive))
+).pipe(
+	Layer.provideMerge(RiskReadServiceLive),
+	Layer.provide(FloorDiffServiceLive),
+	Layer.provideMerge(toPublisherLive(GitHubWriteConfigLive)),
+	Layer.provideMerge(RulesLive)
+)
+
 /** The risk cleanup over the write token: the revocation, the risk reads and the rules. */
 const RiskCleanupLive = RiskFinishServiceLive.pipe(
 	Layer.provideMerge(RiskReadServiceLive),
@@ -249,7 +269,7 @@ const runInvalidMode = Effect.gen(function* () {
 		status: 'invalid-config',
 		source: MODE_VARIABLE,
 		reason:
-			'must be shadow, prepare, review, publish, sweep, authorize, reserve, find, risk-cleanup or deny',
+			'must be shadow, prepare, review, publish, sweep, authorize, reserve, find, risk-cleanup, deny or risk-sweep',
 	}
 	yield* Console.log(formatLogLine(invalid))
 	yield* writeSummary(
@@ -278,6 +298,11 @@ const runAction = Effect.gen(function* () {
 		return yield* maskAppToken().pipe(
 			Effect.andThen(runSweepStep.pipe(Effect.provide(SweepLive))),
 			Effect.catchTag('ConfigError', failSweepConfig)
+		)
+	if (mode.value === 'risk-sweep')
+		return yield* maskAppToken().pipe(
+			Effect.andThen(runRiskSweepStep.pipe(Effect.provide(RiskSweepLive))),
+			Effect.catchTag('ConfigError', failRiskSweepConfig)
 		)
 	if (mode.value === 'risk-cleanup')
 		return yield* maskAppToken().pipe(

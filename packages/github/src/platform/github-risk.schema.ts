@@ -21,12 +21,21 @@ export type RiskCommitStatus = typeof riskCommitStatusSchema.Type
 const commitRefSchema = Schema.NullOr(Schema.Struct({ oid: Schema.String }))
 
 /**
- * One timeline item the risk rating reads: a commit, both sides of a force push, or a label added
- * or removed with who did it. GitHub lists the items in the order they happened.
+ * One timeline item the risk rating reads: a commit with its committer date, both sides of a force
+ * push with its time, or a label added or removed with who did it. GitHub lists the items in the
+ * order they happened.
  */
 export const timelineItemSchema = Schema.Struct({
 	__typename: Schema.String,
-	commit: Schema.optionalKey(commitRefSchema),
+	createdAt: Schema.optionalKey(Schema.String),
+	commit: Schema.optionalKey(
+		Schema.NullOr(
+			Schema.Struct({
+				oid: Schema.String,
+				committedDate: Schema.optionalKey(Schema.String),
+			})
+		)
+	),
 	beforeCommit: Schema.optionalKey(commitRefSchema),
 	afterCommit: Schema.optionalKey(commitRefSchema),
 	actor: Schema.optionalKey(Schema.NullOr(commentAuthorSchema)),
@@ -106,6 +115,52 @@ export const commentEditsAnswerSchema = Schema.Struct({
 			})
 		)
 	),
+})
+
+/** A workflow run as the sweep reads it: its title, state, when it was created and what started it. */
+export const workflowRunSchema = Schema.Struct({
+	id: Schema.Number,
+	/** What `run-name` set; `name` is the workflow's name. */
+	display_title: Schema.String,
+	status: Schema.NullOr(Schema.String),
+	conclusion: Schema.NullOr(Schema.String),
+	created_at: Schema.String,
+	event: Schema.String,
+	path: Schema.String,
+	head_branch: Schema.NullOr(Schema.String),
+	head_repository: Schema.NullOr(Schema.Struct({ id: Schema.Number })),
+	/** The pull requests a `pull_request_target` run names, with their base branch. */
+	pull_requests: Schema.optionalKey(
+		Schema.Array(
+			Schema.Struct({
+				number: Schema.Number,
+				base: Schema.Struct({ ref: Schema.String }),
+			})
+		)
+	),
+})
+export type WorkflowRun = typeof workflowRunSchema.Type
+
+/**
+ * One page of the runs list, and how many runs match the query. A filtered search returns at most
+ * 1,000 of them, while `total_count` still counts every match.
+ */
+export const workflowRunsPageSchema = Schema.Struct({
+	total_count: Schema.Int,
+	workflow_runs: Schema.Array(workflowRunSchema),
+})
+
+/** A job of a run: its name (the decide job carries the dispatch key) and how it ended. */
+export const workflowJobSchema = Schema.Struct({
+	name: Schema.String,
+	status: Schema.String,
+	conclusion: Schema.NullOr(Schema.String),
+})
+export type WorkflowJob = typeof workflowJobSchema.Type
+
+/** One page of a run's jobs. */
+export const workflowJobsPageSchema = Schema.Struct({
+	jobs: Schema.Array(workflowJobSchema),
 })
 
 /**
