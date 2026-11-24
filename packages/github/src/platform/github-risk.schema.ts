@@ -117,7 +117,9 @@ export const commentEditsAnswerSchema = Schema.Struct({
 	),
 })
 
-/** A workflow run as the sweep reads it: its title, state, when it was created and what started it. */
+/**
+ * A workflow run as the sweep reads it: its title, state, when it was created and what started it.
+ */
 export const workflowRunSchema = Schema.Struct({
 	id: Schema.Number,
 	/** What `run-name` set; `name` is the workflow's name. */
@@ -183,8 +185,8 @@ export interface CommentEdit {
 export interface CommentEdits {
 	readonly body: string
 	readonly total: number
-	/** Every page GitHub listed; `null` for an edit GitHub listed as a null node. */
-	readonly edits: readonly (CommentEdit | null)[]
+	/** Every page GitHub listed; a null node fails the read. */
+	readonly edits: readonly CommentEdit[]
 }
 
 /** The part of a workflow run the answer read takes: when GitHub created it. */

@@ -22,7 +22,9 @@ export interface SweptRun {
 	readonly key?: DispatchKey
 	/** How the rating job ended; `null` while it runs, `skipped` when it did not run. */
 	readonly rating: string | null
-	/** How the job that entered the group ended: the converse job for a converse, else the rating job. */
+	/**
+	 * How the job that entered the group ended: the converse job for a converse, else the rating job.
+	 */
 	readonly group: string | null
 	/** How the decide job ended; `undefined` for a run without one. */
 	readonly decide?: string | null
@@ -43,7 +45,9 @@ function getJobConclusion(
 	return run.status === 'completed' ? SKIPPED_CONCLUSION : null
 }
 
-/** Reads a run's decide key and how its decide job ended, and its rating and converse jobs by name. */
+/**
+ * Reads a run's decide key and how its decide job ended, and its rating and converse jobs by name.
+ */
 export function toSweptRun(
 	run: WorkflowRun,
 	jobs: readonly WorkflowJob[]

@@ -18,7 +18,9 @@ export type FloorLevel = typeof floorLevelSchema.Type
 export const riskStatusStateSchema = Schema.Literals(RISK_STATUS_STATES)
 export type RiskStatusState = typeof riskStatusStateSchema.Type
 
-/** What one `MNG Review risk` status says: whose rating it is, the level and what it was rated on. */
+/**
+ * What one `MNG Review risk` status says: whose rating it is, the level and what it was rated on.
+ */
 export const riskDescriptionSchema = Schema.Struct({
 	/** The pull request the rating belongs to; readers take only statuses for their own number. */
 	pr: Schema.Int.check(Schema.isGreaterThan(0)),
@@ -27,7 +29,10 @@ export const riskDescriptionSchema = Schema.Struct({
 	floor: Schema.Boolean,
 	/** The merge base the rating diffed from. */
 	base: Schema.String.check(Schema.isPattern(BASE_SHA_PATTERN)),
-	/** A sha256 prefix over the resolved rubric, the merged `risk` keys and the built-in floor version. */
+	/**
+	 * A sha256 prefix over the resolved rubric, the merged `risk` keys and the built-in floor
+	 * version.
+	 */
 	rules: Schema.String.check(Schema.isPattern(RULES_DIGEST_PATTERN)),
 	/** Random per run; the grant must carry the nonce of the run's own `error`. */
 	nonce: Schema.String.check(Schema.isPattern(NONCE_PATTERN)),

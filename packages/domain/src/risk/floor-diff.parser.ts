@@ -15,7 +15,10 @@ const KNOWN_STATUSES: ReadonlySet<string> = new Set([
 	'R',
 	'T',
 ])
-/** The modes git writes for an absent file, a regular file, an executable, a symlink and a submodule. */
+/**
+ * The modes git writes for an absent file, a regular file, an executable, a symlink and a
+ * submodule.
+ */
 const KNOWN_MODES: ReadonlySet<string> = new Set([
 	'000000',
 	'100644',

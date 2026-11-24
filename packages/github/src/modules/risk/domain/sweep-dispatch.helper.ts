@@ -30,7 +30,9 @@ export interface DispatchKey {
 /** A dispatched run as the sweep reads it: its decide job's key and how its group job ended. */
 export interface DispatchedRun {
 	readonly key: DispatchKey
-	/** `null` while the run is in flight; otherwise the conclusion GitHub reports for the group job. */
+	/**
+	 * `null` while the run is in flight; otherwise the conclusion GitHub reports for the group job.
+	 */
 	readonly conclusion: string | null
 	/** How the decide job ended; a failed one skipped the group job without deciding. */
 	readonly decide?: string | null
@@ -121,7 +123,9 @@ export interface DispatchCheck {
 	readonly key: DispatchKey
 	/** Every run the sweep dispatched for this pull request, read from the jobs of each run. */
 	readonly runs: readonly DispatchedRun[]
-	/** The pre-model checks a push run makes passed: not a fork, base is default, `.mng/` loads, gate. */
+	/**
+	 * The pre-model checks a push run makes passed: not a fork, base is default, `.mng/` loads, gate.
+	 */
 	readonly checksPass: boolean
 	readonly maxRuns: number
 	/**

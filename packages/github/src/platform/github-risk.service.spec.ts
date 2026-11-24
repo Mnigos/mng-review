@@ -275,7 +275,7 @@ layer(Layer.empty)('GitHubRiskService HTTP boundary', test => {
 			})
 	)
 	test.effect(
-		'reads a comment body with its edit count, edit ids, editors, times, texts and null edits',
+		'reads a comment body with its edit count, edit ids, editors, times and texts',
 		() =>
 			Effect.gen(function* () {
 				const fake = makeGitHubHttp(() =>
@@ -300,7 +300,6 @@ layer(Layer.empty)('GitHubRiskService HTTP boundary', test => {
 												editedAt: '2026-01-01T00:01:00Z',
 												diff: null,
 											},
-											null,
 										],
 									},
 								},
@@ -328,7 +327,6 @@ layer(Layer.empty)('GitHubRiskService HTTP boundary', test => {
 							editedAt: '2026-01-01T00:01:00Z',
 							diff: null,
 						},
-						null,
 					],
 				})
 				expect(getGitHubRequestBody(fake.requests[0])).toMatchObject({

@@ -83,6 +83,11 @@ export interface FullRatingFacts {
 	/** The stored level of a rated head with the same tree and base, when the marker has one. */
 	readonly reused: RiskLevel | undefined
 	readonly held: StatusLevel
+	/**
+	 * The highest level any edit of the risk comment by someone other than the app named, read from
+	 * its whole edit history (`getEditedLevel`); `undefined` when that history could not be read.
+	 */
+	readonly edits: StatusLevel | undefined
 }
 
 /** What a thread run decides on: its thread read, the marker and the history. */

@@ -102,8 +102,8 @@ export function countDisputes(
 
 /**
  * True when an owner cleared a waiting thread: `resolver`, who resolved it on GitHub, is an admin
- * or a login in `commands.allow` that still has write access. `roles` holds the resolvers' access by
- * lower-case login; one missing from it, as after a failed lookup, clears nothing.
+ * or a login in `commands.allow` that still has write access. `roles` holds the resolvers' access
+ * by lower-case login; one missing from it, as after a failed lookup, clears nothing.
  */
 export function getOwnerCleared(
 	resolver: string | undefined,
@@ -131,7 +131,10 @@ export function toResolvers(
 	)
 }
 
-/** A thread read made after the answers, and whether it read (`false` means the first read stands in). */
+/**
+ * A thread read made after the answers, and whether it read (`false` means the first read stands
+ * in).
+ */
 export interface FreshRead {
 	readonly raw: readonly Pick<
 		ReviewThread,
@@ -201,8 +204,9 @@ export function toReplyItems(
  * The decisions that still hold in a fresh read, each with its thread: the thread's pending reply
  * (`getPendingReply`) is the comment the decision names, with the digest it was decided on, or the
  * decision names an older reply in a thread the converse answers while answers name replies
- * (`naming`), which the answer's own read of the whole thread checks; and the fingerprint matches. Anything else is dropped, since someone
- * answered or edited meanwhile; a thread decided twice counts once.
+ * (`naming`), which the answer's own read of the whole thread checks; and the fingerprint matches.
+ * Anything else is dropped, since someone answered or edited meanwhile; a thread decided twice
+ * counts once.
  */
 export function getApplicableReplies(
 	decisions: readonly DecidedThreadReply[],

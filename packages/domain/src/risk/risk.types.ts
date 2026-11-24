@@ -15,7 +15,10 @@ export interface FloorDiffFile {
 	readonly path: string
 	/** The `--raw` status letter, such as `M`, `A`, `D` or `T`. */
 	readonly status: string
-	/** Git modes before and after; `000000` when the side has no file, empty when no raw record named it. */
+	/**
+	 * Git modes before and after; `000000` when the side has no file, empty when no raw record named
+	 * it.
+	 */
 	readonly oldMode: string
 	readonly newMode: string
 	readonly count: FloorCount
@@ -24,7 +27,9 @@ export interface FloorDiffFile {
 /** `git diff --no-renames --raw --numstat -z` read whole. */
 export interface FloorDiff {
 	readonly files: readonly FloorDiffFile[]
-	/** False when a record did not parse or the two parts disagree, so the change is not fully known. */
+	/**
+	 * False when a record did not parse or the two parts disagree, so the change is not fully known.
+	 */
 	readonly intact: boolean
 }
 
@@ -90,7 +95,9 @@ export interface CommentAuthor {
 	readonly viaApp: boolean
 }
 
-/** A collaborator's role as the API returns it: a built-in or custom role and its base permission. */
+/**
+ * A collaborator's role as the API returns it: a built-in or custom role and its base permission.
+ */
 export interface RepositoryRole {
 	readonly role_name: string
 	readonly permission: string

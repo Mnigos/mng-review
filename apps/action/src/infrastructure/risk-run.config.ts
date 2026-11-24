@@ -8,7 +8,9 @@ export const RISK_DESCRIPTION_VARIABLE = 'MNG_REVIEW_RISK_DESCRIPTION'
 /** The step output that carries step 1's description to the cleanup step. */
 export const RISK_DESCRIPTION_OUTPUT = 'risk-description'
 
-/** What decides whether publish rates: the app's environment and the repository's default branch. */
+/**
+ * What decides whether publish rates: the app's environment and the repository's default branch.
+ */
 export interface RiskRunSettings {
 	/** `app-environment`; empty when the caller passed none, and then nothing is rated. */
 	readonly environment: string
@@ -74,7 +76,10 @@ export const refusalConfig = Config.all({
 	run: Config.Int('GITHUB_RUN_ID'),
 })
 
-/** The review workflow `status-sweep.yml` dispatches, such as `review.yml`; empty dispatches nothing. */
+/**
+ * The review workflow `status-sweep.yml` dispatches, such as `review.yml`; empty dispatches
+ * nothing.
+ */
 export const dispatchWorkflowConfig = Config.String(
 	'MNG_REVIEW_DISPATCH_WORKFLOW'
 ).pipe(Config.withDefault(''))

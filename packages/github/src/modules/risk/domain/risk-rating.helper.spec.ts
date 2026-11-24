@@ -19,6 +19,7 @@ const FACTS = {
 	history: false,
 	reused: undefined,
 	held: 'none',
+	edits: 'none',
 } as const satisfies FullRatingFacts
 
 describe('risk rating decisions', () => {

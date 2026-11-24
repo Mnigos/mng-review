@@ -1,3 +1,5 @@
+import { Schedule } from 'effect'
+
 /** Rated heads the risk marker keeps; older ones drop off, which only costs a rerun. */
 export const MAX_RATED_HEADS = 50
 /** The text of the risk comment above its marker. */
@@ -14,6 +16,12 @@ export const CLOSING_REPLY_ACTIONS = ['resolved', 'accepted'] as const
 export const REFUSAL_KINDS = ['deny', 'cap'] as const
 /** Bytes of randomness in a nonce: 16 hex characters. */
 export const NONCE_BYTES = 8
+/**
+ * Reads of the edit history again, and the wait before each, while it does not list the marker
+ * update a run just made yet: GitHub can show an edit there a moment after the update answers.
+ */
+export const EDIT_LAG_RETRIES = 3
+export const EDIT_LAG_RETRY = Schedule.spaced('2 seconds')
 /** Timeline item types that bring a head and that carry a label change. */
 export const TIMELINE_TYPES = {
 	COMMIT: 'PullRequestCommit',
@@ -26,8 +34,8 @@ export const TIMELINE_TYPES = {
  * The fixed names of the review workflow's jobs the sweep reads from `actions/runs/<id>/jobs`; the
  * workflows must name their jobs exactly so. `RATING` runs a full rating (push, `review`, the
  * dispatched `review`) and nothing else; `CONVERSE` answers thread replies; `DECIDE` starts the
- * name of a dispatched run's first job, followed by its source and, for the sweep's, its key. A job a reusable workflow
- * runs shows as `<caller job> / <name>`, which counts as the same name.
+ * name of a dispatched run's first job, followed by its source and, for the sweep's, its key. A job
+ * a reusable workflow runs shows as `<caller job> / <name>`, which counts as the same name.
  */
 export const RISK_JOB_NAMES = {
 	DECIDE: 'MNG Review decide',

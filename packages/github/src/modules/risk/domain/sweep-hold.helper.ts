@@ -17,7 +17,9 @@ import {
 	WORKFLOWS_DIR,
 } from './risk.constants'
 
-/** A full rating run as the review hold reads it: when it was created and how its group job ended. */
+/**
+ * A full rating run as the review hold reads it: when it was created and how its group job ended.
+ */
 export interface RatingRun {
 	readonly createdAt: string
 	/** `null` while in flight. */

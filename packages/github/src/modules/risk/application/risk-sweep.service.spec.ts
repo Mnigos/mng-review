@@ -133,6 +133,7 @@ function setup(rated = true) {
 		readHeadStatuses: () => Effect.succeed(statuses),
 		readHeld: () => Effect.die('unused held read'),
 		readMarker: () => Effect.die('unused marker read'),
+		readEditedLevel: () => Effect.die('unused edit history read'),
 		readHistory: () => Effect.die('unused history read'),
 		readThreadBugs: () => Effect.die('unused thread raise'),
 		readMergeBase: () => Effect.die('unused merge base read'),

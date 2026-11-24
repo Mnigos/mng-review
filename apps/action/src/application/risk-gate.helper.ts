@@ -2,7 +2,9 @@ import type { PullRequestInfo, ReviewConfig } from '@mng-review/domain'
 import { type BotIdentity, GITHUB_ACTIONS_IDENTITY } from '@mng-review/github'
 import type { RiskRunSettings } from '../infrastructure/risk-run.config'
 
-/** Whether a run rates, and the one line it reports when the rules ask for a rating it cannot give. */
+/**
+ * Whether a run rates, and the one line it reports when the rules ask for a rating it cannot give.
+ */
 export type RiskGate =
 	| { readonly status: 'on' }
 	| { readonly status: 'off' }

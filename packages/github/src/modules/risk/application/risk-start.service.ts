@@ -1,19 +1,16 @@
 import { randomBytes } from 'node:crypto'
 import {
-	getHigherLevel,
 	type RiskDescription,
-	type StatusLevel,
 	toRiskDescription,
 	toRulesDigest,
 } from '@mng-review/domain'
 import { Context, Effect, Layer } from 'effect'
 import { GitHubApiService } from '../../../platform/github-api.service'
 import { GitHubRiskService } from '../../../platform/github-risk.service'
-import { OwnedIdentities } from '../../../platform/owned-identities.context'
+import type { OwnedIdentities } from '../../../platform/owned-identities.context'
 import { getNewestStatus } from '../domain/risk-history.helper'
 import {
 	EMPTY_RISK_MARKER,
-	getOverwrittenLevel,
 	getReusedLevel,
 	toRebuiltRiskMarker,
 } from '../domain/risk-marker.helper'
@@ -50,12 +47,6 @@ interface StepOneInput {
 	readonly block?: RatingBlock
 }
 
-/** The risk comment after step 1's write, and the level a rewrite overwrote, if it rewrote one. */
-interface MarkerWrite {
-	readonly marker: MarkerRead
-	readonly overwritten?: StatusLevel
-}
-
 /** The rules digest the run's statuses and rated heads carry. */
 function toTargetDigest(target: Pick<RiskTarget, 'rules'>): string {
 	return toRulesDigest(
@@ -66,12 +57,13 @@ function toTargetDigest(target: Pick<RiskTarget, 'rules'>): string {
 
 /**
  * Write-order step 1 and the reads before it. Every run first reads the held level (timeline and
- * statuses); a full run then reads its floors from git, the threads, the risk comment and the
- * history, and decides its level before any write. Step 1 writes `error` with the step-1 maximum
- * and a new nonce, reads it back, and goes on only when it is the newest app status for the
- * number. It then creates the risk comment when none exists and the pull request has no app
- * history, or rewrites one someone else edited from the app's statuses, which can only raise; a
- * level a person's edit during that rewrite named is written as step 1's `error` again.
+ * statuses); a full run then reads its floors from git, the threads, the risk comment with its
+ * whole edit history and the app history, and decides its level before any write. Step 1 writes
+ * `error` with the step-1 maximum and a new nonce, reads it back, and goes on only when it is the
+ * newest app status for the number. It then creates the risk comment when none exists and the
+ * pull request has no app history, or rewrites one someone else edited from the app's statuses,
+ * which can only raise. A person's edit that rewrite overwrote stays in the edit history, which
+ * the next full run reads before its own step 1.
  */
 export class RiskStartService extends Context.Service<
 	RiskStartService,
@@ -93,11 +85,12 @@ export const RiskStartServiceLive = Layer.effect(
 		const api = yield* GitHubApiService
 
 		/**
-		 * Creates the risk comment, or rewrites an edited one; a failed write leaves the run unrated.
-		 * The rewrite goes only over the edit step 1 read, checked against the edit history read just
-		 * before it, so a later edit waits for the next run. GitHub has no conditional comment update,
-		 * so the history is read again after it: the level a person's edit in between names, which
-		 * the rewrite overwrote, comes back as `overwritten` (High when it cannot be seen).
+		 * Creates the risk comment, or rewrites an edited one; a failed create leaves the run
+		 * unrated. The rewrite goes only over the edit step 1 read, checked against the edit history
+		 * read just before it, so a later edit waits for the next run. GitHub has no conditional
+		 * comment update, so a person's edit between that read and the update is overwritten; its
+		 * text stays in the edit history, and the next full run carries what it named
+		 * (`readEditedLevel`), whether or not GitHub answered the update.
 		 */
 		const writeMarker = Effect.fn('RiskStartService.writeMarker')(function* (
 			input: StepOneInput,
@@ -107,20 +100,16 @@ export const RiskStartServiceLive = Layer.effect(
 			if (marker.status === 'none' && !input.history) {
 				const body = formatRiskComment(EMPTY_RISK_MARKER)
 				return yield* api.createIssueComment(target.pullNumber, body).pipe(
-					Effect.map((id): MarkerWrite => ({
-						marker: {
-							status: 'trusted',
-							id,
-							body,
-							marker: EMPTY_RISK_MARKER,
-						},
+					Effect.map((id): MarkerRead => ({
+						status: 'trusted',
+						id,
+						body,
+						marker: EMPTY_RISK_MARKER,
 					})),
-					Effect.orElseSucceed((): MarkerWrite => ({
-						marker: { status: 'failed' },
-					}))
+					Effect.orElseSucceed((): MarkerRead => ({ status: 'failed' }))
 				)
 			}
-			if (marker.status !== 'edited') return { marker } satisfies MarkerWrite
+			if (marker.status !== 'edited') return marker
 			const grants = [...new Set(statuses.map(status => status.sha))]
 			const trees = new Map(
 				(yield* Effect.all(
@@ -134,56 +123,13 @@ export const RiskStartServiceLive = Layer.effect(
 			const before = yield* risk
 				.readCommentEdits(marker.nodeId)
 				.pipe(Effect.orElseSucceed(() => undefined))
-			if (before?.body !== marker.body) return { marker } satisfies MarkerWrite
+			if (before?.body !== marker.body) return marker
 			const rebuilt = toRebuiltRiskMarker(statuses, trees, marker.named)
-			const updated = yield* api
+			yield* api
 				.updateIssueComment(marker.id, formatRiskComment(rebuilt))
-				.pipe(
-					Effect.as(true),
-					Effect.orElseSucceed(() => false)
-				)
-			if (!updated) return { marker } satisfies MarkerWrite
-			const after = yield* risk
-				.readCommentEdits(marker.nodeId)
-				.pipe(Effect.orElseSucceed(() => undefined))
-			const { current: app } = yield* OwnedIdentities
-			return {
-				marker,
-				overwritten: after ? getOverwrittenLevel(before, after, app) : 'high',
-			} satisfies MarkerWrite
+				.pipe(Effect.ignore)
+			return marker
 		})
-
-		/**
-		 * Step 1's `error` again with the level a marker rewrite overwrote, when that is higher, so
-		 * the held level keeps a person's edit the rewrite replaced. The nonce stays.
-		 */
-		const carryOverwritten = Effect.fn('RiskStartService.carryOverwritten')(
-			function* (
-				target: Pick<RiskTarget, 'head'>,
-				description: RiskDescription,
-				overwritten: StatusLevel
-			) {
-				const level = getHigherLevel(description.level, overwritten)
-				if (level === description.level) return description
-				const carried = { ...description, level } satisfies RiskDescription
-				yield* risk
-					.createStatus({
-						sha: target.head,
-						state: ERROR_STATE,
-						description: toRiskDescription(carried),
-					})
-					.pipe(
-						Effect.mapError(
-							error =>
-								new RiskStepOneError({
-									stage: 'marker-raise',
-									reason: error.message,
-								})
-						)
-					)
-				return carried
-			}
-		)
 
 		/** Step 1: `error` at the step-1 maximum, read back, then the risk comment. */
 		const stepOne = Effect.fn('RiskStartService.stepOne')(function* (
@@ -234,13 +180,7 @@ export const RiskStartServiceLive = Layer.effect(
 			const others = input.held.statuses.filter(
 				status => status.sha !== target.head || !status.current
 			)
-			const written = yield* writeMarker(input, [...others, ...onHead])
-			const { marker } = written
-			const carried = yield* carryOverwritten(
-				target,
-				description,
-				written.overwritten ?? 'none'
-			)
+			const marker = yield* writeMarker(input, [...others, ...onHead])
 			const lost = marker.status === 'failed' && input.marker.status === 'none'
 			const gap = {
 				reason: 'publish-failed',
@@ -258,7 +198,7 @@ export const RiskStartServiceLive = Layer.effect(
 				defaultBranch: target.defaultBranch,
 				labels: target.rules.config.risk.labels,
 				held: input.held.held,
-				description: carried,
+				description,
 				decision: lost
 					? {
 							status: 'unrated',
@@ -280,6 +220,7 @@ export const RiskStartServiceLive = Layer.effect(
 			const held = yield* reads.readHeld(pullNumber, head)
 			const base = yield* reads.readMergeBase(input)
 			const marker = yield* reads.readMarker(pullNumber)
+			const edits = yield* reads.readEditedLevel(marker)
 			const history =
 				marker.status === 'none'
 					? yield* reads.readHistory(pullNumber, held.statuses)
@@ -311,6 +252,7 @@ export const RiskStartServiceLive = Layer.effect(
 				history,
 				reused,
 				held: held.held,
+				edits,
 			})
 			const hits = floors?.hits ?? []
 			const block: RatingBlock =

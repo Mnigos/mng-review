@@ -176,15 +176,15 @@ layer(Layer.empty)('GitHubApiService reads', test => {
 
 	for (const { operation, connection, node } of READS) {
 		test.effect(
-			`${operation} follows cursors, skips null nodes and preserves comment metadata`,
+			`${operation} follows cursors and preserves comment metadata`,
 			() =>
 				Effect.gen(function* () {
 					const fixture = makeGitHubHttp((_request, attempt) =>
 						Effect.succeed(
 							Response.json(
 								attempt === 1
-									? toGitHubPage(connection, [null, node], true, 'cursor-1')
-									: toGitHubPage(connection, [node, null])
+									? toGitHubPage(connection, [node], true, 'cursor-1')
+									: toGitHubPage(connection, [node])
 							)
 						)
 					)

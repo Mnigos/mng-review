@@ -101,20 +101,23 @@ export class GitHubRiskService extends Context.Service<
 		readonly listStatuses: (
 			sha: string
 		) => Effect.Effect<readonly RiskCommitStatus[], GitHubApiError>
-		/** Writes `MNG Review risk`; a description over GitHub's 140 characters is refused, never cut. */
+		/**
+		 * Writes `MNG Review risk`; a description over GitHub's 140 characters is refused, never cut.
+		 */
 		readonly createStatus: (
 			input: RiskStatusInput
 		) => Effect.Effect<void, GitHubApiError>
 		/**
 		 * Every page of the pull request's timeline items the rating reads. An item GitHub lists as a
-		 * null node fails the read, since it may be a head that holds the only High.
+		 * null node fails the read (`collect`), since it may be a head that holds the only High.
 		 */
 		readonly listTimeline: (
 			pullNumber: number
 		) => Effect.Effect<readonly TimelineItem[], GitHubApiError>
 		/**
 		 * The comment's body and its whole edit history by its node id, every page. A missing comment
-		 * or page, a count that changes between pages, or more than `COMMENT_EDIT_PAGES` pages fails.
+		 * or page, an edit GitHub lists as a null node, a count that changes between pages, or more
+		 * than `COMMENT_EDIT_PAGES` pages fails.
 		 */
 		readonly readCommentEdits: (
 			nodeId: string
@@ -251,17 +254,9 @@ export const GitHubRiskServiceLive = Layer.effect(
 						},
 						timelineAnswerSchema
 					).pipe(
-						Effect.flatMap(answer => {
-							const items = answer.data?.repository?.pullRequest?.timelineItems
-							if (!items?.nodes.some(Predicate.isNull))
-								return Effect.succeed(items)
-							return Effect.fail(
-								new GitHubApiError({
-									operation: 'listTimeline',
-									reason: 'GitHub listed a timeline item as a null node',
-								})
-							)
-						})
+						Effect.map(
+							answer => answer.data?.repository?.pullRequest?.timelineItems
+						)
 					),
 				null,
 				0
@@ -285,10 +280,13 @@ export const GitHubRiskServiceLive = Layer.effect(
 					const edits = comment?.userContentEdits
 					if (!(comment && edits))
 						return editsFailure('the comment or its edit history did not read')
+					const listed = edits.nodes.filter(Predicate.isNotNull)
+					if (listed.length < edits.nodes.length)
+						return editsFailure('GitHub listed an edit as a null node')
 					const pageRead = {
 						body: comment.body,
 						total: edits.totalCount,
-						edits: edits.nodes,
+						edits: listed,
 					} satisfies CommentEdits
 					const { hasNextPage, endCursor } = edits.pageInfo
 					if (!hasNextPage) return Effect.succeed(pageRead)
