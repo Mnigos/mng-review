@@ -1,6 +1,7 @@
 import { RulesService } from '@mng-review/engine'
 import {
 	GitHubConfig,
+	provideListCompleteness,
 	provideOwnedIdentities,
 	type ReplyCandidate,
 	type ReplyFindResult,
@@ -78,6 +79,7 @@ export const runFindStep = Effect.gen(function* () {
 		service.find({ max, rotation })
 	).pipe(
 		provideOwnedIdentities(identity, rules.config.identity.previous),
+		provideListCompleteness(rules.config.risk.enabled),
 		Effect.catchTag('GitHubApiError', error => failFind(error.message))
 	)
 	if (found.read > 0 && found.failed === found.read)

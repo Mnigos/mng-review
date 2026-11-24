@@ -4,6 +4,7 @@ import {
 	CommandAuthorizeService,
 	type CommandDecision,
 	GitHubConfig,
+	provideListCompleteness,
 	provideOwnedIdentities,
 } from '@mng-review/github'
 import { Console, Effect } from 'effect'
@@ -50,13 +51,14 @@ const decide = Effect.gen(function* () {
 	)
 	const { identity } = yield* GitHubConfig
 	const owned = provideOwnedIdentities(identity, rules.config.identity.previous)
+	const reading = provideListCompleteness(rules.config.risk.enabled)
 	const decision = yield* CommandAuthorizeService.use(service =>
 		service.authorize({ comment, handles, rules })
-	).pipe(owned)
+	).pipe(owned, reading)
 	// With a rating: a refused command gets a denial answer, a review past the cap a cap reply.
 	return yield* CommandAnswerService.use(service =>
 		service.check({ comment, decision, config: rules.config })
-	).pipe(owned)
+	).pipe(owned, reading)
 })
 
 /**

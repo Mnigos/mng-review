@@ -2,6 +2,7 @@ import { ConfigError } from '@mng-review/domain'
 import {
 	getCommandHandle,
 	GitHubConfig,
+	provideListCompleteness,
 	provideOwnedIdentities,
 	SummaryReviewService,
 } from '@mng-review/github'
@@ -77,7 +78,10 @@ const reserve = Effect.fn('reserveStep.reserve')(function* (
 			maxRuns,
 			handle: context.handle,
 		})
-	).pipe(provideOwnedIdentities(identity, rules.config.identity.previous))
+	).pipe(
+		provideOwnedIdentities(identity, rules.config.identity.previous),
+		provideListCompleteness(rules.config.risk.enabled)
+	)
 	return reserved
 		? ({ reserved: true } satisfies ReserveDecision)
 		: refuse(`commands.max_runs reached (${maxRuns})`)

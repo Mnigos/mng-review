@@ -29,6 +29,7 @@ import {
 } from './github-api.schema'
 import { makeGitHubHttp } from './github-http.client'
 import type { GitHubApiError } from './github.errors'
+import { ListCompleteness } from './list-completeness.context'
 
 /** A single review comment: on a line, or on the whole file when `line` is unset. */
 export interface ReviewCommentInput {
@@ -127,6 +128,7 @@ export const GitHubApiServiceLive = Layer.effect(
 
 		const listReviewThreads = Effect.fn('GitHubApiService.listReviewThreads')(
 			function* (pullNumber: number) {
+				const { complete } = yield* ListCompleteness
 				return yield* collect(
 					'listReviewThreads',
 					cursor =>
@@ -140,6 +142,7 @@ export const GitHubApiServiceLive = Layer.effect(
 								answer => answer.data?.repository?.pullRequest?.reviewThreads
 							)
 						),
+					complete,
 					null,
 					0
 				)
@@ -149,6 +152,7 @@ export const GitHubApiServiceLive = Layer.effect(
 		const listComments = Effect.fn('GitHubApiService.listComments')(function* (
 			pullNumber: number
 		) {
+			const { complete } = yield* ListCompleteness
 			return yield* collect(
 				'listComments',
 				cursor =>
@@ -160,6 +164,7 @@ export const GitHubApiServiceLive = Layer.effect(
 					).pipe(
 						Effect.map(answer => answer.data?.repository?.pullRequest?.comments)
 					),
+				complete,
 				null,
 				0
 			)
@@ -167,6 +172,7 @@ export const GitHubApiServiceLive = Layer.effect(
 
 		const listThreadComments = Effect.fn('GitHubApiService.listThreadComments')(
 			function* (threadId: string) {
+				const { complete } = yield* ListCompleteness
 				return yield* collect(
 					'listThreadComments',
 					cursor =>
@@ -176,6 +182,7 @@ export const GitHubApiServiceLive = Layer.effect(
 							{ id: threadId, cursor },
 							threadCommentsAnswerSchema
 						).pipe(Effect.map(answer => answer.data?.node?.comments)),
+					complete,
 					null,
 					0
 				)

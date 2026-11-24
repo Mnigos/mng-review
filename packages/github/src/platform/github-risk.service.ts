@@ -258,6 +258,8 @@ export const GitHubRiskServiceLive = Layer.effect(
 							answer => answer.data?.repository?.pullRequest?.timelineItems
 						)
 					),
+				// The held read stays complete whatever the run's choice: a null item may be a head.
+				true,
 				null,
 				0
 			)
