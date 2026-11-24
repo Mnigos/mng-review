@@ -142,6 +142,10 @@ export function pr(overrides: Partial<PullRequestInfo> = {}): PullRequestInfo {
 	}
 }
 
+/** A finding title past `MAX_FINDING_TITLE_CHARS`, which the answer parser cuts. */
+export const LONG_TITLE =
+	'Duplicate charge loses balance when the retried invoice reaches the gateway after the first capture already committed'
+
 /** Creates one valid model-reported finding with independently allocated evidence. */
 export function rawFinding(
 	overrides: Partial<ReportedFinding> = {}

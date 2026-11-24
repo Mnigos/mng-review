@@ -2,6 +2,8 @@ import {
 	agentReport,
 	botThread,
 	bug,
+	cutTitleBug,
+	cutTitleFingerprint,
 	report,
 } from '../../../shared/mocks/publish-test.helper'
 import {
@@ -231,6 +233,19 @@ test('open threads no kept finding matches add to the kept findings, a matching 
 	expect(
 		getCoverageGap({ ...covered, nits: [bug()] }, [matching, unrelated])
 	).toStrictEqual({ kind: 'findings', findings: 2 })
+})
+
+test("an open thread with the fingerprint of a kept finding's cut title counts once", () => {
+	const nit = botThread({
+		marker: {
+			...botThread().marker,
+			kind: 'nit',
+			fingerprint: cutTitleFingerprint(),
+		},
+	})
+	expect(
+		getCoverageGap({ ...coveredReport(), nits: [cutTitleBug()] }, [nit])
+	).toStrictEqual({ kind: 'findings', findings: 1 })
 })
 
 test('a plan without the main reviewer is reported first', () => {

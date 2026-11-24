@@ -2,6 +2,7 @@ import {
 	type AnswerEntry,
 	type KeptFinding,
 	toFinding,
+	toFingerprint,
 	DEFAULT_PRESET,
 	buildPlan,
 } from '@mng-review/domain'
@@ -73,6 +74,39 @@ export function bug(overrides: Partial<KeptFinding> = {}): KeptFinding {
 		placement: 'inline',
 		...overrides,
 	}
+}
+
+/** A title over the title limit, as the model reported it. */
+const UNCUT_TITLE =
+	'Duplicate write loses data when a retried request reaches the store after the first write already committed its row'
+/** `UNCUT_TITLE` as the answer parser cuts it. */
+const CUT_TITLE =
+	'Duplicate write loses data when a retried request reaches the store after the first write already…'
+
+/** A bug whose over-long title the answer parser cut, attributed as the finder attributes it. */
+export function cutTitleBug(): KeptFinding {
+	const { path, line } = bug()
+	return {
+		...toFinding(
+			{
+				path,
+				line,
+				severity: 'high',
+				title: CUT_TITLE,
+				uncutTitle: UNCUT_TITLE,
+				trigger: 'A write is retried.',
+				impact: 'Data is overwritten.',
+				evidence: [`${path}:${line}`],
+			},
+			{ agent: 'reviewer', model: 'model-a', kind: 'bug' }
+		),
+		placement: 'inline',
+	}
+}
+
+/** The fingerprint a thread of `cutTitleBug()` carries when it was posted from the cut title. */
+export function cutTitleFingerprint(): string {
+	return toFingerprint({ path: bug().path, title: CUT_TITLE })
 }
 
 /** A minimal reviewed report without an endpoint or model call. */

@@ -3,6 +3,8 @@ import { agent, config } from '../../../shared/mocks/domain-test.helper'
 import {
 	botThread,
 	bug,
+	cutTitleBug,
+	cutTitleFingerprint,
 	RULES,
 } from '../../../shared/mocks/publish-test.helper'
 import { THREAD_KINDS, type ThreadKind } from './publish-marker.schema'
@@ -15,7 +17,7 @@ import {
 	planPublish,
 	type PublishSelection,
 } from './publish-plan.helper'
-import type { BotThread, ThreadPlace } from './publish.types'
+import type { BotThread, PlannedThread, ThreadPlace } from './publish.types'
 
 /** Only the finding under examination is selected. */
 function selection(): PublishSelection {
@@ -283,6 +285,76 @@ describe('getMatchingThreads', () => {
 				)
 			).toHaveLength(shared / words.length >= SAME_TITLE_OVERLAP ? 1 : 0)
 		}
+	})
+})
+
+describe('getMatchingThreads with a cut title', () => {
+	test('the cut title bug carries a fingerprint for its uncut and its cut title', () => {
+		expect(cutTitleBug().fingerprint).not.toBe(cutTitleFingerprint())
+		expect(cutTitleBug().cutTitleFingerprint).toBe(cutTitleFingerprint())
+	})
+	test.each([
+		{ place: 'file', onFile: true, resolved: false, line: undefined },
+		{
+			place: 'resolved outdated line',
+			onFile: false,
+			resolved: true,
+			line: undefined,
+		},
+	])(
+		'a $place thread with the fingerprint of the cut title matches the finding',
+		({ onFile, resolved, line }) => {
+			const thread = botThread({
+				onFile,
+				resolved,
+				line,
+				originalLine: bug().line + NEAR_LINES + 1,
+			})
+			expect(
+				getMatchingThreads({ finding: cutTitleBug(), kind: 'bug' }, [
+					{
+						...thread,
+						marker: {
+							...thread.marker,
+							fingerprint: cutTitleFingerprint(),
+							title: 'Retry overwrites stored records',
+						},
+					},
+				])
+			).toHaveLength(1)
+		}
+	)
+	test('the bug counters see an open thread with the fingerprint of the cut title', () => {
+		const thread = botThread()
+		const threads = [
+			{
+				...thread,
+				marker: { ...thread.marker, fingerprint: cutTitleFingerprint() },
+			},
+		]
+		const plan = {
+			threads: [
+				{ finding: cutTitleBug(), kind: 'bug', place: 'summary' },
+			] satisfies PlannedThread[],
+			repeated: [],
+			dismissed: [],
+			summaryNits: [],
+		}
+		expect(countOpenBugs(plan, threads)).toBe(1)
+		expect(countUnthreadedBugs(plan, threads)).toBe(0)
+	})
+	test('a thread with the fingerprint of the uncut title matches the finding', () => {
+		expect(
+			getMatchingThreads({ finding: cutTitleBug(), kind: 'bug' }, [
+				botThread({
+					onFile: true,
+					marker: {
+						...botThread().marker,
+						fingerprint: cutTitleBug().fingerprint,
+					},
+				}),
+			])
+		).toHaveLength(1)
 	})
 })
 
