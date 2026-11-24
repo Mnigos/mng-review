@@ -168,7 +168,51 @@ export function toBotThread(
 		closedAt:
 			closing !== undefined && isCommitSha(closing) ? closing : undefined,
 		sentToOwner: hasOwnerAnswer(recent, owned),
+		unsettled: getWindowUnsettled(thread, owned),
 	}
+}
+
+/**
+ * The newest answer `app` wrote among `comments` and nobody else edited: its comment ending with a
+ * reply marker. Only the token's app counts, since a pull request's own workflow can post as the
+ * job token.
+ */
+function getNewestAnswer(
+	comments: readonly ThreadComment[],
+	app: BotIdentity
+): ThreadComment | undefined {
+	return comments.findLast(
+		comment =>
+			isBotComment(comment, [app]) &&
+			parseReplyMarker(comment.body) !== undefined
+	)
+}
+
+/** True when the newest answer of `app` among `comments` carries `unsettled`. */
+export function isUnsettled(
+	comments: readonly ThreadComment[],
+	app: BotIdentity
+): boolean {
+	const answer = getNewestAnswer(comments, app)
+	return (
+		answer !== undefined && parseReplyMarker(answer.body)?.unsettled === true
+	)
+}
+
+/**
+ * Whether the newest answer of the token's app (the first of `owned`) is unsettled, from the
+ * latest comments the read brought; `undefined` when the thread is longer than its two windows and
+ * the latest one holds no such answer.
+ */
+function getWindowUnsettled(
+	thread: Pick<ReviewThread, 'comments' | 'latest'>,
+	owned: readonly BotIdentity[]
+): boolean | undefined {
+	const [app] = owned
+	const latest = thread.latest?.nodes ?? []
+	if (!app) return false
+	if (getNewestAnswer(latest, app)) return isUnsettled(latest, app)
+	return thread.comments.totalCount > latest.length + 1 ? undefined : false
 }
 
 /** True for a refusal of the comment's place, the only failure after which another place is tried. */

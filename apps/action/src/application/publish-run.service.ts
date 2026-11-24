@@ -1,20 +1,39 @@
-import { RulesService } from '@mng-review/engine'
+import { type Rules, RulesService } from '@mng-review/engine'
 import {
 	type CommandRun,
 	type DismissalOutcome,
+	getAnsweredOpenThreads,
+	type GitHubApiError,
 	GitHubConfig,
 	provideOwnedIdentities,
+	type PublishIncompleteError,
 	type PublishResult,
 	PublishService,
+	type RatingBlock,
 	type ReplyPublishResult,
 	ReplyPublishService,
+	type RiskTarget,
 	type StatusReportResult,
 	StatusReportService,
 	SummaryReviewService,
 	toTrustedPlacement,
 } from '@mng-review/github'
 import { Context, Effect, Layer } from 'effect'
-import type { OutcomeFile } from '../infrastructure/outcome-file.schema'
+import type {
+	OutcomeFile,
+	OutcomeReplies,
+} from '../infrastructure/outcome-file.schema'
+import type { RiskRunSettings } from '../infrastructure/risk-run.config'
+import {
+	getConverseReplies,
+	isUnpublished,
+	toFailed,
+	toRiskField,
+	toRulesReason,
+	toStatusWriteError,
+} from './publish-report.helper'
+import { getRiskGate, getSettingsGate, type RiskGate } from './risk-gate.helper'
+import { type RiskReport, RiskRunService } from './risk-run.service'
 import { getGateReason } from './run-gate.helper'
 import type { PullRequestEvent } from './shadow-run.types'
 
@@ -36,7 +55,18 @@ export interface PublishContext {
 	readonly command?: CommandRun
 	/** A reply schedule run, from the job's trusted trigger: only a replied outcome publishes. */
 	readonly converse?: boolean
+	/** The app's environment and the default branch; without them nothing is rated. */
+	readonly risk?: RiskRunSettings
 }
+
+/** A GitHub failure after the rules loaded, which the report says and the rating may fail on. */
+type PublishFailure = GitHubApiError | PublishIncompleteError
+
+/** No environment and no default branch: the rating refuses. */
+const NO_RISK_SETTINGS = {
+	environment: '',
+	defaultBranch: '',
+} as const satisfies RiskRunSettings
 
 /** What publishing did with an outcome. */
 export type PublishReport =
@@ -45,6 +75,7 @@ export type PublishReport =
 			readonly result: PublishResult
 			/** Check runs written and whether the commit status was set. */
 			readonly checks: StatusReportResult
+			readonly risk?: RiskReport
 	  }
 	| {
 			readonly status: 'status-only'
@@ -57,9 +88,15 @@ export type PublishReport =
 	| {
 			readonly status: 'replied'
 			readonly result: ReplyPublishResult
+			readonly risk?: RiskReport
 	  }
 	| { readonly status: 'not-published'; readonly reason: string }
-	| { readonly status: 'failed'; readonly reason: string }
+	| {
+			readonly status: 'failed'
+			readonly reason: string
+			/** Set when the rating stopped before or in step 1; the job then fails. */
+			readonly risk?: RiskReport
+	  }
 
 /**
  * Publishes a parsed outcome file on its pull request: a reviewed run gets threads, the summary
@@ -69,8 +106,10 @@ export type PublishReport =
  * (`ReplyPublishService`) and nothing else. The rules name the bot identities whose
  * earlier threads and summary count. A skip, an invalid configuration or a git failure posts nothing; the job summary and the job's exit code report them. The rules are
  * loaded again from the binding's base commit, never taken from the file, and no model is
- * called. A GitHub or rules failure never fails the job: the report says what happened. When the
- * summary write fails after threads may have been posted, the status is set to `error` first.
+ * called. A GitHub or rules failure is a `failed` report; while the rating is on (or, when the
+ * rules did not load, while the settings would rate) it carries a failed rating, which fails the
+ * job (a refused `MNG Review` status too), and a thread run's thread raise still runs after its
+ * posts failed. When the summary write fails after posting began, the status is set to `error`.
  */
 export class PublishRunService extends Context.Service<
 	PublishRunService,
@@ -90,61 +129,98 @@ export const PublishRunServiceLive = Layer.effect(
 		const statuses = yield* StatusReportService
 		const replyPublisher = yield* ReplyPublishService
 		const rulesService = yield* RulesService
+		const riskRuns = yield* RiskRunService
 		const { identity } = yield* GitHubConfig
+
+		/** Whether the run rates under these rules for this pull request. */
+		const toGate = (context: PublishContext, rules: Rules) =>
+			getRiskGate({
+				config: rules.config,
+				identity,
+				settings: context.risk ?? NO_RISK_SETTINGS,
+				pr: context.event.pr,
+			})
+
+		/** Whether the run would rate if its rules, which did not load, turned the rating on. */
+		const toSettingsGate = (context: PublishContext) =>
+			getSettingsGate({
+				identity,
+				settings: context.risk ?? NO_RISK_SETTINGS,
+				pr: context.event.pr,
+			})
+
+		/** The bot identities whose earlier threads and summary count under these rules. */
+		const toOwned = (rules: Rules) =>
+			provideOwnedIdentities(identity, rules.config.identity.previous)
+
+		/**
+		 * A thread run's posts, then its thread raise, which runs even when the posts failed part way;
+		 * the failure then still fails the run.
+		 */
+		const withThreadRaise = <TValue, TError, TContext>(
+			posting: Effect.Effect<TValue, TError, TContext>,
+			gate: RiskGate,
+			target: RiskTarget
+		) =>
+			Effect.gen(function* () {
+				const posted = yield* Effect.result(posting)
+				const risk = yield* riskRuns.rateThread(gate, target)
+				if (posted._tag === 'Failure') return yield* Effect.fail(posted.failure)
+				return { value: posted.success, risk }
+			})
 
 		/**
 		 * A reply schedule run: the decisions only, with no `skip` rule or run limit, since a reply
-		 * on a pull request with a skip label is still the author's question.
+		 * on a pull request with a skip label is still the author's question. The threads it keeps
+		 * open are known before it posts, so the thread raise counts them even after a failure.
 		 */
 		const publishReplies = Effect.fn('PublishRunService.publishReplies')(
-			function* (outcome: OutcomeFile, context: PublishContext) {
-				if (
-					!context.converse ||
-					outcome.status !== 'replied' ||
-					!outcome.replies
-				)
-					return {
-						status: 'not-published',
-						reason: `the run ended ${outcome.status}`,
-					} satisfies PublishReport
-				const rules = yield* rulesService.load(outcome.binding.baseSha)
-				const result = yield* replyPublisher
-					.publish({
+			function* (
+				replies: OutcomeReplies,
+				outcome: OutcomeFile,
+				context: PublishContext,
+				rules: Rules
+			) {
+				const answered = getAnsweredOpenThreads(replies.decided)
+				const posting = replyPublisher.publish({
+					pullNumber: context.pullNumber,
+					head: context.head,
+					engineCommit: context.engineCommit,
+					rules,
+					replies: {
+						decisions: replies.decided,
+						base: outcome.binding.baseSha,
+						tokens: replies.tokens,
+					},
+				})
+				const { value, risk } = yield* withThreadRaise(
+					posting,
+					toGate(context, rules),
+					{
 						pullNumber: context.pullNumber,
 						head: context.head,
-						engineCommit: context.engineCommit,
+						baseSha: outcome.binding.baseSha,
+						defaultBranch: (context.risk ?? NO_RISK_SETTINGS).defaultBranch,
 						rules,
-						replies: {
-							decisions: outcome.replies.decided,
-							base: outcome.binding.baseSha,
-							tokens: outcome.replies.tokens,
-						},
-					})
-					.pipe(
-						provideOwnedIdentities(identity, rules.config.identity.previous)
-					)
-				return { status: 'replied', result } satisfies PublishReport
+						answered,
+					}
+				).pipe(toOwned(rules))
+				return {
+					status: 'replied',
+					result: value,
+					...toRiskField(risk),
+				} satisfies PublishReport
 			}
 		)
 
 		const publish = Effect.fn('PublishRunService.publish')(function* (
 			outcome: OutcomeFile,
-			context: PublishContext
+			context: PublishContext,
+			rules: Rules
 		) {
 			const { report, recheck, replies } = outcome
-			if (context.converse || outcome.status === 'replied')
-				return yield* publishReplies(outcome, context)
-			if (outcome.status !== 'reviewed' && outcome.status !== 'offline')
-				return {
-					status: 'not-published',
-					reason: `the run ended ${outcome.status}`,
-				} satisfies PublishReport
 			// The review job decided the gates too, but a file never decides whether this job writes.
-			const rules = yield* rulesService.load(outcome.binding.baseSha)
-			const owned = provideOwnedIdentities(
-				identity,
-				rules.config.identity.previous
-			)
+			const owned = toOwned(rules)
 			const gated = getGateReason(
 				context.event,
 				rules.config,
@@ -162,47 +238,83 @@ export const PublishRunServiceLive = Layer.effect(
 						reason: report.planReport.plan.skippedRun,
 					} satisfies PublishReport
 				const placed = toTrustedPlacement(report, rules)
-				const result = yield* publisher
-					.publish({
-						pullNumber: context.pullNumber,
-						report: placed,
-						rules,
-						head: context.head,
-						engineCommit: context.engineCommit,
-						...(context.command ? { command: context.command } : {}),
-						...(recheck
-							? {
-									recheck: {
-										checked: recheck.checked,
-										proposals: recheck.rejected,
-										tokens: recheck.tokens,
-									},
-								}
-							: {}),
-						...(replies
-							? {
-									replies: {
-										decisions: replies.decided,
-										base: outcome.binding.baseSha,
-										tokens: replies.tokens,
-									},
-								}
-							: {}),
-					})
-					.pipe(
-						owned,
-						Effect.tapErrorTag('PublishIncompleteError', () =>
-							statuses.reportUnfinished(context.head)
-						)
-					)
-				const checks = yield* statuses.report({
+				const target = {
+					pullNumber: context.pullNumber,
 					head: context.head,
-					report: placed,
-					verdict: result.verdict,
-					openBugs: result.openBugs,
-					finished: result.finished,
-				})
-				return { status: 'published', result, checks } satisfies PublishReport
+					baseSha: outcome.binding.baseSha,
+					defaultBranch: (context.risk ?? NO_RISK_SETTINGS).defaultBranch,
+					rules,
+				}
+				const gate = toGate(context, rules)
+				// The checks and the `MNG Review` status are written inside, so the grant stays last.
+				const toPublish = (rating: RatingBlock | undefined) =>
+					publisher
+						.publish({
+							...(rating ? { rating } : {}),
+							pullNumber: context.pullNumber,
+							report: placed,
+							rules,
+							head: context.head,
+							engineCommit: context.engineCommit,
+							...(context.command ? { command: context.command } : {}),
+							...(recheck
+								? {
+										recheck: {
+											checked: recheck.checked,
+											proposals: recheck.rejected,
+											tokens: recheck.tokens,
+										},
+									}
+								: {}),
+							...(replies
+								? {
+										replies: {
+											decisions: replies.decided,
+											base: outcome.binding.baseSha,
+											tokens: replies.tokens,
+										},
+									}
+								: {}),
+						})
+						.pipe(
+							Effect.flatMap(result =>
+								statuses
+									.report({
+										head: context.head,
+										report: placed,
+										verdict: result.verdict,
+										openBugs: result.openBugs,
+										finished: result.finished,
+									})
+									.pipe(Effect.map(checks => ({ result, checks })))
+							),
+							Effect.filterOrFail(
+								({ checks }) => gate.status !== 'on' || checks.status,
+								toStatusWriteError
+							),
+							Effect.tapErrorTag('PublishIncompleteError', () =>
+								statuses.reportUnfinished(context.head)
+							)
+						)
+				const rating = context.command?.agentOnly
+					? withThreadRaise(toPublish(undefined), gate, target)
+					: riskRuns.rateFull(gate, { ...target, report: placed }, toPublish)
+				const rated = yield* rating.pipe(owned)
+				const published = rated.value
+				if (published === undefined)
+					return {
+						status: 'failed',
+						reason:
+							rated.risk.status === 'failed'
+								? rated.risk.reason
+								: 'the risk rating stopped before step 1',
+						risk: rated.risk,
+					} satisfies PublishReport
+				return {
+					status: 'published',
+					...published,
+					...toRiskField(rated.risk),
+				} satisfies PublishReport
 			}
 			if (outcome.status === 'offline') {
 				const reason = `Reviewer offline: ${outcome.reason ?? 'no reason given'}. Nothing was reviewed.`
@@ -232,28 +344,28 @@ export const PublishRunServiceLive = Layer.effect(
 			outcome: OutcomeFile,
 			context: PublishContext
 		) {
-			return yield* publish(outcome, context).pipe(
+			if (isUnpublished(outcome, context))
+				return {
+					status: 'not-published',
+					reason: `the run ended ${outcome.status}`,
+				} satisfies PublishReport
+			const loaded = yield* Effect.result(
+				rulesService.load(outcome.binding.baseSha)
+			)
+			if (loaded._tag === 'Failure')
+				return toFailed(toRulesReason(loaded.failure), toSettingsGate(context))
+			const rules = loaded.success
+			const gate = toGate(context, rules)
+			const replies = getConverseReplies(outcome, context)
+			const publishing: Effect.Effect<PublishReport, PublishFailure> = replies
+				? publishReplies(replies, outcome, context, rules)
+				: publish(outcome, context, rules)
+			return yield* publishing.pipe(
 				Effect.catchTags({
 					GitHubApiError: error =>
-						Effect.succeed({
-							status: 'failed',
-							reason: error.message,
-						} satisfies PublishReport),
+						Effect.succeed(toFailed(error.message, gate)),
 					PublishIncompleteError: error =>
-						Effect.succeed({
-							status: 'failed',
-							reason: error.message,
-						} satisfies PublishReport),
-					ConfigError: error =>
-						Effect.succeed({
-							status: 'failed',
-							reason: `the rules at the base commit: ${error.source}: ${error.reason}`,
-						} satisfies PublishReport),
-					GitError: error =>
-						Effect.succeed({
-							status: 'failed',
-							reason: `the rules at the base commit: git: ${error.message}`,
-						} satisfies PublishReport),
+						Effect.succeed(toFailed(error.message, gate)),
 				})
 			)
 		})

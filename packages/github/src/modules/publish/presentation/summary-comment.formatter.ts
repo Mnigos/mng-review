@@ -1,6 +1,8 @@
 import { getSeverityRank } from '@mng-review/domain'
 import type { ReviewReport, TokensByModel } from '@mng-review/engine'
 import { escapeMarkdown, toCodeSpan } from '../../../utils/markdown.util'
+import type { RatingBlock } from '../../risk/domain/risk.types'
+import { formatRatingBlock } from '../../risk/presentation/rating-block.formatter'
 import type { SummaryMarker } from '../domain/publish-marker.schema'
 import { MARKER_PREFIX, SHORT_SHA_LENGTH } from '../domain/publish.constants'
 import type {
@@ -68,6 +70,7 @@ export interface SummaryInput {
 	readonly waiting?: readonly BotThread[]
 	/** Tokens of the whole job, the re-check and the reply decisions included. */
 	readonly tokens: TokensByModel
+	readonly rating?: RatingBlock
 }
 
 /** The verdict line: verdict, risk and why, open bugs and the run count. */
@@ -328,6 +331,7 @@ function toSummaryBody(input: SummaryInput, depth: SummaryDepth): string {
 		: ['', 'The details did not fit in one review; the job summary has them.']
 	return [
 		toVerdictLine(input),
+		...(input.rating ? formatRatingBlock(input.rating) : []),
 		...(input.carriedBugs
 			? [
 					'',

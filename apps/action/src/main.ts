@@ -3,6 +3,7 @@ import { BunRuntime, BunServices } from '@effect/platform-bun'
 import type { ConfigError } from '@mng-review/domain'
 import {
 	EndpointProbeServiceLive,
+	FloorDiffServiceLive,
 	GitServiceLive,
 	GitWorkdir,
 	RecheckServiceLive,
@@ -14,6 +15,7 @@ import {
 	CommandAuthorizeServiceLive,
 	GitHubApiServiceLive,
 	GitHubReviewServiceLive,
+	GitHubRiskServiceLive,
 	type GitHubConfig,
 	GitHubReadConfigLive,
 	GitHubStatusServiceLive,
@@ -22,6 +24,9 @@ import {
 	ReplyDecisionServiceLive,
 	ReplyFindServiceLive,
 	ReplyPublishServiceLive,
+	RiskFinishServiceLive,
+	RiskReadServiceLive,
+	RiskStartServiceLive,
 	StatusReportServiceLive,
 	StatusSweepServiceLive,
 	SummaryReviewServiceLive,
@@ -34,6 +39,7 @@ import { FetchHttpClient } from 'effect/http'
 import { ConverseRunServiceLive } from './application/converse-run.service'
 import { PrepareRunServiceLive } from './application/prepare-run.service'
 import { PublishRunServiceLive } from './application/publish-run.service'
+import { RiskRunServiceLive } from './application/risk-run.service'
 import { ShadowRunServiceLive } from './application/shadow-run.service'
 import type { ShadowOutcome } from './application/shadow-run.types'
 import {
@@ -73,6 +79,10 @@ import {
 	runShadowStep,
 } from './presentation/handlers/review-step.handler'
 import {
+	failRiskCleanupConfig,
+	runRiskCleanupStep,
+} from './presentation/handlers/risk-cleanup-step.handler'
+import {
 	failSweepConfig,
 	runSweepStep,
 } from './presentation/handlers/sweep-step.handler'
@@ -102,7 +112,8 @@ const toGitHubLive = (config: Layer.Layer<GitHubConfig, ConfigError>) =>
 	Layer.mergeAll(
 		GitHubApiServiceLive,
 		GitHubReviewServiceLive,
-		GitHubStatusServiceLive
+		GitHubStatusServiceLive,
+		GitHubRiskServiceLive
 	).pipe(Layer.provideMerge(config))
 
 /** Publishing, the summary review, thread resolution, replies and the status over one token. */
@@ -151,8 +162,22 @@ const PrepareLive = Layer.mergeAll(
 	Layer.provideMerge(RulesLive)
 )
 
+/**
+ * The risk rating around a publish: its reads (statuses, timeline, the risk comment, the floor
+ * diff from git), step 1 and the grant, over the publisher's token.
+ */
+const RiskLive = RiskRunServiceLive.pipe(
+	Layer.provide(
+		Layer.mergeAll(RiskStartServiceLive, RiskFinishServiceLive).pipe(
+			Layer.provideMerge(RiskReadServiceLive),
+			Layer.provide(FloorDiffServiceLive)
+		)
+	)
+)
+
 /** The publish step: the publisher over the write token and the rules; no endpoint, no model. */
 const PublishLive = PublishRunServiceLive.pipe(
+	Layer.provideMerge(RiskLive),
 	Layer.provideMerge(toPublisherLive(GitHubWriteConfigLive)),
 	Layer.provideMerge(RulesLive)
 )
@@ -184,6 +209,14 @@ const SweepLive = StatusSweepServiceLive.pipe(
 	Layer.provideMerge(RulesLive)
 )
 
+/** The risk cleanup over the write token: the revocation, the risk reads and the rules. */
+const RiskCleanupLive = RiskFinishServiceLive.pipe(
+	Layer.provideMerge(RiskReadServiceLive),
+	Layer.provide(FloorDiffServiceLive),
+	Layer.provideMerge(toPublisherLive(GitHubWriteConfigLive)),
+	Layer.provideMerge(RulesLive)
+)
+
 /** An unknown `MNG_REVIEW_MODE`: reported as an invalid configuration before anything else runs. */
 const runInvalidMode = Effect.gen(function* () {
 	const startedAt = yield* Clock.currentTimeMillis
@@ -193,7 +226,7 @@ const runInvalidMode = Effect.gen(function* () {
 		status: 'invalid-config',
 		source: MODE_VARIABLE,
 		reason:
-			'must be shadow, prepare, review, publish, sweep, authorize, reserve or find',
+			'must be shadow, prepare, review, publish, sweep, authorize, reserve, find or risk-cleanup',
 	}
 	yield* Console.log(formatLogLine(invalid))
 	yield* writeSummary(
@@ -222,6 +255,11 @@ const runAction = Effect.gen(function* () {
 		return yield* maskAppToken().pipe(
 			Effect.andThen(runSweepStep.pipe(Effect.provide(SweepLive))),
 			Effect.catchTag('ConfigError', failSweepConfig)
+		)
+	if (mode.value === 'risk-cleanup')
+		return yield* maskAppToken().pipe(
+			Effect.andThen(runRiskCleanupStep.pipe(Effect.provide(RiskCleanupLive))),
+			Effect.catchTag('ConfigError', failRiskCleanupConfig)
 		)
 	if (mode.value === 'authorize')
 		return yield* runAuthorizeStep.pipe(

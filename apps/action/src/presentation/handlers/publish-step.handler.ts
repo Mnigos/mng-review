@@ -10,6 +10,7 @@ import {
 	toMismatchReason,
 	toOutcomeBinding,
 } from '../../application/outcome-file.helper'
+import { failsRating } from '../../application/publish-report.helper'
 import {
 	type PublishContext,
 	PublishRunService,
@@ -24,6 +25,7 @@ import {
 import { OutcomeFileError } from '../../infrastructure/outcome-file.errors'
 import { parseOutcomeFile } from '../../infrastructure/outcome-file.parser'
 import { parsePullRequestEvent } from '../../infrastructure/pull-request-event.parser'
+import { riskRunConfig } from '../../infrastructure/risk-run.config'
 import { addPublishToResult } from '../../infrastructure/runner-output.client'
 import {
 	hasOutcomeFile,
@@ -135,9 +137,13 @@ const readTrustedOutcome = Effect.fn('publishStep.readTrustedOutcome')(
 				message: toMismatchReason(mismatch),
 			})
 		if (read.skipped !== undefined) return { skipped: read.skipped }
+		const risk = yield* riskRunConfig.pipe(
+			Effect.orElseSucceed(() => ({ environment: '', defaultBranch: '' }))
+		)
 		return {
 			file,
 			context: {
+				risk,
 				engineCommit: env.engineCommit,
 				pullNumber: trusted.pullNumber,
 				head: trusted.headSha,
@@ -190,7 +196,9 @@ export const publishMissingOutcome = Effect.gen(function* () {
  * engine or pull request posts nothing and exits 1; for the reply schedule a missing file means
  * the review leg had nothing to answer, and a pull request that changed since the find job listed
  * it is left to the next tick: both post nothing and the step passes. Once the file is trusted, a
- * GitHub refusal is reported and the step passes, as before the split.
+ * GitHub refusal is reported and the step passes, as before the split, unless the run rates: then
+ * any failed report carries a failed rating, and the step exits 1 on it or on a grant that may
+ * still stand.
  */
 export const runPublishStep = Effect.gen(function* () {
 	if (yield* publishMissingOutcome) return yield* Effect.void
@@ -213,7 +221,10 @@ export const runPublishStep = Effect.gen(function* () {
 	const report = yield* PublishRunService.use(service =>
 		service.run(trusted.file, trusted.context)
 	)
-	return yield* finishPublish(report, env)
+	yield* finishPublish(report, env)
+	// A failed rating fails the job, so the merge sweep's run hold sees it and the cleanup runs.
+	if (!failsRating(report)) return yield* Effect.void
+	return yield* new ActionExit({ code: FAILED_EXIT_CODE })
 })
 
 /** A domain `ConfigError` (a token or app setting, the rules) or one of Effect's own config errors. */

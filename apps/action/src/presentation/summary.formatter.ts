@@ -23,6 +23,7 @@ import type {
 	ShadowOutcome,
 } from '../application/shadow-run.types'
 import { toFindingsLines } from './findings-summary.formatter'
+import { withRiskText } from './risk-summary.formatter'
 
 export const SUMMARY_TITLE = '## MNG Review (shadow mode)'
 export const PUBLISH_SUMMARY_TITLE = '## MNG Review (publish mode)'
@@ -282,7 +283,7 @@ function toDismissalText(dismissal: DismissalOutcome): string {
 }
 
 /** What publish mode did on the pull request, in one line of plain text. */
-function toPublishText(report: PublishReport): string {
+function toPublishBaseText(report: PublishReport): string {
 	if (report.status === 'failed') return `publishing failed: ${report.reason}`
 	if (report.status === 'not-published')
 		return `nothing posted: ${report.reason}`
@@ -298,6 +299,11 @@ function toPublishText(report: PublishReport): string {
 	}
 	const { result, checks } = report
 	return `posted run ${result.run}: verdict ${result.verdict}, review ${toReviewText(result)}, ${toDismissalText(result.dismissal)}, ${result.openBugs} open bug thread(s); new threads: ${result.onLine} on lines, ${result.onFile} on files, ${result.inSummary} in the summary, ${result.unposted} not posted; ${result.repeated} already had a thread, ${result.dismissed} found again under resolved threads; ${result.resolved} of ${result.rechecked} rechecked thread(s) resolved; ${checks.checks} check run(s), status ${checks.status ? 'set' : 'not set'}; earlier summaries: ${result.cleanup}; replies answered: ${toAnswerText(result.answered)}; ${result.waiting} thread(s) wait for the owner, label ${result.label}`
+}
+
+/** What publishing did, with the rating's clause. */
+function toPublishText(report: PublishReport): string {
+	return withRiskText(toPublishBaseText(report), report)
 }
 
 /** The engine's commit in a sentence. */

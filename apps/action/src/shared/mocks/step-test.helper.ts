@@ -27,6 +27,7 @@ import {
 } from './outcome-file.helper'
 import { eventPayload } from './pull-request-event.helper'
 import { RULES } from './review-report.helper'
+import { RiskRunOffLayer } from './risk-run.helper'
 
 /** Local repository and runner files with recording GitHub boundaries and no HTTP layer. */
 export function stepFixture(
@@ -149,7 +150,8 @@ export function stepFixture(
 			Layer.mergeAll(
 				publisherLayer,
 				StatusReportServiceLive.pipe(Layer.provide(status.layer)),
-				rulesLayer
+				rulesLayer,
+				RiskRunOffLayer
 			)
 		),
 		Layer.merge(api.api)
