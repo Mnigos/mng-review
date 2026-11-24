@@ -105,3 +105,4 @@ Converse (7): `ReplyService` in `modules/converse` decides on an author's reply 
 | [0009](docs/decisions/0009-bot-identity-commands-and-replies.md) | A GitHub App identity, mention commands and answers to replies                    |
 | [0010](docs/decisions/0010-summary-in-reviews.md)                | The summary is the body of the bot's review, edited or posted once per run        |
 | [0011](docs/decisions/0011-review-state-carries-the-verdict.md)  | The review state carries the verdict; the bot approves and requests changes       |
+| [0012](docs/decisions/0012-risk-rating.md)                       | The risk rating is a commit status the app grants last; ratings never walk down   |

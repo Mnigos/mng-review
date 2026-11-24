@@ -45,6 +45,13 @@ const SPEC_DEFAULTS = {
 		validator: 'cross',
 	},
 	identity: { previous: ['github-actions'] },
+	risk: {
+		enabled: false,
+		labels: { low: 'Low Risk', medium: 'Medium Risk', high: 'High Risk' },
+		floors: [],
+		assets: DEFAULT_PRESET.risk.assets,
+		reviews_per_head: 3,
+	},
 } as const satisfies ReviewConfig
 
 layer(Layer.empty)('parseReviewConfig', test => {
