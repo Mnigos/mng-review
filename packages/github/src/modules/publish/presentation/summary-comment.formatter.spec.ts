@@ -1,3 +1,4 @@
+import { SEVERITIES } from '@mng-review/domain'
 import { agent, config } from '../../../shared/mocks/domain-test.helper'
 import {
 	HOSTILE_TEXT,
@@ -524,5 +525,66 @@ describe('toUnfinishedSummary', () => {
 			...marker,
 			finished: false,
 		})
+	})
+})
+
+describe('summary finding markers', () => {
+	test.each(SEVERITIES)(
+		'uses the shared %s marker for folded summaries and review lists',
+		severity => {
+			const finding = bug({ severity })
+			const fixture = input()
+			const name = `${severity.charAt(0).toUpperCase()}${severity.slice(1)}`
+			const text = formatSummaryComment({
+				...fixture,
+				report: { ...report(), bugs: [finding] },
+				plan: {
+					threads: [{ finding, kind: 'bug', place: 'summary' }],
+					repeated: [],
+					dismissed: [],
+					summaryNits: [],
+				},
+			})
+			expect(text).toContain(
+				`<summary>${SEVERITY_MARKERS[severity]} ${name} finding 1</summary>`
+			)
+			expect(text).toContain(`${SEVERITY_MARKERS[severity]} **${name}**`)
+		}
+	)
+	test('a nit has no severity marker in its folded heading or list, and summary findings never suggest edits', () => {
+		const finding = bug({
+			kind: 'nit',
+			suggestion: 'Use a unique key.',
+			validation: {
+				status: 'confirmed',
+				severity: 'high',
+				reason: 'Confirmed.',
+				evidence: [],
+				model: 'model',
+				edit: {
+					commit: LINKS.head,
+					line: bug().line,
+					original: 'old()',
+					replacement: 'new()',
+				},
+			},
+		})
+		const text = formatSummaryComment({
+			...input(),
+			report: { ...report(), bugs: [], nits: [finding] },
+			plan: {
+				threads: [],
+				repeated: [],
+				dismissed: [],
+				summaryNits: [finding],
+			},
+		})
+		expect(text).toContain('**Nit**')
+		expect(text).not.toContain('```suggestion')
+		for (const marker of [
+			...Object.values(SEVERITY_MARKERS),
+			UNVERIFIED_MARKER,
+		])
+			expect(text).not.toContain(marker)
 	})
 })

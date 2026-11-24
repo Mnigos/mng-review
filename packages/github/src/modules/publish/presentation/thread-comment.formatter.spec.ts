@@ -1,17 +1,25 @@
+import { SEVERITIES } from '@mng-review/domain'
 import {
 	HOSTILE_TEXT,
 	toTextOutsideCode,
 } from '../../../shared/mocks/hostile-text.helper'
-import { bug, LINKS } from '../../../shared/mocks/publish-test.helper'
+import {
+	bug,
+	botThread,
+	LINKS,
+} from '../../../shared/mocks/publish-test.helper'
 import { escapeMarkdown } from '../../../utils/markdown.util'
 import {
 	parseFindingMarker,
 	parseReplyMarker,
 } from '../domain/publish-marker.parser'
+import { isSameProblem } from '../domain/publish-plan.helper'
 import {
 	formatThreadComment,
 	formatResolvedReply,
 	MAX_COMMENT_CHARS,
+	toKindLabel,
+	toKindTag,
 	toFindingMarker,
 	toMarkerComment,
 } from './thread-comment.formatter'
@@ -19,6 +27,7 @@ import {
 import {
 	MARKER_VERSION,
 	SEVERITY_MARKERS,
+	UNVERIFIED_MARKER,
 	SHORT_SHA_LENGTH,
 } from '../domain/publish.constants'
 import { toFindingBodyLines } from './finding-body.formatter'
@@ -227,5 +236,83 @@ describe('formatResolvedReply', () => {
 			action: 'resolved',
 			commit: links.head,
 		})
+	})
+})
+
+describe('thread heading and matching compatibility', () => {
+	test.each(SEVERITIES)(
+		'uses the shared severity marker for %s in labels, tags and thread headings',
+		severity => {
+			const name = `${severity.charAt(0).toUpperCase()}${severity.slice(1)}`
+			expect(toKindLabel('bug', severity)).toBe(
+				`${SEVERITY_MARKERS[severity]} ${name}`
+			)
+			expect(toKindTag('bug', severity)).toBe(
+				`${SEVERITY_MARKERS[severity]} **${name}**`
+			)
+			expect(
+				formatThreadComment(
+					{ finding: bug({ severity, title: HOSTILE_TEXT }), kind: 'bug' },
+					LINKS,
+					true
+				).split('\n')[0]
+			).toBe(
+				`${SEVERITY_MARKERS[severity]} **${name}** · ${escapeMarkdown(HOSTILE_TEXT)}`
+			)
+			expect(toKindLabel('unverified', severity)).toBe(
+				`${UNVERIFIED_MARKER} Unverified, ${severity}`
+			)
+			expect(toKindTag('unverified', severity)).toBe(
+				`${UNVERIFIED_MARKER} **Unverified, ${severity}**`
+			)
+			expect(toKindLabel('nit', severity)).toBe('Nit')
+			expect(toKindTag('nit', severity)).toBe('**Nit**')
+		}
+	)
+	test.each([true, false])(
+		'keeps a parseable marker last and matches the same problem with onLine=%s',
+		onLine => {
+			const finding = bug({
+				title: HOSTILE_TEXT,
+				trigger: HOSTILE_TEXT,
+				impact: HOSTILE_TEXT,
+			})
+			const published = { finding, kind: 'bug' } as const
+			const text = formatThreadComment(published, LINKS, onLine)
+			const marker = parseFindingMarker(text)
+			expect(marker).toEqual(toFindingMarker(published, LINKS))
+			expect(
+				text.endsWith(
+					toMarkerComment('finding', toFindingMarker(published, LINKS))
+				)
+			).toBe(true)
+			if (!marker) return
+			expect(
+				isSameProblem(finding, botThread({ marker, onFile: !onLine }))
+			).toBe(true)
+		}
+	)
+	test('offers a suggestion only for an on-line thread', () => {
+		const finding = bug({
+			validation: {
+				status: 'confirmed',
+				severity: 'high',
+				reason: 'Confirmed.',
+				evidence: [],
+				model: 'model',
+				edit: {
+					commit: LINKS.head,
+					line: bug().line,
+					original: 'old()',
+					replacement: 'new()',
+				},
+			},
+		})
+		expect(
+			formatThreadComment({ finding, kind: 'bug' }, LINKS, true)
+		).toContain('```suggestion\nnew()\n```')
+		expect(
+			formatThreadComment({ finding, kind: 'bug' }, LINKS, false)
+		).not.toContain('```suggestion')
 	})
 })

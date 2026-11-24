@@ -1,8 +1,11 @@
 import {
+	MAX_VERDICT_REASON_CHARS,
+	MAX_PREMISE_CHARS,
 	SEVERITIES,
 	SEVERITY_CRITERIA,
 	SEVERITY_RUBRIC,
 } from '@mng-review/domain'
+import { WRITING_RULES_PROMPT } from '../../review/application/reviewer.prompt'
 import { VALIDATOR_PROMPT } from './validator.prompt'
 
 describe('VALIDATOR_PROMPT severity and evidence rules', () => {
@@ -26,4 +29,13 @@ describe('VALIDATOR_PROMPT severity and evidence rules', () => {
 		)
 		expect(VALIDATOR_PROMPT).toContain('answer `unverified`')
 	})
+})
+
+test('validator writing rules include shared wording, text limits and the edit contract', () => {
+	expect(VALIDATOR_PROMPT).toContain(WRITING_RULES_PROMPT)
+	for (const limit of [MAX_VERDICT_REASON_CHARS, MAX_PREMISE_CHARS])
+		expect(VALIDATOR_PROMPT).toContain(String(limit))
+	for (const field of ['`edit`', '`line`', '`replacement`'])
+		expect(VALIDATOR_PROMPT).toContain(field)
+	expect(VALIDATOR_PROMPT).toContain('copied exactly without its line number')
 })

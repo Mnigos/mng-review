@@ -1,5 +1,11 @@
 import { layer } from '@effect/vitest'
-import { absorb, NEAR_LINES, UNNAMED_PREMISE } from '@mng-review/domain'
+import {
+	absorb,
+	MAX_PREMISE_CHARS,
+	MAX_VERDICT_REASON_CHARS,
+	NEAR_LINES,
+	UNNAMED_PREMISE,
+} from '@mng-review/domain'
 import { Deferred, Effect, Fiber, Layer, Ref } from 'effect'
 import { LanguageModel } from 'effect/ai'
 import {
@@ -1357,4 +1363,147 @@ layer(Layer.empty)('group validation scheduling', test => {
 					)
 				)
 		)
+})
+
+layer(Layer.empty)('validator confirmed edits', test => {
+	for (const scenario of [
+		'matching',
+		'mismatch',
+		'reject',
+		'unverified',
+	] as const)
+		test.effect(
+			`${scenario} edit is retained only when confirmed against the head line`,
+			() =>
+				Effect.gen(function* () {
+					const validation = yield* ValidatorService.use(validator =>
+						validator.validate(finding(), CONTEXT)
+					)
+					if (scenario === 'matching')
+						expect(validation).toMatchObject({
+							status: 'confirmed',
+							edit: {
+								commit: CONTEXT.scope.change.head.commit,
+								line: finding().line,
+								original: 'charge(balance)',
+								replacement: 'chargeOnce(balance)',
+							},
+						})
+					else {
+						expect(validation.status).toBe(
+							scenario === 'mismatch'
+								? 'confirmed'
+								: scenario === 'reject'
+									? 'rejected'
+									: 'unverified'
+						)
+						expect(validation).not.toHaveProperty('edit')
+					}
+				}).pipe(
+					Effect.provide(
+						validatorLayer(() =>
+							Effect.succeed(
+								answer(
+									'report_verdict',
+									verdict({
+										verdict:
+											scenario === 'reject'
+												? 'reject'
+												: scenario === 'unverified'
+													? 'unverified'
+													: 'confirm',
+										premise: 'A package retries.',
+										edit: {
+											line:
+												scenario === 'mismatch'
+													? 'different()'
+													: 'charge(balance)',
+											replacement: 'chargeOnce(balance)',
+										},
+									})
+								)
+							)
+						)
+					)
+				)
+		)
+	test.effect('reads the edit source at the head commit and finding path', () =>
+		Effect.gen(function* () {
+			const readFileAtSpy = vi.fn(() =>
+				Effect.succeed('const balance = 9\ncharge(balance)')
+			)
+			yield* Effect.gen(function* () {
+				expect(
+					yield* ValidatorService.use(validator =>
+						validator.validate(finding(), CONTEXT)
+					)
+				).toHaveProperty('edit', {
+					commit: CONTEXT.scope.change.head.commit,
+					line: finding().line,
+					original: 'charge(balance)',
+					replacement: '',
+				})
+				expect(readFileAtSpy).toHaveBeenCalledWith(
+					CONTEXT.scope.change.head.commit,
+					finding().path
+				)
+			}).pipe(
+				Effect.provide(
+					ValidatorServiceLive.pipe(
+						Layer.provideMerge(
+							reviewDependencies(
+								() =>
+									Effect.succeed(
+										answer(
+											'report_verdict',
+											verdict({
+												edit: { line: 'charge(balance)', replacement: '' },
+											})
+										)
+									),
+								{},
+								gitFixture({ readFileAt: readFileAtSpy })
+							)
+						)
+					)
+				)
+			)
+		})
+	)
+})
+
+layer(Layer.empty)('validator text limits', test => {
+	test.effect(
+		'cuts an over-long reason and premise and keeps the verdict without a correction turn',
+		() =>
+			Effect.gen(function* () {
+				const validation = yield* ValidatorService.use(validator =>
+					validator.validate(finding(), CONTEXT)
+				)
+				expect(validation.status).toBe('unverified')
+				if (validation.status !== 'unverified') return
+				expect(validation.reason.length).toBeLessThanOrEqual(
+					MAX_VERDICT_REASON_CHARS
+				)
+				expect(validation.premise.length).toBeLessThanOrEqual(MAX_PREMISE_CHARS)
+				expect(validation.reason).toMatch(/because…$/u)
+				expect(validation.premise).toMatch(/retries…$/u)
+				expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(1)
+			}).pipe(
+				Effect.provide(
+					validatorLayer(() =>
+						Effect.succeed(
+							answer(
+								'report_verdict',
+								verdict({
+									verdict: 'unverified',
+									reason: 'because '.repeat(200).trim(),
+									premise: 'retries '.repeat(100).trim(),
+								})
+							)
+						)
+					)
+				)
+			)
+	)
 })

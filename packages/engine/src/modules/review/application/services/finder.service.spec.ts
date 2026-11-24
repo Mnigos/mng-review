@@ -1,4 +1,10 @@
 import { layer } from '@effect/vitest'
+import {
+	MAX_FINDING_FIX_CHARS,
+	MAX_FINDING_IMPACT_CHARS,
+	MAX_FINDING_STEP_CHARS,
+	MAX_FINDING_TITLE_CHARS,
+} from '@mng-review/domain'
 import { Effect, Layer } from 'effect'
 import { LlmError } from '../../../../platform/llm/llm.errors'
 import {
@@ -1341,5 +1347,47 @@ layer(Layer.empty)('coverage allowance wiring', test => {
 					})
 					if (fanOut) expect(requests[1]?.budget).not.toHaveProperty('reserve')
 				})
+		)
+})
+
+layer(Layer.empty)('finder text limits', test => {
+	const limits = {
+		title: MAX_FINDING_TITLE_CHARS,
+		impact: MAX_FINDING_IMPACT_CHARS,
+		suggestion: MAX_FINDING_FIX_CHARS,
+		trigger: MAX_FINDING_STEP_CHARS,
+	} as const
+	for (const field of ['title', 'impact', 'suggestion', 'trigger'] as const)
+		test.effect(
+			`cuts an over-long ${field}, keeps every finding and asks for no correction turn`,
+			() =>
+				Effect.gen(function* () {
+					const run = yield* FinderService.use(finder =>
+						finder.run(plannedRun(), context())
+					)
+					expect(run.report).toMatchObject({
+						status: 'ok',
+						findings: 2,
+						malformed: 0,
+					})
+					const [cut, other] = run.findings
+					expect(cut?.[field]?.length).toBeLessThanOrEqual(limits[field])
+					expect(cut?.[field]).toMatch(/word…$/u)
+					expect(other?.title).toBe('Another defect')
+					expect(yield* ScriptedLlm.use(script => script.calls)).toHaveLength(1)
+				}).pipe(
+					Effect.provide(
+						finderLayer(() =>
+							Effect.succeed(
+								answer('report_findings', {
+									findings: [
+										rawFinding({ [field]: 'word '.repeat(200).trim() }),
+										rawFinding({ title: 'Another defect' }),
+									],
+								})
+							)
+						)
+					)
+				)
 		)
 })
