@@ -9,6 +9,7 @@ import {
 	toReviewJson,
 } from '@mng-review/engine'
 import { formatPlanText } from './plan.formatter'
+import { toRiskLines } from './risk.formatter'
 import { toModelTokenLines, toSourceTokenLines } from './tokens.formatter'
 
 const MILLIS_PER_SECOND = 1000
@@ -119,7 +120,7 @@ function toSection(title: string, lines: readonly string[]): string[] {
 	return lines.length === 0 ? [] : ['', title, ...lines]
 }
 
-/** Findings, nits, rejected bugs, agents, tokens, dropped models and wall time. */
+/** Findings, nits, rejected bugs, the risk rating, agents, tokens, dropped models and wall time. */
 function toOutcomeLines(report: ReviewReport): string[] {
 	const inline = report.bugs.filter(bug => bug.placement === 'inline')
 	const unverified = report.bugs.filter(
@@ -150,6 +151,7 @@ function toOutcomeLines(report: ReviewReport): string[] {
 			`Rejected by the validator (${report.rejected.length}):`,
 			report.rejected.flatMap(toRejectedLines)
 		),
+		...(report.rating ? toRiskLines(report.rating) : []),
 		...toSection('Agents:', report.agents.map(toAgentLine)),
 		...toSection('Tokens:', toModelTokenLines(report.tokens, '  ')),
 		...toSection(

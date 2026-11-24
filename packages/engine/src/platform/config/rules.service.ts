@@ -10,6 +10,7 @@ import {
 	parseImportLine,
 	parseReviewConfig,
 	type ReviewConfig,
+	RISK_RULES_PATH,
 	toDeclaredAgent,
 } from '@mng-review/domain'
 import { Context, Effect, FileSystem, Layer, Path } from 'effect'
@@ -23,6 +24,14 @@ import {
 
 const AGENT_EXTENSION = '.md'
 
+/** The risk rubric with its imports expanded, and every file it resolves to. */
+export interface RiskRules {
+	/** `.mng/risk.md` with its imports expanded; empty when the repository has none. */
+	readonly rubric: string
+	/** The rubric and the files it imports; the built-in floor covers each. */
+	readonly paths: readonly string[]
+}
+
 /** The rules of a run: `review.yml` over its preset and the declared agents, imports expanded. */
 export interface Rules {
 	readonly config: ReviewConfig
@@ -31,6 +40,8 @@ export interface Rules {
 	readonly context?: string
 	/** `.mng/MEMORY.md`, when the repository has one. */
 	readonly memory?: string
+	/** The risk rubric, loaded only with `risk.enabled`. */
+	readonly risk?: RiskRules
 	/** `working tree` or the rules ref. */
 	readonly source: string
 }
@@ -130,6 +141,26 @@ function loadAgents(reader: RepoReader) {
 	)
 }
 
+/** `.mng/risk.md` and the files its import lines name; no rubric gives empty text and no paths. */
+const loadRiskRules = Effect.fn('RulesService.loadRiskRules')(function* (
+	reader: RepoReader
+) {
+	const text = yield* readNamed(reader, RISK_RULES_PATH, RISK_RULES_PATH)
+	if (text === undefined) return { rubric: '', paths: [] } satisfies RiskRules
+	const imports = yield* Effect.forEach(text.split('\n'), line =>
+		parseImportLine(line, RISK_RULES_PATH)
+	)
+	return {
+		rubric: yield* expandImports(text, reader, RISK_RULES_PATH),
+		paths: [
+			...new Set([
+				RISK_RULES_PATH,
+				...imports.flatMap(found => (found ? [found.path] : [])),
+			]),
+		],
+	} satisfies RiskRules
+})
+
 export const RulesServiceLive = Layer.effect(
 	RulesService,
 	Effect.gen(function* () {
@@ -156,12 +187,16 @@ export const RulesServiceLive = Layer.effect(
 			const agents = yield* loadAgents(reader)
 			const context = yield* readNamed(reader, CONTEXT_PATH, CONTEXT_PATH)
 			const memory = yield* readNamed(reader, MEMORY_PATH, MEMORY_PATH)
+			const risk = config.risk.enabled
+				? yield* loadRiskRules(reader)
+				: undefined
 			return {
 				config,
 				agents,
 				source: reader.source,
 				...(context === undefined ? {} : { context }),
 				...(memory === undefined ? {} : { memory }),
+				...(risk === undefined ? {} : { risk }),
 			}
 		})
 

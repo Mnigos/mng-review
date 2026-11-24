@@ -53,6 +53,8 @@ export const LABEL_MAX_LENGTH = 50
 export const RESERVED_LABELS = ['blocked'] as const
 /** `review` commands that rate one head; a later one gets a cap reply. */
 export const DEFAULT_REVIEWS_PER_HEAD = 3
+/** `risk.model` value that rates on the validator's model: `models.validator`, else the reviewers in order. */
+export const VALIDATOR_RISK_MODEL = 'validator'
 
 /** Git modes in `--raw` output. */
 export const GIT_MODE = {

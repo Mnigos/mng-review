@@ -3,6 +3,7 @@ import type {
 	TokensByModel,
 	TokensBySource,
 } from '../../../platform/llm/token-ledger.service'
+import type { RiskRating } from '../../risk/domain/risk-rating.types'
 import type { PlanReport } from '../../routing/domain/plan-report.types'
 
 /** A model the run stopped using, and why. */
@@ -67,4 +68,6 @@ export interface ReviewReport extends ReviewOutcome {
 	readonly incomplete?: IncompleteRun
 	/** A kept bug at or above its severity floor. */
 	readonly blocking: boolean
+	/** The risk rating, set only on a full run with `risk.enabled` (`isRatingRun`). */
+	readonly rating?: RiskRating
 }

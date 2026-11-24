@@ -8,10 +8,21 @@ import {
 	FINGERPRINT_LENGTH,
 	MECHANICAL_CONDITIONS,
 	normalizeRepoPath,
+	RATED_LEVELS,
 	RISK_CATEGORIES,
 	RISK_LEVELS,
+	RULES_DIGEST_PATTERN,
 	severitySchema,
+	UNRATED_REASONS,
 } from '@mng-review/domain'
+import {
+	MAX_RISK_DETAIL_CHARS,
+	MAX_RISK_DIRECTION_CHARS,
+	MAX_RISK_REASON_CHARS,
+	MAX_RISK_REASONS,
+	MAX_RISK_REF_CHARS,
+	MAX_RISK_REFS,
+} from '@mng-review/engine'
 import { Effect, Schema } from 'effect'
 
 /** Most entries in each finding list, the agent reports, and the plan's runs and skips. */
@@ -244,6 +255,59 @@ const agentRunReportSchema = Schema.Struct({
 	wallMillis: countSchema,
 })
 
+const ratedLevelSchema = Schema.Literals(RATED_LEVELS)
+
+/** A floor the complete change hits, with its paths and their summed line counts. */
+const floorHitSchema = Schema.Struct({
+	name: nameSchema,
+	level: ratedLevelSchema,
+	builtIn: Schema.Boolean,
+	paths: boundedList(textSchema, MAX_REPORT_FILES),
+	added: countSchema,
+	deleted: countSchema,
+})
+
+/** A rating string at most `max` characters, the engine's cut for it. */
+function riskTextSchema(max: number) {
+	return Schema.String.check(Schema.isMaxLength(max))
+}
+
+/** What every rating names: the head, the merge base, the rules digest and the floors. */
+const ratingBindingFields = {
+	head: commitShaSchema,
+	base: commitShaSchema,
+	rules: Schema.String.check(Schema.isPattern(RULES_DIGEST_PATTERN)),
+	floors: boundedList(floorHitSchema),
+	floor: Schema.Boolean,
+} as const
+
+/**
+ * The engine's risk rating. Publish shows its reasons and recomputes the floors from its own git
+ * read; it never takes the floors or a level from here as a permission.
+ */
+const riskRatingSchema = Schema.Union([
+	Schema.Struct({
+		...ratingBindingFields,
+		status: Schema.Literal('rated'),
+		level: ratedLevelSchema,
+		model: ratedLevelSchema,
+		reasons: boundedList(
+			riskTextSchema(MAX_RISK_REASON_CHARS),
+			MAX_RISK_REASONS
+		).check(Schema.isMinLength(1)),
+		refs: boundedList(riskTextSchema(MAX_RISK_REF_CHARS), MAX_RISK_REFS),
+		up: Schema.optional(riskTextSchema(MAX_RISK_DIRECTION_CHARS)),
+		down: Schema.optional(riskTextSchema(MAX_RISK_DIRECTION_CHARS)),
+		rater: nameSchema,
+	}),
+	Schema.Struct({
+		...ratingBindingFields,
+		status: Schema.Literal('unrated'),
+		reason: Schema.Literals(UNRATED_REASONS),
+		detail: riskTextSchema(MAX_RISK_DETAIL_CHARS),
+	}),
+])
+
 /**
  * The engine's `ReviewReport` as it crosses from the review to publishing in the outcome file.
  * Paths are repository-relative, commits are full SHAs, and every list and string is bounded; a
@@ -276,5 +340,6 @@ export const reviewReportSchema = Schema.Struct({
 		Schema.Struct({ reason: textSchema, unfinished: textListSchema })
 	),
 	blocking: Schema.Boolean,
+	rating: Schema.optional(riskRatingSchema),
 })
 export type DecodedReviewReport = typeof reviewReportSchema.Type

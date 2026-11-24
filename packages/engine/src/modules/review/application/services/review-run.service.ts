@@ -10,6 +10,10 @@ import type { Rules } from '../../../../platform/config/rules.service'
 import { SAFE_DIFF } from '../../../../platform/git/git.constants'
 import type { GitError } from '../../../../platform/git/git.errors'
 import { GitService } from '../../../../platform/git/git.service'
+import { TokenLedger } from '../../../../platform/llm/token-ledger.service'
+import { RaterService } from '../../../risk/application/rater.service'
+import { isRatingRun } from '../../../risk/domain/risk-rating.helper'
+import { makeRaterLayer } from '../../../risk/infrastructure/risk.layers'
 import {
 	PlanService,
 	PlanServiceLive,
@@ -23,6 +27,7 @@ import {
 	MAX_TOOL_CALLS,
 } from '../../domain/review.constants'
 import { makeReviewLayer } from '../../infrastructure/review.layers'
+import type { ReviewLimits } from '../review-limits.context'
 import { ReviewService } from './review.service'
 
 /** One review of a change: the loaded rules, the two refs and what is known about the pull request. */
@@ -120,26 +125,56 @@ export const reviewChange = Effect.fn('ReviewRunService.reviewChange')(
 		const incremental = yield* toIncrementalReport(planned, request.since)
 		const planReport = toRequestedReport(incremental, request)
 		const { plan } = planReport
-		if (plan.skippedRun || plan.runs.length === 0)
-			return toEmptyReviewReport(
-				planReport,
-				(yield* Clock.currentTimeMillis) - startedAt
-			)
-		return yield* ReviewService.use(service =>
-			service.review({ rules, planReport, pr, startedAt })
-		).pipe(
-			Effect.provide(
-				makeReviewLayer({
-					concurrency: limits.concurrency,
-					tokensPerRun: limits.tokens_per_run,
-					maxFileKb: limits.max_file_kb,
-					maxToolCalls: MAX_TOOL_CALLS,
-					maxWallTime: MAX_AGENT_WALL_TIME,
-				})
-			)
-		)
+		const reviewLimits = {
+			concurrency: limits.concurrency,
+			tokensPerRun: limits.tokens_per_run,
+			maxFileKb: limits.max_file_kb,
+			maxToolCalls: MAX_TOOL_CALLS,
+			maxWallTime: MAX_AGENT_WALL_TIME,
+		} satisfies ReviewLimits['Service']
+		const report =
+			plan.skippedRun || plan.runs.length === 0
+				? toEmptyReviewReport(
+						planReport,
+						(yield* Clock.currentTimeMillis) - startedAt
+					)
+				: yield* ReviewService.use(service =>
+						service.review({ rules, planReport, pr, startedAt })
+					).pipe(Effect.provide(makeReviewLayer(reviewLimits)))
+		if (!isRatingRun({ config: rules.config, plan, ...request })) return report
+		return yield* rateReport(report, request, reviewLimits, startedAt)
 	}
 )
+
+/**
+ * The report with the rating of its change: the rater over the complete change after the review,
+ * on the same token ledger, so the report's tokens and wall time include it.
+ */
+const rateReport = Effect.fn('ReviewRunService.rateReport')(function* (
+	report: ReviewReport,
+	request: ReviewRunRequest,
+	limits: ReviewLimits['Service'],
+	startedAt: number
+) {
+	const { planReport } = report
+	const rating = yield* RaterService.use(service =>
+		service.rate({
+			rules: request.rules,
+			change: planReport.change,
+			pr: request.pr,
+			plan: planReport.plan,
+			review: report,
+		})
+	).pipe(Effect.provide(makeRaterLayer(limits)))
+	const ledger = yield* TokenLedger
+	return {
+		...report,
+		rating,
+		tokens: yield* ledger.snapshot,
+		tokenSources: yield* ledger.sources,
+		wallMillis: (yield* Clock.currentTimeMillis) - startedAt,
+	} satisfies ReviewReport
+})
 
 /** Services a review takes from its caller: git, the token ledger, the HTTP client and the environment. */
 export type ReviewRunServices = Effect.Services<ReturnType<typeof reviewChange>>

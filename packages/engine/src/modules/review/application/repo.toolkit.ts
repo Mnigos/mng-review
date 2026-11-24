@@ -108,3 +108,13 @@ export const VALIDATOR_REPO_TOOLS = ALL_REPO_TOOLS.filter(
 	name => name !== PrMetadataTool.name
 )
 export const METADATA_REPO_TOOLS = [PrMetadataTool.name] as const
+/**
+ * The rater's tools: no `pr_metadata`, which carries the title, description and commit messages,
+ * and no `blame`, which carries authors; the rater reads only the code.
+ */
+export const RATER_REPO_TOOLS = [
+	ReadFileTool.name,
+	GrepTool.name,
+	ListDirTool.name,
+	DiffTool.name,
+] as const

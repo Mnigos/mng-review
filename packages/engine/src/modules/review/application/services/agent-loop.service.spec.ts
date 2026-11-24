@@ -1114,6 +1114,7 @@ layer(Layer.empty)('conversation token budget and sources', test => {
 						turns: 2,
 						spentTokens: 1150 + nextInputTokens,
 						unspentTokens: conversationTokens - 1150 - nextInputTokens,
+						budgetStopped: true,
 					})
 					expect(callSpy).toHaveBeenCalledTimes(5)
 					const calls = yield* ScriptedLlm.use(script => script.calls)

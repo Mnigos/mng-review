@@ -51,6 +51,7 @@ const SPEC_DEFAULTS = {
 		floors: [],
 		assets: DEFAULT_PRESET.risk.assets,
 		reviews_per_head: 3,
+		model: 'validator',
 	},
 } as const satisfies ReviewConfig
 
