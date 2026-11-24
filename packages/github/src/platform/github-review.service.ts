@@ -1,6 +1,9 @@
 import { Context, Effect, Layer } from 'effect'
 import { HttpClientRequest } from 'effect/http'
-import { PULL_REQUEST_REVIEWS_QUERY } from './github-api.constants'
+import {
+	PULL_REQUEST_REVIEWS_QUERY,
+	PULL_REQUEST_REVIEWS_WITH_COMMITS_QUERY,
+} from './github-api.constants'
 import { collect } from './github-api.helper'
 import {
 	createdSchema,
@@ -20,6 +23,14 @@ export const REVIEW_STATE_BY_EVENT = {
 	APPROVE: 'APPROVED',
 	REQUEST_CHANGES: 'CHANGES_REQUESTED',
 } as const satisfies Record<ReviewEvent, ReviewState>
+/** The event a review in each state stands for; a dismissed or pending one blocks nothing. */
+export const REVIEW_EVENT_BY_STATE = {
+	PENDING: 'COMMENT',
+	COMMENTED: 'COMMENT',
+	APPROVED: 'APPROVE',
+	CHANGES_REQUESTED: 'REQUEST_CHANGES',
+	DISMISSED: 'COMMENT',
+} as const satisfies Record<ReviewState, ReviewEvent>
 
 /** One inline comment of a review, on a line of the head side of the diff. */
 export interface InlineComment {
@@ -40,16 +51,20 @@ export interface ReviewInput {
 export class GitHubReviewService extends Context.Service<
 	GitHubReviewService,
 	{
-		/** Every review of the pull request, hidden and dismissed ones included, oldest first. */
+		/**
+		 * Every review of the pull request, hidden and dismissed ones included, oldest first; with
+		 * `withCommits` each with its commit, which needs contents read.
+		 */
 		readonly listReviews: (
-			pullNumber: number
+			pullNumber: number,
+			withCommits?: boolean
 		) => Effect.Effect<readonly PullRequestReview[], GitHubApiError>
 		/** Submits a review; one comment GitHub cannot place refuses the whole review with 422. */
 		readonly createReview: (
 			pullNumber: number,
 			input: ReviewInput
 		) => Effect.Effect<number, GitHubApiError>
-		/** Dismisses a `CHANGES_REQUESTED` review; its state becomes `DISMISSED` and its body stays. */
+		/** Dismisses an `APPROVED` or `CHANGES_REQUESTED` review; its state becomes `DISMISSED` and its body stays. */
 		readonly dismissReview: (
 			pullNumber: number,
 			reviewId: number,
@@ -70,14 +85,17 @@ export const GitHubReviewServiceLive = Layer.effect(
 		const { config, repo, sendJson, query } = yield* makeGitHubHttp
 
 		const listReviews = Effect.fn('GitHubReviewService.listReviews')(function* (
-			pullNumber: number
+			pullNumber: number,
+			withCommits = false
 		) {
 			return yield* collect(
 				'listReviews',
 				cursor =>
 					query(
 						'listReviews',
-						PULL_REQUEST_REVIEWS_QUERY,
+						withCommits
+							? PULL_REQUEST_REVIEWS_WITH_COMMITS_QUERY
+							: PULL_REQUEST_REVIEWS_QUERY,
 						{
 							owner: config.owner,
 							name: config.name,

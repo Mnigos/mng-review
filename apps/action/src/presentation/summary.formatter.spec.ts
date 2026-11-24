@@ -38,6 +38,7 @@ const CONTEXT = {
 	engineCommit: '1234567890abcdef',
 } as const satisfies SummaryContext
 const MALICIOUS = '![x](https://evil.example/a.png) <img src=x> | col'
+const NONE = { dismissed: 0, failed: 0 } as const
 const OUTCOMES = [
 	{
 		outcome: { status: 'skipped', reason: 'draft pull request' },
@@ -515,6 +516,7 @@ test.each(['published', 'failed', 'status-only', 'not-published'] as const)(
 						result: {
 							verdict: 'ready',
 							event: 'COMMENT',
+							dismissal: { dismissed: 0, failed: 0 },
 							openBugs: 0,
 							onLine: 1,
 							onFile: 2,
@@ -533,7 +535,12 @@ test.each(['published', 'failed', 'status-only', 'not-published'] as const)(
 						},
 					} as const)
 				: status === 'status-only'
-					? { status, reason: MALICIOUS, posted: false }
+					? {
+							status,
+							reason: MALICIOUS,
+							posted: false,
+							dismissal: { dismissed: 1, failed: 1 },
+						}
 					: { status, reason: MALICIOUS }
 		const text = formatPublishSummary(publish, CONTEXT.engineCommit)
 		expect(text).toContain('Publish mode:')
@@ -550,7 +557,7 @@ test.each(['published', 'failed', 'status-only', 'not-published'] as const)(
 			expect(text).toContain(escapeMarkdown(MALICIOUS))
 		if (status === 'status-only')
 			expect(text).toContain(
-				'marked the existing summary unfinished; the reviewer was offline'
+				'marked the existing summary unfinished; the reviewer was offline; 1 stale review\\(s\\) dismissed, 1 not dismissed'
 			)
 	}
 )
@@ -568,18 +575,29 @@ test.each([
 
 describe('sweep formatters', () => {
 	test('reports checked, updated and failed pulls including a no-op sweep', () => {
-		expect(formatSweepLine({ checked: 4, updated: 2, failed: 1 })).toBe(
-			'status sweep: 4 pull request(s) carry the status, 2 updated, 1 failed'
+		expect(
+			formatSweepLine({
+				checked: 4,
+				updated: 2,
+				failed: 1,
+				dismissal: { dismissed: 2, failed: 1 },
+			})
+		).toBe(
+			'status sweep: 4 pull request(s) carry the status, 2 updated, 1 failed; 2 change request(s) dismissed, 1 not dismissed'
 		)
-		expect(formatSweepLine({ checked: 0, updated: 0, failed: 0 })).toBe(
-			'status sweep: 0 pull request(s) carry the status, 0 updated, 0 failed'
+		expect(
+			formatSweepLine({ checked: 0, updated: 0, failed: 0, dismissal: NONE })
+		).toBe(
+			'status sweep: 0 pull request(s) carry the status, 0 updated, 0 failed; 0 change request(s) dismissed, 0 not dismissed'
 		)
 	})
 	test('sweep summaries escape supplied text', () => {
 		expect(formatSweepSummary(MALICIOUS)).toContain(escapeMarkdown(MALICIOUS))
 		expect(formatSweepSummary(MALICIOUS)).not.toContain('![')
 		expect(
-			formatSweepSummary(formatSweepLine({ checked: 2, updated: 1, failed: 0 }))
+			formatSweepSummary(
+				formatSweepLine({ checked: 2, updated: 1, failed: 0, dismissal: NONE })
+			)
 		).toContain('2 pull request')
 	})
 })
@@ -594,6 +612,7 @@ test.each(['none', 'minimized', 'deleted', 'kept'] as const)(
 				result: {
 					verdict: 'ready',
 					event: 'COMMENT',
+					dismissal: { dismissed: 0, failed: 0 },
 					openBugs: 0,
 					onLine: 0,
 					onFile: 0,
@@ -624,6 +643,7 @@ test.each(['added', 'removed', 'failed', 'none'] as const)(
 			result: {
 				verdict: 'needs owner',
 				event: 'REQUEST_CHANGES',
+				dismissal: { dismissed: 0, failed: 0 },
 				openBugs: 0,
 				onLine: 0,
 				onFile: 0,

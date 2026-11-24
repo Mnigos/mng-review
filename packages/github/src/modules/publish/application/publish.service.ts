@@ -10,6 +10,7 @@ import {
 	isFullReview,
 	toBotThread,
 } from '../domain/bot-thread.helper'
+import { getCoverageGaps, hasFailedRuns } from '../domain/coverage-gap.helper'
 import type { SummaryMarker } from '../domain/publish-marker.schema'
 import {
 	countOpenBugs,
@@ -22,7 +23,7 @@ import type {
 	PlannedThread,
 	PublishPlan,
 } from '../domain/publish.types'
-import { canApprove, getReviewEvent } from '../domain/review-event.helper'
+import { getApproval } from '../domain/review-event.helper'
 import {
 	getCarriedBugs,
 	type MarkedRun,
@@ -63,9 +64,13 @@ const LIMITED_ACTIONS: ReadonlySet<string> = new Set([
 	'needs-owner',
 ])
 
-/** A run as the marker judges it, and whether its pull request moved to another head meanwhile. */
+/**
+ * A run as the marker judges it, whether its pull request moved to another head meanwhile (or
+ * could not be read again), and whether the token's identity opened it.
+ */
 interface CheckedRun extends MarkedRun {
 	readonly moved: boolean
+	readonly authored: boolean
 }
 
 /** A line thread moved into the summary after GitHub refused the review's inline comments. */
@@ -133,28 +138,23 @@ export const PublishServiceLive = Layer.effect(
 		})
 
 		/**
-		 * Whether the run stands for a full review of its head. A command overlaps push runs, so its
-		 * pull request is read again: one whose head moved meanwhile, or cannot be read, is partial,
-		 * as is one that named a single agent. A push run is the head's own run.
+		 * Whether the run stands for a full review of its head. A push can land while a run reviews,
+		 * so the pull request is read again: one whose head moved meanwhile, or cannot be read, is
+		 * partial, as is a command that named a single agent.
 		 */
 		const checkRun = Effect.fn('PublishService.checkRun')(function* (
 			input: PublishInput
 		) {
-			if (!input.command)
-				return {
-					head: input.head,
-					partial: false,
-					moved: false,
-				} satisfies CheckedRun
-			const head = yield* api.getPullRequest(input.pullNumber).pipe(
-				Effect.map(pr => pr.head.sha),
-				Effect.orElseSucceed(() => undefined)
-			)
-			const moved = head !== input.head
+			const { current } = yield* OwnedIdentities
+			const pr = yield* api
+				.getPullRequest(input.pullNumber)
+				.pipe(Effect.orElseSucceed(() => undefined))
+			const moved = pr?.head.sha !== input.head
 			return {
 				head: input.head,
-				partial: input.command.agentOnly || moved,
+				partial: input.command?.agentOnly === true || moved,
 				moved,
+				authored: pr?.user?.login.toLowerCase() === current.restLogin,
 			} satisfies CheckedRun
 		})
 
@@ -176,7 +176,7 @@ export const PublishServiceLive = Layer.effect(
 					})
 				: []
 			const { current, identities } = yield* OwnedIdentities
-			const approve = canApprove(input.rules.config, current)
+			const approval = getApproval(input.rules.config, current)
 			// A failed whole-thread read leaves the latest comments the read brought for this run.
 			const sentBefore = yield* conversation
 				.getSentToOwner(first.raw)
@@ -235,16 +235,23 @@ export const PublishServiceLive = Layer.effect(
 			const onLine = filed.filter(thread => thread.place === 'line')
 			const posting =
 				onLine.length > 0 || filed.some(thread => thread.place === 'file')
-			// Read again after the answers, so the ones this run sent to the owner are among them.
+			// Read again after the answers, so the ones this run sent to the owner are among them. A
+			// failed read keeps the first for the run's work, but a thread reopened meanwhile goes unseen.
 			const second = yield* readAll(pullNumber).pipe(
-				Effect.orElseSucceed(() => first)
+				Effect.map(read => ({ ...read, reread: true })),
+				Effect.orElseSucceed(() => ({ ...first, reread: false }))
 			)
-			const latest = second.threads.map(thread =>
-				resolvedIds.has(thread.id) ? { ...thread, resolved: true } : thread
-			)
+			// A successful read decides: a thread is closed only while the bot's closing reply is its
+			// latest comment (`toBotThread`). A failed one leaves the first with this run's closures.
+			const latest = second.reread ? second.threads : threads
 			// Every new bug counts from the plan, wherever the review puts it.
 			const threadBugs = countOpenBugs(planned, latest)
 			const run = yield* checkRun(input)
+			// Publishing's own read of the bot's threads, after this run's answers and file threads.
+			const [gap, ...more] = [
+				...(second.reread ? [] : [{ kind: 'threads' } as const]),
+				...getCoverageGaps(report, latest),
+			]
 			// Answers this run or one alongside it sent to the owner wait, even if the summary write failed.
 			const all = [
 				...new Set([
@@ -265,16 +272,21 @@ export const PublishServiceLive = Layer.effect(
 				...planned,
 				threads: inline ? filed : filed.map(toSummaryPlace),
 			})
-			const toUpdate = (plan: PublishPlan) =>
+			const toUpdate = (plan: PublishPlan, checked: CheckedRun = run) =>
 				({
-					head: run.head,
-					partial: run.partial,
+					head: checked.head,
+					partial: checked.partial,
 					finished: isFinished(report),
+					failed: hasFailedRuns(report),
 					unthreadedBugs: countUnthreadedBugs(plan, latest),
 					waiting: { added: all.filter(id => !cleared.has(id)), cleared },
 				}) satisfies MarkerUpdate
-			const standing = (marker: SummaryMarker, update: MarkerUpdate) => {
-				const finished = isFullReview(report, marker, run)
+			const standing = (
+				marker: SummaryMarker,
+				update: MarkerUpdate,
+				checked: CheckedRun = run
+			) => {
+				const finished = isFullReview(report, marker, checked)
 				const openBugs = threadBugs + getCarriedBugs(marker, update)
 				const owner = marker.needsOwner?.length ?? 0
 				return {
@@ -292,24 +304,32 @@ export const PublishServiceLive = Layer.effect(
 						body: formatThreadComment(thread, links, true),
 					})),
 					fresh: posting,
-					render: (prior, inline) => {
+					render: (prior, inline, moved) => {
+						// A push after the head check: partial, so the marker keeps the previous head and flags.
+						const checked = moved ? { ...run, partial: true, moved } : run
 						const plan = toPlan(inline)
-						const update = toUpdate(plan)
+						const update = toUpdate(plan, checked)
 						const marker = toNextSummaryMarker(prior?.marker, update)
-						const judged = standing(marker, update)
-						const event = getReviewEvent({
+						const judged = standing(marker, update, checked)
+						const evidence = {
 							kind: 'review',
 							verdict: judged.verdict,
-							partial: run.partial,
-							findings: report.bugs.length + report.nits.length,
-							approve,
-						})
+							openBugs: judged.openBugs,
+							onHead: !checked.moved,
+							full: input.command?.agentOnly !== true,
+							failed: hasFailedRuns(report) || !second.reread,
+							gap,
+							more,
+							approval,
+							authored: run.authored,
+						} as const
 						// The summary describes the head; a run whose head moved and posts nothing only counts itself.
-						if (prior && run.moved && !posting)
+						if (prior && checked.moved && !posting)
 							return {
 								body: toSummaryWithMarker(prior.body, marker),
 								marker,
-								event,
+								evidence,
+								standing: judged,
 							}
 						const body = formatSummaryComment({
 							report,
@@ -327,15 +347,14 @@ export const PublishServiceLive = Layer.effect(
 							tokens:
 								input.replies?.tokens ?? input.recheck?.tokens ?? report.tokens,
 						})
-						return { body, marker, event }
+						return { body, marker, evidence, standing: judged }
 					},
 				})
 				.pipe(Effect.mapError(error => new PublishIncompleteError({ error })))
 			const plan = toPlan(written.inline)
-			const { finished, openBugs, verdict } = standing(
-				written.marker,
-				toUpdate(plan)
-			)
+			// The standing of the render the write used, which judged against the write's own head read.
+			const { finished, openBugs, verdict } =
+				written.standing ?? standing(written.marker, toUpdate(plan))
 			const owner = written.marker.needsOwner?.length ?? 0
 			const label = yield* conversation.syncLabel(
 				pullNumber,
@@ -346,7 +365,9 @@ export const PublishServiceLive = Layer.effect(
 				plan.threads.filter(thread => thread.place === place).length
 			return {
 				verdict,
-				event: written.event ?? 'COMMENT',
+				event: written.event,
+				dismissal: written.dismissal,
+				outlived: written.outlived,
 				openBugs,
 				onLine: count('line'),
 				onFile: count('file'),

@@ -1,6 +1,7 @@
 import { layer } from '@effect/vitest'
 import { Effect } from 'effect'
 import { GITHUB_ACTIONS_IDENTITY } from '../../../platform/bot-identity.helper'
+import { REVIEW_STATE_BY_EVENT } from '../../../platform/github-review.service'
 import { cleanupRepos } from '../../../shared/mocks/git-test.helper'
 import { publishEventFixture } from '../../../shared/mocks/publish-event-test.helper'
 import {
@@ -163,6 +164,10 @@ layer(APP_MODE_OWNED, { excludeTestServices: true })(
 					if (!thread) return
 					fixture.repo.write('src/store.ts', 'guarded write\n')
 					const head = fixture.repo.commit()
+					fixture.fake.command.pullRequest = {
+						...fixture.fake.command.pullRequest,
+						head: { ...fixture.fake.command.pullRequest.head, sha: head },
+					}
 					expect(
 						yield* publisher.publish({
 							...fixture.input,
@@ -250,61 +255,63 @@ layer(APP_MODE_OWNED, { excludeTestServices: true })(
 	'ReplyPublishService events',
 	test => {
 		for (const mode of ['approve', 'preview'] as const)
-			test.effect(`closing the last bug in a reply-only run uses ${mode}`, () =>
-				Effect.gen(function* () {
-					const fixture = publishEventFixture()
-					fixture.fake.reviews.push(
-						summaryReview(
-							{ ...SUMMARY_MARKER, head: fixture.head, finished: true },
-							{
-								state: 'CHANGES_REQUESTED',
-								author: { __typename: 'Bot', login: APP_IDENTITY.login },
-							}
+			test.effect(
+				`closing the last bug in a reply-only run comments and clears with ${mode}`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = publishEventFixture()
+						fixture.fake.reviews.push(
+							summaryReview(
+								{ ...SUMMARY_MARKER, head: fixture.head, finished: true },
+								{
+									state: 'CHANGES_REQUESTED',
+									author: { __typename: 'Bot', login: APP_IDENTITY.login },
+								}
+							)
 						)
-					)
-					fixture.fake.threads.push(pendingReviewThread())
-					const event = mode === 'approve' ? 'APPROVE' : 'COMMENT'
-					expect(
-						yield* ReplyPublishService.use(service =>
-							service.publish({
-								pullNumber: 17,
-								head: fixture.head,
-								engineCommit: 'engine',
-								rules: {
-									...ACCEPTING_RULES,
-									config: {
-										...ACCEPTING_RULES.config,
-										verdict: { ...ACCEPTING_RULES.config.verdict, mode },
+						fixture.fake.threads.push(pendingReviewThread())
+						const event = 'COMMENT'
+						expect(
+							yield* ReplyPublishService.use(service =>
+								service.publish({
+									pullNumber: 17,
+									head: fixture.head,
+									engineCommit: 'engine',
+									rules: {
+										...ACCEPTING_RULES,
+										config: {
+											...ACCEPTING_RULES.config,
+											verdict: { ...ACCEPTING_RULES.config.verdict, mode },
+										},
 									},
-								},
-								replies: {
-									base: fixture.base,
-									tokens: {},
-									decisions: [
-										decidedReply({
-											...ACCEPTED_DECISION,
-											evidence: ['src/store.ts:12'],
-										}),
-									],
-								},
-							})
-						).pipe(Effect.provide(fixture.replyPublisher))
-					).toMatchObject({
-						verdict: 'ready',
-						event,
-						openBugs: 0,
-						answered: { accepted: 1 },
+									replies: {
+										base: fixture.base,
+										tokens: {},
+										decisions: [
+											decidedReply({
+												...ACCEPTED_DECISION,
+												evidence: ['src/store.ts:12'],
+											}),
+										],
+									},
+								})
+							).pipe(Effect.provide(fixture.replyPublisher))
+						).toMatchObject({
+							verdict: 'ready',
+							event,
+							openBugs: 0,
+							answered: { accepted: 1 },
+						})
+						expect(fixture.fake.threads[0]?.isResolved).toBe(true)
+						expect(
+							fixture.fake.writes.filter(write => write.method === 'review')
+						).toMatchObject([{ input: { event } }])
+						expect(
+							fixture.fake.writes.filter(
+								write => write.method === 'dismissReview'
+							)
+						).toHaveLength(1)
 					})
-					expect(fixture.fake.threads[0]?.isResolved).toBe(true)
-					expect(
-						fixture.fake.writes.filter(write => write.method === 'review')
-					).toMatchObject([{ input: { event } }])
-					expect(
-						fixture.fake.writes.filter(
-							write => write.method === 'dismissReview'
-						)
-					).toHaveLength(mode === 'preview' ? 1 : 0)
-				})
 			)
 		for (const concern of [
 			'nit',
@@ -313,7 +320,7 @@ layer(APP_MODE_OWNED, { excludeTestServices: true })(
 			'owner',
 			'none',
 		] as const)
-			test.effect(`reply-only event with open ${concern}`, () =>
+			test.effect(`a reply-only run with open ${concern} never approves`, () =>
 				Effect.gen(function* () {
 					const fixture = publishEventFixture()
 					fixture.fake.reviews.push(
@@ -333,12 +340,11 @@ layer(APP_MODE_OWNED, { excludeTestServices: true })(
 								? ownerReviewThread()
 								: reviewThread({ finding: bug(), kind: concern })
 						)
+					// Ready comments and clears; a bug or a waiting thread on the head requests changes.
 					const event =
 						concern === 'bug' || concern === 'owner'
 							? 'REQUEST_CHANGES'
-							: concern === 'none'
-								? 'APPROVE'
-								: 'COMMENT'
+							: 'COMMENT'
 					expect(
 						yield* ReplyPublishService.use(service =>
 							service.publish({
@@ -351,13 +357,7 @@ layer(APP_MODE_OWNED, { excludeTestServices: true })(
 						).pipe(Effect.provide(fixture.replyPublisher))
 					).toMatchObject({ event })
 					const states = fixture.fake.reviews.at(-1)?.state
-					expect(states).toBe(
-						event === 'APPROVE'
-							? 'APPROVED'
-							: event === 'REQUEST_CHANGES'
-								? 'CHANGES_REQUESTED'
-								: 'COMMENTED'
-					)
+					expect(states).toBe(REVIEW_STATE_BY_EVENT[event])
 				})
 			)
 	}

@@ -34,6 +34,12 @@ export interface AgentRunReport {
 	readonly units?: number
 	/** Conversations that got a continuation turn for changed files they had not read. */
 	readonly continued?: number
+	/**
+	 * Changed files in the agent's scope that it answered without reading: neither shown whole in
+	 * its first message nor read with a tool, after any continuation turn. Only the main reviewer
+	 * is held to reading every file; unset when none.
+	 */
+	readonly unread?: number
 	/** Units the token budget stopped before they answered; the agent's name when it is not split. */
 	readonly unfinished?: readonly string[]
 	readonly wallMillis: number

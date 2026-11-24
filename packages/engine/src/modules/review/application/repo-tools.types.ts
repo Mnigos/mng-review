@@ -13,8 +13,20 @@ export interface ShownLines {
 	readonly truncated: boolean
 }
 
-/** A tool's output and, for a `read_file` that showed lines, which ones. */
+/**
+ * The characters of one file's section of a `diff` output the part holds: `from` to `to` of the
+ * section's `size`, so the parts of a long diff add up to the whole file.
+ */
+export interface DiffPart {
+	readonly path: string
+	readonly size: number
+	readonly from: number
+	readonly to: number
+}
+
+/** A tool's output and, for a `read_file` that showed lines or a `diff`, what it held. */
 export interface ToolResult {
 	readonly output: string
 	readonly shown?: ShownLines
+	readonly diff?: readonly DiffPart[]
 }

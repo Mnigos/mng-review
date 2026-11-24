@@ -10,7 +10,7 @@ import { createRepo, gitLayer } from './git-test.helper'
 import { githubApiFake } from './github-api-fake.helper'
 import { GITHUB_SETTINGS } from './github-http.helper'
 import { githubStatusFake } from './github-status-fake.helper'
-import { APP_IDENTITY, report, RULES } from './publish-test.helper'
+import { agentReport, APP_IDENTITY, report, RULES } from './publish-test.helper'
 
 /** Local history and recording services for event tests; no endpoint or transport layer. */
 export function publishEventFixture(identity: BotIdentity = APP_IDENTITY) {
@@ -51,6 +51,11 @@ export function publishEventFixture(identity: BotIdentity = APP_IDENTITY) {
 		report: {
 			...reviewed,
 			bugs: [],
+			// Every planned finder reported `ok`, so a clean run covers the change.
+			agents: reviewed.planReport.plan.runs.map(run => ({
+				...agentReport(),
+				name: run.name,
+			})),
 			planReport: {
 				...reviewed.planReport,
 				change: {

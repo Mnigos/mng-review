@@ -37,6 +37,11 @@ export const summaryMarkerSchema = Schema.Struct({
 	head: Schema.optionalKey(Schema.String),
 	/** Whether the last run finished; the status sweep reads it, never the status text. */
 	finished: Schema.optionalKey(Schema.Boolean),
+	/**
+	 * The last full run had a run or unit that failed or never reported (`hasFailedRuns`), so a
+	 * reply-only run on its head clears no change request. Unset when none failed.
+	 */
+	failed: Schema.optionalKey(Schema.Boolean),
 	/** Runs a command started, counted before the endpoint is used; `commands.max_runs` caps them. */
 	manualRuns: Schema.optionalKey(countSchema),
 	/**

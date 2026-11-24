@@ -15,6 +15,10 @@ import {
 	toSummaryReviews,
 } from './summary-review.helper'
 
+const COMMENT = { event: 'COMMENT', keep: false } as const
+const ON_HEAD = { head: 'head', current: 'head' } as const
+const APPROVE = { event: 'APPROVE', keep: false } as const
+
 /** Projects review fixtures using the app and its previous job-token identity. */
 function summaries(reviews: readonly PullRequestReview[]) {
 	return toSummaryReviews(reviews, APP_MODE_IDENTITIES, APP_IDENTITY)
@@ -77,20 +81,26 @@ describe('summary reviews', () => {
 			author: { __typename: 'Bot', login: APP_IDENTITY.login },
 		})
 		const reviews = summaries([own])
-		expect(getEditableReview(reviews, 'COMMENTED', false)).toBe(reviews[0])
-		expect(getEditableReview(reviews, 'COMMENTED', true)).toBeUndefined()
-		expect(getEditableReview(reviews, 'APPROVED', false)).toBeUndefined()
+		expect(getEditableReview(reviews, COMMENT, false, ON_HEAD)).toBe(reviews[0])
+		expect(getEditableReview(reviews, COMMENT, true, ON_HEAD)).toBeUndefined()
+		expect(getEditableReview(reviews, APPROVE, false, ON_HEAD)).toBeUndefined()
 		expect(
-			getEditableReview(summaries([own, summaryReview()]), 'COMMENTED', false)
+			getEditableReview(
+				summaries([own, summaryReview()]),
+				COMMENT,
+				false,
+				ON_HEAD
+			)
 		).toBeUndefined()
 		expect(
 			getEditableReview(
 				summaries([{ ...own, isMinimized: true }]),
-				'COMMENTED',
-				false
+				COMMENT,
+				false,
+				ON_HEAD
 			)
 		).toBeUndefined()
-		expect(getEditableReview([], 'COMMENTED', false)).toBeUndefined()
+		expect(getEditableReview([], COMMENT, false, ON_HEAD)).toBeUndefined()
 	})
 	test('stale reviews include old unmarked bodies but exclude hidden, edited, foreign, empty and kept reviews', () => {
 		const old = summaryReview(SUMMARY_MARKER, {

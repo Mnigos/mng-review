@@ -41,27 +41,38 @@ export interface PreviousStatus {
 }
 
 /**
- * The status the sweep sets after counting the bot's open bug threads again, or `undefined` when
- * it stays. Open threads, or threads that wait for the owner (`waiting`), make it `failure`; none left makes it `success` only when the last run
- * finished, so an unfinished run stays `error` until a run finishes. Whether it finished comes from
- * the summary's marker when there is one, since a status can be overwritten; else from the status.
+ * The status the bot's threads stand for now, as the sweep counts them. Open threads, or threads
+ * that wait for the owner (`waiting`), make it `failure`; none left makes it `success` only when the
+ * last run finished, so an unfinished run stays `error` until a run finishes. Whether it finished
+ * comes from the summary's marker when there is one, since a status can be overwritten; else from
+ * the status.
  */
+export function toSweptStanding(
+	previous: PreviousStatus,
+	openBugs: number,
+	lastRunFinished?: boolean,
+	waiting = 0
+): CommitStatusText {
+	const finished =
+		lastRunFinished ??
+		(previous.state !== 'error' &&
+			!(previous.description ?? '').includes(UNFINISHED_NOTE))
+	const verdict = openBugs > 0 ? 'needs fixes' : 'ready'
+	return toCommitStatus(
+		waiting > 0 ? 'needs owner' : verdict,
+		openBugs,
+		finished
+	)
+}
+
+/** The status the sweep sets (`toSweptStanding`), or `undefined` when it stays. */
 export function toSweptStatus(
 	previous: PreviousStatus,
 	openBugs: number,
 	lastRunFinished?: boolean,
 	waiting = 0
 ): CommitStatusText | undefined {
-	const finished =
-		lastRunFinished ??
-		(previous.state !== 'error' &&
-			!(previous.description ?? '').includes(UNFINISHED_NOTE))
-	const verdict = openBugs > 0 ? 'needs fixes' : 'ready'
-	const next = toCommitStatus(
-		waiting > 0 ? 'needs owner' : verdict,
-		openBugs,
-		finished
-	)
+	const next = toSweptStanding(previous, openBugs, lastRunFinished, waiting)
 	if (
 		next.state === previous.state &&
 		next.description === previous.description

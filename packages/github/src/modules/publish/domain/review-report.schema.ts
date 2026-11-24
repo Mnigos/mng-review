@@ -228,6 +228,7 @@ const agentRunReportSchema = Schema.Struct({
 	malformed: countSchema,
 	units: Schema.optional(countSchema),
 	continued: Schema.optional(countSchema),
+	unread: Schema.optional(countSchema),
 	unfinished: Schema.optional(textListSchema),
 	wallMillis: countSchema,
 })

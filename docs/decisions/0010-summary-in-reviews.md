@@ -24,7 +24,7 @@ Publish mode (ADR 0007) wrote a sticky summary as a conversation comment and, be
 
 - A clean push that changes nothing edits the review in place and sends no notification; a push with new threads notifies once.
 - Each new review hides the previous one, so the result reports `minimized` on most runs that post.
-- Reviews of the token's identity count in GitHub's per-author review list; they are always `COMMENT`, so they never change a pull request's review decision; ADR 0011 gives the state the verdict.
+- Reviews of the token's identity count in GitHub's per-author review list. Their state, and so whether they change a pull request's review decision, is ADR 0011's, which also keeps an approval or change request from being edited onto a newer commit.
 - A pull request opened before the change keeps its old sticky comment hidden, not deleted, unless GitHub refuses to hide it.
 - A pull request with more than 2,000 reviews fails the read, as every other paged read does.
 

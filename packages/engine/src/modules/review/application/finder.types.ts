@@ -48,4 +48,6 @@ export interface FinderJob {
 	 * first message does not show whole.
 	 */
 	readonly coverage?: readonly string[]
+	/** The head lines each file of the job's diff changes (`getChangedLines`). */
+	readonly changed?: ReadonlyMap<string, readonly number[]>
 }

@@ -62,6 +62,11 @@ import {
 import { THREAD_PLACE_LINES } from '../domain/publish.constants'
 import { PublishIncompleteError } from '../domain/publish.errors'
 import type { ThreadReplyDecision } from '../domain/thread-reply.schema'
+import {
+	formatReviewHeadline,
+	toBodyWithHeadline,
+	toBodyWithoutHeadline,
+} from '../presentation/review-headline.formatter'
 import { toMarkerComment } from '../presentation/thread-comment.formatter'
 import { PublishService, PublishServiceLive } from './publish.service'
 import {
@@ -73,6 +78,10 @@ import {
 	ThreadResolutionServiceLive,
 } from './thread-resolution.service'
 
+/** The head check, then the summary write's reads before the review, the cleanup and the dismissals. */
+const HEAD_READS = Array.from({ length: 4 }, () => 'getPullRequest:17')
+const NO_DISMISSAL = { dismissed: 0, failed: 0 } as const
+
 /** `ACCEPTED_DECISION` citing a line the pull request did not change, so publishing's check passes. */
 const ACCEPTED_ON_KEPT_LINE = {
 	...ACCEPTED_DECISION,
@@ -80,6 +89,17 @@ const ACCEPTED_ON_KEPT_LINE = {
 } as const satisfies ThreadReplyDecision
 
 /** Real git history with a finding on a changed head line and a recording API. */
+/** The in-memory GitHub of these specs. */
+type GitHubApiFake = ReturnType<typeof githubApiFake>
+
+/** Points the pull request the fake serves at `head`, as a push to it does. */
+function moveHead(fake: GitHubApiFake, head: string): void {
+	fake.command.pullRequest = {
+		...fake.command.pullRequest,
+		head: { ...fake.command.pullRequest.head, sha: head },
+	}
+}
+
 function setup(
 	apply?: ThreadResolutionService['Service']['apply'],
 	identity = GITHUB_ACTIONS_IDENTITY,
@@ -389,7 +409,9 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 						engineCommit: undefined,
 						status: 'Reviewer offline',
 					}
-					expect(yield* publisher.publishStatus(input)).toBe(true)
+					expect(yield* publisher.publishStatus(input)).toMatchObject({
+						created: true,
+					})
 					expect(fixture.fake.writes.map(call => call.method)).toEqual([
 						'review',
 					])
@@ -404,7 +426,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 							...input,
 							status: 'Another failure',
 						})
-					).toBe(false)
+					).toMatchObject({ created: false })
 					expect(fixture.fake.writes.map(call => call.method)).toEqual([
 						'review',
 						'updateReview',
@@ -458,6 +480,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 						fixture.repo.commit()
 					}
 					const head = fixture.repo.git('rev-parse', 'HEAD')
+					moveHead(fixture.fake, head)
 					const publisher = yield* PublishService.pipe(
 						Effect.provide(fixture.publisher)
 					)
@@ -557,6 +580,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 							text.replace('line 10\n', 'changed again 10\n')
 						)
 						const head = fixture.repo.commit()
+						moveHead(fixture.fake, head)
 						const publisher = yield* PublishService.pipe(
 							Effect.provide(fixture.publisher)
 						)
@@ -660,7 +684,12 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 									)
 								)
 							)
-						).toEqual({ checked: 1, updated: 0, failed: 0 })
+						).toEqual({
+							checked: 1,
+							updated: 0,
+							failed: 0,
+							dismissal: NO_DISMISSAL,
+						})
 						expect(fake.statuses).toEqual([])
 					})
 			)
@@ -961,8 +990,15 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 							engineCommit: 'engine',
 							status: 'offline',
 						})
-					).toBe(false)
-					const body = `Verdict: ready\n${toMarkerComment('summary', { ...SUMMARY_MARKER, finished: false })}`
+					).toMatchObject({ created: false })
+					const body = toBodyWithHeadline(
+						`Verdict: ready\n${toMarkerComment('summary', { ...SUMMARY_MARKER, finished: false })}`,
+						formatReviewHeadline({
+							event: 'COMMENT',
+							evidence: { kind: 'offline', authored: false },
+							keep: true,
+						})
+					)
 					expect(fixture.fake.writes).toEqual([
 						{ method: 'updateReview', id: existing.databaseId, body },
 					])
@@ -1016,7 +1052,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 								status: 'offline',
 							})
 						).pipe(Effect.provide(fixture.publisher))
-					).toBe(false)
+					).toMatchObject({ created: false })
 					const status = githubStatusFake({
 						listOpenPullRequests: () =>
 							Effect.succeed([openPullRequest(17, fixture.head)]),
@@ -1036,7 +1072,12 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 								)
 							)
 						)
-					).toEqual({ checked: 1, updated: 1, failed: 0 })
+					).toEqual({
+						checked: 1,
+						updated: 1,
+						failed: 0,
+						dismissal: NO_DISMISSAL,
+					})
 					expect(status.statuses).toEqual([
 						{ sha: fixture.head, ...toCommitStatus('incomplete', 0, false) },
 					])
@@ -1267,6 +1308,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 							.replace('line 35\n', 'changed 35\n')
 					)
 					const head = fixture.repo.commit()
+					moveHead(fixture.fake, head)
 					const published = yield* PublishService.use(publisher =>
 						publisher.publish({
 							...fixture.input,
@@ -1648,25 +1690,18 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 								).toEqual(
 									hasBug ? [] : [{ method: 'updateReview', id: 202, body }]
 								)
-								expect(fixture.fake.reads).toEqual(['getPullRequest:17'])
+								expect(fixture.fake.reads).toEqual(HEAD_READS)
 							})
 					)
 		for (const finished of [false, true])
 			test.effect(
-				`push uses its own finished=${finished} and the fresh run count without reading the pull request`,
+				`push reads the head again and uses its own finished=${finished} and the fresh run count`,
 				() =>
 					Effect.gen(function* () {
 						const applySpy =
 							vi.fn<ThreadResolutionService['Service']['apply']>()
 						const fixture = setupOverlap(applySpy)
 						fixture.fake.reviews.push(summary())
-						fixture.fake.command.pullRequest = {
-							...fixture.fake.command.pullRequest,
-							head: {
-								...fixture.fake.command.pullRequest.head,
-								sha: 'moved-head',
-							},
-						}
 						const fresh = {
 							...SUMMARY_MARKER,
 							head: 'new-full-review-head',
@@ -1705,7 +1740,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 						})
 						expect(body).toContain(`**Verdict: ${verdict}**`)
 						expect(body).not.toContain('Other run details.')
-						expect(fixture.fake.reads).toEqual([])
+						expect(fixture.fake.reads).toEqual(HEAD_READS)
 					})
 			)
 	}
@@ -1751,7 +1786,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 					expect(reviewBody(fixture.fake)).not.toContain(
 						'Stale review details.'
 					)
-					expect(fixture.fake.reads).toEqual(['getPullRequest:17'])
+					expect(fixture.fake.reads).toEqual(HEAD_READS)
 				})
 		)
 		for (const agentOnly of [false, true])
@@ -1815,9 +1850,12 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 								expect(body).toContain(`**Verdict: ${verdict}**`)
 							else
 								expect(
-									body.replace(/<!-- mng-review:summary .* -->$/u, '')
+									toBodyWithoutHeadline(body).replace(
+										/<!-- mng-review:summary .* -->$/u,
+										''
+									)
 								).toBe(visible)
-							expect(fixture.fake.reads).toEqual(['getPullRequest:17'])
+							expect(fixture.fake.reads).toEqual(HEAD_READS)
 						})
 				)
 		for (const headState of ['moved', 'unreadable'] as const)
@@ -1878,17 +1916,19 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 							})
 							const body = reviewBody(fixture.fake) ?? ''
 							expect(parseSummaryMarker(body)).toEqual({ ...fresh, runs: 8 })
-							expect(body.replace(/<!-- mng-review:summary .* -->$/u, '')).toBe(
-								visible
-							)
 							expect(
-								fixture.fake.writes.filter(write => write.method === 'review')
-							).toMatchObject([
-								{
-									method: 'review',
-									input: { event: 'REQUEST_CHANGES', body, comments: [] },
-								},
-							])
+								toBodyWithoutHeadline(body).replace(
+									/<!-- mng-review:summary .* -->$/u,
+									''
+								)
+							).toBe(visible)
+							// A head that moved or cannot be read is no evidence: the newest review keeps its state.
+							expect(
+								fixture.fake.writes.filter(
+									write =>
+										write.method === 'review' || write.method === 'updateReview'
+								)
+							).toEqual([{ method: 'updateReview', id: 202, body }])
 						})
 				)
 		for (const agentOnly of [false, true])
@@ -1947,13 +1987,16 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 										runs: 5,
 									})
 									expect(
-										body.replace(/<!-- mng-review:summary .* -->$/u, '')
+										toBodyWithoutHeadline(body).replace(
+											/<!-- mng-review:summary .* -->$/u,
+											''
+										)
 									).toBe(visible)
 								}
 								expect(fixture.fake.writes.map(write => write.method)).toEqual([
 									previous === 'none' ? 'review' : 'updateReview',
 								])
-								expect(fixture.fake.reads).toEqual(['getPullRequest:17'])
+								expect(fixture.fake.reads).toEqual(HEAD_READS)
 							})
 					)
 	}
@@ -2043,7 +2086,12 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 									)
 								)
 							)
-						).toEqual({ checked: 1, updated: 0, failed: 0 })
+						).toEqual({
+							checked: 1,
+							updated: 0,
+							failed: 0,
+							dismissal: NO_DISMISSAL,
+						})
 						expect(statuses.statuses).toEqual([])
 						expect(statuses.statuses.at(-1)?.state ?? status.state).toBe(
 							'failure'
@@ -3629,6 +3677,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 					fixture.fake.reviews.push({
 						...summary(),
 						state: 'CHANGES_REQUESTED',
+						commit: { oid: fixture.head },
 					})
 					fixture.fake.failures.updateReview.push(error(503))
 					const publisher = yield* PublishService.pipe(
@@ -3683,7 +3732,12 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 								)
 							)
 						)
-					).toEqual({ checked: 1, updated: 1, failed: 0 })
+					).toEqual({
+						checked: 1,
+						updated: 1,
+						failed: 0,
+						dismissal: NO_DISMISSAL,
+					})
 					expect(statuses.statuses.at(-1)?.state).toBe('failure')
 					expect(
 						yield* publisher.publish({

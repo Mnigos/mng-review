@@ -26,7 +26,12 @@ layer(FileSystemLayer)('sweep step app identity', test => {
 						OwnedIdentities.pipe(
 							Effect.map(owned => {
 								observed.push(owned.identities.map(identity => identity.login))
-								return { checked: 1, updated: 1, failed: 0 }
+								return {
+									checked: 1,
+									updated: 1,
+									failed: 0,
+									dismissal: { dismissed: 0, failed: 0 },
+								}
 							})
 						)
 					)

@@ -2,6 +2,7 @@ import type { ReviewReport, Rules, TokensByModel } from '@mng-review/engine'
 import type { ReviewEvent } from '../../../platform/github-review.service'
 import type {
 	AnswerCounts,
+	DismissalOutcome,
 	LabelOutcome,
 	RecheckProposal,
 	SummaryCleanup,
@@ -66,8 +67,12 @@ export interface StatusInput extends PublishTarget {
 /** What a publish run did. */
 export interface PublishResult {
 	readonly verdict: Verdict
-	/** The state of the run's review: posted with it, or kept by an edit. */
+	/** The state the run's review was posted or edited in, before any dismissal. */
 	readonly event: ReviewEvent
+	/** Stale owned change requests and approvals dismissed after the write, and those that failed. */
+	readonly dismissal: DismissalOutcome
+	/** The run's own review was dismissed after a push landed right after the write; unset is `false`. */
+	readonly outlived?: boolean
 	readonly openBugs: number
 	readonly onLine: number
 	readonly onFile: number

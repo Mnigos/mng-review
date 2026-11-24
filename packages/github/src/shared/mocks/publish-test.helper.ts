@@ -12,6 +12,7 @@ import type {
 	BotThread,
 	PublishedFinding,
 } from '../../modules/publish/domain/publish.types'
+import type { ReviewEvidence } from '../../modules/publish/domain/review-event.helper'
 import {
 	formatResolvedReply,
 	toFindingMarker,
@@ -76,6 +77,7 @@ export function bug(overrides: Partial<KeptFinding> = {}): KeptFinding {
 /** A minimal reviewed report without an endpoint or model call. */
 export function report() {
 	const input = planInput({ config: DEFAULT_PRESET })
+	const plan = buildPlan(input, { status: 'ok', risk: 'normal', added: [] })
 	return {
 		...toEmptyReviewReport(
 			{
@@ -85,12 +87,14 @@ export function report() {
 					mergeBase: 'base',
 					files: input.files,
 				},
-				plan: buildPlan(input, { status: 'ok', risk: 'normal', added: [] }),
+				plan,
 				rulesSource: 'base',
 				tokens: {},
 			},
 			0
 		),
+		// Every planned run reported, so only what a test changes makes the run fail.
+		agents: plan.runs.map(run => ({ ...agentReport(), name: run.name })),
 		bugs: [bug()],
 	}
 }
@@ -255,3 +259,16 @@ export function summaryReview(
 		...overrides,
 	}
 }
+
+/** The evidence of a push that finished on the current head and covered the change. */
+export const COVERED_REVIEW = {
+	kind: 'review',
+	verdict: 'ready',
+	openBugs: 0,
+	onHead: true,
+	full: true,
+	failed: false,
+	gap: undefined,
+	approval: 'allowed',
+	authored: false,
+} as const satisfies ReviewEvidence

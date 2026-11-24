@@ -1,11 +1,12 @@
 import type { KeptFinding, ReplyAction } from '@mng-review/domain'
 import type { ReviewState } from '../../../platform/github-api.schema'
-import type { ReviewEvent } from '../../../platform/github-review.service'
+import type { Verdict } from '../presentation/summary-comment.formatter'
 import type {
 	FindingMarker,
 	SummaryMarker,
 	ThreadKind,
 } from './publish-marker.schema'
+import type { ReviewDecision, ReviewEvidence } from './review-event.helper'
 import type { ThreadReplyDecision } from './thread-reply.schema'
 
 /** One of the bot's review threads, found by its author and its marker. */
@@ -124,6 +125,8 @@ export interface SummaryComment {
 /** A review of an owned identity whose body ends with a summary marker. */
 export interface SummaryReview extends SummaryComment {
 	readonly state: ReviewState
+	/** The commit the review is on, when the read asked for it. */
+	readonly commit: string | undefined
 	/** Hidden as outdated or otherwise; its marker still counts. */
 	readonly minimized: boolean
 }
@@ -135,12 +138,27 @@ export interface SummaryReview extends SummaryComment {
  */
 export type SummaryCleanup = 'none' | 'minimized' | 'deleted' | 'kept'
 
+/** What the dismissals after a write did: reviews dismissed, and dismissals GitHub refused or never answered. */
+export interface DismissalOutcome {
+	readonly dismissed: number
+	readonly failed: number
+}
+
 /** A summary built from the summary read just before it is written: its text, marker and state. */
 export interface RenderedSummary {
 	readonly body: string
 	readonly marker: SummaryMarker
-	/** The state the review carries; unset keeps the state of the bot's newest review (`getReviewEvent`). */
-	readonly event?: ReviewEvent
+	/** What the run judged, for its review's state (`getReviewDecision`); unset, like offline, judged nothing. */
+	readonly evidence?: ReviewEvidence
+	/** The verdict, open bugs and whether a full review finished, as this render judged them. */
+	readonly standing?: SummaryStanding
+}
+
+/** What a render judged the pull request's standing to be. */
+export interface SummaryStanding {
+	readonly verdict: Verdict
+	readonly openBugs: number
+	readonly finished: boolean
 }
 
 /** An author's reply the bot answered in this run, with its decision. */
@@ -159,3 +177,9 @@ export type LabelOutcome = 'added' | 'removed' | 'failed' | 'none'
 
 /** Answers a run wrote, by action. */
 export type AnswerCounts = Partial<Record<ReplyAction, number>>
+
+/** A rendered summary and the state `getReviewDecision` picked for it. */
+export interface DecidedSummary {
+	readonly rendered: RenderedSummary
+	readonly decision: ReviewDecision
+}

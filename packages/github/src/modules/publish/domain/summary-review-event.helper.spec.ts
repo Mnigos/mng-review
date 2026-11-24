@@ -15,6 +15,9 @@ import {
 	toSummaryReviews,
 } from './summary-review.helper'
 
+const KEEP = { event: 'COMMENT', keep: true } as const
+const ON_HEAD = { head: 'head', current: 'head' } as const
+
 for (const event of REVIEW_EVENTS)
 	for (const state of [
 		'APPROVED',
@@ -29,16 +32,17 @@ for (const event of REVIEW_EVENTS)
 					summaryReview(SUMMARY_MARKER, {
 						author: { __typename: 'Bot', login: APP_IDENTITY.login },
 						state,
+						commit: { oid: 'head' },
 					}),
 				],
 				APP_MODE_IDENTITIES,
 				APP_IDENTITY
 			)
 			expect(
-				getEditableReview(reviews, REVIEW_STATE_BY_EVENT[event], false)
+				getEditableReview(reviews, { event, keep: false }, false, ON_HEAD)
 			).toBe(state === REVIEW_STATE_BY_EVENT[event] ? reviews[0] : undefined)
-			expect(getEditableReview(reviews, undefined, false)).toBe(reviews[0])
-			expect(getEditableReview(reviews, undefined, true)).toBeUndefined()
+			expect(getEditableReview(reviews, KEEP, false, ON_HEAD)).toBe(reviews[0])
+			expect(getEditableReview(reviews, KEEP, true, ON_HEAD)).toBeUndefined()
 		})
 
 for (const event of [...REVIEW_EVENTS, undefined])
@@ -71,7 +75,10 @@ for (const event of [...REVIEW_EVENTS, undefined])
 				),
 				APP_MODE_IDENTITIES,
 				APP_IDENTITY,
-				event
+				{
+					event: event ?? 'COMMENT',
+					clears: event === 'COMMENT' || event === 'APPROVE',
+				}
 			)
 		).toEqual(
 			event === 'COMMENT' ? [1, 2, 3] : event === 'APPROVE' ? [2, 3] : []
@@ -89,8 +96,9 @@ test('offline still rejects hidden reviews and the newest summary of another ide
 				APP_MODE_IDENTITIES,
 				APP_IDENTITY
 			),
-			undefined,
-			false
+			KEEP,
+			false,
+			ON_HEAD
 		)
 	).toBeUndefined()
 	expect(
@@ -100,8 +108,9 @@ test('offline still rejects hidden reviews and the newest summary of another ide
 				APP_MODE_IDENTITIES,
 				APP_IDENTITY
 			),
-			undefined,
-			false
+			KEEP,
+			false,
+			ON_HEAD
 		)
 	).toBeUndefined()
 })

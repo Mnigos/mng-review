@@ -3,6 +3,7 @@ import {
 	CLIENT_ERROR_STATUS,
 	DECLINED_GRAPHQL_TYPES,
 	MAX_PAGES,
+	NOT_FOUND_STATUS,
 	PAGE_SIZE,
 	RATE_LIMIT_MESSAGE,
 	READ_RETRIES,
@@ -12,6 +13,11 @@ import {
 } from './github-api.constants'
 import type { ConnectionPage } from './github-api.schema'
 import { GitHubApiError } from './github.errors'
+
+/** True when GitHub answered that the comment or review does not exist. */
+export function isNotFound(error: GitHubApiError): boolean {
+	return error.status === NOT_FOUND_STATUS
+}
 
 /** True for a failure worth reading again: no answer, or a 5xx. */
 export function isTransient(error: GitHubApiError): boolean {

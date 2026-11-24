@@ -245,10 +245,17 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 							1,
 							summaryReview(
 								{ ...SUMMARY_MARKER, head: fixture.head, finished: true },
-								{ state: 'CHANGES_REQUESTED' }
+								{ state: 'CHANGES_REQUESTED', commit: { oid: fixture.head } }
 							)
 						)
 						fixture.fake.command.role = 'write'
+						fixture.fake.command.pullRequest = {
+							...fixture.fake.command.pullRequest,
+							head: {
+								...fixture.fake.command.pullRequest.head,
+								sha: fixture.head,
+							},
+						}
 						fixture.fake.threads.push(threadAtCommit(fixture.base))
 						const error = new GitHubApiError({
 							operation: 'updateReview',
