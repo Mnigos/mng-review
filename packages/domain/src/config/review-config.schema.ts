@@ -160,6 +160,10 @@ export const reviewConfigSchema = Schema.Struct({
 	limits: Schema.Struct({
 		max_runs_per_pr: positiveIntSchema,
 		max_file_kb: positiveIntSchema,
+		/**
+		 * Hard cap of one run: no model call starts once it is spent, and the finders together plan
+		 * at most `FINDER_TOKEN_SHARE` of it, the main reviewer's reading included.
+		 */
 		tokens_per_run: positiveIntSchema,
 		/** Tokens a run plans to spend at each depth; `tokens_per_run` still caps it. */
 		tokens_by_depth: Schema.Struct({

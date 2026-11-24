@@ -10,7 +10,7 @@ import {
 	type PlannedRun,
 	type PullRequestInfo,
 } from '@mng-review/domain'
-import { Clock, Context, Effect, Layer } from 'effect'
+import { Clock, Context, Effect, Layer, Result } from 'effect'
 import type { Rules } from '../../../../platform/config/rules.service'
 import { TokenLedger } from '../../../../platform/llm/token-ledger.service'
 import type { PlanReport } from '../../../routing/domain/plan-report.types'
@@ -20,7 +20,9 @@ import { makeTokenPool } from '../../domain/loop-budget.helper'
 import { toIncompleteRun } from '../../domain/review-report.helper'
 import type { ReviewReport } from '../../domain/review-report.types'
 import { FINDER_TOKEN_SHARE } from '../../domain/review.constants'
+import type { FinderContext } from '../finder.types'
 import { ReviewLimits } from '../review-limits.context'
+import { toSizedJobs } from '../reviewer-jobs.helper'
 import { FinderService } from './finder.service'
 import { ModelHealthService } from './model-health.service'
 
@@ -37,7 +39,10 @@ export interface ReviewRequest {
  * Finds, validates and places the findings of a planned run. The run plans to spend
  * `limits.tokens_by_depth` for its depth (never more than `limits.tokens_per_run`):
  * `FINDER_TOKEN_SHARE` of it split over the finders by weight, the rest over the validations; what a
- * finder leaves unspent goes to the main reviewer's conversations. At
+ * finder leaves unspent goes to the main reviewer's conversations. Each main reviewer conversation
+ * then gets what reading every changed file its first message cuts needs (`toSizedJobs`), and the
+ * run plans that much more, while the finders together stay within `FINDER_TOKEN_SHARE` of
+ * `limits.tokens_per_run`; past that every grant is cut alike and the report says so (`capped`). At
  * deep depth under `risk_paths`, or when the router's signals made the change risky, reviewer models
  * after the first review only the units of those files and plan tokens for their changed lines
  * (`getFocusShare`). The main reviewer and the selected
@@ -87,36 +92,62 @@ export const ReviewServiceLive = Layer.effect(
 				run.role === 'reviewer' &&
 				run !== firstReviewer &&
 				focusPaths.length > 0
+			const entries = plan.runs.map((run, index) => {
+				const allowance = allowances[index] ?? 0
+				const narrowed = isNarrowed(run)
+				const context: FinderContext = {
+					scope,
+					rules,
+					fanOut: plan.depth === 'deep',
+					fallback: run.role === 'reviewer' ? reviewerFallback : reviewers,
+					tokens: {
+						allowance: narrowed
+							? Math.floor(allowance * focusShare)
+							: allowance,
+						runTokens,
+						pool,
+					},
+					...(narrowed ? { unitPaths: focusPaths } : {}),
+				}
+				return { run, context }
+			})
+			const built = yield* Effect.forEach(
+				entries,
+				entry => Effect.result(finder.jobs(entry.run, entry.context)),
+				{ concurrency: 'unbounded' }
+			)
+			const finderCap = Math.floor(
+				config.limits.tokens_per_run * FINDER_TOKEN_SHARE
+			)
+			const sized = toSizedJobs(
+				built.map(jobs => (Result.isSuccess(jobs) ? jobs.success : undefined)),
+				finderCap - runTokens
+			)
 			const results = yield* Effect.forEach(
-				plan.runs,
-				(run, index) => {
-					const allowance = allowances[index] ?? 0
-					const narrowed = isNarrowed(run)
-					return finder.run(run, {
-						scope,
-						rules,
-						fanOut: plan.depth === 'deep',
-						fallback: run.role === 'reviewer' ? reviewerFallback : reviewers,
-						tokens: {
-							allowance: narrowed
-								? Math.floor(allowance * focusShare)
-								: allowance,
-							runTokens,
-							pool,
+				entries,
+				({ run, context }, index) =>
+					finder.run(
+						run,
+						{
+							...context,
+							tokens: {
+								...context.tokens,
+								runTokens: runTokens + sized.granted,
+							},
 						},
-						...(narrowed ? { unitPaths: focusPaths } : {}),
-					})
-				},
+						sized.jobs[index]
+					),
 				{ concurrency: 'unbounded' }
 			)
 			const found = results.flatMap(result => result.findings)
 			const bugs = mergeFindings(found.filter(entry => entry.kind === 'bug'))
 			const nits = mergeFindings(found.filter(entry => entry.kind === 'nit'))
 			const droppedWhileFinding = yield* health.dropped
+			const sizedTokens = plannedTokens + sized.granted
 			const budget = {
-				runTokens: plannedTokens,
+				runTokens: sizedTokens,
 				conversationTokens: getValidationTokens(
-					plannedTokens - (yield* health.spent),
+					sizedTokens - (yield* health.spent),
 					bugs.length
 				),
 			}
@@ -158,6 +189,9 @@ export const ReviewServiceLive = Layer.effect(
 				wallMillis: (yield* Clock.currentTimeMillis) - request.startedAt,
 				...(endpointError ? { endpointError } : {}),
 				...(incomplete ? { incomplete } : {}),
+				...(sized.capped
+					? { capped: { needed: runTokens + sized.needed, cap: finderCap } }
+					: {}),
 				blocking: hasBlockingBug(outcome.bugs),
 			} satisfies ReviewReport
 		})

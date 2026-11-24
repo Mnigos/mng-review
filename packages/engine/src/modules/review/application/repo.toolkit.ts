@@ -18,7 +18,7 @@ const pathSchema = Schema.String.annotate({
 
 export const ReadFileTool = Tool.make('read_file', {
 	description:
-		'Read a file from the repository at head or base, with line numbers.',
+		'Read a file from the repository at head or base, with line numbers. It never shows the lines a change deletes, so read a changed file whose diff was cut with `diff`, not with this tool.',
 	parameters: Schema.Struct({
 		ref: refSchema,
 		path: pathSchema,
@@ -65,7 +65,7 @@ const offsetSchema = Schema.optionalKey(
 
 export const DiffTool = Tool.make('diff', {
 	description:
-		'Unified diff of the change, for one file or for all reviewable files. A long diff comes in parts; the end of each part names the offset of the next.',
+		'Unified diff of the change, for one file or for all reviewable files. Read every changed file whose diff your first message cut with `diff(path)`. A long diff comes in parts; the end of each part names the offset of the next, and a file counts as read only once every part came back.',
 	parameters: Schema.Struct({
 		path: Schema.optionalKey(pathSchema),
 		offset: offsetSchema,

@@ -5,6 +5,16 @@ import type {
 } from '../../../platform/llm/token-ledger.service'
 import type { RiskRating } from '../../risk/domain/risk-rating.types'
 import type { PlanReport } from '../../routing/domain/plan-report.types'
+import type { UNREAD_REASONS } from './review.constants'
+
+/** Why a changed file counts as unread (`UNREAD_REASONS`). */
+export type UnreadReason = (typeof UNREAD_REASONS)[number]
+
+/** A changed file a main reviewer conversation answered without receiving whole, and why. */
+export interface UnreadFile {
+	readonly path: string
+	readonly reason: UnreadReason
+}
 
 /** A model the run stopped using, and why. */
 export interface DroppedModel {
@@ -41,6 +51,8 @@ export interface AgentRunReport {
 	 * is held to reading every file; unset when none.
 	 */
 	readonly unread?: number
+	/** The files `unread` counts, each with its reason, in unit order; unset when none. */
+	readonly unreadFiles?: readonly UnreadFile[]
 	/** Units the token budget stopped before they answered; the agent's name when it is not split. */
 	readonly unfinished?: readonly string[]
 	readonly wallMillis: number
@@ -51,6 +63,16 @@ export interface IncompleteRun {
 	readonly reason: string
 	/** Finders and units that gave no answer, and the validations that did not run. */
 	readonly unfinished: readonly string[]
+}
+
+/**
+ * A deep review whose main reviewer needs more tokens to read every changed file than the run may
+ * plan: its finders together plan at most `cap`, `FINDER_TOKEN_SHARE` of `limits.tokens_per_run`.
+ */
+export interface CoverageCap {
+	/** Finder tokens reading every changed file needs. */
+	readonly needed: number
+	readonly cap: number
 }
 
 /** What `mng-review --base` reports: the plan, the outcome and what the run took. */
@@ -66,6 +88,8 @@ export interface ReviewReport extends ReviewOutcome {
 	readonly endpointError?: string
 	/** Set when the token budget stopped work; the findings that were produced are kept. */
 	readonly incomplete?: IncompleteRun
+	/** Set when reading every changed file needs more than the run may plan; the run read within it. */
+	readonly capped?: CoverageCap
 	/** A kept bug at or above its severity floor. */
 	readonly blocking: boolean
 	/** The risk rating, set only on a full run with `risk.enabled` (`isRatingRun`). */

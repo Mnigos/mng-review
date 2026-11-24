@@ -39,6 +39,8 @@ function toGapText(gap: CoverageGap): string {
 		return 'the review stopped at its token budget before reading every changed file.'
 	if (gap.kind === 'failed')
 		return `${gap.failed} of ${gap.runs} review run(s) failed or did not report.`
+	if (gap.kind === 'cap')
+		return `reading every changed file needs more than the ${gap.cap.toLocaleString('en-US')} tokens \`limits.tokens_per_run\` lets the finders plan, so the review read only what fit.`
 	if (gap.kind === 'threads')
 		return "the bot's threads could not be read again before this review was written."
 	if (gap.kind === 'unread')
@@ -51,7 +53,7 @@ function toRestrictionTexts(evidence: ReviewedEvidence): readonly string[] {
 	return [
 		evidence.authored &&
 			'the bot opened this pull request, and GitHub gives the author of a pull request no review state',
-		evidence.open === false && 'the pull request is a draft or closed',
+		evidence.open === false && 'the pull request is a draft, closed or merged',
 		evidence.approval === 'preview' &&
 			'approvals are turned off (`verdict.mode: preview`)',
 		evidence.approval === 'token' &&
@@ -71,11 +73,15 @@ function toSentence(reasons: readonly string[]): string {
 function toNotApprovedReason(evidence: ReviewEvidence): string {
 	if (evidence.kind === 'offline')
 		return 'the reviewer was offline, so this run judged nothing and kept the earlier state.'
+	const off = evidence.kind === 'reply' ? !evidence.current : !evidence.onHead
+	// A failed read keeps the state whatever the verdict, so it is the reason before any verdict.
+	if (off && evidence.headUnknown)
+		return 'the pull request could not be read again before the review, so the earlier state stands.'
 	if (evidence.verdict === 'needs owner')
 		return 'a thread waits for the owner to decide.'
 	if (evidence.verdict === 'needs fixes')
 		return `${evidence.openBugs} confirmed bug(s) at or above the severity floor are still open.`
-	if (evidence.kind === 'reply' ? !evidence.current : !evidence.onHead)
+	if (off)
 		return 'the pull request moved to another commit, or could not be read again, while this run worked, so the earlier state stands.'
 	if (!evidence.onHead)
 		return 'replies were answered on a commit the last full review did not cover, so the earlier state stands.'

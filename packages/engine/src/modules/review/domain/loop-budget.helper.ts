@@ -43,11 +43,6 @@ export interface LoopBudget {
 	 * reviewer's conversations get one.
 	 */
 	readonly pool?: TokenPool
-	/**
-	 * Tokens of `conversationTokens` held back until the conversation gets its continuation turn,
-	 * so a finder that answers with changed files unread can still read them.
-	 */
-	readonly reserve?: number
 }
 
 /** What a conversation has spent so far. */
@@ -59,12 +54,6 @@ export interface ConversationTokens {
 	 * tool results it will send, or the first message's estimate before the first call.
 	 */
 	readonly nextInputTokens: number
-}
-
-/** Why a turn's repository calls do not run: the agent must answer, or its tokens ran out. */
-export interface CallStop {
-	readonly wrapUp: boolean
-	readonly outOfTokens: boolean
 }
 
 /**
@@ -105,10 +94,7 @@ export interface SpentTokens {
 
 /** One conversation's token bounds as the loop checks them, its pool claims included. */
 export interface ConversationBudget {
-	/**
-	 * The budget with what the conversation claimed from the pool added to its share, and its
-	 * reserve held back until `openReserve`.
-	 */
+	/** The budget with what the conversation claimed from the pool added to its share. */
 	readonly current: Effect.Effect<LoopBudget | undefined>
 	/** Adds one call's input and output tokens to what the conversation spent. */
 	readonly record: (tokens: number) => Effect.Effect<void>
@@ -119,8 +105,14 @@ export interface ConversationBudget {
 	readonly settle: <TResult extends SpentTokens>(
 		result: TResult
 	) => Effect.Effect<TResult>
-	/** Makes the reserve part of the share, for the continuation turn. */
-	readonly openReserve: Effect.Effect<void>
+	/**
+	 * Claims from the pool what the conversation lacks to send `tokens` more with its next call,
+	 * so tool outputs the pool can pay for are not refused; without a pool it claims nothing.
+	 */
+	readonly claimFor: (
+		state: ConversationTokens,
+		tokens: number
+	) => Effect.Effect<void>
 	/**
 	 * True once the conversation cannot afford a call after the next one and the pool cannot cover
 	 * the difference, or the whole run has spent its finder tokens (`spent`).
@@ -133,57 +125,64 @@ export function makeConversationBudget(
 	budget: LoopBudget | undefined,
 	spent: Effect.Effect<number>
 ): Effect.Effect<ConversationBudget> {
-	return Effect.map(
-		Ref.make({ granted: 0, spent: 0, opened: false }),
-		totals => {
-			const current = Ref.get(totals).pipe(
-				Effect.map(entry => {
-					if (budget === undefined) return undefined
-					const held = entry.opened ? 0 : (budget.reserve ?? 0)
-					return {
-						...budget,
-						conversationTokens:
-							budget.conversationTokens + entry.granted - held,
-					}
-				})
+	return Effect.map(Ref.make({ granted: 0, spent: 0 }), totals => {
+		const current = Ref.get(totals).pipe(
+			Effect.map(entry =>
+				budget === undefined
+					? undefined
+					: {
+							...budget,
+							conversationTokens: budget.conversationTokens + entry.granted,
+						}
 			)
-			const isSpent = (state: ConversationTokens) =>
-				Effect.gen(function* () {
-					const now = yield* current
-					if (now === undefined) return false
-					if ((yield* spent) >= now.runTokens) return true
-					const missing = getMissingTokens(now, state)
-					if (missing === 0) return false
-					if (!(now.pool && (yield* now.pool.claim(missing)))) return true
-					yield* Ref.update(totals, entry => ({
-						...entry,
-						granted: entry.granted + missing,
-					}))
-					return false
-				})
-			const record = (tokens: number) =>
-				Ref.update(totals, entry => ({ ...entry, spent: entry.spent + tokens }))
-			const settle = <TResult extends SpentTokens>(result: TResult) =>
-				Ref.get(totals).pipe(
-					Effect.map(entry => ({
-						...result,
-						spentTokens: entry.spent,
-						unspentTokens:
-							budget === undefined
-								? 0
-								: Math.max(
-										0,
-										budget.conversationTokens + entry.granted - entry.spent
-									),
-					}))
-				)
-			const openReserve = Ref.update(totals, entry => ({
-				...entry,
-				opened: true,
-			}))
-			return { current, isSpent, record, settle, openReserve }
-		}
-	)
+		)
+		/** Moves `missing` tokens from the pool into the share; false when the pool cannot pay. */
+		const claim = (missing: number) =>
+			Effect.gen(function* () {
+				if (!(budget?.pool && (yield* budget.pool.claim(missing)))) return false
+				yield* Ref.update(totals, entry => ({
+					...entry,
+					granted: entry.granted + missing,
+				}))
+				return true
+			})
+		const isSpent = (state: ConversationTokens) =>
+			Effect.gen(function* () {
+				const now = yield* current
+				if (now === undefined) return false
+				if ((yield* spent) >= now.runTokens) return true
+				const missing = getMissingTokens(now, state)
+				return missing > 0 && !(yield* claim(missing))
+			})
+		const claimFor = (state: ConversationTokens, tokens: number) =>
+			Effect.gen(function* () {
+				const now = yield* current
+				if (now === undefined) return
+				const missing =
+					state.spentTokens +
+					state.nextInputTokens +
+					tokens -
+					now.conversationTokens
+				if (missing > 0) yield* claim(missing)
+			})
+		const record = (tokens: number) =>
+			Ref.update(totals, entry => ({ ...entry, spent: entry.spent + tokens }))
+		const settle = <TResult extends SpentTokens>(result: TResult) =>
+			Ref.get(totals).pipe(
+				Effect.map(entry => ({
+					...result,
+					spentTokens: entry.spent,
+					unspentTokens:
+						budget === undefined
+							? 0
+							: Math.max(
+									0,
+									budget.conversationTokens + entry.granted - entry.spent
+								),
+				}))
+			)
+		return { current, isSpent, record, settle, claimFor }
+	})
 }
 
 /** Tokens a text is assumed to take, at `CHARS_PER_TOKEN`. */

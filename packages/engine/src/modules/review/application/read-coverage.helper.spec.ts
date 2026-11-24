@@ -6,7 +6,7 @@ import {
 	addToolReads,
 	getChangedLines,
 	getDiffParts,
-	getUnreadPaths,
+	getUnreadFiles,
 	isWholeRead,
 	NO_READS,
 	type ReadCoverage,
@@ -100,7 +100,7 @@ describe('isWholeRead', () => {
 			true
 		)
 		expect(
-			getUnreadPaths(reads, { paths: [BILLING_PATH], changed: CHANGED })
+			getUnreadFiles(reads, { paths: [BILLING_PATH], changed: CHANGED })
 		).toEqual([])
 	})
 	test('one page of a long diff does not read the file', () => {
@@ -114,7 +114,7 @@ describe('isWholeRead', () => {
 	test('a whole-change diff reads every file in it', () => {
 		const reads = readAll([output('diff', '', { diff: whole })])
 		expect(
-			getUnreadPaths(reads, {
+			getUnreadFiles(reads, {
 				paths: [BILLING_PATH, OTHER_PATH],
 				changed: CHANGED,
 			})
@@ -167,9 +167,8 @@ describe('isWholeRead', () => {
 				false
 			)
 		})
-	test('blame touches the file without reading it', () => {
+	test('blame does not read the file', () => {
 		const reads = readAll([output('blame', BILLING_PATH)])
-		expect(reads.touched).toEqual(new Set([BILLING_PATH]))
 		expect(isWholeRead(reads, BILLING_PATH, CHANGED.get(BILLING_PATH))).toBe(
 			false
 		)

@@ -4,66 +4,61 @@ import {
 	type PlannedRun,
 	parseFindingsAnswer,
 	sortFindings,
-	splitReviewUnits,
 	toFinding,
 } from '@mng-review/domain'
 import { Clock, Context, Effect, Layer, Result } from 'effect'
+import type { GitError } from '../../../../platform/git/git.errors'
 import { GitService } from '../../../../platform/git/git.service'
 import { fenceData } from '../../../../utils/fence.util'
 import {
 	getFirstDiffChars,
-	getUnitCount,
-	getUnitsToReview,
 	toFinderStatus,
+	toUnreadReport,
 } from '../../domain/finder-budget.helper'
-import {
-	getWholePaths,
-	toChangeMessage,
-	toContextNotes,
-	toUnitMessage,
-} from '../../domain/finder-message.helper'
+import { toChangeMessage } from '../../domain/finder-message.helper'
 import type { AgentRunReport } from '../../domain/review-report.types'
 import {
-	CONTINUATION_RESERVE_SHARE,
 	MAX_FULL_DIFF_CHARS,
 	MAX_INCREMENTAL_DIFF_CHARS,
 } from '../../domain/review.constants'
 import { LoopError } from '../../domain/review.errors'
 import type { FinderContext, FinderJob, FinderResult } from '../finder.types'
 import { toFindingsCoverage } from '../findings-coverage.helper'
-import { getChangedLines } from '../read-coverage.helper'
 import {
 	ALL_REPO_TOOLS,
 	METADATA_REPO_TOOLS,
 	PrMetadataTool,
 } from '../repo.toolkit'
 import { ReportFindingsTool } from '../report-findings.tool'
-import {
-	FINDING_RULES_PROMPT,
-	NIT_PROMPT,
-	REVIEWER_PROMPT,
-	UNIT_PROMPT,
-} from '../reviewer.prompt'
+import { toReviewerJobs } from '../reviewer-jobs.helper'
+import { FINDING_RULES_PROMPT, NIT_PROMPT } from '../reviewer.prompt'
 import { AgentLoopService } from './agent-loop.service'
 import { ModelHealthService } from './model-health.service'
 import { type RepoScope, RepoToolsService } from './repo-tools.service'
 
 /**
  * Runs one planned finder: the main reviewer (split into units at deep depth) or a declared agent
- * (`kind`, `input` and `max_findings` from its front matter). A job whose model is dropped moves to
- * the next available fallback model. Each job answers with what it has once its share of the run's
- * planned tokens runs out (`tokens`); a deep review splits into as many units as its share pays
- * for, and `unitPaths` narrows them to the risky ones. A job that answers under its share gives the
- * rest to the run's pool, and the main reviewer's conversations claim from it before they wrap up.
- * A job the budget stops before it answers is listed as
- * unfinished and the others' findings stay. It never fails: a failure is the report's status.
+ * (`kind`, `input` and `max_findings` from its front matter). `jobs` builds its conversations, each
+ * main reviewer one with the tokens reading its cut files needs (`need`), so the review can size
+ * them before `run` runs them. A job whose model is dropped moves to the next available fallback
+ * model. Each job answers with what it has once its tokens run out; a deep review splits into as
+ * many units as its share pays for, and `unitPaths` narrows them to the risky ones. A job that
+ * answers under its tokens gives the rest to the run's pool, and the main reviewer's conversations
+ * claim from it before they wrap up. A job the budget stops before it answers is listed as
+ * unfinished and the others' findings stay. `run` never fails: a failure is the report's status.
  */
 export class FinderService extends Context.Service<
 	FinderService,
 	{
-		readonly run: (
+		readonly jobs: (
 			run: PlannedRun,
 			context: FinderContext
+		) => Effect.Effect<readonly FinderJob[], LoopError | GitError>
+		/** Runs `jobs` when given, else the ones `jobs` builds. */
+		readonly run: (
+			run: PlannedRun,
+			context: FinderContext,
+			jobs?: readonly FinderJob[]
 		) => Effect.Effect<FinderResult>
 	}
 >()('mng-review/FinderService') {}
@@ -89,65 +84,13 @@ export const FinderServiceLive = Layer.effect(
 			run: PlannedRun,
 			context: FinderContext
 		) {
-			const { pr } = context.scope
-			const system = [
-				REVIEWER_PROMPT,
-				...toContextNotes(context.rules.context),
-				FINDING_RULES_PROMPT,
-			].join('\n\n')
 			// A narrowed reviewer splits only its focus files, so a small share still keeps it to them.
 			const narrowed = context.fanOut && context.unitPaths !== undefined
 			const diff = yield* readDiff(
 				context.scope,
 				narrowed ? context.unitPaths : undefined
 			)
-			const { allowance } = context.tokens
-			const split = context.fanOut
-				? splitReviewUnits(diff, getUnitCount(allowance))
-				: []
-			const units = getUnitsToReview(split, context.unitPaths)
-			if ((split.length > 0 || narrowed) && units.length === 0) return []
-			if (split.length > 1 || narrowed) {
-				const tokens = Math.floor(allowance / Math.max(1, units.length))
-				return units.map(unit => {
-					const maxChars = getFirstDiffChars(tokens, MAX_INCREMENTAL_DIFF_CHARS)
-					const whole = getWholePaths(unit.diff, maxChars)
-					return {
-						unit: unit.label,
-						system: `${system}\n\n${UNIT_PROMPT}`,
-						user: toUnitMessage({
-							unit,
-							files: context.scope.change.files,
-							pr,
-							maxChars,
-						}),
-						tools: ALL_REPO_TOOLS,
-						tokens,
-						coverage: unit.paths.filter(path => !whole.has(path)),
-						changed: getChangedLines(unit.diff),
-					}
-				})
-			}
-			const maxChars = getFirstDiffChars(allowance, MAX_FULL_DIFF_CHARS)
-			const whole = getWholePaths(diff, maxChars)
-			return [
-				{
-					system,
-					user: toChangeMessage({
-						files: context.scope.change.files,
-						scope: run.files,
-						pr,
-						diff,
-						maxChars,
-					}),
-					tools: ALL_REPO_TOOLS,
-					tokens: allowance,
-					coverage: getReviewableFiles(context.scope.change.files)
-						.map(file => file.path)
-						.filter(path => run.files.includes(path) && !whole.has(path)),
-					changed: getChangedLines(diff),
-				},
-			]
+			return toReviewerJobs({ run, context, diff, narrowed })
 		})
 
 		const agentJobs = Effect.fn('FinderService.agentJobs')(function* (
@@ -261,11 +204,6 @@ export const FinderServiceLive = Layer.effect(
 						...(run.role === 'reviewer' && context.tokens.pool
 							? { pool: context.tokens.pool }
 							: {}),
-						...(job.coverage && job.coverage.length > 0
-							? {
-									reserve: Math.floor(job.tokens * CONTINUATION_RESERVE_SHARE),
-								}
-							: {}),
 					},
 					source: run.name,
 					...(job.coverage
@@ -278,7 +216,7 @@ export const FinderServiceLive = Layer.effect(
 						model: model.model,
 						toolCalls: result.toolCalls,
 						continued: result.continued === true,
-						unread: result.unread?.length ?? 0,
+						unread: result.unread ?? [],
 						malformed: result.value.dropped,
 						findings: result.value.findings.map(reported =>
 							toFinding(reported, {
@@ -290,9 +228,15 @@ export const FinderServiceLive = Layer.effect(
 					}))
 				)
 
+		const jobs = (run: PlannedRun, context: FinderContext) =>
+			run.role === 'reviewer'
+				? reviewerJobs(run, context)
+				: agentJobs(run, context)
+
 		const run = Effect.fn('FinderService.run')(function* (
 			planned: PlannedRun,
-			context: FinderContext
+			context: FinderContext,
+			given?: readonly FinderJob[]
 		) {
 			const started = yield* Clock.currentTimeMillis
 			const base = {
@@ -308,17 +252,15 @@ export const FinderServiceLive = Layer.effect(
 			const elapsed = Clock.currentTimeMillis.pipe(
 				Effect.map(now => now - started)
 			)
-			const jobs = yield* Effect.result(
-				planned.role === 'reviewer'
-					? reviewerJobs(planned, context)
-					: agentJobs(planned, context)
+			const built = yield* Effect.result(
+				given ? Effect.succeed(given) : jobs(planned, context)
 			)
-			if (Result.isFailure(jobs)) {
+			if (Result.isFailure(built)) {
 				return {
 					report: {
 						...base,
 						status: 'failed',
-						error: jobs.failure.message,
+						error: built.failure.message,
 						wallMillis: yield* elapsed,
 					},
 					findings: [],
@@ -326,7 +268,7 @@ export const FinderServiceLive = Layer.effect(
 			}
 			const model = { model: planned.model, effort: planned.effort }
 			const results = yield* Effect.forEach(
-				jobs.success,
+				built.success,
 				(job: FinderJob) =>
 					Effect.result(
 						runJob(planned, job, context, model, [model.model])
@@ -368,21 +310,19 @@ export const FinderServiceLive = Layer.effect(
 				toolCalls: done.reduce((sum, entry) => sum + entry.toolCalls, 0),
 				malformed: done.reduce((sum, entry) => sum + entry.malformed, 0),
 				findings: findings.length,
-				...(jobs.success.length > 1 ? { units: jobs.success.length } : {}),
+				...(built.success.length > 1 ? { units: built.success.length } : {}),
 				...(done.some(entry => entry.continued)
 					? { continued: done.filter(entry => entry.continued).length }
 					: {}),
-				...(done.some(entry => entry.unread > 0)
-					? { unread: done.reduce((sum, entry) => sum + entry.unread, 0) }
-					: {}),
+				...toUnreadReport(done.flatMap(entry => entry.unread)),
 				...(unfinished.length > 0 ? { unfinished } : {}),
 				...(firstFailure === undefined
 					? {}
 					: {
 							error:
-								jobs.success.length === 1
+								built.success.length === 1
 									? firstFailure.error.message
-									: `${failures.length} of ${jobs.success.length} units did not finish: ${firstFailure.error.message}`,
+									: `${failures.length} of ${built.success.length} units did not finish: ${firstFailure.error.message}`,
 						}),
 				...(errors.some(error => error._tag === 'LlmError')
 					? { endpointError: true }
@@ -392,6 +332,6 @@ export const FinderServiceLive = Layer.effect(
 			return { report, findings } satisfies FinderResult
 		})
 
-		return { run }
+		return { jobs, run }
 	})
 )

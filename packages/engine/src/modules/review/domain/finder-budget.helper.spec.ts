@@ -43,7 +43,7 @@ describe('finder budgets', () => {
 		[MIN_UNIT_TOKENS * MAX_REVIEW_UNITS * 2, MAX_REVIEW_UNITS],
 	] as const)
 		test(`splits ${tokens} tokens into ${expected} units`, () =>
-			expect(getUnitCount(tokens)).toBe(expected))
+			expect(getUnitCount(tokens, 0)).toBe(expected))
 	test('shares validation leftovers, floors and clamps both ends', () => {
 		expect(getValidationTokens(100_001, 3)).toBe(Math.floor(100_001 / 3))
 		expect(getValidationTokens(-1, 2)).toBe(MIN_VALIDATION_TOKENS)

@@ -12,7 +12,6 @@ export function toFindingsCoverage(
 	return {
 		paths,
 		changed,
-		answered: value => value.findings.map(entry => entry.path),
 		merge: addLaterFindings,
 	}
 }

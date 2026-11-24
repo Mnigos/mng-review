@@ -2,6 +2,7 @@ import type { ModelSetting } from '@mng-review/domain'
 import type { Effect } from 'effect'
 import type { Prompt, Response } from 'effect/ai'
 import type { LoopBudget, SpentTokens } from '../domain/loop-budget.helper'
+import type { UnreadFile } from '../domain/review-report.types'
 import type { ToolResult } from './repo-tools.types'
 import type { RepoToolName } from './repo.toolkit'
 import type { ReportFindingsTool } from './report-findings.tool'
@@ -54,18 +55,16 @@ export interface LoopRequest<TValue> {
 }
 
 /**
- * A finder that answers without reading some of `paths` (with `read_file`, `diff` or `blame`, or a
- * finding on them) gets one continuation turn naming them, while its budget, tool calls and time
- * allow. The first answer is kept, and `merge` adds what the continuation finds. The files it
- * leaves unread in the result are stricter: only every page of a file's diff, or `read_file` at the
- * head showing every line of `changed`, counts (`isWholeRead`).
+ * A finder that answers without receiving some of `paths` whole gets one continuation turn naming
+ * them, while its budget, tool calls and time allow. A file counts as received whole only when
+ * every page of its diff came back, or `read_file` at the head showed every line of `changed`
+ * (`isWholeRead`); the continuation and the files left unread in the result use the same test. The
+ * first answer is kept, and `merge` adds what the continuation finds.
  */
 export interface LoopCoverage<TValue> {
 	readonly paths: readonly string[]
 	/** The head lines each path changes (`getChangedLines`). */
 	readonly changed: ReadonlyMap<string, readonly number[]>
-	/** Paths the answer itself shows the agent looked at, such as its findings' paths. */
-	readonly answered: (value: TValue) => readonly string[]
 	readonly merge: (first: TValue, next: TValue) => TValue
 }
 
@@ -76,8 +75,8 @@ export interface LoopResult<TValue> extends SpentTokens {
 	readonly turns: number
 	/** The agent got a continuation turn for files it had not read. */
 	readonly continued?: boolean
-	/** Files of the request's coverage the agent did not receive whole (`isWholeRead`); unset without coverage. */
-	readonly unread?: readonly string[]
+	/** Files of the request's coverage the agent did not receive whole, with why; unset without coverage. */
+	readonly unread?: readonly UnreadFile[]
 	/** The token budget forced an answer this result holds, the first one of a continuation included. */
 	readonly budgetStopped?: true
 }

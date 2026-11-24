@@ -1332,7 +1332,7 @@ layer(APP_MODE_OWNED, { excludeTestServices: true })(
 								'\n'
 							)[0]
 						).toBe(
-							'**Comment.** Not approved: the pull request is a draft or closed.'
+							'**Comment.** Not approved: the pull request is a draft, closed or merged.'
 						)
 					})
 			)

@@ -36,12 +36,13 @@ function reviewLayer(
 	validate: ValidatorService['Service']['validate'],
 	dropped: ModelHealthService['Service']['dropped'] = Effect.succeed([]),
 	spent = 0,
-	validateAll?: ValidatorService['Service']['validateAll']
+	validateAll?: ValidatorService['Service']['validateAll'],
+	jobs: FinderService['Service']['jobs'] = () => Effect.succeed([])
 ) {
 	return ReviewServiceLive.pipe(
 		Layer.provide(
 			Layer.mergeAll(
-				Layer.succeed(FinderService, { run: find }),
+				Layer.succeed(FinderService, { jobs, run: find }),
 				Layer.succeed(ValidatorService, {
 					validate,
 					validateAll:

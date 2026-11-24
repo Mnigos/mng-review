@@ -171,9 +171,9 @@ const CASES = [
 			'the job token cannot approve; only a GitHub App identity approves.',
 	},
 	{
-		name: 'a draft or closed pull request',
+		name: 'a draft, closed or merged pull request',
 		evidence: { ...COVERED_REVIEW, open: false },
-		expected: 'the pull request is a draft or closed.',
+		expected: 'the pull request is a draft, closed or merged.',
 	},
 	{
 		name: 'unread files in preview mode',
@@ -200,7 +200,7 @@ const CASES = [
 		name: 'a draft pull request in preview mode',
 		evidence: { ...COVERED_REVIEW, open: false, approval: 'preview' },
 		expected:
-			'the pull request is a draft or closed; approvals are turned off (`verdict.mode: preview`).',
+			'the pull request is a draft, closed or merged; approvals are turned off (`verdict.mode: preview`).',
 	},
 ] as const satisfies readonly HeadlineCase[]
 

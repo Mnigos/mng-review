@@ -15,7 +15,7 @@ const SPEC_DEFAULTS = {
 	limits: {
 		max_runs_per_pr: 6,
 		max_file_kb: 300,
-		tokens_per_run: 1_500_000,
+		tokens_per_run: 2_000_000,
 		tokens_by_depth: DEFAULT_PRESET.limits.tokens_by_depth,
 		tokens_per_pr: 5_000_000,
 		concurrency: 4,
