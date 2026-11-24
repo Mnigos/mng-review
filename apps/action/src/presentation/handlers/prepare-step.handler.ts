@@ -3,6 +3,7 @@ import {
 	type BotThread,
 	GITHUB_ACTIONS_IDENTITY,
 	GitHubConfig,
+	provideListCompleteness,
 	provideOwnedIdentities,
 	PublishService,
 	ReplyFindService,
@@ -85,6 +86,7 @@ export const runPrepareStep = Effect.gen(function* () {
 	const readPrior = (event: PullRequestEvent, rules: Rules) =>
 		summaries.readPrior(event.number).pipe(
 			provideOwnedIdentities(identity, rules.config.identity.previous),
+			provideListCompleteness(rules.config.risk.enabled),
 			Effect.map((marker): PriorRun | undefined =>
 				marker
 					? {
@@ -99,6 +101,7 @@ export const runPrepareStep = Effect.gen(function* () {
 	const readThreads = (event: PullRequestEvent, rules: Rules) =>
 		publisher.readThreads(event.number).pipe(
 			provideOwnedIdentities(identity, rules.config.identity.previous),
+			provideListCompleteness(rules.config.risk.enabled),
 			Effect.orElseSucceed(() => [])
 		)
 	const readReplies = (
@@ -115,7 +118,10 @@ export const runPrepareStep = Effect.gen(function* () {
 				waiting: prior?.waiting ?? [],
 				...(isNaming(rules) ? { naming: true } : {}),
 			})
-			.pipe(provideOwnedIdentities(identity, rules.config.identity.previous))
+			.pipe(
+				provideOwnedIdentities(identity, rules.config.identity.previous),
+				provideListCompleteness(rules.config.risk.enabled)
+			)
 	// The schedule's own read: the waiting list from every summary and the bot's answers.
 	/** With a rating from the app, answers name replies, so older unnamed replies count too. */
 	const isNaming = (rules: Rules) =>
@@ -136,6 +142,7 @@ export const runPrepareStep = Effect.gen(function* () {
 			})
 			.pipe(
 				provideOwnedIdentities(identity, rules.config.identity.previous),
+				provideListCompleteness(rules.config.risk.enabled),
 				Effect.orElseSucceed(() => ({ threads: [], replies: [] }))
 			)
 	const command = yield* readCommandRun

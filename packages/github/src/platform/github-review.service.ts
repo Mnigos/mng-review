@@ -13,6 +13,7 @@ import {
 } from './github-api.schema'
 import { makeGitHubHttp } from './github-http.client'
 import type { GitHubApiError } from './github.errors'
+import { ListCompleteness } from './list-completeness.context'
 
 /** The events a submitted review can carry, as the REST API names them. */
 export const REVIEW_EVENTS = ['COMMENT', 'APPROVE', 'REQUEST_CHANGES'] as const
@@ -88,6 +89,7 @@ export const GitHubReviewServiceLive = Layer.effect(
 			pullNumber: number,
 			withCommits = false
 		) {
+			const { complete } = yield* ListCompleteness
 			return yield* collect(
 				'listReviews',
 				cursor =>
@@ -106,6 +108,7 @@ export const GitHubReviewServiceLive = Layer.effect(
 					).pipe(
 						Effect.map(answer => answer.data?.repository?.pullRequest?.reviews)
 					),
+				complete,
 				null,
 				0
 			)

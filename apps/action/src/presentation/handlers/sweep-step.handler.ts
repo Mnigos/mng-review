@@ -1,6 +1,7 @@
 import { RulesService } from '@mng-review/engine'
 import {
 	GitHubConfig,
+	provideListCompleteness,
 	provideOwnedIdentities,
 	StatusSweepService,
 	toLogText,
@@ -51,6 +52,7 @@ const sweepWithRules = Effect.gen(function* () {
 		service.sweep(rules.config.commands.allow)
 	).pipe(
 		provideOwnedIdentities(identity, rules.config.identity.previous),
+		provideListCompleteness(rules.config.risk.enabled),
 		Effect.map(formatSweepLine),
 		Effect.catchTag('GitHubApiError', error =>
 			Effect.succeed(`status sweep failed: ${error.message}`)

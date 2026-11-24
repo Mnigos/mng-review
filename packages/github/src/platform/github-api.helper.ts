@@ -79,16 +79,18 @@ export function getGraphqlErrors(
 }
 
 /**
- * Every node of a connection, page by page. A missing pull request, more than `MAX_PAGES` pages
- * or a node GitHub lists as `null` fails, so a partial list is never taken for the whole: a
- * thread, comment, review or timeline item GitHub could not resolve may be the one that holds a
- * level or an answer.
+ * Every node of a connection, page by page. A missing pull request or more than `MAX_PAGES` pages
+ * fails, so a partial list is never taken for the whole. A node GitHub lists as `null` fails too
+ * when `complete` is set, since a thread, comment, review or timeline item GitHub could not
+ * resolve may be the one that holds a level or an answer; otherwise it is left out. The caller
+ * passes `complete` from the risk gate (`ListCompleteness`), never from the data.
  */
 export function collect<TNode>(
 	operation: string,
 	fetchPage: (
 		cursor: string | null
 	) => Effect.Effect<ConnectionPage<TNode> | undefined, GitHubApiError>,
+	complete: boolean,
 	cursor: string | null,
 	page: number
 ): Effect.Effect<readonly TNode[], GitHubApiError> {
@@ -103,7 +105,7 @@ export function collect<TNode>(
 					})
 				)
 			const nodes = connection.nodes.filter(Predicate.isNotNull)
-			if (nodes.length < connection.nodes.length)
+			if (complete && nodes.length < connection.nodes.length)
 				return Effect.fail(
 					new GitHubApiError({
 						operation,
@@ -126,7 +128,7 @@ export function collect<TNode>(
 						reason: `more than ${MAX_PAGES * PAGE_SIZE} entries`,
 					})
 				)
-			return collect(operation, fetchPage, endCursor, page + 1).pipe(
+			return collect(operation, fetchPage, complete, endCursor, page + 1).pipe(
 				Effect.map(rest => [...nodes, ...rest])
 			)
 		})

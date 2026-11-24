@@ -9,6 +9,7 @@ import { GitHubApiService } from '../../../platform/github-api.service'
 import { GitHubReviewService } from '../../../platform/github-review.service'
 import type { TimelineItem } from '../../../platform/github-risk.schema'
 import { GitHubRiskService } from '../../../platform/github-risk.service'
+import { provideListCompleteness } from '../../../platform/list-completeness.context'
 import { OwnedIdentities } from '../../../platform/owned-identities.context'
 import { PublishService } from '../../publish/application/publish.service'
 import { isUnsettled } from '../../publish/domain/bot-thread.helper'
@@ -96,7 +97,7 @@ export class RiskReadService extends Context.Service<
 		/**
 		 * Severities of the confirmed bug threads that are open, that this run answered without
 		 * closing them (`answered`), or whose newest app answer is unsettled, or `undefined` when a
-		 * read failed.
+		 * read failed. Its reads are complete whatever the run provides: a null node is a failed read.
 		 */
 		readonly readThreadBugs: (
 			pullNumber: number,
@@ -247,7 +248,8 @@ export const RiskReadServiceLive = Layer.effect(
 						)
 					),
 					Effect.map(threads => threads.map(thread => thread.marker.severity)),
-					Effect.orElseSucceed(() => undefined)
+					Effect.orElseSucceed(() => undefined),
+					provideListCompleteness(true)
 				)
 			}
 		)

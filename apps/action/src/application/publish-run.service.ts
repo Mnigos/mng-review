@@ -4,6 +4,7 @@ import {
 	type DismissalOutcome,
 	getAnsweredOpenThreads,
 	GitHubConfig,
+	provideListCompleteness,
 	provideOwnedIdentities,
 	type PublishIncompleteError,
 	type PublishResult,
@@ -109,6 +110,7 @@ export type PublishReport =
  * rules did not load, while the settings would rate) it carries a failed rating, which fails the
  * job (a refused `MNG Review` status too), and a thread run's thread raise still runs after its
  * posts failed. When the summary write fails after posting began, the status is set to `error`.
+ * Only a run whose gate rates fails a list read on a null node (`ListCompleteness`, ADR 0012).
  */
 export class PublishRunService extends Context.Service<
 	PublishRunService,
@@ -387,6 +389,7 @@ export const PublishRunServiceLive = Layer.effect(
 				? publishReplies(replies, outcome, context, rules)
 				: publish(outcome, context, rules)
 			return yield* publishing.pipe(
+				provideListCompleteness(gate.status === 'on'),
 				Effect.catch(error => Effect.succeed(toFailed(error.message, gate)))
 			)
 		})
