@@ -1,5 +1,6 @@
 import type { ReviewReport, Rules, TokensByModel } from '@mng-review/engine'
 import type { ReviewEvent } from '../../../platform/github-review.service'
+import type { RatingBlock } from '../../risk/domain/risk.types'
 import type {
 	AnswerCounts,
 	DismissalOutcome,
@@ -47,6 +48,8 @@ export interface PublishInput extends PublishTarget {
 	readonly recheck?: PublishRecheck
 	/** Set when the review decided on authors' replies; each is applied after a fresh read. */
 	readonly replies?: PublishReplies
+	/** The risk rating's block, set by a full run that reached write-order step 1. */
+	readonly rating?: RatingBlock
 }
 
 /** What the review decided on authors' replies in the bot's threads. */

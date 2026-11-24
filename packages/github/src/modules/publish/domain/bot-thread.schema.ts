@@ -26,5 +26,7 @@ export const botThreadSchema = Schema.Struct({
 	latestDigest: Schema.optionalKey(Schema.String),
 	closedAt: Schema.optionalKey(Schema.String),
 	sentToOwner: Schema.Boolean,
+	/** Left out when the read's windows did not show the newest app answer. */
+	unsettled: Schema.optionalKey(Schema.Boolean),
 })
 export type BotThreadFile = typeof botThreadSchema.Type

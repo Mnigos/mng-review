@@ -4,6 +4,7 @@ import {
 	toCodeSpan,
 	toShort,
 } from '../../../utils/markdown.util'
+import type { MarkerName } from '../domain/publish-marker.parser'
 import type { FindingMarker, ThreadKind } from '../domain/publish-marker.schema'
 import {
 	MARKER_PREFIX,
@@ -91,10 +92,7 @@ function toHeading(published: PublishedFinding): string {
 }
 
 /** The hidden marker: JSON on one line with `<`, `>` and `&` escaped, so it cannot close the comment. */
-export function toMarkerComment(
-	name: 'finding' | 'summary' | 'reply',
-	data: object
-): string {
+export function toMarkerComment(name: MarkerName, data: object): string {
 	const json = JSON.stringify(data)
 		.replaceAll('<', String.raw`\u003c`)
 		.replaceAll('>', String.raw`\u003e`)
@@ -120,6 +118,7 @@ export function toFindingMarker(
 		trigger: toShort(finding.trigger, MAX_TEXT_CHARS),
 		impact: toShort(finding.impact, MAX_TEXT_CHARS),
 		engine: links.engineCommit ?? null,
+		...(finding.validation?.status === 'confirmed' ? { confirmed: true } : {}),
 	}
 }
 

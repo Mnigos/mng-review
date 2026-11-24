@@ -1,4 +1,9 @@
-import { countSchema, REPLY_ACTIONS, severitySchema } from '@mng-review/domain'
+import {
+	countSchema,
+	REPLY_ACTIONS,
+	riskLevelSchema,
+	severitySchema,
+} from '@mng-review/domain'
 import { Schema } from 'effect'
 import { MARKER_VERSION } from './publish.constants'
 
@@ -23,6 +28,11 @@ export const findingMarkerSchema = Schema.Struct({
 	impact: Schema.optionalKey(Schema.String),
 	/** The engine commit that posted it; `null` outside the workflow. */
 	engine: Schema.NullOr(Schema.String),
+	/**
+	 * Set when validation confirmed the bug; only such a thread raises the risk rating, as only a
+	 * confirmed bug of the run does. Unset for an unvalidated bug.
+	 */
+	confirmed: Schema.optionalKey(Schema.Literal(true)),
 })
 export type FindingMarker = typeof findingMarkerSchema.Type
 export type ThreadKind = FindingMarker['kind']
@@ -56,6 +66,11 @@ export const summaryMarkerSchema = Schema.Struct({
 	 * latest comment.
 	 */
 	needsOwner: Schema.optionalKey(Schema.Array(Schema.String)),
+	/**
+	 * The level a rating block in this review published. A trusted app review with it is app
+	 * history: the pull request had a real rating, so a lost risk comment never resets it.
+	 */
+	risk: Schema.optionalKey(riskLevelSchema),
 })
 export type SummaryMarker = typeof summaryMarkerSchema.Type
 
@@ -68,5 +83,12 @@ export const replyMarkerSchema = Schema.Struct({
 	action: Schema.Literals(REPLY_ACTIONS),
 	commit: Schema.String,
 	reply: Schema.optionalKey(Schema.Int),
+	/**
+	 * Set while the app has not reopened the thread after this answer: GitHub gives no resolution
+	 * time, so until a later write drops it, a resolution GitHub shows may predate the answer.
+	 * While the token app's newest answer in a thread carries it, every reader counts the thread
+	 * as open and no resolution clears its wait.
+	 */
+	unsettled: Schema.optionalKey(Schema.Literal(true)),
 })
 export type ReplyMarker = typeof replyMarkerSchema.Type

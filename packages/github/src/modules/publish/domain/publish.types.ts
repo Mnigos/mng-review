@@ -47,6 +47,11 @@ export interface BotThread {
 	 * (`RECENT_COMMENTS`); `ThreadReplyService.getSentToOwner` reads longer threads whole.
 	 */
 	readonly sentToOwner: boolean
+	/**
+	 * The token app's newest answer in the thread is unsettled (`isUnsettled`); unset when the read's
+	 * windows do not show that answer, so only the whole thread tells.
+	 */
+	readonly unsettled?: boolean
 }
 
 /** A comment's author as the thread read names it. */

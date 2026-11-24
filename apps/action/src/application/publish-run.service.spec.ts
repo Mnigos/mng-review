@@ -24,6 +24,7 @@ import {
 	outcomeFile as boundOutcomeFile,
 } from '../shared/mocks/outcome-file.helper'
 import { reviewReport, RULES } from '../shared/mocks/review-report.helper'
+import { RiskRunOffLayer } from '../shared/mocks/risk-run.helper'
 import {
 	PublishRunService,
 	PublishRunServiceLive,
@@ -134,6 +135,7 @@ function setup(
 	const service = PublishRunServiceLive.pipe(
 		Layer.provide(
 			Layer.mergeAll(
+				RiskRunOffLayer,
 				Layer.succeed(RulesService, { load: loadSpy }),
 				Layer.succeed(StatusReportService, {
 					report: reportSpy,

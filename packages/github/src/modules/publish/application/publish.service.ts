@@ -326,12 +326,17 @@ export const PublishServiceLive = Layer.effect(
 								evidence,
 								standing: judged,
 							}
+						const rated =
+							input.rating?.status === 'rated'
+								? { ...marker, risk: input.rating.level }
+								: marker
 						const body = formatSummaryComment({
 							report,
+							...(input.rating ? { rating: input.rating } : {}),
 							plan,
 							...judged,
 							carriedBugs: getCarriedBugs(marker, update),
-							marker,
+							marker: rated,
 							maxRuns: input.rules.config.limits.max_runs_per_pr,
 							links,
 							resolved,
@@ -342,7 +347,7 @@ export const PublishServiceLive = Layer.effect(
 							tokens:
 								input.replies?.tokens ?? input.recheck?.tokens ?? report.tokens,
 						})
-						return { body, marker, evidence, standing: judged }
+						return { body, marker: rated, evidence, standing: judged }
 					},
 				})
 				.pipe(Effect.mapError(error => new PublishIncompleteError({ error })))
