@@ -1,5 +1,4 @@
 import { Context, Effect, Layer } from 'effect'
-import { isNotFound } from '../../../platform/github-api.helper'
 import { GitHubApiService } from '../../../platform/github-api.service'
 import {
 	GitHubReviewService,
@@ -7,27 +6,25 @@ import {
 } from '../../../platform/github-review.service'
 import { GitHubConfig } from '../../../platform/github.config'
 import type { GitHubApiError } from '../../../platform/github.errors'
-import { getIncompleteLists } from '../../../platform/list-completeness.context'
+import {
+	isReadIncomplete,
+	readListed,
+} from '../../../platform/list-completeness.context'
 import { OwnedIdentities } from '../../../platform/owned-identities.context'
 import type { SummaryMarker } from '../domain/publish-marker.schema'
 import {
-	type LatestHead,
-	toDecidedSummary,
-} from '../domain/review-event.helper'
-import {
 	getListedWaiting,
-	getSummary,
+	toHiddenSummaryComments,
 	toSummaryComments,
 } from '../domain/summary-comment.helper'
-import { getMarkerError } from '../domain/summary-marker.helper'
+import { isManualRunCapped } from '../domain/summary-marker.helper'
 import {
-	getEditableReview,
+	getPriorMarker,
 	getPriorSummary,
-	hasChangeRequest,
 	toSummaryReviews,
 } from '../domain/summary-review.helper'
-import { toHeadedSummary } from '../presentation/review-headline.formatter'
 import {
+	toIncompleteSummary,
 	toOfflineSummary,
 	toReservedStatus,
 	toReservedSummary,
@@ -40,6 +37,10 @@ import {
 } from './review-dismiss.service'
 import { ReviewPostService, ReviewPostServiceLive } from './review-post.service'
 import {
+	ReviewWriteService,
+	ReviewWriteServiceLive,
+} from './review-write.service'
+import {
 	SummaryCleanupService,
 	SummaryCleanupServiceLive,
 } from './summary-cleanup.service'
@@ -47,6 +48,7 @@ import type {
 	ManualRunInput,
 	SummaryDraft,
 	SummaryRead,
+	SummaryRender,
 	SummaryWriteError,
 	WrittenSummary,
 } from './summary-review.service.types'
@@ -54,9 +56,10 @@ import type {
 /**
  * The summary as the body of the bot's review. Each run that posts threads, or whose review state
  * would change, submits one review with the summary as its body and the new inline comments; any
- * other run edits the body of the newest review. Every write hides the bot's earlier reviews and
- * old sticky comments as outdated, but that of a run whose list reads left a node out. The state the next run builds on is the marker of the newest
- * summary review of any owned identity, hidden or dismissed, or with none the old sticky comment.
+ * other run edits the body of the newest review (`ReviewWriteService`). Every write hides earlier summaries, the bot's
+ * reviews and old sticky comments, as outdated, but not when a list read of the run left a node
+ * out. The state the next run builds on is the marker of the newest summary review of any owned
+ * identity, hidden or dismissed, or with none the old sticky comment.
  */
 export class SummaryReviewService extends Context.Service<
 	SummaryReviewService,
@@ -72,7 +75,13 @@ export class SummaryReviewService extends Context.Service<
 		readonly publishStatus: (
 			input: StatusInput
 		) => Effect.Effect<WrittenSummary, SummaryWriteError, OwnedIdentities>
-		/** The marker of the summary a run builds on: run count and last finished head. */
+		/**
+		 * The marker of the summary a run builds on: run count and last finished head. Its counts are
+		 * the most any listed summary holds, reviews and sticky comments alike, hidden ones included,
+		 * so they never fall below what the summaries a read lists hold. A write that cannot see the
+		 * summary with the higher count stores a lower one, so the run caps can undercount until that
+		 * summary is listed again; the caps bound cost, not approval.
+		 */
 		readonly readPrior: (
 			pullNumber: number
 		) => Effect.Effect<
@@ -84,7 +93,11 @@ export class SummaryReviewService extends Context.Service<
 		readonly readWaiting: (
 			pullNumber: number
 		) => Effect.Effect<readonly string[], GitHubApiError, OwnedIdentities>
-		/** Counts a manual run in the summary before it starts; `false` at the cap, with nothing written. */
+		/**
+		 * Counts a manual run in the summary before it starts; `false` at the cap, or once a list read
+		 * of the run left a node out, which may hide the marker that holds the count, with nothing
+		 * written.
+		 */
 		readonly reserveManualRun: (
 			input: ManualRunInput
 		) => Effect.Effect<boolean, GitHubApiError, OwnedIdentities>
@@ -98,6 +111,7 @@ export const SummaryReviewServiceLive = Layer.effect(
 		const github = yield* GitHubReviewService
 		const dismissals = yield* ReviewDismissService
 		const posting = yield* ReviewPostService
+		const writes = yield* ReviewWriteService
 		const cleanups = yield* SummaryCleanupService
 		const config = yield* GitHubConfig
 
@@ -113,23 +127,15 @@ export const SummaryReviewServiceLive = Layer.effect(
 				comments,
 				reviews: toSummaryReviews(raw, identities, current),
 				summaries: toSummaryComments(comments, identities, current),
+				hidden: toHiddenSummaryComments(comments, identities, current),
 			} satisfies SummaryRead
 		})
 
 		const readPrior = Effect.fn('SummaryReviewService.readPrior')(function* (
 			pullNumber: number
 		) {
-			const { current, identities } = yield* OwnedIdentities
-			const reviews = toSummaryReviews(
-				yield* github.listReviews(pullNumber),
-				identities,
-				current
-			)
-			const latest = reviews.at(-1)
-			if (latest) return latest.marker
-			const comments = yield* api.listComments(pullNumber)
-			return getSummary(toSummaryComments(comments, identities, current))
-				?.marker
+			const found = yield* read(pullNumber, false)
+			return getPriorMarker(found.reviews, found.summaries, found.hidden)
 		})
 
 		const readWaiting = Effect.fn('SummaryReviewService.readWaiting')(
@@ -142,126 +148,44 @@ export const SummaryReviewServiceLive = Layer.effect(
 		)
 
 		/**
-		 * Edits the newest summary review when it can be edited (keeping its state), else posts one in
-		 * the state `toDecidedSummary` picks; the body's headline names the state it lands in. A run
-		 * whose list reads, this write's own included, left a node out never edits an approval: it
-		 * posts a `COMMENT` review, so the approval is no longer the newest. It attaches no inline
-		 * comment then, and its summary lists their findings and clears no wait.
-		 */
-		const writeReview = Effect.fn('SummaryReviewService.writeReview')(
-			function* (
-				pullNumber: number,
-				draft: SummaryDraft,
-				found: SummaryRead,
-				latest: LatestHead
-			) {
-				const { identities } = yield* OwnedIdentities
-				const changesRequested = hasChangeRequest(found.raw, identities)
-				const prior = getPriorSummary(found.reviews, found.summaries)
-				// The write's own read may have hidden a thread an inline comment would repeat.
-				const incomplete = latest.incomplete !== undefined
-				const decide = (inline: boolean) =>
-					toDecidedSummary(
-						draft.render(
-							prior,
-							inline && !incomplete,
-							latest.current !== draft.head,
-							incomplete
-						),
-						changesRequested,
-						latest,
-						draft.head
-					)
-				const fresh = draft.fresh === true || (draft.comments?.length ?? 0) > 0
-				const decided = decide(true)
-				const unreadable = getMarkerError(decided.rendered.marker)
-				if (unreadable) return yield* unreadable
-				const editable = getEditableReview(
-					found.reviews,
-					decided.decision,
-					fresh,
-					{ head: draft.head, current: latest.current }
-				)
-				// An incomplete run leaves no approval as the app's newest review: it posts a comment over it.
-				const keptApproval = incomplete && editable?.state === 'APPROVED'
-				if (editable && !keptApproval) {
-					const edited = toHeadedSummary(
-						decided,
-						REVIEW_EVENT_BY_STATE[editable.state]
-					)
-					const updated = yield* github
-						.updateReview(pullNumber, editable.id, edited.rendered.body)
-						.pipe(
-							Effect.as(true),
-							Effect.catchIf(isNotFound, () => Effect.succeed(false))
-						)
-					if (updated)
-						return {
-							id: editable.id,
-							...edited,
-							review: { state: editable.state, commit: editable.commit },
-							inline: !incomplete,
-							created: false,
-						}
-				}
-				const posted = yield* posting.post(
-					pullNumber,
-					incomplete ? { ...draft, comments: [] } : draft,
-					toHeadedSummary(decided),
-					() => toHeadedSummary(decide(false)),
-					found.raw
-				)
-				return {
-					...posted,
-					inline: posted.inline && !incomplete,
-					created: true,
-				}
-			}
-		)
-
-		/**
-		 * The pull request's head, whether the token's identity opened it and whether it is open and
-		 * not a draft, read again; a failed read leaves the head and the state unknown, never a draft.
-		 * It also names the lists a read of the run so far left a node out of (`getIncompleteLists`).
-		 */
-		const readHead = Effect.fn('SummaryReviewService.readHead')(function* (
-			pullNumber: number
-		) {
-			const { current } = yield* OwnedIdentities
-			const pr = yield* api
-				.getPullRequest(pullNumber)
-				.pipe(Effect.orElseSucceed(() => undefined))
-			const lists = yield* getIncompleteLists
-			return {
-				current: pr?.head.sha,
-				authored: pr?.user?.login.toLowerCase() === current.restLogin,
-				...(pr ? { open: pr.state === 'open' && pr.draft !== true } : {}),
-				...(lists.length > 0 ? { incomplete: lists } : {}),
-			} satisfies LatestHead
-		})
-
-		/**
 		 * Reads the head right before the review write, which decides against it, again before the
 		 * cleanup and once more before the dismissals, so a push that lands meanwhile keeps the state.
 		 * The dismissal API takes no expected head, so the last read narrows that window but cannot
-		 * close it.
+		 * close it. When a list read of the run left a node out, that node may be a newer summary the
+		 * marker should build on, or something the run's verdict missed, so the summary is still
+		 * written, this run's findings in it, but its marker is unfinished and failed
+		 * (`toIncompleteSummary`); when the write's own read left it out, the summary is a new review.
 		 */
 		const write = Effect.fn('SummaryReviewService.write')(function* (
 			pullNumber: number,
 			draft: SummaryDraft
 		) {
-			const found = yield* read(pullNumber, true)
-			const before = yield* readHead(pullNumber)
-			const written = yield* writeReview(pullNumber, draft, found, before)
+			const listed = yield* readListed(read(pullNumber, true))
+			const found = listed.incomplete
+				? { ...listed.value, incomplete: true }
+				: listed.value
+			const render: SummaryRender = (...args) =>
+				toIncompleteSummary(draft.render(...args))
+			// Only a run whose reads were all complete releases the hold an unfinished marker keeps.
+			const unfinished = yield* isReadIncomplete
+			const written = yield* writes.write(
+				pullNumber,
+				unfinished ? { ...draft, render } : draft,
+				found,
+				yield* writes.readHead(pullNumber)
+			)
 			const cleanup = yield* cleanups.cleanUp(found, written.id, {
 				head: draft.head,
-				current: (yield* readHead(pullNumber)).current,
+				current: (yield* writes.readHead(pullNumber)).current,
 			})
 			const { outlived, ...dismissal } = yield* dismissals.dismissStale(
 				pullNumber,
-				{ head: draft.head, current: (yield* readHead(pullNumber)).current },
+				{
+					head: draft.head,
+					current: (yield* writes.readHead(pullNumber)).current,
+				},
 				found.raw,
-				written
+				{ ...written, evidence: written.rendered.evidence }
 			)
 			return {
 				...written.rendered,
@@ -289,16 +213,30 @@ export const SummaryReviewServiceLive = Layer.effect(
 		 * used, so a run that fails later still counts: the newest summary review's marker when the
 		 * current identity wrote it, hidden or not; with no review, the current identity's old sticky
 		 * comment; otherwise a `COMMENT` review with one status line over the carried marker, which
-		 * the run's own write edits or hides. It hides nothing itself.
+		 * the run's own write edits or hides. It hides nothing itself, and counts nothing once a list
+		 * read of the run left a node out. Past the cap it still counts a full review while the newest
+		 * marker is unfinished (`isManualRunCapped`).
 		 */
 		const reserveManualRun = Effect.fn('SummaryReviewService.reserveManualRun')(
 			function* (input: ManualRunInput) {
 				const found = yield* read(input.pullNumber, false)
-				const prior = getPriorSummary(found.reviews, found.summaries)
-				if ((prior?.marker.manualRuns ?? 0) >= input.maxRuns) return false
+				// A node left out may be the only marker that counts the runs so far.
+				if (yield* isReadIncomplete) return false
+				// Its counts are the most any listed summary holds, hidden ones included.
+				const prior = getPriorSummary(
+					found.reviews,
+					found.summaries,
+					found.hidden
+				)
+				const counted = getPriorMarker(
+					found.reviews,
+					found.summaries,
+					found.hidden
+				)
+				if (isManualRunCapped(counted, input.maxRuns, input.agent)) return false
 				const latest = found.reviews.at(-1)
-				if (latest?.mine) {
-					const { body } = toReservedSummary(latest)
+				if (latest?.mine && prior) {
+					const { body } = toReservedSummary(prior)
 					yield* github.updateReview(input.pullNumber, latest.id, body)
 					return true
 				}
@@ -307,7 +245,7 @@ export const SummaryReviewServiceLive = Layer.effect(
 					return true
 				}
 				const status = toReservedStatus(
-					prior?.marker,
+					counted,
 					input.handle,
 					toBlobLinks(config, input)
 				)
@@ -338,7 +276,8 @@ export const SummaryReviewServiceLive = Layer.effect(
 		Layer.mergeAll(
 			ReviewDismissServiceLive,
 			SummaryCleanupServiceLive,
-			ReviewPostServiceLive
+			ReviewPostServiceLive,
+			ReviewWriteServiceLive
 		)
 	)
 )

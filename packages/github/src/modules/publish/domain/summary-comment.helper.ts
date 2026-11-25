@@ -26,10 +26,32 @@ export function toSummaryComments(
 	owned: readonly BotIdentity[],
 	current: BotIdentity
 ): readonly SummaryComment[] {
+	return toStickySummaries(comments, owned, current, false)
+}
+
+/**
+ * The hidden sticky summaries, trusted as `toSummaryComments` trusts the visible ones. They only
+ * count runs (`getPriorSummary`): a run never builds on, edits or cleans up a hidden one.
+ */
+export function toHiddenSummaryComments(
+	comments: readonly PullRequestComment[],
+	owned: readonly BotIdentity[],
+	current: BotIdentity
+): readonly SummaryComment[] {
+	return toStickySummaries(comments, owned, current, true)
+}
+
+/** The sticky summaries of an owned bot that are hidden (`minimized`) or visible. */
+function toStickySummaries(
+	comments: readonly PullRequestComment[],
+	owned: readonly BotIdentity[],
+	current: BotIdentity,
+	minimized: boolean
+): readonly SummaryComment[] {
 	return comments.flatMap((comment): SummaryComment[] => {
 		if (
 			comment.databaseId === null ||
-			comment.isMinimized ||
+			comment.isMinimized !== minimized ||
 			!isBotComment(comment, owned)
 		)
 			return []

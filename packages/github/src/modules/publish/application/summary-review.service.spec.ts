@@ -70,8 +70,8 @@ function answered(answers: readonly AnswerEntry[]): SummaryDraft {
 	const base = draft()
 	return {
 		...base,
-		render: (prior, inline, moved, incomplete) => {
-			const rendered = base.render(prior, inline, moved, incomplete)
+		render: (...args) => {
+			const rendered = base.render(...args)
 			const marker = { ...rendered.marker, answers }
 			return { ...rendered, marker, body: toMarkerComment('summary', marker) }
 		},
@@ -316,7 +316,13 @@ layer(TOKEN_MODE_OWNED)('SummaryReviewService', test => {
 		test.effect(`unknown create does not accept a ${mismatch} review`, () =>
 			Effect.gen(function* () {
 				const fixture = setup()
-				const { body } = draft().render(undefined, true, false, false)
+				const { body } = draft().render(
+					undefined,
+					true,
+					false,
+					false,
+					undefined
+				)
 				const candidate = summaryReview(SUMMARY_MARKER, {
 					body,
 					...(mismatch === 'foreign'
@@ -492,7 +498,8 @@ layer(TOKEN_MODE_OWNED)('SummaryReviewService', test => {
 							service.readPrior(17)
 						).pipe(Effect.provide(fixture.layer))
 					).toEqual(marker)
-					expect(fixture.fake.commentReads).toEqual([])
+					// The comment is read too: its counts would win if they were higher.
+					expect(fixture.fake.commentReads).toEqual([17])
 				})
 		)
 	test.effect(
@@ -801,7 +808,8 @@ layer(TOKEN_MODE_OWNED)('Summary review status sweep', test => {
 						},
 					])
 					expect(fixture.fake.writes).toEqual([])
-					expect(fixture.fake.reviewReads).toEqual([17])
+					// A `success` stands only on a confirming review read.
+					expect(fixture.fake.reviewReads).toEqual(waiting ? [17] : [17, 17])
 				})
 		)
 })

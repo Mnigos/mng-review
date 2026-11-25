@@ -111,7 +111,7 @@ function toKept(changesRequested: boolean): ReviewDecision {
 }
 
 /** A verdict that is evidence for a change request: an open confirmed bug or a thread waiting for the owner. */
-function isBlocking(verdict: Verdict): boolean {
+export function isBlocking(verdict: Verdict): boolean {
 	return verdict === 'needs fixes' || verdict === 'needs owner'
 }
 

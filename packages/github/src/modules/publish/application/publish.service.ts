@@ -30,6 +30,7 @@ import {
 	getCarriedBugs,
 	type MarkerUpdate,
 	toAnsweredMarker,
+	toHoldFlags,
 	toJudgedMarker,
 	toNextSummaryMarker,
 	toStoredWaits,
@@ -81,8 +82,9 @@ import { ThreadResolutionService } from './thread-resolution.service'
  * owner cleared, and adds or removes the `needs-owner` label. Threads a failed whole-thread read
  * left unknown wait for this run only: they count in its verdict but are never stored. Once a list
  * read of the run left a node out (`isReadIncomplete`), new threads go into the summary, no wait
- * is cleared, the label stays, and the review neither approves nor lifts a change request. File
- * comments wait for the last thread read, and inline ones for the summary write's own read.
+ * is cleared, the label stays, the review neither approves nor lifts a change request, and its
+ * marker is unfinished and failed. File comments wait for the last thread read, and inline ones
+ * for the summary write's own read.
  */
 export class PublishService extends Context.Service<
 	PublishService,
@@ -270,13 +272,13 @@ export const PublishServiceLive = Layer.effect(
 						body: formatThreadComment(thread, links, true),
 					})),
 					fresh: posting,
-					render: (prior, inline, moved, incomplete) => {
+					render: (prior, inline, moved, incomplete, counted) => {
 						// A push after the head check: partial, so the marker keeps the previous head and flags.
 						const checked = moved ? { ...run, partial: true, moved } : run
 						const plan = toPlan(inline)
 						const { update: waitUpdate, held } = toWaits(incomplete)
 						const update = toUpdate(plan, waitUpdate, checked)
-						const marker = toNextSummaryMarker(prior?.marker, update)
+						const marker = toNextSummaryMarker(counted, update)
 						const basis = { report, threadBugs, held }
 						const judged = getPublishStanding(basis, marker, update, checked)
 						const evidence = {
@@ -371,7 +373,7 @@ export const PublishServiceLive = Layer.effect(
 				finished,
 				cleanup: written.cleanup,
 				unsettled: unsettled.size,
-				...(incompleteRead ? { incomplete: true } : {}),
+				...toHoldFlags(incompleteRead, written.marker),
 			} satisfies PublishResult
 		})
 

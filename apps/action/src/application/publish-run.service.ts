@@ -313,6 +313,7 @@ export const PublishRunServiceLive = Layer.effect(
 										verdict: result.verdict,
 										openBugs: result.openBugs,
 										finished: result.finished,
+										...(result.held ? { held: true } : {}),
 									})
 									.pipe(Effect.map(checks => ({ result, checks })))
 							),
@@ -328,8 +329,7 @@ export const PublishRunServiceLive = Layer.effect(
 					? withThreadRaise(toPublish(undefined), gate, () => target)
 					: riskRuns.rateFull(gate, { ...target, report: placed }, toPublish)
 				const rated = yield* rating.pipe(owned)
-				const published = rated.value
-				if (published === undefined)
+				if (rated.value === undefined)
 					return {
 						status: 'failed',
 						reason:
@@ -340,7 +340,7 @@ export const PublishRunServiceLive = Layer.effect(
 					} satisfies PublishReport
 				return {
 					status: 'published',
-					...published,
+					...rated.value,
 					...toRiskField(rated.risk),
 				} satisfies PublishReport
 			}

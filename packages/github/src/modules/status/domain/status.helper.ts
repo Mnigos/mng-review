@@ -66,19 +66,24 @@ export function toSweptStanding(
 	)
 }
 
+/** How the description of a status an incomplete run held back from `success` starts. */
+export const INCOMPLETE_STATUS_PREFIX = 'a list GitHub returned was incomplete'
+
 /**
  * The description of a status an incomplete run holds back from `success`: the lists GitHub left
  * an entry out of, so someone can find it, within GitHub's 140 characters.
  */
 export function toIncompleteDescription(lists: readonly LenientList[]): string {
-	return `a list GitHub returned was incomplete (${lists.join(', ')}); waits for a complete read`
+	return `${INCOMPLETE_STATUS_PREFIX} (${lists.join(', ')}); waits for a complete read`
 }
 
 /**
  * The status a run whose list reads left a null node out of `lists` writes instead of `next`: a
  * blocking or unfinished one as it is. A `success` becomes `pending` on a head with no status or
- * with `success`, since a thread the run could not see may still block (ADR 0012); over a
- * `pending`, `failure` or `error` the head keeps it (`undefined`).
+ * with `success`, since a thread the run could not see may still block (ADR 0012); another
+ * incomplete run's `pending` (its description starts with `INCOMPLETE_STATUS_PREFIX`) that names
+ * other lists is written again with this run's; over any other `pending`, a `failure` or an
+ * `error` the head keeps it (`undefined`).
  */
 export function toIncompleteStatus(
 	next: CommitStatusText,
@@ -86,8 +91,30 @@ export function toIncompleteStatus(
 	lists: readonly LenientList[]
 ): CommitStatusText | undefined {
 	if (next.state !== 'success') return next
-	if (previous && previous.state !== 'success') return undefined
-	return toHeldStatus({ state: 'success', description: null }, lists)
+	const held = toHeldStatus({ state: 'success', description: null }, lists)
+	if (!previous || previous.state === 'success') return held
+	if (
+		previous.state !== 'pending' ||
+		!previous.description?.startsWith(INCOMPLETE_STATUS_PREFIX) ||
+		previous.description === held?.description
+	)
+		return undefined
+	return held
+}
+
+/**
+ * The status a run that judged its standing from a summary marker an incomplete write left
+ * (`isIncompleteMarker`) writes instead of `next`: a `failure` as it is; any other only over no
+ * status or a `success`, since that marker may miss what set the head's `failure`, `error` or
+ * `pending`. Such a standing never finished, so `next` is never `success`.
+ */
+export function toIncompleteMarkerStatus(
+	next: CommitStatusText,
+	previous: PreviousStatus | undefined
+): CommitStatusText | undefined {
+	if (next.state === 'failure' || !previous || previous.state === 'success')
+		return next
+	return undefined
 }
 
 /**
@@ -113,6 +140,30 @@ export function toChangedStatus(
 	)
 		return undefined
 	return next
+}
+
+/**
+ * The status the sweep writes for the standing its threads give (`standing`): held back from
+ * `success` while a list read of the pull request left a node out of `lists` (`toIncompleteStatus`),
+ * since a thread it could not see may block, and judged as `toIncompleteMarkerStatus` does when the
+ * newest summary marker is one an incomplete write left (`unfinished`), which may miss what set a
+ * `failure`; `undefined` when the head keeps the status it has.
+ */
+export function toNextSweptStatus(
+	standing: CommitStatusText,
+	previous: PreviousStatus,
+	unfinished: boolean,
+	lists: readonly LenientList[]
+): CommitStatusText | undefined {
+	if (unfinished)
+		return toChangedStatus(
+			previous,
+			toIncompleteMarkerStatus(standing, previous)
+		)
+	return toChangedStatus(
+		previous,
+		lists.length > 0 ? toIncompleteStatus(standing, previous, lists) : standing
+	)
 }
 
 /** The status the sweep sets (`toSweptStanding`), or `undefined` when it stays. */

@@ -2,7 +2,6 @@ import type { Rules } from '@mng-review/engine'
 import { Context, Effect, Layer } from 'effect'
 import { GitHubApiService } from '../../../platform/github-api.service'
 import type { ReviewEvent } from '../../../platform/github-review.service'
-import { GitHubStatusService } from '../../../platform/github-status.service'
 import { GitHubConfig } from '../../../platform/github.config'
 import { isReadIncomplete } from '../../../platform/list-completeness.context'
 import { OwnedIdentities } from '../../../platform/owned-identities.context'
@@ -15,10 +14,8 @@ import {
 	getOwnerAnswered,
 	getOwnerWaiting,
 	isOpenBug,
-	type ReplyStanding,
 	toReplyStanding,
 } from '../domain/bot-thread.helper'
-import type { SummaryMarker } from '../domain/publish-marker.schema'
 import { CLOSING_ACTIONS, LIMITED_ACTIONS } from '../domain/publish.constants'
 import type {
 	AnswerCounts,
@@ -27,8 +24,12 @@ import type {
 	OwnerWaits,
 } from '../domain/publish.types'
 import {
+	type ReplyJudgement,
+	toReplyJudgement,
+} from '../domain/reply-judgement.helper'
+import {
+	isIncompleteMarker,
 	toJudgedMarker,
-	toRepliedMarker,
 	toStoredWaits,
 } from '../domain/summary-marker.helper'
 import {
@@ -44,6 +45,7 @@ import {
 } from './publish-read.service'
 import type { PublishReplies, PublishTarget } from './publish.service.types'
 import { ReplyCheckService, ReplyCheckServiceLive } from './reply-check.service'
+import { ReplyFailService, ReplyFailServiceLive } from './reply-fail.service'
 import { SummaryReviewService } from './summary-review.service'
 import type { SummaryWriteError } from './summary-review.service.types'
 import {
@@ -85,29 +87,12 @@ export interface ReplyPublishResult {
 	readonly run: number
 	/** Whether the `MNG Review` status was set. */
 	readonly status: boolean
+	/** An incomplete run could not read the head's status for a held `success`, so it wrote none. */
+	readonly statusUnread?: true
 	/** Threads whose newest app answer is still unsettled after the run; any fails the job. */
 	readonly unsettled: number
 	/** A list read of the run left a null node out, so it cleared no wait and lifted no change request. */
 	readonly incomplete?: true
-}
-
-/** What a reply-only run whose summary write failed still writes: the status and the label. */
-interface FailClosedInput {
-	readonly pullNumber: number
-	readonly head: string
-	readonly openBugs: number
-	/** Threads the summary kept waiting before the run and would keep after it. */
-	readonly before: number
-	readonly after: number
-	/** Threads the run held waiting for itself only, which set the status but not the label. */
-	readonly held: number
-	/** A list read of the run left a null node out, the write's own included. */
-	readonly incomplete: boolean
-	/**
-	 * What the summary's newest render judged or, when the write failed before rendering, what it
-	 * would judge from the newest summary's marker; unset when that read failed too.
-	 */
-	readonly standing?: ReplyStanding
 }
 
 /**
@@ -121,8 +106,9 @@ interface FailClosedInput {
  * posts no finding thread and no check run, and the summary's run count, head, finished flag and
  * unthreaded bugs stay as they were. Threads a failed whole-thread read left unknown wait for this
  * run only, as at publishing: they set its verdict and status but are never stored. Once a list
- * read of the run, the summary write's own included, left a node out, no wait is cleared and the
- * label stays.
+ * read of the run, the summary write's own and the marker read after a failed write included, left
+ * a node out, no wait is cleared, the label stays and its marker is unfinished and failed. On such a marker (`isIncompleteMarker`) it
+ * writes a status that does not block only over no status or a `success`.
  */
 export class ReplyPublishService extends Context.Service<
 	ReplyPublishService,
@@ -140,43 +126,11 @@ export const ReplyPublishServiceLive = Layer.effect(
 		const reads = yield* PublishReadService
 		const statuses = yield* StatusReportService
 		const config = yield* GitHubConfig
-		const github = yield* GitHubStatusService
+		const failures = yield* ReplyFailService
 		const summaries = yield* SummaryReviewService
 		const conversation = yield* ThreadReplyService
 		const places = yield* ThreadPlaceService
 		const replyChecks = yield* ReplyCheckService
-
-		/**
-		 * After a failed summary write: the status and the label from what the run computed, since the
-		 * find step will not list the pull request again. A thread that waits sets `needs owner` and
-		 * `failure`; with none the status stays. A run whose list reads left a node out writes the
-		 * status of the standing its newest render judged instead, as the success path does, so an
-		 * open bug it saw sets `failure` and a `success` becomes `pending` (`setVerdictStatus`); with
-		 * no standing, that of its waits and thread bugs.
-		 */
-		const failClosed = Effect.fn('ReplyPublishService.failClosed')(function* (
-			input: FailClosedInput
-		) {
-			const waits = input.after + input.held
-			const standing = input.standing ?? {
-				verdict: waits > 0 ? 'needs owner' : 'ready',
-				openBugs: input.openBugs,
-				finished: true,
-			}
-			if (input.incomplete)
-				yield* statuses.setVerdictStatus(
-					input.head,
-					toCommitStatus(standing.verdict, standing.openBugs, standing.finished)
-				)
-			else if (waits > 0)
-				yield* github
-					.setStatus({
-						sha: input.head,
-						...toCommitStatus('needs owner', input.openBugs, true),
-					})
-					.pipe(Effect.ignore)
-			yield* conversation.syncLabel(input.pullNumber, input.before, input.after)
-		})
 
 		const publish = Effect.fn('ReplyPublishService.publish')(function* (
 			input: ReplyPublishInput
@@ -261,8 +215,8 @@ export const ReplyPublishServiceLive = Layer.effect(
 				allow: input.rules.config.commands.allow,
 			})
 			// Held threads count in this run's verdict and status; the marker never stores them.
-			const toWaits = (incomplete: boolean) =>
-				toStoredWaits({ all, held: waits.held, cleared }, incomplete)
+			const stores = { all, held: waits.held, cleared }
+			const toWaits = (incomplete: boolean) => toStoredWaits(stores, incomplete)
 			const threadBugs = (yield* conversation.resolveUnsettled(
 				latest,
 				second.raw
@@ -273,29 +227,21 @@ export const ReplyPublishServiceLive = Layer.effect(
 				.pipe(Effect.orElseSucceed(() => undefined))
 			const authored = pr?.user?.login.toLowerCase() === current.restLogin
 			// What the render judges of the summary's marker, which a failed write sets the status from.
-			const judge = (prior: SummaryMarker | undefined, incomplete: boolean) => {
-				const { update, held } = toWaits(incomplete)
-				const marker = toRepliedMarker(prior, update)
-				const judging = toJudgedMarker(marker, held)
-				return {
-					marker,
-					judging,
-					standing: toReplyStanding(judging, input.head, threadBugs),
-				}
-			}
-			const rendered: { standing?: ReplyStanding } = {}
+			const judged = { waits: stores, head: input.head, threadBugs }
+			const rendered: { judgement?: ReplyJudgement } = {}
 			const written = yield* summaries
 				.write(pullNumber, {
 					head: input.head,
 					render: (prior, _inline, _moved, incomplete) => {
-						const {
-							marker,
-							judging,
-							standing: judged,
-						} = judge(prior?.marker, incomplete)
-						rendered.standing = judged
+						const judgement = toReplyJudgement(
+							prior?.marker,
+							incomplete,
+							judged
+						)
+						const { marker, judging, standing } = judgement
+						rendered.judgement = judgement
 						const body = formatRepliedSummary(prior, {
-							...judged,
+							...standing,
 							waiting: latest.filter(thread =>
 								judging.needsOwner?.includes(thread.id)
 							),
@@ -305,8 +251,8 @@ export const ReplyPublishServiceLive = Layer.effect(
 						const onCurrent = pr?.head.sha === input.head
 						const evidence = {
 							kind: 'reply',
-							verdict: judged.verdict,
-							openBugs: judged.openBugs,
+							verdict: standing.verdict,
+							openBugs: standing.openBugs,
 							current: onCurrent,
 							onHead: onCurrent && marker.head === input.head,
 							failed: marker.failed === true || !second.reread,
@@ -318,18 +264,23 @@ export const ReplyPublishServiceLive = Layer.effect(
 				.pipe(
 					Effect.tapError(() =>
 						Effect.gen(function* () {
+							// The newest marker when the write failed before rendering, read before the run's
+							// completeness, so a node that read leaves out clears no wait and keeps the label.
+							const recovered = rendered.judgement
+								? undefined
+								: yield* summaries.readPrior(pullNumber).pipe(
+										Effect.map(prior => ({ prior })),
+										Effect.orElseSucceed(() => undefined)
+									)
 							const incomplete = yield* isReadIncomplete
 							const { update, held } = toWaits(incomplete)
-							// Only an incomplete run sets the status from the standing (`failClosed`).
-							const standing =
-								rendered.standing ??
-								(incomplete
-									? yield* summaries.readPrior(pullNumber).pipe(
-											Effect.map(prior => judge(prior, true).standing),
-											Effect.orElseSucceed(() => undefined)
-										)
-									: undefined)
-							yield* failClosed({
+							// What the render judged or what the newest marker gives; only an incomplete run or a
+							// held marker sets the status from it (`failClosed`).
+							const judgement =
+								rendered.judgement ??
+								(recovered &&
+									toReplyJudgement(recovered.prior, incomplete, judged))
+							yield* failures.failClosed({
 								pullNumber,
 								head: input.head,
 								openBugs: threadBugs,
@@ -337,7 +288,8 @@ export const ReplyPublishServiceLive = Layer.effect(
 								after: update.added.length,
 								held: held.length,
 								incomplete,
-								...(standing ? { standing } : {}),
+								unfinished: isIncompleteMarker(judgement?.marker),
+								...(judgement ? { standing: judgement.standing } : {}),
 							})
 						})
 					)
@@ -348,7 +300,12 @@ export const ReplyPublishServiceLive = Layer.effect(
 			const judging = toJudgedMarker(written.marker, afterWrite.held)
 			const standing = toReplyStanding(judging, input.head, threadBugs)
 			const owner = judging.needsOwner?.length ?? 0
-			const status = yield* statuses.setVerdictStatus(
+			// A marker an incomplete write left may miss what set the head's status: only a block writes over it.
+			const status = yield* (
+				isIncompleteMarker(written.marker)
+					? statuses.setIncompleteMarkerStatus
+					: statuses.setVerdictStatus
+			)(
 				input.head,
 				toCommitStatus(standing.verdict, standing.openBugs, standing.finished)
 			)
@@ -378,7 +335,8 @@ export const ReplyPublishServiceLive = Layer.effect(
 				waiting: owner,
 				label,
 				run: written.marker.runs,
-				status,
+				status: status.set,
+				...(status.unread ? { statusUnread: true } : {}),
 				unsettled: unsettled.size,
 				...(incompleteRead ? { incomplete: true } : {}),
 			} satisfies ReplyPublishResult
@@ -392,6 +350,7 @@ export const ReplyPublishServiceLive = Layer.effect(
 			ThreadReplyServiceLive,
 			ThreadPlaceServiceLive,
 			ReplyCheckServiceLive,
+			ReplyFailServiceLive,
 			PublishReadServiceLive,
 			StatusReportServiceLive
 		)
