@@ -16,6 +16,7 @@ import {
 	isPullRequestFinding,
 	planPublish,
 	type PublishSelection,
+	toWithheldPlan,
 } from './publish-plan.helper'
 import type { BotThread, PlannedThread, ThreadPlace } from './publish.types'
 
@@ -929,4 +930,36 @@ describe('countUnthreadedBugs', () => {
 			).toBe(0)
 		}
 	)
+})
+
+describe('toWithheldPlan', () => {
+	const PLACES = [
+		'line',
+		'file',
+		'summary',
+		'pull_request',
+		'unposted',
+	] as const satisfies readonly ThreadPlace[]
+	test('moves every new line and file thread into the summary and keeps the rest', () => {
+		const plan = {
+			threads: PLACES.map((place): PlannedThread => ({
+				finding: bug(),
+				kind: 'bug',
+				place,
+			})),
+			repeated: [{ finding: bug(), kind: 'bug' }],
+			dismissed: [],
+			summaryNits: [],
+		} as const
+		expect(toWithheldPlan(plan)).toEqual({
+			...plan,
+			threads: [
+				'summary',
+				'summary',
+				'summary',
+				'pull_request',
+				'unposted',
+			].map(place => ({ finding: bug(), kind: 'bug', place })),
+		})
+	})
 })

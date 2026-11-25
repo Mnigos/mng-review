@@ -4,6 +4,7 @@ import {
 	formatReviewHeadline,
 	toBodyWithHeadline,
 	toBodyWithoutHeadline,
+	toIncompleteReason,
 } from './review-headline.formatter'
 
 interface HeadlineCase {
@@ -309,4 +310,68 @@ describe('a failed head read under a blocking verdict', () => {
 				'**Comment.** Not approved: the pull request could not be read again before the review, so the earlier state stands.'
 			)
 		})
+})
+
+describe('an incomplete list read', () => {
+	const lists = ['review threads', 'reviews'] as const
+	const reason = toIncompleteReason(lists)
+	for (const [name, evidence] of [
+		['a ready review', { ...COVERED_REVIEW, incomplete: lists }],
+	] as const)
+		test(`${name} gives the incomplete read as its only reason`, () => {
+			expect(
+				formatReviewHeadline({ event: 'COMMENT', evidence, keep: true })
+			).toBe(`**Comment.** Not approved: ${reason}`)
+		})
+	for (const [name, evidence, rest] of [
+		[
+			'a review with open bugs',
+			{
+				...COVERED_REVIEW,
+				verdict: 'needs fixes',
+				openBugs: 2,
+				incomplete: lists,
+			},
+			'2 confirmed bug(s) at or above the severity floor are still open.',
+		],
+		[
+			'a review whose head read failed',
+			{
+				...COVERED_REVIEW,
+				onHead: false,
+				headUnknown: true,
+				incomplete: lists,
+			},
+			'the pull request could not be read again before the review, so the earlier state stands.',
+		],
+		[
+			'a ready reply-only run',
+			{ ...REPLIED, incomplete: lists },
+			'a run that only answers replies never approves; the next full review can.',
+		],
+	] as const)
+		test(`${name} gives the incomplete read first, then its other reason`, () => {
+			expect(
+				formatReviewHeadline({ event: 'COMMENT', evidence, keep: true })
+			).toBe(
+				`**Comment.** Not approved: ${reason.replace(/\.$/u, '')}; ${rest}`
+			)
+		})
+	test('the reason names each list GitHub left an entry out of', () => {
+		expect(reason).toContain('(review threads, reviews)')
+		expect(reason).toContain(
+			'did not approve, lift a change request or clear a wait'
+		)
+	})
+	test('a kept approval names the incomplete read as why this run left it', () => {
+		expect(
+			formatReviewHeadline({
+				event: 'APPROVE',
+				evidence: { ...COVERED_REVIEW, incomplete: lists },
+				keep: true,
+			})
+		).toBe(
+			`**Approved.** An earlier full review of this commit approved it, and this run left that state: ${reason}`
+		)
+	})
 })

@@ -380,6 +380,53 @@ describe('toDecidedSummary after a failed read', () => {
 	})
 })
 
+describe('toDecidedSummary after an incomplete list read', () => {
+	const rendered = { body: 'Summary', marker: SUMMARY_MARKER } as const
+	const latest = {
+		current: 'head',
+		authored: false,
+		incomplete: ['reviews'],
+	} as const
+	for (const verdict of ['ready', 'needs fixes', 'needs owner'] as const)
+		test(`a ${verdict} review keeps the state as a comment and clears nothing`, () => {
+			expect(
+				toDecidedSummary(
+					{ ...rendered, evidence: { ...COVERED_REVIEW, verdict } },
+					true,
+					latest,
+					'head'
+				)
+			).toStrictEqual({
+				rendered: {
+					...rendered,
+					evidence: {
+						...COVERED_REVIEW,
+						verdict,
+						open: true,
+						incomplete: ['reviews'],
+					},
+				},
+				decision: KEEPS_COMMENT,
+			})
+		})
+	test('a ready reply-only run keeps the state and clears nothing', () => {
+		expect(
+			toDecidedSummary({ ...rendered, evidence: REPLIED }, true, latest, 'head')
+				.decision
+		).toStrictEqual(KEEPS_COMMENT)
+	})
+	test('a complete read leaves the evidence unmarked', () => {
+		expect(
+			toDecidedSummary(
+				{ ...rendered, evidence: COVERED_REVIEW },
+				false,
+				{ current: 'head', authored: false },
+				'head'
+			).rendered.evidence
+		).not.toHaveProperty('incomplete')
+	})
+})
+
 /** A report whose plan ran and reported the main reviewer and found nothing. */
 function coveredReport() {
 	const reviewed = report()
