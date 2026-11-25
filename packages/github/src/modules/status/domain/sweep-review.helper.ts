@@ -3,11 +3,7 @@ import type { PullRequestReview } from '../../../platform/github-api.schema'
 import type { SummaryMarker } from '../../publish/domain/publish-marker.schema'
 import type { SummaryComment } from '../../publish/domain/publish.types'
 import { isIncompleteMarker } from '../../publish/domain/summary-marker.helper'
-import {
-	getPriorSummary,
-	getStaleChangeRequests,
-	toSummaryReviews,
-} from '../../publish/domain/summary-review.helper'
+import { getStaleChangeRequests } from '../../publish/domain/summary-review.helper'
 import type { CommitStatusText } from './status.helper'
 
 /**
@@ -57,72 +53,15 @@ export function getSweptFinished(
 }
 
 /**
- * The ids of `ids` whose review a later read still shows with the body and state of the first
- * read: one edited in place meanwhile can carry new evidence, so it is not dismissed.
- */
-export function getUnchangedReviews(
-	ids: readonly number[],
-	before: readonly PullRequestReview[],
-	after: readonly PullRequestReview[]
-): readonly number[] {
-	return ids.filter(id => {
-		const first = before.find(review => review.databaseId === id)
-		const latest = after.find(review => review.databaseId === id)
-		return (
-			first !== undefined &&
-			latest?.body === first.body &&
-			latest.state === first.state
-		)
-	})
-}
-
-/**
- * True when the sweep reads the reviews again before it decides the status: it has a change request
- * to dismiss (`stale`), or would write `success` (`planned`), which only that read can back.
+ * True when the sweep reads the pull request again before it decides: it has a change request to
+ * dismiss (`stale`), or would write `success` (`planned`), which only a second pass that read
+ * exactly what the first read backs (`isSameReads`).
  */
 export function isConfirmDue(
 	stale: readonly number[],
 	planned: Pick<CommitStatusText, 'state'> | undefined
 ): boolean {
 	return stale.length > 0 || planned?.state === 'success'
-}
-
-/** The summary the sweep judged first and the reviews its confirming read listed, if it made one. */
-export interface SweptSummaries {
-	readonly summary: SummaryComment | undefined
-	/** The confirming review read; unset when the sweep made none or it failed. */
-	readonly latest: readonly PullRequestReview[] | undefined
-	/** The sticky summaries of the first read, which the confirming read does not repeat. */
-	readonly summaries: readonly SummaryComment[]
-	readonly owned: readonly BotIdentity[]
-	readonly current: BotIdentity
-}
-
-/**
- * The summary the sweep decides from: the newest in its confirming review read, which a run that
- * landed between the two review reads may have posted, else the one it judged first.
- */
-export function getConfirmedSummary(
-	summaries: SweptSummaries
-): SummaryComment | undefined {
-	if (!summaries.latest) return summaries.summary
-	const reviews = toSummaryReviews(
-		summaries.latest,
-		summaries.owned,
-		summaries.current
-	)
-	return getPriorSummary(reviews, summaries.summaries)
-}
-
-/**
- * True when the sweep holds on a marker an incomplete write left (`isIncompleteMarker`): the one it
- * judged first, or the newest in its confirming review read (`getConfirmedSummary`).
- */
-export function isSweptUnfinished(summaries: SweptSummaries): boolean {
-	return (
-		isIncompleteMarker(summaries.summary?.marker) ||
-		isIncompleteMarker(getConfirmedSummary(summaries)?.marker)
-	)
 }
 
 /**
@@ -134,48 +73,4 @@ export function getUnthreadedBugs(
 	head: string
 ): number {
 	return marker?.head === head ? (marker.unthreadedBugs ?? 0) : 0
-}
-
-/**
- * The threads the confirming read's newest summary (`confirmed`) lists as waiting for the owner when
- * a run wrote it between the sweep's two review reads, as another summary or the first one edited:
- * that run judged them, so they hold whether or not the sweep saw them cleared. None while the sweep
- * decides from the summary it judged first (`summary`).
- */
-export function getConfirmedWaiting(
-	summary: Pick<SummaryComment, 'id' | 'body'> | undefined,
-	confirmed: Pick<SummaryComment, 'id' | 'body' | 'marker'> | undefined
-): readonly string[] {
-	if (
-		!confirmed ||
-		(confirmed.id === summary?.id && confirmed.body === summary.body)
-	)
-		return []
-	return confirmed.marker.needsOwner ?? []
-}
-
-/**
- * The status the sweep writes once its confirming read decided `recomputed`: that read can only
- * hold back the `success` the sweep planned (`planned`), never raise a plan to one, and a failed
- * read (`readFailed`) backs none; `undefined` writes nothing.
- */
-export function toConfirmedStatus(
-	planned: CommitStatusText | undefined,
-	recomputed: CommitStatusText | undefined,
-	readFailed: boolean
-): CommitStatusText | undefined {
-	if (recomputed?.state !== 'success') return recomputed
-	return planned?.state === 'success' && !readFailed ? recomputed : undefined
-}
-
-/**
- * True when the confirming read turned the sweep's plan (`planned`) aside: it holds back a planned
- * `success`, or would raise a plan to one, which `toConfirmedStatus` drops. Either way the sweep lifts
- * no change request.
- */
-export function isPlanTurned(
-	planned: Pick<CommitStatusText, 'state'> | undefined,
-	recomputed: Pick<CommitStatusText, 'state'> | undefined
-): boolean {
-	return (planned?.state === 'success') !== (recomputed?.state === 'success')
 }

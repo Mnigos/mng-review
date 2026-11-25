@@ -1,3 +1,4 @@
+import { Predicate } from 'effect'
 import type { CommitState } from '../../../platform/github-status.service'
 import type { LenientList } from '../../../platform/list-completeness.context'
 import type { Verdict } from '../../publish/presentation/summary-comment.formatter'
@@ -76,6 +77,15 @@ export const INCOMPLETE_STATUS_PREFIX = 'a list GitHub returned was incomplete'
 export function toIncompleteDescription(lists: readonly LenientList[]): string {
 	return `${INCOMPLETE_STATUS_PREFIX} (${lists.join(', ')}); waits for a complete read`
 }
+
+/**
+ * The `pending` a sweep writes over a `success` when its confirming second pass failed: what that
+ * pass could not read may block, so it waits for a complete read as an incomplete one does.
+ */
+export const UNCONFIRMED_STATUS = {
+	state: 'pending',
+	description: 'a confirming read failed; waits for a complete read',
+} as const satisfies CommitStatusText
 
 /**
  * The status a run whose list reads left a null node out of `lists` writes instead of `next`: a
@@ -177,4 +187,41 @@ export function toSweptStatus(
 		previous,
 		toSweptStanding(previous, openBugs, lastRunFinished, waiting)
 	)
+}
+
+/** The commit states from the most blocking to the least, as the sweep lowers a status. */
+const LOWERING_ORDER = [
+	'failure',
+	'error',
+	'pending',
+	'success',
+] as const satisfies readonly CommitState[]
+
+/** Where `state` stands in `LOWERING_ORDER`; one outside it stands below all, so nothing lowers it. */
+function getLoweringRank(state: string): number {
+	const order: readonly string[] = LOWERING_ORDER
+	return order.indexOf(state)
+}
+
+/**
+ * The status a sweep writes when its two passes differ, or its second pass failed or left a node
+ * out: of `candidates` (each pass's plan), the most blocking one that blocks more than the head's
+ * status (`current`), never `success`; `undefined` writes nothing. A plan that blocks the same or
+ * less, such as an `error` over a `failure`, is a raise and needs passes that agree.
+ */
+export function toLoweredStatus(
+	candidates: readonly (CommitStatusText | undefined)[],
+	current: PreviousStatus
+): CommitStatusText | undefined {
+	const lowering = candidates
+		.filter(Predicate.isNotUndefined)
+		.filter(
+			candidate =>
+				candidate.state !== 'success' &&
+				getLoweringRank(candidate.state) < getLoweringRank(current.state)
+		)
+	return lowering.toSorted(
+		(first, second) =>
+			getLoweringRank(first.state) - getLoweringRank(second.state)
+	)[0]
 }

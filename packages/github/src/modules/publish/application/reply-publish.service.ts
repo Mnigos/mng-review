@@ -107,8 +107,9 @@ export interface ReplyPublishResult {
  * unthreaded bugs stay as they were. Threads a failed whole-thread read left unknown wait for this
  * run only, as at publishing: they set its verdict and status but are never stored. Once a list
  * read of the run, the summary write's own and the marker read after a failed write included, left
- * a node out, no wait is cleared, the label stays and its marker is unfinished and failed. On such a marker (`isIncompleteMarker`) it
- * writes a status that does not block only over no status or a `success`.
+ * a node out, no wait is cleared, the label stays and its marker is unfinished and failed. On such
+ * a marker (`isIncompleteMarker`) it writes a status that does not block only over no status or a
+ * `success`.
  */
 export class ReplyPublishService extends Context.Service<
 	ReplyPublishService,
