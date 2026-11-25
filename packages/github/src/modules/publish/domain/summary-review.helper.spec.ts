@@ -7,9 +7,14 @@ import {
 	SUMMARY_MARKER,
 	summaryReview,
 } from '../../../shared/mocks/publish-test.helper'
-import { getListedWaiting, toSummaryComments } from './summary-comment.helper'
+import {
+	getListedWaiting,
+	toHiddenSummaryComments,
+	toSummaryComments,
+} from './summary-comment.helper'
 import {
 	getEditableReview,
+	getPriorMarker,
 	getPriorSummary,
 	getStaleReviews,
 	hasChangeRequest,
@@ -293,6 +298,44 @@ describe('summary reviews', () => {
 		})
 		expect(getPriorSummary([], comments)).toBe(comments[0])
 		expect(getPriorSummary([], [])).toBeUndefined()
+	})
+	test('prior counts the most runs and manual runs any listed summary holds', () => {
+		const reviews = summaries([
+			summaryReview({ ...SUMMARY_MARKER, runs: 7, manualRuns: 3 }),
+			summaryReview(
+				{ ...SUMMARY_MARKER, runs: 5, manualRuns: 1, unthreadedBugs: 2 },
+				{ databaseId: 102 }
+			),
+		])
+		expect(getPriorSummary(reviews, [])).toMatchObject({
+			id: 102,
+			marker: { runs: 7, manualRuns: 3, unthreadedBugs: 2 },
+		})
+	})
+	test('the prior marker keeps hidden sticky counts when no visible summary is left', () => {
+		const hidden = toHiddenSummaryComments(
+			[
+				appSummary(
+					{ ...SUMMARY_MARKER, runs: 9, manualRuns: 4, finished: true },
+					{ isMinimized: true }
+				),
+			],
+			APP_MODE_IDENTITIES,
+			APP_IDENTITY
+		)
+		// No run builds on a hidden summary, so only its counts carry, never its head or flags.
+		expect(getPriorMarker([], [], hidden)).toEqual({
+			v: SUMMARY_MARKER.v,
+			runs: 9,
+			finished: false,
+			manualRuns: 4,
+		})
+		expect(getPriorMarker(summaries([summaryReview()]), [], hidden)).toEqual({
+			...SUMMARY_MARKER,
+			runs: 9,
+			manualRuns: 4,
+		})
+		expect(getPriorMarker([], [], [])).toBeUndefined()
 	})
 	test('only the latest summary can be edited and all edit conditions must hold', () => {
 		const own = summaryReview(SUMMARY_MARKER, {

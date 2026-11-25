@@ -5,8 +5,10 @@ import {
 	GITHUB_ACTIONS_IDENTITY,
 	type BotIdentity,
 } from '../../../platform/bot-identity.helper'
+import { GitHubApiService } from '../../../platform/github-api.service'
 import { GitHubConfig } from '../../../platform/github.config'
 import { GitHubApiError } from '../../../platform/github.errors'
+import { provideListCompleteness } from '../../../platform/list-completeness.context'
 import {
 	githubApiFake,
 	type GitHubApiFakeOptions,
@@ -810,6 +812,297 @@ layer(TOKEN_MODE_OWNED)('Summary review status sweep', test => {
 					expect(fixture.fake.writes).toEqual([])
 					// A `success` stands only on a confirming review read.
 					expect(fixture.fake.reviewReads).toEqual(waiting ? [17] : [17, 17])
+				})
+		)
+})
+
+layer(APP_MODE_OWNED)('SummaryReviewService incomplete list reads', test => {
+	for (const list of ['reviews', 'comments'] as const)
+		test.effect(
+			`reservation whose ${list} read drops a node counts nothing and refuses before the cap`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup({}, APP_IDENTITY)
+					// The null node may be the only summary marker, which would count every run so far.
+					fixture.fake.nullNodes[list] = 1
+					const reserving = SummaryReviewService.use(service =>
+						service.reserveManualRun(RESERVE)
+					).pipe(Effect.provide(fixture.layer), provideListCompleteness(false))
+					expect(yield* reserving).toBe(false)
+					expect(fixture.fake.writes).toEqual([])
+					fixture.fake.nullNodes[list] = 0
+					expect(yield* reserving).toBe(true)
+				})
+		)
+	test.effect(
+		'a reservation counts the most manual runs any listed summary holds',
+		() =>
+			Effect.gen(function* () {
+				const fixture = setup({}, APP_IDENTITY)
+				const author = { __typename: 'Bot', login: APP_IDENTITY.login } as const
+				// The newest summary was built on an older one with fewer runs.
+				fixture.fake.reviews.push(
+					summaryReview(
+						{ ...SUMMARY_MARKER, manualRuns: RESERVE.maxRuns },
+						{ author }
+					),
+					summaryReview(
+						{ ...SUMMARY_MARKER, manualRuns: 1 },
+						{ author, id: 'newest', databaseId: 102 }
+					)
+				)
+				expect(
+					yield* SummaryReviewService.use(service =>
+						service.reserveManualRun(RESERVE)
+					).pipe(Effect.provide(fixture.layer))
+				).toBe(false)
+				expect(fixture.fake.writes).toEqual([])
+			})
+	)
+	for (const editor of [null, 'writer'] as const)
+		test.effect(
+			`a minimized sticky summary ${editor ? 'someone else edited' : 'of the app'} ${editor ? 'never counts' : 'counts runs but is left as it is'}`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup({}, APP_IDENTITY)
+					const author = {
+						__typename: 'Bot',
+						login: APP_IDENTITY.login,
+					} as const
+					fixture.fake.reviews.push(
+						summaryReview(
+							{ ...SUMMARY_MARKER, runs: 2, manualRuns: 1 },
+							{ author }
+						)
+					)
+					const sticky = appSummary(
+						{ ...SUMMARY_MARKER, runs: 9, manualRuns: RESERVE.maxRuns },
+						{
+							isMinimized: true,
+							editor: editor && { __typename: 'User', login: editor },
+						}
+					)
+					fixture.fake.comments.push(sticky)
+					const counts = editor
+						? { runs: 2, manualRuns: 1 }
+						: { runs: 9, manualRuns: RESERVE.maxRuns }
+					expect(
+						yield* SummaryReviewService.use(service =>
+							service.readPrior(17)
+						).pipe(Effect.provide(fixture.layer))
+					).toMatchObject(counts)
+					expect(
+						yield* SummaryReviewService.use(service =>
+							service.reserveManualRun(RESERVE)
+						).pipe(Effect.provide(fixture.layer))
+					).toBe(editor !== null)
+					expect(
+						yield* SummaryReviewService.use(service =>
+							service.write(17, draft())
+						).pipe(Effect.provide(fixture.layer))
+					).toMatchObject({
+						marker: {
+							runs: counts.runs + 1,
+							manualRuns: editor ? 2 : RESERVE.maxRuns,
+						},
+					})
+					// Counting only: the write edits, minimizes and deletes no hidden sticky comment.
+					expect(fixture.fake.comments).toEqual([sticky])
+				})
+		)
+	for (const capped of [false, true])
+		test.effect(
+			`a minimized sticky summary that is the only one carries its counts ${capped ? 'to the cap' : 'into the reservation'}`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup({}, APP_IDENTITY)
+					const manualRuns = capped ? RESERVE.maxRuns : 2
+					const sticky = appSummary(
+						{ ...SUMMARY_MARKER, runs: 9, manualRuns },
+						{ isMinimized: true }
+					)
+					fixture.fake.comments.push(sticky)
+					expect(
+						yield* SummaryReviewService.use(service =>
+							service.readPrior(17)
+						).pipe(Effect.provide(fixture.layer))
+					).toMatchObject({ runs: 9, manualRuns })
+					expect(
+						yield* SummaryReviewService.use(service =>
+							service.reserveManualRun(RESERVE)
+						).pipe(Effect.provide(fixture.layer))
+					).toBe(!capped)
+					expect(
+						fixture.fake.reviews.map(review => parseSummaryMarker(review.body))
+					).toEqual(
+						capped
+							? []
+							: [
+									{
+										v: SUMMARY_MARKER.v,
+										runs: 9,
+										finished: false,
+										manualRuns: manualRuns + 1,
+									},
+								]
+					)
+					// Counting only: the reservation edits, minimizes and deletes no hidden sticky comment.
+					expect(fixture.fake.comments).toEqual([sticky])
+				})
+		)
+	for (const list of ['reviews', 'comments'] as const)
+		test.effect(
+			`a write whose own ${list} read drops a node and finds no summary writes an unfinished one`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup({}, APP_IDENTITY)
+					fixture.fake.nullNodes[list] = 1
+					const written = yield* SummaryReviewService.use(service =>
+						service.write(17, draft())
+					).pipe(Effect.provide(fixture.layer), provideListCompleteness(false))
+					expect(written).toMatchObject({
+						created: true,
+						event: 'COMMENT',
+						marker: { runs: 1, finished: false, failed: true },
+					})
+					expect(fixture.fake.writes.map(write => write.method)).toEqual([
+						'review',
+					])
+					expect(
+						parseSummaryMarker(fixture.fake.reviews.at(-1)?.body ?? '')
+					).toMatchObject({ finished: false, failed: true })
+				})
+		)
+	test.effect(
+		'a write whose own review read drops a node but finds a summary creates a review over it',
+		() =>
+			Effect.gen(function* () {
+				const fixture = setup({}, APP_IDENTITY)
+				fixture.fake.reviews.push(
+					summaryReview(
+						{ ...SUMMARY_MARKER, runs: 3 },
+						{ author: { __typename: 'Bot', login: APP_IDENTITY.login } }
+					)
+				)
+				fixture.fake.nullNodes.reviews = 1
+				const written = yield* SummaryReviewService.use(service =>
+					service.write(17, draft())
+				).pipe(Effect.provide(fixture.layer), provideListCompleteness(false))
+				expect(written).toMatchObject({
+					created: true,
+					marker: { runs: 4, finished: false, failed: true },
+				})
+				// The node left out may be a newer summary; an edit would leave that one newest.
+				expect(fixture.fake.writes.map(write => write.method)).toEqual([
+					'review',
+				])
+			})
+	)
+	test.effect(
+		'a write after an earlier read of the run dropped a node leaves its marker unfinished',
+		() =>
+			Effect.gen(function* () {
+				const fixture = setup({}, APP_IDENTITY)
+				fixture.fake.reviews.push(
+					summaryReview(
+						{ ...SUMMARY_MARKER, runs: 3, finished: false, failed: true },
+						{ author: { __typename: 'Bot', login: APP_IDENTITY.login } }
+					)
+				)
+				// The run's thread read left a node out; the write's own read is complete.
+				fixture.fake.nullNodes.threads = 1
+				const written = yield* SummaryReviewService.use(service =>
+					Effect.gen(function* () {
+						yield* GitHubApiService.use(api => api.listReviewThreads(17))
+						return yield* service.write(
+							17,
+							draft({
+								render: (prior, inline) => {
+									const marker = {
+										...SUMMARY_MARKER,
+										runs: (prior?.marker.runs ?? 0) + 1,
+										finished: true,
+									}
+									return {
+										marker,
+										body: `${inline ? 'Review' : 'Not in the diff'}\n${toMarkerComment('summary', marker)}`,
+										evidence: COVERED_REVIEW,
+									}
+								},
+							})
+						)
+					})
+				).pipe(
+					Effect.provide(Layer.merge(fixture.layer, fixture.fake.api)),
+					provideListCompleteness(false)
+				)
+				expect(written.marker).toMatchObject({
+					runs: 4,
+					finished: false,
+					failed: true,
+				})
+			})
+	)
+	test.effect(
+		'readPrior counts the sticky comment an incomplete write could not find once a review exists',
+		() =>
+			Effect.gen(function* () {
+				const fixture = setup({}, APP_IDENTITY)
+				const sticky = appSummary({ ...SUMMARY_MARKER, runs: 7, manualRuns: 2 })
+				// The write's comment read lists a null node where the sticky comment is.
+				fixture.fake.nullNodes.comments = 1
+				const writing = SummaryReviewService.use(service =>
+					service.write(17, draft())
+				).pipe(Effect.provide(fixture.layer), provideListCompleteness(false))
+				expect((yield* writing).marker).toMatchObject({
+					runs: 1,
+					finished: false,
+					failed: true,
+				})
+				fixture.fake.nullNodes.comments = 0
+				fixture.fake.comments.push(sticky)
+				expect(
+					yield* SummaryReviewService.use(service =>
+						service.readPrior(17)
+					).pipe(Effect.provide(fixture.layer))
+				).toMatchObject({ runs: 7, manualRuns: 2 })
+				expect((yield* writing).marker).toMatchObject({
+					runs: 8,
+					manualRuns: 2,
+				})
+			})
+	)
+	for (const agent of [undefined, 'storage'] as const)
+		test.effect(
+			`a reservation for ${agent === undefined ? 'a full review' : 'one agent'} at the cap over an unfinished newest summary ${agent === undefined ? 'counts it' : 'refuses'}`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup({}, APP_IDENTITY)
+					fixture.fake.reviews.push(
+						summaryReview(
+							{
+								...SUMMARY_MARKER,
+								runs: 6,
+								manualRuns: RESERVE.maxRuns,
+								finished: false,
+								failed: true,
+							},
+							{ author: { __typename: 'Bot', login: APP_IDENTITY.login } }
+						)
+					)
+					// Only a full review can replace the hold, so only it passes the cap.
+					expect(
+						yield* SummaryReviewService.use(service =>
+							service.reserveManualRun({
+								...RESERVE,
+								...(agent === undefined ? {} : { agent }),
+							})
+						).pipe(Effect.provide(fixture.layer))
+					).toBe(agent === undefined)
+					expect(
+						parseSummaryMarker(fixture.fake.reviews.at(-1)?.body ?? '')
+							?.manualRuns
+					).toBe(RESERVE.maxRuns + (agent === undefined ? 1 : 0))
 				})
 		)
 })

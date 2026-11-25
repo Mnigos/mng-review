@@ -216,6 +216,69 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 					).toEqual([])
 				})
 		)
+		for (const reread of [true, false])
+			test.effect(
+				reread
+					? 'a closed bug the second read shows resolved counts closed and clears the change request'
+					: 'a failed second read keeps the close it made and clears no change request',
+				() =>
+					Effect.gen(function* () {
+						const fixture = setup()
+						fixture.fake.reviews.splice(
+							0,
+							1,
+							summaryReview(
+								{ ...SUMMARY_MARKER, head: fixture.head, finished: true },
+								{
+									state: 'CHANGES_REQUESTED',
+									commit: { oid: fixture.head },
+									author: {
+										__typename: 'Bot',
+										login: GITHUB_ACTIONS_IDENTITY.login,
+									},
+								}
+							)
+						)
+						fixture.fake.command.pullRequest = {
+							...fixture.fake.command.pullRequest,
+							head: {
+								...fixture.fake.command.pullRequest.head,
+								sha: fixture.head,
+							},
+						}
+						fixture.fake.threads.push(threadAtCommit(fixture.base))
+						if (!reread)
+							fixture.fake.failures.listThreads.push(
+								undefined,
+								new GitHubApiError({
+									operation: 'threads',
+									reason: 'unavailable',
+								})
+							)
+						expect(
+							yield* ReplyPublishService.use(service =>
+								service.publish({
+									...fixture.input,
+									replies: {
+										...fixture.input.replies,
+										decisions: [decidedReply(RESOLVED)],
+									},
+								})
+							).pipe(Effect.provide(fixture.publisher))
+						).toMatchObject({
+							answered: { resolved: 1 },
+							openBugs: 0,
+							verdict: 'ready',
+							dismissal: { dismissed: reread ? 1 : 0, failed: 0 },
+						})
+						expect(fixture.fake.threadReads).toHaveLength(2)
+						expect(
+							fixture.fake.writes.filter(
+								write => write.method === 'dismissReview'
+							)
+						).toHaveLength(reread ? 1 : 0)
+					})
+			)
 		test.effect(
 			'drops resolved and keeps the bug open when its commit is not an ancestor of the bound head',
 			() =>

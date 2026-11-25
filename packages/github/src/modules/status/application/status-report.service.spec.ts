@@ -1,6 +1,6 @@
 import { layer } from '@effect/vitest'
 import type { ReviewReport } from '@mng-review/engine'
-import { Effect, Layer } from 'effect'
+import { Effect, Layer, Logger } from 'effect'
 import { GitHubApiError } from '../../../platform/github.errors'
 import {
 	collectListed,
@@ -410,6 +410,43 @@ layer(TOKEN_MODE_OWNED)('StatusReportService full review completion', test => {
 			)
 })
 
+layer(TOKEN_MODE_OWNED)('StatusReportService held runs', test => {
+	for (const [previous, openBugs, written] of [
+		['failure', 0, []],
+		['success', 0, ['error']],
+		['failure', 1, ['failure']],
+	] as const)
+		test.effect(
+			`a run under the hold an incomplete write left with ${openBugs} bugs over a ${previous} writes ${written.length === 0 ? 'nothing' : written[0]}`,
+			() =>
+				Effect.gen(function* () {
+					const fake = githubStatusFake()
+					fake.seeded.set('head', {
+						id: 1,
+						state: previous,
+						description: 'earlier',
+						context: 'MNG Review',
+						creator: null,
+					})
+					yield* StatusReportService.use(service =>
+						service.report({
+							head: 'head',
+							report: { ...report(), bugs: [] },
+							verdict: openBugs ? 'needs fixes' : 'ready',
+							openBugs,
+							finished: false,
+							held: true,
+						})
+					).pipe(
+						Effect.provide(
+							StatusReportServiceLive.pipe(Layer.provide(fake.layer))
+						)
+					)
+					expect(fake.statuses.map(status => status.state)).toEqual(written)
+				})
+		)
+})
+
 /** A lenient list read that leaves one null node out, which marks the run incomplete. */
 const DROPPED_NODE = collectListed('listReviews', () =>
 	Effect.succeed({
@@ -605,5 +642,149 @@ layer(TOKEN_MODE_OWNED)('StatusReportService incomplete list reads', test => {
 			])
 			expect(fake.checks.map(check => check.conclusion)).toEqual(['success'])
 		})
+	)
+})
+
+layer(TOKEN_MODE_OWNED)('StatusReportService unread statuses', test => {
+	test.effect(
+		'an incomplete ready run whose status read fails says so in its result and warns in the log',
+		() =>
+			Effect.gen(function* () {
+				const fake = githubStatusFake({
+					getStatus: () =>
+						Effect.fail(
+							new GitHubApiError({ operation: 'getStatus', reason: 'Denied' })
+						),
+				})
+				const warnings: string[] = []
+				const collector = Logger.make(options => {
+					if (options.logLevel === 'Warn')
+						warnings.push(String(options.message))
+				})
+				expect(
+					yield* DROPPED_NODE.pipe(
+						Effect.andThen(
+							StatusReportService.use(service =>
+								service.report({
+									head: 'head',
+									report: cleanReport(),
+									verdict: 'ready',
+									openBugs: 0,
+									finished: true,
+								})
+							)
+						),
+						Effect.provide(
+							Layer.merge(
+								StatusReportServiceLive.pipe(Layer.provide(fake.layer)),
+								Logger.layer([collector])
+							)
+						),
+						provideListCompleteness(false)
+					)
+				).toEqual({ checks: 1, status: false, statusUnread: true })
+				expect(fake.statuses).toEqual([])
+				expect(warnings).toHaveLength(1)
+				expect(warnings[0]).toContain('head')
+			})
+	)
+	test.effect(
+		'an incomplete ready run whose status write fails is not an unread status',
+		() =>
+			Effect.gen(function* () {
+				const fake = githubStatusFake({
+					setStatus: () =>
+						Effect.fail(
+							new GitHubApiError({ operation: 'setStatus', reason: 'Denied' })
+						),
+				})
+				expect(
+					yield* DROPPED_NODE.pipe(
+						Effect.andThen(
+							StatusReportService.use(service =>
+								service.report({
+									head: 'head',
+									report: cleanReport(),
+									verdict: 'ready',
+									openBugs: 0,
+									finished: true,
+								})
+							)
+						),
+						Effect.provide(
+							StatusReportServiceLive.pipe(Layer.provide(fake.layer))
+						),
+						provideListCompleteness(false)
+					)
+				).toEqual({ checks: 1, status: false })
+			})
+	)
+
+	for (const [name, previous, written] of [
+		['no status', undefined, ['error']],
+		['a success', 'success', ['error']],
+		['a failure', 'failure', []],
+		['a pending', 'pending', []],
+		['an unreadable status', 'unread', []],
+	] as const)
+		test.effect(
+			`an unfinished standing from a marker an incomplete write left over ${name} writes ${written.length === 0 ? 'nothing' : written[0]}`,
+			() =>
+				Effect.gen(function* () {
+					const fake = githubStatusFake(
+						previous === 'unread'
+							? {
+									getStatus: () =>
+										Effect.fail(
+											new GitHubApiError({
+												operation: 'getStatus',
+												reason: 'Denied',
+											})
+										),
+								}
+							: {}
+					)
+					if (previous !== undefined && previous !== 'unread')
+						fake.seeded.set('head', {
+							id: 1,
+							state: previous,
+							description: 'earlier',
+							context: 'MNG Review',
+							creator: null,
+						})
+					const set = yield* StatusReportService.use(service =>
+						service.setIncompleteMarkerStatus(
+							'head',
+							toCommitStatus('incomplete', 0, false)
+						)
+					).pipe(
+						Effect.provide(
+							StatusReportServiceLive.pipe(Layer.provide(fake.layer))
+						)
+					)
+					expect(fake.statuses.map(status => status.state)).toEqual(written)
+					// A status it cannot read may block, so it writes nothing over it.
+					if (previous === 'unread')
+						expect(set).toEqual({ set: false, unread: true })
+				})
+		)
+	test.effect(
+		'a blocking standing from a marker an incomplete write left writes its failure unread',
+		() =>
+			Effect.gen(function* () {
+				const fake = githubStatusFake()
+				yield* StatusReportService.use(service =>
+					service.setIncompleteMarkerStatus(
+						'head',
+						toCommitStatus('needs fixes', 1, false)
+					)
+				).pipe(
+					Effect.provide(
+						StatusReportServiceLive.pipe(Layer.provide(fake.layer))
+					)
+				)
+				expect(fake.heads).toEqual([])
+				expect(fake.statuses.map(status => status.state)).toEqual(['failure'])
+			})
 	)
 })

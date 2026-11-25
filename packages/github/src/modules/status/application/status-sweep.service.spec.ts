@@ -2527,3 +2527,379 @@ function newestStatus(first: CommitStatusText) {
 	})
 	return status
 }
+
+/** The confirming review read GitHub refuses, after a first review read that passes. */
+function failConfirmingRead(api: ApiFake) {
+	api.failures.listReviews.push(
+		undefined,
+		new GitHubApiError({
+			operation: 'listReviews',
+			reason: 'Denied',
+			status: 403,
+		})
+	)
+}
+
+layer(APP_MODE_OWNED)('StatusSweepService failed confirming reads', test => {
+	test.effect(
+		'a failed confirming read counts as failed when a newer status keeps the write',
+		() =>
+			Effect.gen(function* () {
+				const fixture = rewriteSetup()
+				failConfirmingRead(fixture.api)
+				const previous = {
+					id: 1,
+					state: 'failure',
+					description: 'stale',
+					context: 'MNG Review',
+					creator: null,
+				} as const
+				// A publish run sets a newer status between the sweep's first read and its write.
+				const status = githubStatusFake({
+					listOpenPullRequests: () =>
+						Effect.succeed([openPullRequest(17, 'head')]),
+					getStatus: vi
+						.fn()
+						.mockReturnValueOnce(Effect.succeed(previous))
+						.mockReturnValue(Effect.succeed({ ...previous, id: 2 })),
+				})
+				expect(
+					yield* StatusSweepService.use(service => service.sweep()).pipe(
+						Effect.provide(
+							StatusSweepServiceLive.pipe(
+								Layer.provide(Layer.merge(fixture.api.api, status.layer))
+							)
+						)
+					)
+				).toEqual({
+					checked: 1,
+					updated: 0,
+					failed: 1,
+					dismissal: NO_DISMISSAL,
+				})
+				expect(status.statuses).toEqual([])
+				expect(fixture.api.reviews[0]?.state).toBe('CHANGES_REQUESTED')
+			})
+	)
+	test.effect(
+		'a failed confirming read counts as failed after a status update when the head moved',
+		() =>
+			Effect.gen(function* () {
+				// The last full run did not finish, so the sweep writes `error`, which needs no read.
+				const fixture = rewriteSetup(false)
+				failConfirmingRead(fixture.api)
+				onListedHead(fixture.api, 'next-head')
+				expect(yield* fixture.sweep).toEqual({
+					checked: 1,
+					updated: 1,
+					failed: 1,
+					dismissal: NO_DISMISSAL,
+				})
+				expect(fixture.api.reviews[0]?.state).toBe('CHANGES_REQUESTED')
+			})
+	)
+	test.effect(
+		'a failed confirming read counts as failed with no status write due when the head moved',
+		() =>
+			Effect.gen(function* () {
+				const fixture = sweepSetup([toCommitStatus('ready', 0, true)])
+				fixture.api.reviews.push(fixture.request)
+				failConfirmingRead(fixture.api)
+				onListedHead(fixture.api, 'next-head')
+				expect(yield* fixture.sweep).toEqual({
+					checked: 1,
+					updated: 0,
+					failed: 1,
+					dismissal: NO_DISMISSAL,
+				})
+				expect(fixture.status.statuses).toEqual([])
+				expect(fixture.api.reviews[1]?.state).toBe('CHANGES_REQUESTED')
+			})
+	)
+})
+
+/** A summary review of the app on `head` that an incomplete write left unfinished and failed. */
+function unfinishedSummary(databaseId: number) {
+	return summaryReview(
+		{ ...SUMMARY_MARKER, head: 'head', finished: false, failed: true },
+		{
+			id: `unfinished-${databaseId}`,
+			databaseId,
+			author: { __typename: 'Bot', login: APP_IDENTITY.login },
+		}
+	)
+}
+
+layer(APP_MODE_OWNED)('StatusSweepService unfinished summaries', test => {
+	for (const standing of ['failure', 'error'] as const)
+		test.effect(
+			`a confirming read that lists a newer finished summary with an unthreaded bug keeps a ${standing} and dismisses nothing`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = sweepSetup([])
+					fixture.api.reviews.push(fixture.request)
+					const status = newestStatus(
+						standing === 'failure'
+							? toCommitStatus('needs fixes', 1, true)
+							: toCommitStatus('ready', 0, false)
+					)
+					// A bugs run posts a finished summary whose bug got no thread between the two review reads.
+					fixture.api.reviewSnapshots.push(
+						[...fixture.api.reviews],
+						[
+							...fixture.api.reviews,
+							summaryReview(
+								{
+									...SUMMARY_MARKER,
+									head: 'head',
+									finished: true,
+									unthreadedBugs: 1,
+								},
+								{
+									id: 'unthreaded-103',
+									databaseId: 103,
+									author: { __typename: 'Bot', login: APP_IDENTITY.login },
+								}
+							),
+						]
+					)
+					const sweep = StatusSweepService.use(service => service.sweep()).pipe(
+						Effect.provide(
+							StatusSweepServiceLive.pipe(
+								Layer.provide(Layer.merge(fixture.api.api, status.layer))
+							)
+						)
+					)
+					expect((yield* sweep).dismissal).toEqual(NO_DISMISSAL)
+					expect(fixture.api.reviews[1]?.state).toBe('CHANGES_REQUESTED')
+					expect(
+						status.statuses.filter(next => next.state === 'success')
+					).toEqual([])
+				})
+		)
+	for (const standing of ['success', 'failure'] as const)
+		test.effect(
+			`a confirming read that lists a newer unfinished summary over a ${standing} writes no success and dismisses nothing`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = sweepSetup([])
+					fixture.api.reviews.push(fixture.request)
+					const status = newestStatus(
+						standing === 'success'
+							? toCommitStatus('ready', 0, true)
+							: toCommitStatus('needs fixes', 1, true)
+					)
+					// An incomplete reply run posts its unfinished summary between the two review reads.
+					fixture.api.reviewSnapshots.push(
+						[...fixture.api.reviews],
+						[...fixture.api.reviews, unfinishedSummary(103)]
+					)
+					const sweep = StatusSweepService.use(service => service.sweep()).pipe(
+						Effect.provide(
+							StatusSweepServiceLive.pipe(
+								Layer.provide(Layer.merge(fixture.api.api, status.layer))
+							)
+						)
+					)
+					expect((yield* sweep).dismissal).toEqual(NO_DISMISSAL)
+					expect(fixture.api.reviews[1]?.state).toBe('CHANGES_REQUESTED')
+					expect(
+						fixture.api.writes.filter(write => write.method === 'dismissReview')
+					).toEqual([])
+					// Over a `success` the unfinished standing is `error`; a `failure` stays.
+					expect(status.statuses).toEqual(
+						standing === 'success'
+							? [{ sha: 'head', ...toCommitStatus('ready', 0, false) }]
+							: []
+					)
+				})
+		)
+	for (const standing of ['failure', 'error'] as const)
+		test.effect(
+			`a sweep with no request to dismiss confirms the summary before it lifts a ${standing} to success`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = sweepSetup([])
+					const status = newestStatus(
+						standing === 'failure'
+							? toCommitStatus('needs fixes', 1, true)
+							: toCommitStatus('ready', 0, false)
+					)
+					// An incomplete run posts its unfinished summary between the two review reads and keeps
+					// the status it found.
+					fixture.api.reviewSnapshots.push(
+						[...fixture.api.reviews],
+						[...fixture.api.reviews, unfinishedSummary(103)]
+					)
+					const sweep = StatusSweepService.use(service => service.sweep()).pipe(
+						Effect.provide(
+							StatusSweepServiceLive.pipe(
+								Layer.provide(Layer.merge(fixture.api.api, status.layer))
+							)
+						)
+					)
+					expect(yield* sweep).toEqual({
+						checked: 1,
+						updated: 0,
+						failed: 0,
+						dismissal: NO_DISMISSAL,
+					})
+					expect(status.statuses).toEqual([])
+				})
+		)
+	test.effect(
+		'a sweep with no request to dismiss whose confirming read fails writes no success',
+		() =>
+			Effect.gen(function* () {
+				const fixture = sweepSetup([])
+				const status = newestStatus(toCommitStatus('needs fixes', 1, true))
+				failConfirmingRead(fixture.api)
+				const sweep = StatusSweepService.use(service => service.sweep()).pipe(
+					Effect.provide(
+						StatusSweepServiceLive.pipe(
+							Layer.provide(Layer.merge(fixture.api.api, status.layer))
+						)
+					)
+				)
+				expect(yield* sweep).toEqual({
+					checked: 1,
+					updated: 0,
+					failed: 1,
+					dismissal: NO_DISMISSAL,
+				})
+				expect(status.statuses).toEqual([])
+			})
+	)
+	for (const standing of ['failure', 'success'] as const)
+		test.effect(
+			`a complete sweep over an unfinished summary with nothing open leaves a ${standing} as it may`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = sweepSetup([])
+					fixture.api.reviews.push(unfinishedSummary(103))
+					const status = newestStatus(
+						standing === 'success'
+							? toCommitStatus('ready', 0, true)
+							: toCommitStatus('needs fixes', 1, true)
+					)
+					const sweep = StatusSweepService.use(service => service.sweep()).pipe(
+						Effect.provide(
+							StatusSweepServiceLive.pipe(
+								Layer.provide(Layer.merge(fixture.api.api, status.layer))
+							)
+						)
+					)
+					expect(yield* sweep).toMatchObject({
+						checked: 1,
+						failed: 0,
+						dismissal: NO_DISMISSAL,
+					})
+					// The marker may miss what set the `failure`, so `error` never replaces it.
+					expect(status.statuses).toEqual(
+						standing === 'success'
+							? [{ sha: 'head', ...toCommitStatus('ready', 0, false) }]
+							: []
+					)
+				})
+		)
+	for (const standing of ['failure', 'error'] as const)
+		test.effect(
+			`a confirming read that lists a newer clean summary never raises a planned ${standing} to success and dismisses nothing`,
+			() =>
+				Effect.gen(function* () {
+					const api = onListedHead(githubApiFake(APP_IDENTITY))
+					const author = {
+						__typename: 'Bot',
+						login: APP_IDENTITY.login,
+					} as const
+					// The change request and the summary sit on the older head, so the sweep plans no `success`.
+					api.reviews.push(
+						summaryReview(
+							{ ...SUMMARY_MARKER, head: 'older-head', finished: true },
+							{
+								databaseId: 101,
+								state: 'CHANGES_REQUESTED',
+								commit: { oid: 'older-head' },
+								author,
+							}
+						)
+					)
+					const status = newestStatus(
+						standing === 'failure'
+							? toCommitStatus('needs fixes', 1, true)
+							: toCommitStatus('ready', 0, false)
+					)
+					// A full run on the head posts a finished summary between the two review reads, and its
+					// new bug threads are not in the sweep's thread read.
+					api.reviewSnapshots.push(
+						[...api.reviews],
+						[
+							...api.reviews,
+							summaryReview(
+								{ ...SUMMARY_MARKER, head: 'head', finished: true },
+								{ id: 'newer-103', databaseId: 103, author }
+							),
+						]
+					)
+					const sweep = StatusSweepService.use(service => service.sweep()).pipe(
+						Effect.provide(
+							StatusSweepServiceLive.pipe(
+								Layer.provide(Layer.merge(api.api, status.layer))
+							)
+						)
+					)
+					expect((yield* sweep).dismissal).toEqual(NO_DISMISSAL)
+					expect(api.reviews[0]?.state).toBe('CHANGES_REQUESTED')
+					expect(
+						status.statuses.filter(next => next.state === 'success')
+					).toEqual([])
+				})
+		)
+	for (const standing of ['failure', 'error'] as const)
+		test.effect(
+			`a confirming read that lists a newer finished summary with a wait keeps a ${standing} from success and dismisses nothing`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = sweepSetup([])
+					fixture.api.reviews.push(fixture.request)
+					const status = newestStatus(
+						standing === 'failure'
+							? toCommitStatus('needs fixes', 1, true)
+							: toCommitStatus('ready', 0, false)
+					)
+					// A reply run posts a finished summary with a thread waiting for the owner between the two
+					// review reads; the first read lists no wait.
+					fixture.api.reviewSnapshots.push(
+						[...fixture.api.reviews],
+						[
+							...fixture.api.reviews,
+							summaryReview(
+								{
+									...SUMMARY_MARKER,
+									head: 'head',
+									finished: true,
+									needsOwner: ['thread'],
+								},
+								{
+									id: 'waiting-103',
+									databaseId: 103,
+									author: { __typename: 'Bot', login: APP_IDENTITY.login },
+								}
+							),
+						]
+					)
+					const sweep = StatusSweepService.use(service => service.sweep()).pipe(
+						Effect.provide(
+							StatusSweepServiceLive.pipe(
+								Layer.provide(Layer.merge(fixture.api.api, status.layer))
+							)
+						)
+					)
+					expect((yield* sweep).dismissal).toEqual(NO_DISMISSAL)
+					expect(fixture.api.reviews[1]?.state).toBe('CHANGES_REQUESTED')
+					expect(
+						status.statuses.filter(next => next.state === 'success')
+					).toEqual([])
+				})
+		)
+})

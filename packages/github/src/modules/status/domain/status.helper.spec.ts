@@ -2,7 +2,9 @@ import {
 	toCommitStatus,
 	toHeldStatus,
 	toIncompleteDescription,
+	toIncompleteMarkerStatus,
 	toIncompleteStatus,
+	toNextSweptStatus,
 	toSweptStatus,
 	UNFINISHED_NOTE,
 } from './status.helper'
@@ -129,6 +131,25 @@ describe('toIncompleteStatus', () => {
 				toIncompleteStatus(toCommitStatus('ready', 0, true), previous, lists)
 			).toEqual(pending)
 		})
+	test("a success over another run's pending names this run's lists", () => {
+		expect(
+			toIncompleteStatus(
+				toCommitStatus('ready', 0, true),
+				{ state: 'pending', description: toIncompleteDescription(['reviews']) },
+				lists
+			)
+		).toEqual(pending)
+	})
+	for (const description of [null, 'a review is running'])
+		test(`a success over a pending that is not an incomplete read's (${description}) writes nothing`, () => {
+			expect(
+				toIncompleteStatus(
+					toCommitStatus('ready', 0, true),
+					{ state: 'pending', description },
+					lists
+				)
+			).toBeUndefined()
+		})
 	for (const [name, next] of [
 		['needs fixes', toCommitStatus('needs fixes', 1, true)],
 		['needs owner', toCommitStatus('needs owner', 0, true)],
@@ -175,4 +196,53 @@ describe('toHeldStatus', () => {
 		test(`a ${status.state} status stays after an incomplete read`, () => {
 			expect(toHeldStatus(status, lists)).toBeUndefined()
 		})
+})
+
+describe('toIncompleteMarkerStatus', () => {
+	const unfinished = toCommitStatus('incomplete', 0, false)
+	for (const [name, previous] of [
+		['no status', undefined],
+		['a success', toCommitStatus('ready', 0, true)],
+	] as const)
+		test(`an unfinished status over ${name} is written`, () => {
+			expect(toIncompleteMarkerStatus(unfinished, previous)).toEqual(unfinished)
+		})
+	for (const state of ['failure', 'error', 'pending'] as const)
+		test(`an unfinished status over a ${state} writes nothing`, () => {
+			expect(
+				toIncompleteMarkerStatus(unfinished, { state, description: 'earlier' })
+			).toBeUndefined()
+		})
+	test('a failure is written over anything', () => {
+		const failure = toCommitStatus('needs fixes', 1, false)
+		expect(
+			toIncompleteMarkerStatus(failure, { state: 'error', description: null })
+		).toEqual(failure)
+	})
+})
+
+describe('toNextSweptStatus', () => {
+	const ready = toCommitStatus('ready', 0, true)
+	const previous = { state: 'failure', description: 'earlier' } as const
+	test('writes the standing after complete reads', () => {
+		expect(toNextSweptStatus(ready, previous, false, [])).toEqual(ready)
+	})
+	test('holds a success back after a list read that left a node out', () => {
+		expect(
+			toNextSweptStatus(ready, { state: 'success', description: null }, false, [
+				'reviews',
+			])
+		).toEqual({
+			state: 'pending',
+			description: toIncompleteDescription(['reviews']),
+		})
+	})
+	test('never lowers a failure on a marker an incomplete write left', () => {
+		expect(
+			toNextSweptStatus(toCommitStatus('ready', 0, false), previous, true, [])
+		).toBeUndefined()
+	})
+	test('writes nothing when the head already says the same', () => {
+		expect(toNextSweptStatus(ready, ready, false, [])).toBeUndefined()
+	})
 })
