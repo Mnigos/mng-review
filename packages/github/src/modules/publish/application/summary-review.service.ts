@@ -55,7 +55,7 @@ import type {
  * The summary as the body of the bot's review. Each run that posts threads, or whose review state
  * would change, submits one review with the summary as its body and the new inline comments; any
  * other run edits the body of the newest review. Every write hides the bot's earlier reviews and
- * old sticky comments as outdated. The state the next run builds on is the marker of the newest
+ * old sticky comments as outdated, but that of a run whose list reads left a node out. The state the next run builds on is the marker of the newest
  * summary review of any owned identity, hidden or dismissed, or with none the old sticky comment.
  */
 export class SummaryReviewService extends Context.Service<
