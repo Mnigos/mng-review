@@ -1,7 +1,9 @@
 import type { ReviewEvent } from '../../../platform/github-review.service'
+import type { LenientList } from '../../../platform/list-completeness.context'
 import type { CoverageGap } from '../domain/coverage-gap.helper'
 import type { DecidedSummary } from '../domain/publish.types'
 import type {
+	RepliedEvidence,
 	ReviewedEvidence,
 	ReviewEvidence,
 } from '../domain/review-event.helper'
@@ -12,6 +14,9 @@ const STATE_LABEL = {
 	REQUEST_CHANGES: 'Changes requested',
 	COMMENT: 'Comment',
 } as const satisfies Record<ReviewEvent, string>
+/** Why a ready full review with no other restriction did not approve. */
+const TOKEN_REASON =
+	'the job token cannot approve; only a GitHub App identity approves.'
 /** A headline an earlier write put first, replaced by each write. */
 const HEADLINE = /^\*\*(?:Approved|Changes requested|Comment)\.\*\* [^\n]*\n\n/u
 
@@ -21,6 +26,14 @@ export interface HeadlineInput {
 	readonly evidence: ReviewEvidence
 	/** The run kept the state it found instead of setting one. */
 	readonly keep: boolean
+}
+
+/**
+ * Why a run whose list reads left a null node out set no state: the lists, so someone can find the
+ * entry, and every action it holds back.
+ */
+export function toIncompleteReason(lists: readonly LenientList[]): string {
+	return `a list GitHub returned was incomplete (${lists.join(', ')}), so this run did not approve, lift a change request or clear a wait.`
 }
 
 /** Why the run's coverage falls short, with the counts the engine recorded. */
@@ -73,6 +86,22 @@ function toSentence(reasons: readonly string[]): string {
 function toNotApprovedReason(evidence: ReviewEvidence): string {
 	if (evidence.kind === 'offline')
 		return 'the reviewer was offline, so this run judged nothing and kept the earlier state.'
+	const other = toReviewedReason(evidence)
+	if (!evidence.incomplete) return other ?? TOKEN_REASON
+	// A list read that left a node out keeps the state whatever the verdict or head, so it comes first.
+	return toSentence([
+		toIncompleteReason(evidence.incomplete),
+		...(other === undefined ? [] : [other]),
+	])
+}
+
+/**
+ * Why a run that judged its reads did not approve, as one sentence; `undefined` when nothing it
+ * read explains it, as for a ready full review on its head with no restriction.
+ */
+function toReviewedReason(
+	evidence: ReviewedEvidence | RepliedEvidence
+): string | undefined {
 	const off = evidence.kind === 'reply' ? !evidence.current : !evidence.onHead
 	// A failed read keeps the state whatever the verdict, so it is the reason before any verdict.
 	if (off && evidence.headUnknown)
@@ -98,11 +127,7 @@ function toNotApprovedReason(evidence: ReviewEvidence): string {
 			...restrictions,
 		])
 	if (evidence.verdict !== 'ready') return 'the review did not finish.'
-	return toSentence(
-		restrictions.length > 0
-			? restrictions
-			: ['the job token cannot approve; only a GitHub App identity approves']
-	)
+	return restrictions.length > 0 ? toSentence(restrictions) : undefined
 }
 
 /**

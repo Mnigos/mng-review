@@ -32,6 +32,36 @@ export interface WaitingUpdate {
 	readonly cleared: ReadonlySet<string>
 }
 
+/** A run's owner waits before the write: every one it would store, those it holds, the cleared. */
+export interface StoredWaitInput {
+	readonly all: readonly string[]
+	/** Threads a failed whole-thread read left unknown, which wait for this run only. */
+	readonly held: readonly string[]
+	readonly cleared: ReadonlySet<string>
+}
+
+/** The marker's waiting update and the threads the run holds for itself only. */
+export interface StoredWaits {
+	readonly update: WaitingUpdate
+	readonly held: readonly string[]
+}
+
+/**
+ * What a write stores of the owner's waits: every one without those an owner cleared. When a list
+ * read of the run, the write's own included, left a node out, it clears none, so the marker keeps
+ * every wait it had and `syncLabel` keeps the label (ADR 0012).
+ */
+export function toStoredWaits(
+	input: StoredWaitInput,
+	incomplete: boolean
+): StoredWaits {
+	const cleared = incomplete ? new Set<string>() : input.cleared
+	return {
+		update: { added: input.all.filter(id => !cleared.has(id)), cleared },
+		held: input.held.filter(id => !cleared.has(id)),
+	}
+}
+
 /** A run as the marker judges it: its head, and whether it stands for a full review. */
 export type MarkedRun = Pick<MarkerUpdate, 'head' | 'partial'>
 

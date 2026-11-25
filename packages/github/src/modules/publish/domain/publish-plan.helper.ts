@@ -192,6 +192,22 @@ export function planPublish(
 /** Places whose thread is on GitHub. */
 const THREAD_PLACES = ['line', 'file'] as const satisfies readonly ThreadPlace[]
 
+/**
+ * The plan with every new line or file thread moved into the summary, for a run whose list reads
+ * left a node out: an unseen thread of the bot may hold the finding already, so no thread is posted
+ * that could repeat it. The next run with complete reads posts the ones still new.
+ */
+export function toWithheldPlan(plan: PublishPlan): PublishPlan {
+	return {
+		...plan,
+		threads: plan.threads.map(thread =>
+			THREAD_PLACES.some(place => place === thread.place)
+				? { ...thread, place: 'summary' }
+				: thread
+		),
+	}
+}
+
 /** Fingerprints of the bot's open bug threads. */
 function getHeldFingerprints(
 	threads: readonly BotThread[]

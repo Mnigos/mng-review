@@ -4,6 +4,7 @@ import {
 	GITHUB_ACTIONS_IDENTITY,
 } from '../../../platform/bot-identity.helper'
 import type { ReviewEvent } from '../../../platform/github-review.service'
+import type { LenientList } from '../../../platform/list-completeness.context'
 import type { Verdict } from '../presentation/summary-comment.formatter'
 import type { CoverageGap } from './coverage-gap.helper'
 import type { DecidedSummary, RenderedSummary } from './publish.types'
@@ -48,6 +49,8 @@ export interface ReviewedEvidence {
 	readonly open?: boolean
 	/** The write's last read of the pull request failed, so its head is unknown and the state stands. */
 	readonly headUnknown?: boolean
+	/** The lists a read of the run left a null node out of, so the state stands (`getIncompleteLists`). */
+	readonly incomplete?: readonly LenientList[]
 }
 
 /** What a reply-only run knows: the standing verdict and whether it is on the summary's head. */
@@ -67,6 +70,8 @@ export interface RepliedEvidence {
 	readonly authored: boolean
 	/** The write's last read of the pull request failed, so its head is unknown and the state stands. */
 	readonly headUnknown?: boolean
+	/** The lists a read of the run left a null node out of, so the state stands (`getIncompleteLists`). */
+	readonly incomplete?: readonly LenientList[]
 }
 
 /** An offline run judged nothing; it still reads who opened the pull request. */
@@ -113,6 +118,8 @@ function isBlocking(verdict: Verdict): boolean {
 /** The decision before GitHub's rule that an author gets no review state. */
 function toDecision(input: ReviewEventInput): ReviewDecision {
 	if (input.kind === 'offline') return toKept(false)
+	// A list that left a node out may hide a thread or review, so no read is evidence for a state.
+	if (input.incomplete) return toKept(false)
 	// A run whose head is not the current one never sets a state over the current head.
 	if (!(input.kind === 'reply' ? input.current : input.onHead))
 		return toKept(false)
@@ -142,7 +149,7 @@ function toDecision(input: ReviewEventInput): ReviewDecision {
  * run never approves: `ready` on the summary's head after a last full review with no failed run
  * comments and clears. Every other run keeps the state and posts `COMMENT`: a run whose head is not
  * the current one or could not be read, a single-agent, unfinished or failed run that found nothing
- * blocking, and an offline run. Only a reply-only run on the current head but off the summary's
+ * blocking, a run whose list reads left a node out, and an offline run. Only a reply-only run on the current head but off the summary's
  * head, with a blocking standing, keeps a standing owned change request as `REQUEST_CHANGES`. On a
  * pull request the bot opened every state is a `COMMENT`.
  */
@@ -171,9 +178,11 @@ export interface LatestHead {
 	readonly authored: boolean
 	/** `false` when the pull request is a draft, closed or merged; unset when the read failed. */
 	readonly open?: boolean
+	/** The lists a read of the run, the write's own included, left a null node out of; unset for none. */
+	readonly incomplete?: readonly LenientList[]
 }
 
-/** The evidence as the latest read of the pull request leaves it: off the head, or authored. */
+/** The evidence as the latest reads leave it: off the head, authored, or incomplete. */
 function toLatestEvidence(
 	evidence: ReviewEvidence,
 	latest: LatestHead,
@@ -182,7 +191,10 @@ function toLatestEvidence(
 	const authored = evidence.authored || latest.authored
 	const onCurrent = latest.current === head
 	if (evidence.kind === 'offline') return { ...evidence, authored }
-	const unknown = latest.current === undefined ? { headUnknown: true } : {}
+	const unknown = {
+		...(latest.current === undefined ? { headUnknown: true } : {}),
+		...(latest.incomplete ? { incomplete: latest.incomplete } : {}),
+	}
 	if (evidence.kind === 'review')
 		return {
 			...evidence,

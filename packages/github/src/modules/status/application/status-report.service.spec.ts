@@ -7,6 +7,7 @@ import {
 	bug,
 	report,
 	agentReport,
+	TOKEN_MODE_OWNED,
 } from '../../../shared/mocks/publish-test.helper'
 import { isFinished } from '../../publish/domain/bot-thread.helper'
 import { toCommitStatus, UNFINISHED_NOTE } from '../domain/status.helper'
@@ -15,7 +16,7 @@ import {
 	StatusReportServiceLive,
 } from './status-report.service'
 
-layer(Layer.empty)('StatusReportService', test => {
+layer(TOKEN_MODE_OWNED)('StatusReportService', test => {
 	for (const scenario of ['clean', 'bug', 'nit', 'failed', 'missing'] as const)
 		test.effect(
 			`${scenario} agent has a nonblocking check with the right conclusion`,
@@ -184,7 +185,7 @@ layer(Layer.empty)('StatusReportService', test => {
 	)
 })
 
-layer(Layer.empty)('StatusReportService unfinished and offline', test => {
+layer(TOKEN_MODE_OWNED)('StatusReportService unfinished and offline', test => {
 	for (const stopped of ['endpoint', 'budget', 'failed', 'incomplete'] as const)
 		for (const openBugs of [0, 1])
 			test.effect(
@@ -361,7 +362,7 @@ layer(Layer.empty)('StatusReportService unfinished and offline', test => {
 		)
 })
 
-layer(Layer.empty)('StatusReportService full review completion', test => {
+layer(TOKEN_MODE_OWNED)('StatusReportService full review completion', test => {
 	for (const finished of [false, true])
 		for (const openBugs of [0, 2])
 			test.effect(

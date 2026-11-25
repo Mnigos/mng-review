@@ -5,6 +5,10 @@ import type {
 	ThreadComment,
 } from '../../../platform/github-api.schema'
 import { GitHubApiService } from '../../../platform/github-api.service'
+import {
+	isReadIncomplete,
+	readListed,
+} from '../../../platform/list-completeness.context'
 import { OwnedIdentities } from '../../../platform/owned-identities.context'
 import {
 	getUnsettledAnswer,
@@ -46,14 +50,16 @@ export class ThreadSettleService extends Context.Service<
 		) => Effect.Effect<boolean>
 		/**
 		 * Whether the thread's newest answer of the token's app is unsettled, from the whole thread
-		 * when the read's windows do not show it; a failed read counts as unsettled.
+		 * when the read's windows do not show it; a failed read, or one that left a comment out,
+		 * counts as unsettled.
 		 */
 		readonly isUnsettledThread: (
 			thread: ReviewThread
 		) => Effect.Effect<boolean, never, OwnedIdentities>
 		/**
 		 * Ids of waiting threads an admin or an allowed login resolved on GitHub, unless the thread's
-		 * newest app answer is unsettled, so that resolution may predate it.
+		 * newest app answer is unsettled, so that resolution may predate it. None once a list read of
+		 * the run left a node out (`isReadIncomplete`).
 		 */
 		readonly getCleared: (
 			input: ClearedInput
@@ -100,7 +106,10 @@ export const ThreadSettleServiceLive = Layer.effect(
 			}
 		)
 
-		/** The comments that show the newest app answer: the latest window, or the whole thread. */
+		/**
+		 * The comments that show the newest app answer: the latest window, or the whole thread. A read
+		 * that failed, or left a comment out, is unknown, since that comment may be the answer.
+		 */
 		const readAnswers = Effect.fn('ThreadSettleService.readAnswers')(function* (
 			thread: ReviewThread
 		) {
@@ -108,9 +117,10 @@ export const ThreadSettleServiceLive = Layer.effect(
 			const window = getWindowUnsettled(thread, [current])
 			if (window === false) return []
 			if (window) return thread.latest?.nodes ?? []
-			return yield* api
-				.listThreadComments(thread.id)
-				.pipe(Effect.orElseSucceed(() => undefined))
+			const read = yield* readListed(api.listThreadComments(thread.id)).pipe(
+				Effect.orElseSucceed(() => undefined)
+			)
+			return read?.incomplete === false ? read.value : undefined
 		})
 
 		const isUnsettledThread = Effect.fn(
@@ -183,6 +193,8 @@ export const ThreadSettleServiceLive = Layer.effect(
 				},
 				{ concurrency: 1 }
 			)
+			// A read that left a node out may miss the answer or resolution that keeps the wait.
+			if (yield* isReadIncomplete) return new Set<string>()
 			return new Set(cleared.map(entry => entry.id))
 		})
 

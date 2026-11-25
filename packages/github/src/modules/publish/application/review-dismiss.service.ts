@@ -1,6 +1,7 @@
 import { Context, Effect, Layer } from 'effect'
 import type { PullRequestReview } from '../../../platform/github-api.schema'
 import { GitHubReviewService } from '../../../platform/github-review.service'
+import { isReadIncomplete } from '../../../platform/list-completeness.context'
 import { OwnedIdentities } from '../../../platform/owned-identities.context'
 import type { DismissalOutcome } from '../domain/publish.types'
 import {
@@ -31,6 +32,12 @@ export interface StaleDismissal extends DismissalOutcome {
 	readonly outlived: boolean
 }
 
+/** Nothing dismissed. */
+const NOTHING_DISMISSED = {
+	dismissed: 0,
+	failed: 0,
+} as const satisfies DismissalOutcome
+
 /**
  * Dismisses the bot's reviews that no longer hold. Dismissals run one at a time; one GitHub refuses
  * or never answers counts as failed, is reported, and is left for the next run.
@@ -45,10 +52,22 @@ export class ReviewDismissService extends Context.Service<
 			message: string
 		) => Effect.Effect<DismissalOutcome>
 		/**
+		 * Dismisses the change requests `ids` with `message`, and none once a list read of the run
+		 * left a node out (`isReadIncomplete`): a thread or review it could not see may still back
+		 * them. Every change-request dismissal goes through it.
+		 */
+		readonly liftRequests: (
+			pullNumber: number,
+			ids: readonly number[],
+			message: string
+		) => Effect.Effect<DismissalOutcome>
+		/**
 		 * After a write: the owned change requests a clearing write leaves stale
-		 * (`getStaleChangeRequests`) and the owned approvals that outlived the current head
-		 * (`getStaleApprovals`), among `reviews` as read before the write, and the review the write
-		 * left when a push landed right after it (`getOutlivedReview`).
+		 * (`getStaleChangeRequests`, through `liftRequests`) and the owned approvals that outlived
+		 * the current head (`getStaleApprovals`), among `reviews` as read before the write, and the
+		 * review the write left when a push landed right after it (`getOutlivedReview`; a change
+		 * request through `liftRequests`). An incomplete run still dismisses the approvals and an
+		 * outlived approval, which only lowers approval.
 		 */
 		readonly dismissStale: (
 			pullNumber: number,
@@ -85,6 +104,15 @@ export const ReviewDismissServiceLive = Layer.effect(
 			} satisfies DismissalOutcome
 		})
 
+		const liftRequests = Effect.fn('ReviewDismissService.liftRequests')(
+			function* (pullNumber: number, ids: readonly number[], message: string) {
+				// A list read that left a node out may miss the thread or review that keeps a request.
+				if (ids.length === 0 || (yield* isReadIncomplete))
+					return NOTHING_DISMISSED
+				return yield* dismiss(pullNumber, ids, message)
+			}
+		)
+
 		const dismissStale = Effect.fn('ReviewDismissService.dismissStale')(
 			function* (
 				pullNumber: number,
@@ -95,7 +123,7 @@ export const ReviewDismissServiceLive = Layer.effect(
 				const { current, identities } = yield* OwnedIdentities
 				// A push that landed after the write leaves the clearing evidence on an older head.
 				const cleared = heads.current === heads.head
-				const requests = yield* dismiss(
+				const requests = yield* liftRequests(
 					pullNumber,
 					cleared
 						? getStaleChangeRequests(
@@ -134,7 +162,9 @@ export const ReviewDismissServiceLive = Layer.effect(
 				)
 				// The read before the write did not hold the review it just left.
 				const outlived = getOutlivedReview(written, heads.current)
-				const own = yield* dismiss(
+				const own = yield* (
+					written.review.state === 'CHANGES_REQUESTED' ? liftRequests : dismiss
+				)(
 					pullNumber,
 					outlived === undefined ? [] : [outlived],
 					toOutlivedReviewMessage(latest)
@@ -152,6 +182,6 @@ export const ReviewDismissServiceLive = Layer.effect(
 			}
 		)
 
-		return { dismiss, dismissStale }
+		return { dismiss, liftRequests, dismissStale }
 	})
 )
