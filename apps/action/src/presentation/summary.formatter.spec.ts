@@ -591,6 +591,21 @@ describe('sweep formatters', () => {
 			'status sweep: 0 pull request(s) carry the status, 0 updated, 0 failed'
 		)
 	})
+	test('names the lists each incomplete pull request left out', () => {
+		expect(
+			formatSweepLine({
+				checked: 2,
+				updated: 1,
+				failed: 0,
+				incomplete: [
+					{ pullNumber: 17, lists: ['review threads', 'reviews'] },
+					{ pullNumber: 23, lists: ['conversation comments'] },
+				],
+			})
+		).toBe(
+			'status sweep: 2 pull request(s) carry the status, 1 updated, 0 failed; a list GitHub returned was incomplete on #17 (review threads, reviews), #23 (conversation comments)'
+		)
+	})
 	test('raise summaries carry their title and escape supplied text', () => {
 		expect(formatRaiseSummary(MALICIOUS)).toContain('## MNG Review (raise)')
 		expect(formatRaiseSummary(MALICIOUS)).toContain(escapeMarkdown(MALICIOUS))

@@ -1,9 +1,11 @@
 import { layer } from '@effect/vitest'
-import { ConfigProvider, Effect, Layer } from 'effect'
+import { Clock, ConfigProvider, Duration, Effect, Fiber, Layer } from 'effect'
+import { TestClock } from 'effect/testing'
 import type {
 	OpenPullRequest,
 	PullRequestReview,
 } from '../../../platform/github-api.schema'
+import type { GitHubStatusService } from '../../../platform/github-status.service'
 import { GitHubReadConfigLive } from '../../../platform/github.config'
 import { GitHubApiError } from '../../../platform/github.errors'
 import { provideListCompleteness } from '../../../platform/list-completeness.context'
@@ -28,8 +30,13 @@ import {
 import { SummaryReviewServiceLive } from '../../publish/application/summary-review.service'
 import type { SummaryMarker } from '../../publish/domain/publish-marker.schema'
 import { toClearedMessage } from '../../publish/presentation/summary-status.formatter'
-import { type CommitStatusText, toCommitStatus } from '../domain/status.helper'
+import {
+	type CommitStatusText,
+	toCommitStatus,
+	UNFINISHED_NOTE,
+} from '../domain/status.helper'
 import { RaiseService, RaiseServiceLive } from './raise.service'
+import type { RaiseScan } from './raise.service.types'
 import {
 	StatusSweepService,
 	StatusSweepServiceLive,
@@ -82,8 +89,13 @@ const READY = toCommitStatus('ready', 0, true)
 function raiseSetup(
 	pulls: readonly OpenPullRequest[] = [openPullRequest(17, 'head')],
 	head = 'head',
-	previous: CommitStatusText | null = ONE_BUG
+	previous: CommitStatusText | null = ONE_BUG,
+	allow: readonly string[] = [],
+	setStatus?: GitHubStatusService['Service']['setStatus'],
+	readDelay?: Duration.Input,
+	hangAt?: number
 ) {
+	const statusReads = { count: 0 }
 	const api = githubApiFake(APP_IDENTITY)
 	api.command.pullRequest = {
 		...api.command.pullRequest,
@@ -99,10 +111,14 @@ function raiseSetup(
 	)
 	api.threads.push(reviewThread(undefined, { isResolved: true }))
 	const status = githubStatusFake({
+		...(setStatus ? { setStatus } : {}),
 		listOpenPullRequests: () => Effect.succeed(pulls),
 		getStatus: () => {
+			statusReads.count += 1
+			// A read that never ends, for a judgment the scan's hard bound must drop.
+			if (statusReads.count === hangAt) return Effect.never
 			const newest = status.statuses.at(-1) ?? previous ?? undefined
-			return Effect.succeed(
+			const read = Effect.succeed(
 				newest && {
 					id: status.statuses.length + 1,
 					...newest,
@@ -110,6 +126,10 @@ function raiseSetup(
 					creator: null,
 				}
 			)
+			// A slow read, so a scan on the test clock runs into its deadline.
+			return readDelay === undefined
+				? read
+				: Effect.sleep(readDelay).pipe(Effect.andThen(read))
 		},
 	})
 	const services = Layer.mergeAll(
@@ -117,13 +137,17 @@ function raiseSetup(
 		StatusSweepServiceLive,
 		ReplyFindServiceLive.pipe(Layer.provide(SummaryReviewServiceLive))
 	).pipe(Layer.provide(Layer.mergeAll(api.api, status.layer, READ_CONFIG)))
-	const findDue = RaiseService.use(service => service.findDue([])).pipe(
+	const findDue = RaiseService.use(service => service.findDue(allow)).pipe(
 		Effect.provide(services)
 	)
-	const raise = RaiseService.use(service => service.raise(17, [])).pipe(
+	const findDueWith = (scan: RaiseScan) =>
+		RaiseService.use(service => service.findDue(allow, scan)).pipe(
+			Effect.provide(services)
+		)
+	const raise = RaiseService.use(service => service.raise(17, allow)).pipe(
 		Effect.provide(services)
 	)
-	const sweep = StatusSweepService.use(service => service.sweep()).pipe(
+	const sweep = StatusSweepService.use(service => service.sweep(allow)).pipe(
 		Effect.provide(services)
 	)
 	const findReplies = ReplyFindService.use(service =>
@@ -133,7 +157,16 @@ function raiseSetup(
 		api.writes.flatMap(write =>
 			write.method === 'dismissReview' ? [write.id] : []
 		)
-	return { api, status, findDue, raise, sweep, findReplies, dismissed }
+	return {
+		api,
+		status,
+		findDue,
+		findDueWith,
+		raise,
+		sweep,
+		findReplies,
+		dismissed,
+	}
 }
 
 layer(APP_MODE_OWNED)('RaiseService schedule run', test => {
@@ -537,6 +570,667 @@ layer(APP_MODE_OWNED)('RaiseService find', test => {
 					deferred: 0,
 				})
 				expect(fixture.dismissed()).toEqual([])
+			})
+	)
+})
+
+layer(APP_MODE_OWNED)('RaiseService status', test => {
+	test.effect(
+		'a status that should turn success is listed and raised with no change request',
+		() =>
+			Effect.gen(function* () {
+				const fixture = raiseSetup()
+				fixture.api.reviews.splice(1, 1)
+				expect((yield* fixture.findDue).pulls).toEqual([17])
+				expect(yield* fixture.raise).toEqual({
+					outcome: 'raised',
+					head: 'head',
+					status: READY,
+					dismissal: { dismissed: 0, failed: 0 },
+				})
+				expect(fixture.status.statuses).toEqual([{ sha: 'head', ...READY }])
+			})
+	)
+	test.effect(
+		'a status already success with no change request is neither listed nor written',
+		() =>
+			Effect.gen(function* () {
+				const fixture = raiseSetup(undefined, undefined, READY)
+				fixture.api.reviews.splice(1, 1)
+				expect((yield* fixture.findDue).pulls).toEqual([])
+				expect((yield* fixture.raise).outcome).toBe('not-due')
+				expect(fixture.status.statuses).toEqual([])
+			})
+	)
+	test.effect(
+		'with no status of the bot on the head only the change request is lifted',
+		() =>
+			Effect.gen(function* () {
+				const fixture = raiseSetup(undefined, undefined, null)
+				expect((yield* fixture.findDue).pulls).toEqual([17])
+				expect(yield* fixture.raise).toEqual({
+					outcome: 'raised',
+					head: 'head',
+					dismissal: { dismissed: 1, failed: 0 },
+				})
+				expect(fixture.status.statuses).toEqual([])
+			})
+	)
+	for (const recorded of ['a bug', 'an owner wait'] as const)
+		test.effect(
+			`a publisher that records ${recorded} and writes failure after find gets no success over it`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = raiseSetup()
+					expect((yield* fixture.findDue).pulls).toEqual([17])
+					// A reply run in the group before the locked job: it records what blocks and writes failure.
+					if (recorded === 'a bug')
+						fixture.api.threads.splice(0, 1, reviewThread())
+					else
+						fixture.api.reviews.push(
+							summaryReview(
+								{ ...ON_HEAD, finished: true, needsOwner: ['thread'] },
+								{ id: 'waiting-103', databaseId: 103, author: APP_AUTHOR }
+							)
+						)
+					const blocking =
+						recorded === 'a bug'
+							? ONE_BUG
+							: toCommitStatus('needs owner', 0, true)
+					fixture.status.statuses.push({ sha: 'head', ...blocking })
+					expect((yield* fixture.raise).outcome).toBe('not-due')
+					expect(fixture.status.statuses).toEqual([
+						{ sha: 'head', ...blocking },
+					])
+					expect(fixture.dismissed()).toEqual([])
+				})
+		)
+	test.effect(
+		'a status written between the judgment and the writes keeps the status and the change request',
+		() =>
+			Effect.gen(function* () {
+				const fixture = raiseSetup()
+				const lowered = {
+					sha: 'head',
+					state: 'pending',
+					description: 'written by another writer',
+				} as const
+				// The sweep, outside the group, lowers the status while the locked job reads the threads.
+				fixture.api.threadSnapshots.shift = () => {
+					fixture.status.statuses.push(lowered)
+					return undefined
+				}
+				expect(yield* fixture.raise).toEqual({
+					outcome: 'changed',
+					head: 'head',
+					dismissal: { dismissed: 0, failed: 0 },
+				})
+				expect(fixture.status.statuses).toEqual([lowered])
+				expect(fixture.dismissed()).toEqual([])
+			})
+	)
+})
+
+/** The bot's `failure` while a thread waits for the owner and nothing else blocks. */
+const OWNER_WAIT = toCommitStatus('needs owner', 0, true)
+
+/**
+ * Pull request 17 whose only blocker is the summary's wait on `thread`, a bug thread `resolver`'s
+ * login resolved by hand with no reply, with the bot's `failure` and its change request standing.
+ */
+function ownerWaitSetup(role: string, allow: readonly string[]) {
+	const fixture = raiseSetup(undefined, undefined, OWNER_WAIT, allow)
+	fixture.api.command.role = role
+	fixture.api.reviews.splice(
+		0,
+		1,
+		summaryReview(
+			{ ...ON_HEAD, finished: true, needsOwner: ['thread'] },
+			{ databaseId: 101, author: APP_AUTHOR }
+		)
+	)
+	fixture.api.threads.splice(
+		0,
+		1,
+		reviewThread(undefined, {
+			isResolved: true,
+			resolvedBy: { login: 'contributor' },
+		})
+	)
+	return fixture
+}
+
+layer(APP_MODE_OWNED)('RaiseService owner waits', test => {
+	for (const [resolver, role, allow] of [
+		['an admin', 'admin', []],
+		['a login in commands.allow', 'write', ['contributor']],
+	] as const)
+		test.effect(
+			`${resolver} resolving the waiting thread by hand turns the status green and lifts the change request in one schedule run`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = ownerWaitSetup(role, allow)
+					// One run of the schedule file: the sweep leaves the `failure`, the locked job raises.
+					expect(yield* fixture.sweep).toEqual({
+						checked: 1,
+						updated: 0,
+						failed: 0,
+					})
+					expect((yield* fixture.findReplies).candidates).toEqual([])
+					expect((yield* fixture.findDue).pulls).toEqual([17])
+					expect(yield* fixture.raise).toEqual({
+						outcome: 'raised',
+						head: 'head',
+						status: READY,
+						dismissal: { dismissed: 1, failed: 0 },
+					})
+					expect(fixture.status.statuses).toEqual([{ sha: 'head', ...READY }])
+					expect(
+						fixture.api.reviews.filter(
+							review => review.state === 'CHANGES_REQUESTED'
+						)
+					).toEqual([])
+				})
+		)
+	test.effect(
+		'a writer outside commands.allow resolving the waiting thread raises nothing and the wait stays',
+		() =>
+			Effect.gen(function* () {
+				const fixture = ownerWaitSetup('write', [])
+				expect(yield* fixture.sweep).toEqual({
+					checked: 1,
+					updated: 0,
+					failed: 0,
+				})
+				expect((yield* fixture.findDue).pulls).toEqual([])
+				expect(yield* fixture.raise).toEqual({
+					outcome: 'not-due',
+					head: 'head',
+					dismissal: { dismissed: 0, failed: 0 },
+				})
+				expect(fixture.status.statuses).toEqual([])
+				expect(fixture.dismissed()).toEqual([])
+				expect(fixture.api.reviews[1]?.state).toBe('CHANGES_REQUESTED')
+			})
+	)
+})
+
+layer(APP_MODE_OWNED)('RaiseService blocking statuses', test => {
+	test.effect(
+		'an owner wait cleared on a head whose last full run did not finish turns failure into error under the lock',
+		() =>
+			Effect.gen(function* () {
+				const fixture = raiseSetup(
+					undefined,
+					undefined,
+					toCommitStatus('needs owner', 0, false)
+				)
+				fixture.api.command.role = 'admin'
+				// The summary of a full run that did not finish waits on the thread an admin resolved.
+				fixture.api.reviews.splice(
+					0,
+					fixture.api.reviews.length,
+					summaryReview(
+						{ ...ON_HEAD, finished: false, needsOwner: ['thread'] },
+						{ databaseId: 101, author: APP_AUTHOR }
+					)
+				)
+				fixture.api.threads.splice(
+					0,
+					1,
+					reviewThread(undefined, {
+						isResolved: true,
+						resolvedBy: { login: 'contributor' },
+					})
+				)
+				const unfinished = toCommitStatus('ready', 0, false)
+				expect(yield* fixture.sweep).toMatchObject({ updated: 0 })
+				expect((yield* fixture.findDue).pulls).toEqual([17])
+				expect(yield* fixture.raise).toEqual({
+					outcome: 'updated',
+					head: 'head',
+					status: unfinished,
+					dismissal: { dismissed: 0, failed: 0 },
+				})
+				expect(fixture.status.statuses).toEqual([
+					{ sha: 'head', ...unfinished },
+				])
+			})
+	)
+	test.effect(
+		"2 of 3 bug threads resolved by hand update the failure's count under the lock",
+		() =>
+			Effect.gen(function* () {
+				const fixture = raiseSetup(
+					undefined,
+					undefined,
+					toCommitStatus('needs fixes', 3, true)
+				)
+				fixture.api.reviews.splice(1, 1)
+				fixture.api.threads.splice(
+					0,
+					1,
+					reviewThread(undefined, { id: 'open' }),
+					reviewThread(undefined, { id: 'first', isResolved: true }),
+					reviewThread(undefined, { id: 'second', isResolved: true })
+				)
+				expect(yield* fixture.sweep).toMatchObject({ updated: 0 })
+				expect((yield* fixture.findDue).pulls).toEqual([17])
+				expect(yield* fixture.raise).toEqual({
+					outcome: 'updated',
+					head: 'head',
+					status: ONE_BUG,
+					dismissal: { dismissed: 0, failed: 0 },
+				})
+				expect(fixture.status.statuses).toEqual([{ sha: 'head', ...ONE_BUG }])
+			})
+	)
+	test.effect(
+		'an unfinished error that names its cause is neither listed nor rewritten as a generic one',
+		() =>
+			Effect.gen(function* () {
+				const offline = {
+					state: 'error',
+					description: `the reviewer was offline; ${UNFINISHED_NOTE}`,
+				} as const
+				const fixture = raiseSetup(undefined, undefined, offline)
+				fixture.api.reviews.splice(
+					0,
+					fixture.api.reviews.length,
+					summaryReview(
+						{ ...ON_HEAD, finished: false },
+						{ databaseId: 101, author: APP_AUTHOR }
+					)
+				)
+				expect((yield* fixture.findDue).pulls).toEqual([])
+				expect((yield* fixture.raise).outcome).toBe('not-due')
+				expect(fixture.status.statuses).toEqual([])
+			})
+	)
+	test.effect(
+		'a blocking status that already says what the threads say is neither listed nor written',
+		() =>
+			Effect.gen(function* () {
+				const fixture = raiseSetup()
+				fixture.api.reviews.splice(1, 1)
+				fixture.api.threads.splice(0, 1, reviewThread())
+				expect((yield* fixture.findDue).pulls).toEqual([])
+				expect((yield* fixture.raise).outcome).toBe('not-due')
+				expect(fixture.status.statuses).toEqual([])
+			})
+	)
+	test.effect(
+		'a green head under an unfinished full run is lowered to error while the stale change request is lifted',
+		() =>
+			Effect.gen(function* () {
+				const fixture = raiseSetup(undefined, undefined, READY)
+				const unfinishedRun = { ...ON_HEAD, finished: false }
+				fixture.api.reviews.splice(
+					0,
+					fixture.api.reviews.length,
+					summaryReview(unfinishedRun, {
+						databaseId: 101,
+						author: APP_AUTHOR,
+					}),
+					changeRequest({}, unfinishedRun)
+				)
+				const lowered = toCommitStatus('ready', 0, false)
+				expect((yield* fixture.findDue).pulls).toEqual([17])
+				expect(yield* fixture.raise).toEqual({
+					outcome: 'raised',
+					head: 'head',
+					status: lowered,
+					dismissal: { dismissed: 1, failed: 0 },
+				})
+				expect(fixture.status.statuses).toEqual([{ sha: 'head', ...lowered }])
+				expect(fixture.dismissed()).toEqual([102])
+			})
+	)
+})
+
+/** GitHub refusing a status write, as at the per-context status limit of a commit. */
+const REFUSED_STATUS = new GitHubApiError({
+	operation: 'setStatus',
+	reason: 'too many statuses',
+	status: 422,
+})
+
+layer(APP_MODE_OWNED)('RaiseService writes', test => {
+	test.effect(
+		'a push while the status is written keeps the change requests and reports the status written',
+		() =>
+			Effect.gen(function* () {
+				const fixture = raiseSetup()
+				const { pullRequest } = fixture.api.command
+				// The judgment's read and the one before the writes see the head; the one before the
+				// dismissal sees the push.
+				fixture.api.pullRequestSnapshots.push(pullRequest, pullRequest, {
+					...pullRequest,
+					head: { ...pullRequest.head, sha: 'next-head' },
+				})
+				expect(yield* fixture.raise).toEqual({
+					outcome: 'raised',
+					head: 'head',
+					status: READY,
+					dismissal: { dismissed: 0, failed: 0 },
+					movedBeforeDismissal: true,
+				})
+				expect(fixture.status.statuses).toEqual([{ sha: 'head', ...READY }])
+				expect(fixture.dismissed()).toEqual([])
+				expect(fixture.api.reviews[1]?.state).toBe('CHANGES_REQUESTED')
+			})
+	)
+	test.effect(
+		'a refused status write is reported and the due dismissal still runs',
+		() =>
+			Effect.gen(function* () {
+				const fixture = raiseSetup(undefined, undefined, undefined, [], () =>
+					Effect.fail(REFUSED_STATUS)
+				)
+				expect(yield* fixture.raise).toEqual({
+					outcome: 'raised',
+					head: 'head',
+					statusError: REFUSED_STATUS.message,
+					dismissal: { dismissed: 1, failed: 0 },
+				})
+				expect(fixture.dismissed()).toEqual([102])
+			})
+	)
+	test.effect(
+		'a refused status write with nothing to dismiss is reported as refused',
+		() =>
+			Effect.gen(function* () {
+				const fixture = raiseSetup(undefined, undefined, undefined, [], () =>
+					Effect.fail(REFUSED_STATUS)
+				)
+				fixture.api.reviews.splice(1, 1)
+				expect(yield* fixture.raise).toEqual({
+					outcome: 'refused',
+					head: 'head',
+					statusError: REFUSED_STATUS.message,
+					dismissal: { dismissed: 0, failed: 0 },
+				})
+			})
+	)
+})
+
+/** Five open pull requests on the same head, every one with a raise due. */
+const FIVE_PULLS = [17, 18, 19, 20, 21].map(number =>
+	openPullRequest(number, 'head')
+)
+/** How long one judgment's status read takes on the test clock. */
+const SLOW_READ = Duration.seconds(40)
+/** A deadline that lets three such judgments start and stops the fourth. */
+const SCAN_BUDGET = Duration.seconds(100)
+
+layer(APP_MODE_OWNED)('RaiseService scan deadline', test => {
+	test.effect(
+		'a listing of the open pull requests that never ends is cut at the hard bound',
+		() =>
+			Effect.gen(function* () {
+				const api = githubApiFake(APP_IDENTITY)
+				const status = githubStatusFake({
+					listOpenPullRequests: () => Effect.never,
+				})
+				const now = yield* Clock.currentTimeMillis
+				const fiber = yield* RaiseService.use(service =>
+					service.findDue([], {
+						rotation: 0,
+						bound: now + Duration.toMillis(Duration.minutes(3)),
+					})
+				).pipe(
+					Effect.provide(
+						RaiseServiceLive.pipe(
+							Layer.provide(Layer.mergeAll(api.api, status.layer))
+						)
+					),
+					Effect.forkChild
+				)
+				yield* TestClock.adjust(Duration.minutes(10))
+				expect(fiber.pollUnsafe()).toBeDefined()
+				expect(yield* Fiber.join(fiber)).toEqual({
+					pulls: [],
+					read: 0,
+					failed: 0,
+					unscanned: 0,
+					deferred: 0,
+					stop: 'bound',
+				})
+			})
+	)
+	test.effect(
+		'a judgment that never ends is dropped at the hard bound and the judgments before it are kept',
+		() =>
+			Effect.gen(function* () {
+				// The second pull request's status read never returns.
+				const fixture = raiseSetup(
+					FIVE_PULLS,
+					'head',
+					ONE_BUG,
+					[],
+					undefined,
+					undefined,
+					2
+				)
+				const now = yield* Clock.currentTimeMillis
+				const fiber = yield* fixture
+					.findDueWith({
+						rotation: 0,
+						deadline: now + Duration.toMillis(SCAN_BUDGET),
+						bound: now + Duration.toMillis(Duration.minutes(3)),
+					})
+					.pipe(Effect.forkChild)
+				yield* TestClock.adjust(Duration.minutes(10))
+				expect(fiber.pollUnsafe()).toBeDefined()
+				expect(yield* Fiber.join(fiber)).toEqual({
+					pulls: [17],
+					read: 5,
+					failed: 0,
+					unscanned: 4,
+					deferred: 0,
+					dropped: 18,
+					stop: 'bound',
+				})
+			})
+	)
+	test.effect(
+		'a deadline that passed before the scan started still judges the pull request at its start',
+		() =>
+			Effect.gen(function* () {
+				const fixture = raiseSetup(FIVE_PULLS)
+				const deadline = (yield* Clock.currentTimeMillis) - 1
+				expect(yield* fixture.findDueWith({ rotation: 1, deadline })).toEqual({
+					pulls: [18],
+					read: 5,
+					failed: 0,
+					unscanned: 4,
+					deferred: 0,
+				})
+			})
+	)
+	test.effect(
+		'a judgment that runs long past the deadline is finished and counted',
+		() =>
+			Effect.gen(function* () {
+				const fixture = raiseSetup(
+					FIVE_PULLS,
+					'head',
+					ONE_BUG,
+					[],
+					undefined,
+					Duration.minutes(5)
+				)
+				const deadline = (yield* Clock.currentTimeMillis) + 1000
+				const fiber = yield* fixture
+					.findDueWith({ rotation: 0, deadline })
+					.pipe(Effect.forkChild)
+				yield* TestClock.adjust(Duration.minutes(10))
+				expect(yield* Fiber.join(fiber)).toEqual({
+					pulls: [17],
+					read: 5,
+					failed: 0,
+					unscanned: 4,
+					deferred: 0,
+				})
+			})
+	)
+	test.effect(
+		'ticks that judge only the pull request at their start still reach every one within N ticks',
+		() =>
+			Effect.gen(function* () {
+				// 40 open pull requests and a limit of 20 share factors; the starts must still visit all.
+				const open = Array.from({ length: 40 }, (_, index) =>
+					openPullRequest(index + 1, 'head')
+				)
+				const fixture = raiseSetup(open)
+				const listed = new Set<number>()
+				for (let rotation = 0; rotation < open.length; rotation += 1) {
+					const deadline = (yield* Clock.currentTimeMillis) - 1
+					const found = yield* fixture.findDueWith({
+						rotation,
+						deadline,
+						limit: 20,
+					})
+					expect(found.pulls).toHaveLength(1)
+					for (const pull of found.pulls) listed.add(pull)
+				}
+				expect(listed.size).toBe(open.length)
+			})
+	)
+	for (const [rotation, pulls] of [
+		[0, [17, 18]],
+		[1, [19, 20]],
+	] as const)
+		test.effect(
+			`a scan with run number ${rotation} makes its limit of full judgments, starts that far along and defers the rest`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = raiseSetup(FIVE_PULLS)
+					expect(yield* fixture.findDueWith({ rotation, limit: 2 })).toEqual({
+						pulls,
+						read: 5,
+						failed: 0,
+						unscanned: 0,
+						deferred: 3,
+					})
+				})
+		)
+	test.effect(
+		'a scan past its deadline keeps the judgments made so far and counts the rest',
+		() =>
+			Effect.gen(function* () {
+				const fixture = raiseSetup(
+					FIVE_PULLS,
+					'head',
+					ONE_BUG,
+					[],
+					undefined,
+					SLOW_READ
+				)
+				const deadline =
+					(yield* Clock.currentTimeMillis) + Duration.toMillis(SCAN_BUDGET)
+				const fiber = yield* fixture
+					.findDueWith({ rotation: 0, deadline })
+					.pipe(Effect.forkChild)
+				yield* TestClock.adjust(Duration.minutes(5))
+				expect(yield* Fiber.join(fiber)).toEqual({
+					pulls: [17, 18, 19],
+					read: 5,
+					failed: 0,
+					unscanned: 2,
+					deferred: 0,
+				})
+			})
+	)
+	test.effect(
+		'ticks that cannot finish the scan list every due pull request within a few run numbers',
+		() =>
+			Effect.gen(function* () {
+				const fixture = raiseSetup(
+					FIVE_PULLS,
+					'head',
+					ONE_BUG,
+					[],
+					undefined,
+					SLOW_READ
+				)
+				const listed = new Set<number>()
+				// Three judgments fit in a tick, so with one more starting point per run number every
+				// one of the five is listed by the third tick.
+				for (const rotation of [0, 1, 2]) {
+					const deadline =
+						(yield* Clock.currentTimeMillis) + Duration.toMillis(SCAN_BUDGET)
+					const fiber = yield* fixture
+						.findDueWith({ rotation, deadline })
+						.pipe(Effect.forkChild)
+					yield* TestClock.adjust(Duration.minutes(5))
+					const found = yield* Fiber.join(fiber)
+					expect(found.pulls).toHaveLength(3)
+					for (const pull of found.pulls) listed.add(pull)
+				}
+				expect([...listed].toSorted((a, b) => a - b)).toEqual([
+					17, 18, 19, 20, 21,
+				])
+			})
+	)
+})
+
+layer(APP_MODE_OWNED)('RaiseService closed and refused', test => {
+	test.effect('a pull request closed before the writes gets none', () =>
+		Effect.gen(function* () {
+			const fixture = raiseSetup()
+			const { pullRequest } = fixture.api.command
+			fixture.api.pullRequestSnapshots.push(pullRequest, {
+				...pullRequest,
+				state: 'closed',
+			})
+			expect(yield* fixture.raise).toEqual({
+				outcome: 'closed',
+				head: 'head',
+				dismissal: { dismissed: 0, failed: 0 },
+			})
+			expect(fixture.status.statuses).toEqual([])
+			expect(fixture.dismissed()).toEqual([])
+		})
+	)
+	test.effect(
+		'a pull request closed after the status write keeps its change requests and reports the status',
+		() =>
+			Effect.gen(function* () {
+				const fixture = raiseSetup()
+				const { pullRequest } = fixture.api.command
+				fixture.api.pullRequestSnapshots.push(pullRequest, pullRequest, {
+					...pullRequest,
+					state: 'closed',
+				})
+				expect(yield* fixture.raise).toEqual({
+					outcome: 'raised',
+					head: 'head',
+					status: READY,
+					dismissal: { dismissed: 0, failed: 0 },
+					closedBeforeDismissal: true,
+				})
+				expect(fixture.status.statuses).toEqual([{ sha: 'head', ...READY }])
+				expect(fixture.dismissed()).toEqual([])
+			})
+	)
+	test.effect(
+		'a dismissal GitHub refuses with no status to write is reported as refused, not raised',
+		() =>
+			Effect.gen(function* () {
+				const fixture = raiseSetup(undefined, undefined, READY)
+				fixture.api.failures.dismissReview.push(
+					new GitHubApiError({
+						operation: 'dismissReview',
+						reason: 'Denied',
+						status: 403,
+					})
+				)
+				expect(yield* fixture.raise).toEqual({
+					outcome: 'refused',
+					head: 'head',
+					dismissal: { dismissed: 0, failed: 1 },
+				})
 			})
 	)
 })

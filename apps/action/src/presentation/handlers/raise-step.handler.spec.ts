@@ -110,6 +110,115 @@ layer(FileSystemLayer)('raise step', test => {
 				).toContain('## MNG Review (raise)')
 			}).pipe(Effect.provide(Layer.fresh(TestConsole.layer)))
 		)
+	test.effect('a status update with nothing to raise says so', () =>
+		Effect.gen(function* () {
+			const fixture = stepFixture()
+			yield* runRaise(fixture, () =>
+				Effect.succeed<RaiseResult>({
+					outcome: 'updated',
+					head: 'head',
+					status: { state: 'error', description: 'no open bug thread' },
+					dismissal: { dismissed: 0, failed: 0 },
+				})
+			)
+			expect(yield* TestConsole.logLines).toEqual([
+				'mng-review: raise on #17: error written, nothing to raise',
+			])
+		}).pipe(Effect.provide(Layer.fresh(TestConsole.layer)))
+	)
+	test.effect('a raise that only lifts says the status is unchanged', () =>
+		Effect.gen(function* () {
+			const fixture = stepFixture()
+			yield* runRaise(fixture, () =>
+				Effect.succeed<RaiseResult>({
+					outcome: 'raised',
+					head: 'head',
+					dismissal: { dismissed: 1, failed: 0 },
+				})
+			)
+			expect(yield* TestConsole.logLines).toEqual([
+				'mng-review: raise on #17: status unchanged, 1 change request(s) dismissed, 0 not dismissed',
+			])
+		}).pipe(Effect.provide(Layer.fresh(TestConsole.layer)))
+	)
+	test.effect(
+		'a refused status write is reported beside the dismissal and fails the step',
+		() =>
+			Effect.gen(function* () {
+				const fixture = stepFixture()
+				expect(
+					yield* runRaise(fixture, () =>
+						Effect.succeed<RaiseResult>({
+							outcome: 'raised',
+							head: 'head',
+							statusError:
+								'GitHub setStatus failed (HTTP 422): too many statuses',
+							dismissal: { dismissed: 1, failed: 0 },
+						})
+					).pipe(Effect.flip)
+				).toMatchObject({ _tag: 'ActionExit', code: 1 })
+				expect(yield* TestConsole.logLines).toEqual([
+					'mng-review: raise on #17: status write refused (GitHub setStatus failed (HTTP 422): too many statuses), 1 change request(s) dismissed, 0 not dismissed',
+				])
+			}).pipe(Effect.provide(Layer.fresh(TestConsole.layer)))
+	)
+	test.effect(
+		'a status update whose head moved before the dismissal says the change requests stay',
+		() =>
+			Effect.gen(function* () {
+				const fixture = stepFixture()
+				yield* runRaise(fixture, () =>
+					Effect.succeed<RaiseResult>({
+						outcome: 'updated',
+						head: 'head',
+						status: { state: 'error', description: 'no open bug thread' },
+						dismissal: { dismissed: 0, failed: 0 },
+						movedBeforeDismissal: true,
+					})
+				)
+				expect(yield* TestConsole.logLines).toEqual([
+					'mng-review: raise on #17: error written, the head moved before the dismissal, so the change requests stay',
+				])
+			}).pipe(Effect.provide(Layer.fresh(TestConsole.layer)))
+	)
+	test.effect(
+		'a pull request closed before the dismissal says the change requests stay',
+		() =>
+			Effect.gen(function* () {
+				const fixture = stepFixture()
+				yield* runRaise(fixture, () =>
+					Effect.succeed<RaiseResult>({
+						outcome: 'raised',
+						head: 'head',
+						status: READY,
+						dismissal: { dismissed: 0, failed: 0 },
+						closedBeforeDismissal: true,
+					})
+				)
+				expect(yield* TestConsole.logLines).toEqual([
+					'mng-review: raise on #17: success written, the pull request closed before the dismissal, so the change requests stay',
+				])
+			}).pipe(Effect.provide(Layer.fresh(TestConsole.layer)))
+	)
+	test.effect(
+		'a head that moved before the dismissal says the change requests stay',
+		() =>
+			Effect.gen(function* () {
+				const fixture = stepFixture()
+				yield* runRaise(fixture, () =>
+					Effect.succeed<RaiseResult>({
+						outcome: 'raised',
+						head: 'head',
+						status: READY,
+						dismissal: { dismissed: 0, failed: 0 },
+						movedBeforeDismissal: true,
+					})
+				)
+				expect(yield* TestConsole.logLines).toEqual([
+					'mng-review: raise on #17: success written, the head moved before the dismissal, so the change requests stay',
+				])
+			}).pipe(Effect.provide(Layer.fresh(TestConsole.layer)))
+	)
 	test.effect('a read GitHub refuses fails the step with exit 1', () =>
 		Effect.gen(function* () {
 			const fixture = stepFixture()
