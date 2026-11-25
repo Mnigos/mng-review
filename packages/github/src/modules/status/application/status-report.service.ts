@@ -122,7 +122,7 @@ export const StatusReportServiceLive = Layer.effect(
 					)
 					return { set: false, unread: true } satisfies VerdictStatusWrite
 				}
-				const text = toIncompleteStatus(next, previous.success, lists)
+				const text = toIncompleteStatus(next, previous.success)
 				if (!text) return { set: true } satisfies VerdictStatusWrite
 				return yield* writeStatus(head, text)
 			}

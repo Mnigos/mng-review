@@ -798,18 +798,17 @@ layer(TOKEN_MODE_OWNED)('Summary review status sweep', test => {
 						)
 					).toEqual({
 						checked: 1,
-						updated: 1,
+						updated: waiting ? 1 : 0,
 						failed: 0,
 					})
-					expect(statuses.statuses).toEqual([
-						{
-							sha: 'head',
-							...toCommitStatus(waiting ? 'needs owner' : 'ready', 0, true),
-						},
-					])
+					// The wait lowers the `error`; with none the `success` is the locked job's.
+					expect(statuses.statuses).toEqual(
+						waiting
+							? [{ sha: 'head', ...toCommitStatus('needs owner', 0, true) }]
+							: []
+					)
 					expect(fixture.fake.writes).toEqual([])
-					// A `success` stands only on a confirming review read.
-					expect(fixture.fake.reviewReads).toEqual(waiting ? [17] : [17, 17])
+					expect(fixture.fake.reviewReads).toEqual([17])
 				})
 		)
 })

@@ -28,11 +28,8 @@ import {
 import { SummaryReviewServiceLive } from '../../publish/application/summary-review.service'
 import type { SummaryMarker } from '../../publish/domain/publish-marker.schema'
 import { toClearedMessage } from '../../publish/presentation/summary-status.formatter'
-import { toCommitStatus } from '../domain/status.helper'
-import {
-	RequestLiftService,
-	RequestLiftServiceLive,
-} from './request-lift.service'
+import { type CommitStatusText, toCommitStatus } from '../domain/status.helper'
+import { RaiseService, RaiseServiceLive } from './raise.service'
 import {
 	StatusSweepService,
 	StatusSweepServiceLive,
@@ -72,13 +69,20 @@ function changeRequest(
 	})
 }
 
+/** The bot's `failure` for the one bug thread a person since resolved by hand. */
+const ONE_BUG = toCommitStatus('needs fixes', 1, true)
+/** The `success` a raise writes once nothing blocks. */
+const READY = toCommitStatus('ready', 0, true)
+
 /**
  * Pull request 17 on `head`: a finished summary of the app on the head, the app's change request,
- * one bug thread a person resolved by hand and a `failure` status, so a lift is due.
+ * one bug thread a person resolved by hand and the bot's `previous` status (`failure`, or `null` for none), so
+ * a raise is due. The head shows the newest status written, `previous` before any.
  */
-function liftSetup(
+function raiseSetup(
 	pulls: readonly OpenPullRequest[] = [openPullRequest(17, 'head')],
-	head = 'head'
+	head = 'head',
+	previous: CommitStatusText | null = ONE_BUG
 ) {
 	const api = githubApiFake(APP_IDENTITY)
 	api.command.pullRequest = {
@@ -96,24 +100,27 @@ function liftSetup(
 	api.threads.push(reviewThread(undefined, { isResolved: true }))
 	const status = githubStatusFake({
 		listOpenPullRequests: () => Effect.succeed(pulls),
-		getStatus: () =>
-			Effect.succeed({
-				id: status.statuses.length + 1,
-				...toCommitStatus('needs fixes', 1, true),
-				...status.statuses.at(-1),
-				context: 'MNG Review',
-				creator: null,
-			}),
+		getStatus: () => {
+			const newest = status.statuses.at(-1) ?? previous ?? undefined
+			return Effect.succeed(
+				newest && {
+					id: status.statuses.length + 1,
+					...newest,
+					context: 'MNG Review',
+					creator: null,
+				}
+			)
+		},
 	})
 	const services = Layer.mergeAll(
-		RequestLiftServiceLive,
+		RaiseServiceLive,
 		StatusSweepServiceLive,
 		ReplyFindServiceLive.pipe(Layer.provide(SummaryReviewServiceLive))
 	).pipe(Layer.provide(Layer.mergeAll(api.api, status.layer, READ_CONFIG)))
-	const findDue = RequestLiftService.use(service => service.findDue([])).pipe(
+	const findDue = RaiseService.use(service => service.findDue([])).pipe(
 		Effect.provide(services)
 	)
-	const lift = RequestLiftService.use(service => service.lift(17, [])).pipe(
+	const raise = RaiseService.use(service => service.raise(17, [])).pipe(
 		Effect.provide(services)
 	)
 	const sweep = StatusSweepService.use(service => service.sweep()).pipe(
@@ -126,35 +133,38 @@ function liftSetup(
 		api.writes.flatMap(write =>
 			write.method === 'dismissReview' ? [write.id] : []
 		)
-	return { api, status, findDue, lift, sweep, findReplies, dismissed }
+	return { api, status, findDue, raise, sweep, findReplies, dismissed }
 }
 
-layer(APP_MODE_OWNED)('RequestLiftService schedule run', test => {
+layer(APP_MODE_OWNED)('RaiseService schedule run', test => {
 	test.effect(
-		'the last thread resolved by hand turns the status green and lifts the change request in one schedule run',
+		'the last thread resolved by hand turns the status green and lifts the change request in one schedule run, both in the locked job',
 		() =>
 			Effect.gen(function* () {
-				const fixture = liftSetup()
+				const fixture = raiseSetup()
 				// One run of the schedule file: the sweep, then the reply schedule's find and locked job.
+				// The sweep only lowers, so it leaves the `failure` to the locked job.
 				expect(yield* fixture.sweep).toEqual({
 					checked: 1,
-					updated: 1,
+					updated: 0,
 					failed: 0,
 				})
+				expect(fixture.status.statuses).toEqual([])
 				expect((yield* fixture.findReplies).candidates).toEqual([])
 				expect(yield* fixture.findDue).toEqual({
 					pulls: [17],
 					read: 1,
 					failed: 0,
+					unscanned: 0,
+					deferred: 0,
 				})
-				expect(yield* fixture.lift).toEqual({
-					outcome: 'lifted',
+				expect(yield* fixture.raise).toEqual({
+					outcome: 'raised',
 					head: 'head',
+					status: READY,
 					dismissal: { dismissed: 1, failed: 0 },
 				})
-				expect(fixture.status.statuses).toEqual([
-					{ sha: 'head', ...toCommitStatus('ready', 0, true) },
-				])
+				expect(fixture.status.statuses).toEqual([{ sha: 'head', ...READY }])
 				expect(
 					fixture.api.reviews.filter(
 						review => review.state === 'CHANGES_REQUESTED'
@@ -168,10 +178,10 @@ layer(APP_MODE_OWNED)('RequestLiftService schedule run', test => {
 			})
 	)
 	test.effect(
-		'a pull request with a reply and a due lift is listed once on each side, and a second lift dismisses nothing',
+		'a pull request with a reply and a due raise is listed once on each side, and a second raise writes nothing',
 		() =>
 			Effect.gen(function* () {
-				const fixture = liftSetup([openPullRequest(17, FULL_HEAD)], FULL_HEAD)
+				const fixture = raiseSetup([openPullRequest(17, FULL_HEAD)], FULL_HEAD)
 				fixture.api.command.role = 'write'
 				// A person's reply waits in an unverified thread, which backs no change request.
 				fixture.api.threads.push(
@@ -187,23 +197,24 @@ layer(APP_MODE_OWNED)('RequestLiftService schedule run', test => {
 				const replies = yield* fixture.findReplies
 				expect(replies.candidates.map(pull => pull.number)).toEqual([17])
 				expect((yield* fixture.findDue).pulls).toEqual([17])
-				// The workflow runs the lift entry after the reply's publish leg; a repeat finds nothing left.
-				expect((yield* fixture.lift).outcome).toBe('lifted')
-				expect((yield* fixture.lift).outcome).toBe('not-due')
+				// The workflow runs the raise entry after the reply's publish leg; a repeat finds nothing left.
+				expect((yield* fixture.raise).outcome).toBe('raised')
+				expect((yield* fixture.raise).outcome).toBe('not-due')
 				expect(fixture.dismissed()).toEqual([102])
+				expect(fixture.status.statuses).toEqual([{ sha: FULL_HEAD, ...READY }])
 			})
 	)
 })
 
-layer(APP_MODE_OWNED)('RequestLiftService incomplete reads', test => {
+layer(APP_MODE_OWNED)('RaiseService incomplete reads', test => {
 	for (const list of ['threads', 'comments', 'reviews'] as const)
-		test.effect(`a null node in the ${list} lists no lift in find`, () =>
+		test.effect(`a null node in the ${list} lists nothing in find`, () =>
 			Effect.gen(function* () {
-				const fixture = liftSetup()
+				const fixture = raiseSetup()
 				fixture.api.nullNodes[list] = 1
 				expect(
 					yield* fixture.findDue.pipe(provideListCompleteness(false))
-				).toEqual({ pulls: [], read: 1, failed: 0 })
+				).toEqual({ pulls: [], read: 1, failed: 0, unscanned: 0, deferred: 0 })
 				fixture.api.nullNodes[list] = 0
 				expect(
 					(yield* fixture.findDue.pipe(provideListCompleteness(false))).pulls
@@ -215,19 +226,20 @@ layer(APP_MODE_OWNED)('RequestLiftService incomplete reads', test => {
 		'a null node in the locked job dismisses nothing, though find listed the pull request',
 		() =>
 			Effect.gen(function* () {
-				const fixture = liftSetup()
+				const fixture = raiseSetup()
 				expect(
 					(yield* fixture.findDue.pipe(provideListCompleteness(false))).pulls
 				).toEqual([17])
 				fixture.api.nullNodes.threads = 1
 				expect(
-					yield* fixture.lift.pipe(provideListCompleteness(false))
+					yield* fixture.raise.pipe(provideListCompleteness(false))
 				).toEqual({
 					outcome: 'incomplete',
 					head: 'head',
 					dismissal: { dismissed: 0, failed: 0 },
 				})
 				expect(fixture.dismissed()).toEqual([])
+				expect(fixture.status.statuses).toEqual([])
 				expect(fixture.api.reviews[1]?.state).toBe('CHANGES_REQUESTED')
 			})
 	)
@@ -235,7 +247,7 @@ layer(APP_MODE_OWNED)('RequestLiftService incomplete reads', test => {
 		'a null node on one pull request leaves the next one free to be listed',
 		() =>
 			Effect.gen(function* () {
-				const fixture = liftSetup([
+				const fixture = raiseSetup([
 					openPullRequest(17, 'head'),
 					openPullRequest(18, 'head'),
 				])
@@ -243,19 +255,25 @@ layer(APP_MODE_OWNED)('RequestLiftService incomplete reads', test => {
 				fixture.api.nullNodes.queued.threads.push(1, 0)
 				expect(
 					yield* fixture.findDue.pipe(provideListCompleteness(false))
-				).toEqual({ pulls: [18], read: 2, failed: 0 })
+				).toEqual({
+					pulls: [18],
+					read: 2,
+					failed: 0,
+					unscanned: 0,
+					deferred: 0,
+				})
 			})
 	)
 })
 
-layer(APP_MODE_OWNED)('RequestLiftService under the lock', test => {
+layer(APP_MODE_OWNED)('RaiseService under the lock', test => {
 	test.effect('a bug reopened after find keeps the change request', () =>
 		Effect.gen(function* () {
-			const fixture = liftSetup()
+			const fixture = raiseSetup()
 			expect((yield* fixture.findDue).pulls).toEqual([17])
-			// A reply run reopens the bug thread before the lift job gets the group.
+			// A reply run reopens the bug thread before the raise job gets the group.
 			fixture.api.threads.splice(0, 1, reviewThread())
-			expect(yield* fixture.lift).toEqual({
+			expect(yield* fixture.raise).toEqual({
 				outcome: 'not-due',
 				head: 'head',
 				dismissal: { dismissed: 0, failed: 0 },
@@ -265,7 +283,7 @@ layer(APP_MODE_OWNED)('RequestLiftService under the lock', test => {
 	)
 	test.effect('a wait recorded after find keeps the change request', () =>
 		Effect.gen(function* () {
-			const fixture = liftSetup()
+			const fixture = raiseSetup()
 			expect((yield* fixture.findDue).pulls).toEqual([17])
 			// A reply run sends the resolved thread to the owner and records it in a newer summary.
 			fixture.api.reviews.push(
@@ -279,7 +297,11 @@ layer(APP_MODE_OWNED)('RequestLiftService under the lock', test => {
 					{ id: 'waiting-103', databaseId: 103, author: APP_AUTHOR }
 				)
 			)
-			expect((yield* fixture.lift).outcome).toBe('not-due')
+			// The status only says what blocks now; the change request stays.
+			expect(yield* fixture.raise).toMatchObject({
+				outcome: 'updated',
+				status: toCommitStatus('needs owner', 0, true),
+			})
 			expect(fixture.dismissed()).toEqual([])
 		})
 	)
@@ -287,7 +309,7 @@ layer(APP_MODE_OWNED)('RequestLiftService under the lock', test => {
 		'an unfinished summary an incomplete write left keeps the change request',
 		() =>
 			Effect.gen(function* () {
-				const fixture = liftSetup()
+				const fixture = raiseSetup()
 				fixture.api.reviews.push(
 					summaryReview(
 						{ ...SUMMARY_MARKER, head: 'head', finished: false, failed: true },
@@ -295,22 +317,22 @@ layer(APP_MODE_OWNED)('RequestLiftService under the lock', test => {
 					)
 				)
 				expect((yield* fixture.findDue).pulls).toEqual([])
-				expect((yield* fixture.lift).outcome).toBe('not-due')
+				expect((yield* fixture.raise).outcome).toBe('not-due')
 				expect(fixture.dismissed()).toEqual([])
 			})
 	)
 	test.effect(
-		'a change request posted while the lift read the threads is never dismissed',
+		'a change request posted while the raise read the threads is never dismissed',
 		() =>
 			Effect.gen(function* () {
-				const fixture = liftSetup()
+				const fixture = raiseSetup()
 				const later = changeRequest({ id: 'later-request', databaseId: 104 })
 				// The new request lands after the review read, while the threads are read.
 				fixture.api.threadSnapshots.shift = () => {
 					fixture.api.reviews.push(later)
 					return undefined
 				}
-				expect((yield* fixture.lift).dismissal).toEqual({
+				expect((yield* fixture.raise).dismissal).toEqual({
 					dismissed: 1,
 					failed: 0,
 				})
@@ -322,13 +344,13 @@ layer(APP_MODE_OWNED)('RequestLiftService under the lock', test => {
 		'a head that moved before the dismissal keeps every request',
 		() =>
 			Effect.gen(function* () {
-				const fixture = liftSetup()
+				const fixture = raiseSetup()
 				const { pullRequest } = fixture.api.command
 				fixture.api.pullRequestSnapshots.push(pullRequest, {
 					...pullRequest,
 					head: { ...pullRequest.head, sha: 'next-head' },
 				})
-				expect(yield* fixture.lift).toEqual({
+				expect(yield* fixture.raise).toEqual({
 					outcome: 'moved',
 					head: 'head',
 					dismissal: { dismissed: 0, failed: 0 },
@@ -338,12 +360,12 @@ layer(APP_MODE_OWNED)('RequestLiftService under the lock', test => {
 	)
 	test.effect('a closed pull request is left alone', () =>
 		Effect.gen(function* () {
-			const fixture = liftSetup()
+			const fixture = raiseSetup()
 			fixture.api.command.pullRequest = {
 				...fixture.api.command.pullRequest,
 				state: 'closed',
 			}
-			expect(yield* fixture.lift).toEqual({
+			expect(yield* fixture.raise).toEqual({
 				outcome: 'closed',
 				dismissal: { dismissed: 0, failed: 0 },
 			})
@@ -351,9 +373,9 @@ layer(APP_MODE_OWNED)('RequestLiftService under the lock', test => {
 			expect(fixture.dismissed()).toEqual([])
 		})
 	)
-	test.effect('a failed read fails the lift and dismisses nothing', () =>
+	test.effect('a failed read fails the raise and writes nothing', () =>
 		Effect.gen(function* () {
-			const fixture = liftSetup()
+			const fixture = raiseSetup()
 			fixture.api.failures.listThreads.push(
 				new GitHubApiError({
 					operation: 'listReviewThreads',
@@ -361,7 +383,7 @@ layer(APP_MODE_OWNED)('RequestLiftService under the lock', test => {
 					status: 503,
 				})
 			)
-			expect(yield* Effect.flip(fixture.lift)).toMatchObject({
+			expect(yield* Effect.flip(fixture.raise)).toMatchObject({
 				_tag: 'GitHubApiError',
 				operation: 'listReviewThreads',
 			})
@@ -373,7 +395,7 @@ layer(APP_MODE_OWNED)('RequestLiftService under the lock', test => {
 			`only the current identity's change requests are lifted, dismissal denied=${denied}`,
 			() =>
 				Effect.gen(function* () {
-					const fixture = liftSetup()
+					const fixture = raiseSetup()
 					fixture.api.reviews.push(
 						changeRequest({
 							id: 'previous-request',
@@ -394,7 +416,7 @@ layer(APP_MODE_OWNED)('RequestLiftService under the lock', test => {
 								status: 403,
 							})
 						)
-					expect((yield* fixture.lift).dismissal).toEqual(
+					expect((yield* fixture.raise).dismissal).toEqual(
 						denied ? { dismissed: 0, failed: 1 } : { dismissed: 1, failed: 0 }
 					)
 					expect(fixture.dismissed()).toEqual([102])
@@ -407,7 +429,7 @@ layer(APP_MODE_OWNED)('RequestLiftService under the lock', test => {
 			`a marker on another head with open=${open} lifts only change requests on a known commit off the head`,
 			() =>
 				Effect.gen(function* () {
-					const fixture = liftSetup()
+					const fixture = raiseSetup()
 					// An unfinished full run left the marker on the older head.
 					const marker = {
 						...SUMMARY_MARKER,
@@ -433,8 +455,9 @@ layer(APP_MODE_OWNED)('RequestLiftService under the lock', test => {
 						)
 					)
 					if (open) fixture.api.threads.splice(0, 1, reviewThread())
-					expect((yield* fixture.lift).outcome).toBe(
-						open ? 'not-due' : 'lifted'
+					// The open bug only refreshes the failure; the change requests stay.
+					expect((yield* fixture.raise).outcome).toBe(
+						open ? 'updated' : 'raised'
 					)
 					expect(fixture.dismissed()).toEqual(open ? [] : [102])
 				})
@@ -446,7 +469,7 @@ layer(APP_MODE_OWNED)('RequestLiftService under the lock', test => {
 				Effect.gen(function* () {
 					// A full run on the older head left a bug without a thread and its change request; the
 					// author pushed, and the new head has no status and no review yet.
-					const fixture = liftSetup()
+					const fixture = raiseSetup()
 					const marker = {
 						...SUMMARY_MARKER,
 						head: 'older-head',
@@ -459,29 +482,33 @@ layer(APP_MODE_OWNED)('RequestLiftService under the lock', test => {
 						summaryReview(marker, { databaseId: 101, author: APP_AUTHOR }),
 						changeRequest({ id: 'older-request', databaseId: 102 }, marker)
 					)
-					expect((yield* fixture.findDue).pulls).toEqual(
-						unthreadedBugs > 0 ? [] : [17]
-					)
-					expect((yield* fixture.lift).outcome).toBe(
-						unthreadedBugs > 0 ? 'not-due' : 'lifted'
+					expect((yield* fixture.findDue).pulls).toEqual([17])
+					// The new head never had a full run: its `failure` becomes `error` either way, and only
+					// a marker with no bug without a thread lets the change request go.
+					expect((yield* fixture.raise).outcome).toBe(
+						unthreadedBugs > 0 ? 'updated' : 'raised'
 					)
 					expect(fixture.dismissed()).toEqual(unthreadedBugs > 0 ? [] : [102])
-					expect(fixture.status.statuses).toEqual([])
+					expect(fixture.status.statuses).toEqual([
+						{ sha: 'head', ...toCommitStatus('ready', 0, false) },
+					])
 				})
 		)
 })
 
-layer(APP_MODE_OWNED)('RequestLiftService find', test => {
+layer(APP_MODE_OWNED)('RaiseService find', test => {
 	test.effect(
-		'a pull request with no change request of the current identity reads nothing past its reviews',
+		'a green pull request with no change request of the current identity reads nothing past its reviews',
 		() =>
 			Effect.gen(function* () {
-				const fixture = liftSetup()
+				const fixture = raiseSetup(undefined, undefined, READY)
 				fixture.api.reviews.splice(1, 1)
 				expect(yield* fixture.findDue).toEqual({
 					pulls: [],
 					read: 1,
 					failed: 0,
+					unscanned: 0,
+					deferred: 0,
 				})
 				expect(fixture.api.threadReads).toEqual([])
 				expect(fixture.api.commentReads).toEqual([])
@@ -491,7 +518,7 @@ layer(APP_MODE_OWNED)('RequestLiftService find', test => {
 		'a read that fails on one pull request is counted and the next one is listed',
 		() =>
 			Effect.gen(function* () {
-				const fixture = liftSetup([
+				const fixture = raiseSetup([
 					openPullRequest(17, 'head'),
 					openPullRequest(18, 'head'),
 				])
@@ -506,6 +533,8 @@ layer(APP_MODE_OWNED)('RequestLiftService find', test => {
 					pulls: [18],
 					read: 2,
 					failed: 1,
+					unscanned: 0,
+					deferred: 0,
 				})
 				expect(fixture.dismissed()).toEqual([])
 			})

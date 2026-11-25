@@ -9,7 +9,7 @@ export interface CommitStatusText {
 	readonly description: string
 }
 
-/** Ends the description of a status whose run did not finish, so the sweep never turns it green. */
+/** Ends the description of a status whose run did not finish, so no raise turns it green. */
 export const UNFINISHED_NOTE = 'the run did not finish'
 
 /**
@@ -67,49 +67,30 @@ export function toSweptStanding(
 	)
 }
 
-/** How the description of a status an incomplete run held back from `success` starts. */
-export const INCOMPLETE_STATUS_PREFIX = 'a list GitHub returned was incomplete'
-
 /**
- * The description of a status an incomplete run holds back from `success`: the lists GitHub left
- * an entry out of, so someone can find it, within GitHub's 140 characters.
+ * The `pending` a run whose list reads left a node out writes instead of `success`. Its text names
+ * no list, so a later incomplete read that leaves out another one finds it unchanged; the run's job
+ * line and summary name the lists.
  */
-export function toIncompleteDescription(lists: readonly LenientList[]): string {
-	return `${INCOMPLETE_STATUS_PREFIX} (${lists.join(', ')}); waits for a complete read`
-}
-
-/**
- * The `pending` a sweep writes over a `success` when its confirming second pass failed: what that
- * pass could not read may block, so it waits for a complete read as an incomplete one does.
- */
-export const UNCONFIRMED_STATUS = {
+export const INCOMPLETE_STATUS = {
 	state: 'pending',
-	description: 'a confirming read failed; waits for a complete read',
+	description:
+		'a list read left an entry out; waits for a complete read or run',
 } as const satisfies CommitStatusText
 
 /**
- * The status a run whose list reads left a null node out of `lists` writes instead of `next`: a
- * blocking or unfinished one as it is. A `success` becomes `pending` on a head with no status or
- * with `success`, since a thread the run could not see may still block (ADR 0012); another
- * incomplete run's `pending` (its description starts with `INCOMPLETE_STATUS_PREFIX`) that names
- * other lists is written again with this run's; over any other `pending`, a `failure` or an
- * `error` the head keeps it (`undefined`).
+ * The status a run whose list reads left a null node out writes instead of `next`: a blocking or
+ * unfinished one as it is. A `success` becomes `INCOMPLETE_STATUS` on a head with no status or with
+ * `success`, since a thread the run could not see may still block (ADR 0012); over a `pending`, a
+ * `failure` or an `error` the head keeps it (`undefined`).
  */
 export function toIncompleteStatus(
 	next: CommitStatusText,
-	previous: PreviousStatus | undefined,
-	lists: readonly LenientList[]
+	previous: PreviousStatus | undefined
 ): CommitStatusText | undefined {
 	if (next.state !== 'success') return next
-	const held = toHeldStatus({ state: 'success', description: null }, lists)
-	if (!previous || previous.state === 'success') return held
-	if (
-		previous.state !== 'pending' ||
-		!previous.description?.startsWith(INCOMPLETE_STATUS_PREFIX) ||
-		previous.description === held?.description
-	)
-		return undefined
-	return held
+	if (!previous || previous.state === 'success') return INCOMPLETE_STATUS
+	return undefined
 }
 
 /**
@@ -129,35 +110,46 @@ export function toIncompleteMarkerStatus(
 
 /**
  * The status a run whose list reads left a null node out of `lists` writes when it keeps the head's
- * own: `pending` over a `success`, as `toIncompleteStatus` holds one back; `undefined` otherwise.
+ * own: `INCOMPLETE_STATUS` over a `success`, as `toIncompleteStatus` holds one back; `undefined`
+ * otherwise.
  */
 export function toHeldStatus(
 	previous: PreviousStatus,
 	lists: readonly LenientList[]
 ): CommitStatusText | undefined {
 	if (lists.length === 0 || previous.state !== 'success') return undefined
-	return { state: 'pending', description: toIncompleteDescription(lists) }
+	return INCOMPLETE_STATUS
 }
 
-/** `next`, or `undefined` when it is missing or says what `previous` says. */
+/**
+ * `next`, or `undefined` when it is missing or says what `previous` says. Two `error`s that both
+ * say the run did not finish (`UNFINISHED_NOTE`) say the same, so an error that names its cause
+ * ("the reviewer was offline", "publishing failed") is never swapped for the generic one.
+ */
 export function toChangedStatus(
 	previous: PreviousStatus,
 	next: CommitStatusText | undefined
 ): CommitStatusText | undefined {
+	if (!next) return undefined
 	if (
-		next?.state === previous.state &&
-		next.description === previous.description
+		next.state === previous.state &&
+		(next.description === previous.description ||
+			(next.state === 'error' &&
+				next.description.includes(UNFINISHED_NOTE) &&
+				(previous.description ?? '').includes(UNFINISHED_NOTE)))
 	)
 		return undefined
 	return next
 }
 
 /**
- * The status the sweep writes for the standing its threads give (`standing`): held back from
+ * The status the sweep's rules plan for the standing its threads give (`standing`): held back from
  * `success` while a list read of the pull request left a node out of `lists` (`toIncompleteStatus`),
  * since a thread it could not see may block, and judged as `toIncompleteMarkerStatus` does when the
  * newest summary marker is one an incomplete write left (`unfinished`), which may miss what set a
- * `failure`; `undefined` when the head keeps the status it has.
+ * `failure`; `undefined` when the head keeps the status it has. The raise writes any changed plan
+ * from a complete read; only the sweep, and the raise under a marker an incomplete run left, write
+ * it only where it blocks more (`toLoweredStatus`).
  */
 export function toNextSweptStatus(
 	standing: CommitStatusText,
@@ -172,7 +164,7 @@ export function toNextSweptStatus(
 		)
 	return toChangedStatus(
 		previous,
-		lists.length > 0 ? toIncompleteStatus(standing, previous, lists) : standing
+		lists.length > 0 ? toIncompleteStatus(standing, previous) : standing
 	)
 }
 
@@ -204,10 +196,10 @@ function getLoweringRank(state: string): number {
 }
 
 /**
- * The status a sweep writes when its two passes differ, or its second pass failed or left a node
- * out: of `candidates` (each pass's plan), the most blocking one that blocks more than the head's
- * status (`current`), never `success`; `undefined` writes nothing. A plan that blocks the same or
- * less, such as an `error` over a `failure`, is a raise and needs passes that agree.
+ * The status a writer outside the publish group may write: of `candidates`, the most blocking one
+ * that blocks more than the head's status (`current`), never `success`; `undefined` writes nothing.
+ * A plan that blocks the same or less, such as an `error` over a `failure`, is left to the job that
+ * holds the group (`RaiseService`) or to a run.
  */
 export function toLoweredStatus(
 	candidates: readonly (CommitStatusText | undefined)[],

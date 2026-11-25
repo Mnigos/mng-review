@@ -4,14 +4,16 @@
 # pull_request_review_comment, whose runs take the caller's file from the pull request's merge ref. It reviews no code and posts no finding. Four jobs, each
 # holding only what it needs:
 # - find: no secret and no tailnet; lists the open pull requests of this repository with a reply
-#   waiting, at most max-pull-requests, and those whose change request of the bot nothing backs any
-#   more, over a read-only token, with the rules of the default branch. When nothing waits and no
-#   change request is due, it is the only job that gets a runner.
+#   waiting, at most max-pull-requests, and those with a raise due (the plan differs from the bot's
+#   status, or its change request would be lifted), over a read-only token, with the rules of the
+#   default branch. When nothing waits and no raise is due, it is the only job that gets a runner.
 # - review: the endpoint and tailnet secrets and a read-only token, one pull request at a time; it
 #   probes the endpoint and decides on the replies only.
 # - publish: the app key; answers the decisions without a model call, one pull request at a time.
-# - lift: the app key and no endpoint; after publish, judges each listed pull request again inside
-#   its publish group and dismisses the bot's change request only while nothing backs it.
+# - raise: the app key and no endpoint; after publish, judges each listed pull request again inside
+#   its publish group and writes success and dismisses the bot's change request only while nothing
+#   blocks, or rewrites a blocking status whose plan changed. Between runs it is the only place that
+#   raises; status-sweep.yml only lowers.
 # See ADR 0009. Nothing from the caller's repository is installed, built or run.
 name: MNG Review (replies)
 
@@ -72,12 +74,14 @@ jobs:
     name: MNG Review (find replies)
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 5
+    # Statuses read, for the bot's status on each head; callers already grant statuses write.
     permissions:
       contents: read
       pull-requests: read
+      statuses: read
     outputs:
       pulls: ${{ steps.find.outputs.pulls }}
-      lifts: ${{ steps.find.outputs.lifts }}
+      raises: ${{ steps.find.outputs.raises }}
     steps:
       # Without these (GitHub Enterprise Server), checkout would fall back to the caller's repository.
       - name: Check the workflow's own commit
@@ -106,7 +110,7 @@ jobs:
       - name: Set up MNG Review
         uses: ./.mng-review-engine/.github/actions/setup-engine
 
-      # Writes `pulls`, a JSON list of numbers and full commit SHAs the entry validated, and `lifts`,
+      # Writes `pulls`, a JSON list of numbers and full commit SHAs the entry validated, and `raises`,
       # a JSON list of numbers.
       - name: Find
         id: find
@@ -317,27 +321,30 @@ jobs:
           outcome-name: mng-review-outcome-${{ matrix.pull.number }}
           result-name: mng-review-result-${{ matrix.pull.number }}
 
-  lift:
-    name: MNG Review (lift on #${{ matrix.pull.number }})
-    # After publish, so a pull request with replies goes through the reply path once and its change
-    # request is judged after the answers landed.
+  raise:
+    name: MNG Review (raise on #${{ matrix.pull.number }})
+    # After publish, so a pull request with replies goes through the reply path once and is judged
+    # after the answers landed.
     needs: [find, publish]
-    if: ${{ !cancelled() && needs.find.outputs.lifts != '[]' && needs.find.outputs.lifts != '' }}
+    if: ${{ !cancelled() && needs.find.outputs.raises != '[]' && needs.find.outputs.raises != '' }}
+    # Each entry has its own pull request's group, so entries need not wait for each other; the cap
+    # only bounds how many raise jobs read on the app token at once.
     strategy:
       fail-fast: false
-      max-parallel: 1
+      max-parallel: 4
       matrix:
-        pull: ${{ fromJSON(needs.find.outputs.lifts) }}
+        pull: ${{ fromJSON(needs.find.outputs.raises) }}
     # The same group as every other summary writer on the pull request: no publish writes between
-    # this job's judgment and its dismissal.
+    # this job's judgment and its writes.
     concurrency:
       group: mng-review-publish-${{ matrix.pull.number }}
       cancel-in-progress: false
     runs-on: ${{ inputs.runner }}
-    # No endpoint or tailnet secret is named here; the job runs no model and writes no status.
+    # No endpoint or tailnet secret is named here; the job runs no model.
     permissions:
       contents: read
       pull-requests: write
+      statuses: write
     timeout-minutes: 5
     steps:
       - name: Check the workflow's own commit
@@ -381,7 +388,7 @@ jobs:
             exit 1
           fi
 
-      # The calling repository only: a dismissal needs pull requests write; no status is written.
+      # The calling repository only: a dismissal needs pull requests write, success statuses write.
       - name: Mint the app token
         id: app
         if: inputs.app-slug != ''
@@ -390,6 +397,7 @@ jobs:
           client-id: ${{ secrets.app-client-id }}
           private-key: ${{ secrets.app-private-key }}
           permission-pull-requests: write
+          permission-statuses: write
           # Review threads read through GraphQL name each comment's commit, which needs contents read.
           permission-contents: read
 
@@ -397,10 +405,10 @@ jobs:
         uses: ./.mng-review-engine/.github/actions/setup-engine
 
       # The pull request comes from the find job's matrix; the entry reads it again under the group.
-      - name: Lift
+      - name: Raise
         working-directory: .mng-review-engine
         env:
-          MNG_REVIEW_MODE: lift
+          MNG_REVIEW_MODE: raise
           MNG_REVIEW_ENGINE_COMMIT: ${{ job.workflow_sha }}
           MNG_REVIEW_REPO_DIR: ${{ github.workspace }}/repo
           MNG_REVIEW_TARGET_PR: ${{ matrix.pull.number }}

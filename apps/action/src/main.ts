@@ -26,7 +26,7 @@ import {
 	ReplyDecisionServiceLive,
 	ReplyFindServiceLive,
 	ReplyPublishServiceLive,
-	RequestLiftServiceLive,
+	RaiseServiceLive,
 	RiskFinishServiceLive,
 	RiskReadServiceLive,
 	RiskStartServiceLive,
@@ -73,16 +73,16 @@ import {
 	failFindConfig,
 	runFindStep,
 } from './presentation/handlers/find-step.handler'
-import {
-	failLiftConfig,
-	runLiftStep,
-} from './presentation/handlers/lift-step.handler'
 import { runPrepareStep } from './presentation/handlers/prepare-step.handler'
 import {
 	failPublishConfig,
 	publishMissingOutcome,
 	runPublishStep,
 } from './presentation/handlers/publish-step.handler'
+import {
+	failRaiseConfig,
+	runRaiseStep,
+} from './presentation/handlers/raise-step.handler'
 import {
 	failReserveConfig,
 	runReserveStep,
@@ -226,20 +226,17 @@ const ReserveLive = PrepareRunServiceLive.pipe(
 )
 
 /**
- * The find step: the reply reads and the lift judgments over the read token and the default
+ * The find step: the reply reads and the raise judgments over the read token and the default
  * branch's rules; no model.
  */
-const FindLive = Layer.mergeAll(
-	ReplyFindServiceLive,
-	RequestLiftServiceLive
-).pipe(
+const FindLive = Layer.mergeAll(ReplyFindServiceLive, RaiseServiceLive).pipe(
 	Layer.provideMerge(SummaryReviewServiceLive),
 	Layer.provideMerge(toGitHubLive(GitHubReadConfigLive)),
 	Layer.provideMerge(RulesLive)
 )
 
-/** The lift job: the judgment and the dismissal over the write token and the default branch's rules. */
-const LiftLive = RequestLiftServiceLive.pipe(
+/** The raise job: the judgment, the status and the dismissal over the write token and the rules. */
+const RaiseLive = RaiseServiceLive.pipe(
 	Layer.provideMerge(toGitHubLive(GitHubWriteConfigLive)),
 	Layer.provideMerge(RulesLive)
 )
@@ -286,7 +283,7 @@ const runInvalidMode = Effect.gen(function* () {
 		status: 'invalid-config',
 		source: MODE_VARIABLE,
 		reason:
-			'must be shadow, prepare, review, publish, sweep, authorize, reserve, find, risk-cleanup, deny, risk-sweep or lift',
+			'must be shadow, prepare, review, publish, sweep, authorize, reserve, find, risk-cleanup, deny, risk-sweep or raise',
 	}
 	yield* Console.log(formatLogLine(invalid))
 	yield* writeSummary(
@@ -346,10 +343,10 @@ const runAction = Effect.gen(function* () {
 			Effect.provide(FindLive),
 			Effect.catchTag('ConfigError', failFindConfig)
 		)
-	if (mode.value === 'lift')
+	if (mode.value === 'raise')
 		return yield* maskAppToken().pipe(
-			Effect.andThen(runLiftStep.pipe(Effect.provide(LiftLive))),
-			Effect.catchTag('ConfigError', failLiftConfig)
+			Effect.andThen(runRaiseStep.pipe(Effect.provide(RaiseLive))),
+			Effect.catchTag('ConfigError', failRaiseConfig)
 		)
 	if (mode.value === 'prepare')
 		return yield* runPrepareStep.pipe(Effect.provide(PrepareLive))

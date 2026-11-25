@@ -30,7 +30,7 @@ export const PUBLISH_SUMMARY_TITLE = '## MNG Review (publish mode)'
 export const PUBLISH_JOB_SUMMARY_TITLE = '## MNG Review (publish job)'
 export const SWEEP_SUMMARY_TITLE = '## MNG Review (status sweep)'
 export const FIND_SUMMARY_TITLE = '## MNG Review (reply schedule)'
-export const LIFT_SUMMARY_TITLE = '## MNG Review (change request lift)'
+export const RAISE_SUMMARY_TITLE = '## MNG Review (raise)'
 const SHORT_SHA_LENGTH = 8
 const MILLIS_PER_SECOND = 1000
 const PERCENT = 100
@@ -367,7 +367,13 @@ export function formatUnsettledLine(unsettled: number, rated: boolean): string {
 
 /** What the status sweep did, in words. */
 export function formatSweepLine(result: SweepResult): string {
-	return `status sweep: ${result.checked} pull request(s) carry the status, ${result.updated} updated, ${result.failed} failed`
+	const incomplete = result.incomplete
+		?.map(pull => `#${pull.pullNumber} (${pull.lists.join(', ')})`)
+		.join(', ')
+	const lists = incomplete
+		? `; a list GitHub returned was incomplete on ${incomplete}`
+		: ''
+	return `status sweep: ${result.checked} pull request(s) carry the status, ${result.updated} updated, ${result.failed} failed${lists}`
 }
 
 /** The job summary of a status sweep. */
@@ -380,7 +386,7 @@ export function formatFindSummary(line: string): string {
 	return [FIND_SUMMARY_TITLE, '', escapeMarkdown(line), ''].join('\n')
 }
 
-/** The job summary of the reply schedule's lift job. */
-export function formatLiftSummary(line: string): string {
-	return [LIFT_SUMMARY_TITLE, '', escapeMarkdown(line), ''].join('\n')
+/** The job summary of the reply schedule's raise job. */
+export function formatRaiseSummary(line: string): string {
+	return [RAISE_SUMMARY_TITLE, '', escapeMarkdown(line), ''].join('\n')
 }

@@ -1,12 +1,19 @@
 import type { CommitStatus } from '../../../platform/github-api.schema'
+import type { LenientList } from '../../../platform/list-completeness.context'
 import type { CommitStatusText } from './status.helper'
 
 /** What the sweep did on one pull request. */
 export interface SweptPull {
 	/** `unknown` when it has no status of the bot. */
 	readonly outcome: 'unknown' | 'kept' | 'updated' | 'failed'
-	/** The second pass before a raise failed, whatever the status write did. It counts as failed too. */
-	readonly readFailed?: boolean
+	/** The lists its reads left an entry out of; unset when they were complete. */
+	readonly lists?: readonly LenientList[]
+}
+
+/** A pull request whose list reads left an entry out, and which lists, for the sweep's line. */
+export interface IncompletePull {
+	readonly pullNumber: number
+	readonly lists: readonly LenientList[]
 }
 
 /** A pull request whose current identity has two visible old sticky comments and no review. */
@@ -15,7 +22,7 @@ export interface DuplicatePull {
 	readonly previous: CommitStatus
 }
 
-/** A pull request the sweep judged from one pass of reads, before any write. */
+/** A pull request the sweep judged from its reads, before any write. */
 export interface JudgedPull {
 	readonly kind: 'judged'
 	readonly previous: CommitStatus
@@ -24,7 +31,7 @@ export interface JudgedPull {
 	readonly unfinished: boolean
 }
 
-/** What one pass over a pull request with a status of the bot judged. */
+/** What the sweep judged of a pull request with a status of the bot. */
 export type SweptJudgment = DuplicatePull | JudgedPull
 
 /** A pull request whose current identity has two visible old sticky comments and no review. */
