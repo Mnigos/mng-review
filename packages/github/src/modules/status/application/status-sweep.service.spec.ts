@@ -5,6 +5,7 @@ import { RECENT_COMMENTS } from '../../../platform/github-api.constants'
 import { GitHubApiService } from '../../../platform/github-api.service'
 import { GitHubConfig } from '../../../platform/github.config'
 import { GitHubApiError } from '../../../platform/github.errors'
+import { provideListCompleteness } from '../../../platform/list-completeness.context'
 import { githubApiFake } from '../../../shared/mocks/github-api-fake.helper'
 import {
 	makeGitHubHttp,
@@ -46,6 +47,7 @@ import { toMarkerComment } from '../../publish/presentation/thread-comment.forma
 import {
 	type CommitStatusText,
 	toCommitStatus,
+	toIncompleteDescription,
 	UNFINISHED_NOTE,
 } from '../domain/status.helper'
 import {
@@ -2215,3 +2217,307 @@ layer(TOKEN_MODE_OWNED)('StatusSweepService unsettled bug threads', test => {
 				})
 		)
 })
+
+layer(APP_MODE_OWNED)('StatusSweepService incomplete list reads', test => {
+	for (const list of [
+		'threads',
+		'comments',
+		'reviews',
+		'thread comments',
+	] as const)
+		test.effect(
+			`a null node in the ${list} keeps the change request a complete read dismisses`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = sweepSetup([toCommitStatus('ready', 0, true)])
+					fixture.api.reviews.push(fixture.request)
+					const complete = sweepNullNode(fixture.api, list)
+					// The left-out node is dropped, so the pull request is read, not failed.
+					expect(
+						yield* fixture.sweep.pipe(provideListCompleteness(false))
+					).toMatchObject({ checked: 1, failed: 0, dismissal: NO_DISMISSAL })
+					expect(fixture.api.reviews[1]?.state).toBe('CHANGES_REQUESTED')
+					complete()
+					expect(
+						(yield* fixture.sweep.pipe(provideListCompleteness(false)))
+							.dismissal
+					).toEqual({ dismissed: 1, failed: 0 })
+				})
+		)
+	test.effect(
+		'a sweep whose only open bug thread GitHub listed as null writes no success, a complete one does',
+		() =>
+			Effect.gen(function* () {
+				const fixture = sweepSetup([])
+				// The head stands `failure` for one bug thread, which GitHub now lists as a null node.
+				const status = githubStatusFake({
+					listOpenPullRequests: () =>
+						Effect.succeed([openPullRequest(17, 'head')]),
+					getStatus: () =>
+						Effect.succeed({
+							id: 1,
+							...toCommitStatus('needs fixes', 1, true),
+							context: 'MNG Review',
+							creator: null,
+						}),
+				})
+				fixture.api.nullNodes.threads = 1
+				const sweep = StatusSweepService.use(service => service.sweep()).pipe(
+					Effect.provide(
+						StatusSweepServiceLive.pipe(
+							Layer.provide(Layer.merge(fixture.api.api, status.layer))
+						)
+					),
+					provideListCompleteness(false)
+				)
+				expect(yield* sweep).toMatchObject({ checked: 1, updated: 0 })
+				expect(status.statuses).toEqual([])
+				fixture.api.nullNodes.threads = 0
+				expect(yield* sweep).toMatchObject({ checked: 1, updated: 1 })
+				expect(status.statuses).toEqual([
+					{ sha: 'head', ...toCommitStatus('ready', 0, true) },
+				])
+			})
+	)
+	test.effect(
+		'a null node only in the confirming review read dismisses nothing',
+		() =>
+			Effect.gen(function* () {
+				const fixture = sweepSetup([toCommitStatus('ready', 0, true)])
+				fixture.api.reviews.push(fixture.request)
+				// The first review read is complete; the one right before the dismissal is not.
+				fixture.api.nullNodes.queued.reviews.push(0, 1)
+				expect(
+					(yield* fixture.sweep.pipe(provideListCompleteness(false))).dismissal
+				).toEqual(NO_DISMISSAL)
+				expect(fixture.api.reviews[1]?.state).toBe('CHANGES_REQUESTED')
+				expect(
+					fixture.api.writes.filter(write => write.method === 'dismissReview')
+				).toEqual([])
+				expect(
+					(yield* fixture.sweep.pipe(provideListCompleteness(false))).dismissal
+				).toEqual({ dismissed: 1, failed: 0 })
+			})
+	)
+	test.effect(
+		'an incomplete sweep turns a success into pending, and a complete one writes success',
+		() =>
+			Effect.gen(function* () {
+				const fixture = sweepSetup([])
+				// The head's status is the newest one written, `success` before the first sweep.
+				const status = githubStatusFake({
+					listOpenPullRequests: () =>
+						Effect.succeed([openPullRequest(17, 'head')]),
+					getStatus: () =>
+						Effect.succeed({
+							id: status.statuses.length,
+							...toCommitStatus('ready', 0, true),
+							...status.statuses.at(-1),
+							context: 'MNG Review',
+							creator: null,
+						}),
+				})
+				fixture.api.nullNodes.threads = 1
+				const sweep = StatusSweepService.use(service => service.sweep()).pipe(
+					Effect.provide(
+						StatusSweepServiceLive.pipe(
+							Layer.provide(Layer.merge(fixture.api.api, status.layer))
+						)
+					),
+					provideListCompleteness(false)
+				)
+				expect(yield* sweep).toMatchObject({ checked: 1, updated: 1 })
+				expect(status.statuses).toEqual([
+					{
+						sha: 'head',
+						state: 'pending',
+						description: toIncompleteDescription(['review threads']),
+					},
+				])
+				expect(yield* sweep).toMatchObject({ checked: 1, updated: 0 })
+				fixture.api.nullNodes.threads = 0
+				expect(yield* sweep).toMatchObject({ checked: 1, updated: 1 })
+				expect(status.statuses.at(-1)).toEqual({
+					sha: 'head',
+					...toCommitStatus('ready', 0, true),
+				})
+			})
+	)
+	test.effect(
+		'a null node on one pull request leaves the next one free to dismiss',
+		() =>
+			Effect.gen(function* () {
+				const fixture = sweepSetup([toCommitStatus('ready', 0, true)])
+				fixture.api.reviews.push(fixture.request)
+				const reads: number[] = []
+				// Only the first pull request's thread read lists a null node.
+				fixture.api.threadSnapshots.shift = () => {
+					reads.push(reads.length)
+					fixture.api.nullNodes.threads = reads.length === 1 ? 1 : 0
+					return undefined
+				}
+				const sweep = StatusSweepService.use(service => service.sweep()).pipe(
+					Effect.provide(
+						StatusSweepServiceLive.pipe(
+							Layer.provide(
+								Layer.merge(
+									fixture.api.api,
+									githubStatusFake({
+										listOpenPullRequests: () =>
+											Effect.succeed([
+												openPullRequest(17, 'head'),
+												openPullRequest(18, 'head'),
+											]),
+										getStatus: () =>
+											Effect.succeed({
+												id: 1,
+												...toCommitStatus('ready', 0, true),
+												context: 'MNG Review',
+												creator: null,
+											}),
+									}).layer
+								)
+							)
+						)
+					),
+					provideListCompleteness(false)
+				)
+				expect((yield* sweep).dismissal).toEqual({ dismissed: 1, failed: 0 })
+				expect(reads).toEqual([0, 1])
+			})
+	)
+	test.effect(
+		'a null node only in the confirming review read turns a success into pending before any dismissal',
+		() =>
+			Effect.gen(function* () {
+				const fixture = sweepSetup([])
+				fixture.api.reviews.push(fixture.request)
+				const status = newestStatus(toCommitStatus('ready', 0, true))
+				// The first review read is complete; the confirming one is not.
+				fixture.api.nullNodes.queued.reviews.push(0, 1)
+				const sweep = StatusSweepService.use(service => service.sweep()).pipe(
+					Effect.provide(
+						StatusSweepServiceLive.pipe(
+							Layer.provide(Layer.merge(fixture.api.api, status.layer))
+						)
+					),
+					provideListCompleteness(false)
+				)
+				expect(yield* sweep).toEqual({
+					checked: 1,
+					updated: 1,
+					failed: 0,
+					dismissal: NO_DISMISSAL,
+				})
+				expect(status.statuses).toEqual([
+					{
+						sha: 'head',
+						state: 'pending',
+						description: toIncompleteDescription(['reviews']),
+					},
+				])
+				expect(fixture.api.reviews[1]?.state).toBe('CHANGES_REQUESTED')
+				expect(yield* sweep).toMatchObject({
+					updated: 1,
+					dismissal: { dismissed: 1, failed: 0 },
+				})
+				expect(status.statuses.at(-1)).toEqual({
+					sha: 'head',
+					...toCommitStatus('ready', 0, true),
+				})
+			})
+	)
+	test.effect(
+		'an incomplete sweep beside two current identity summaries turns a success into pending',
+		() =>
+			Effect.gen(function* () {
+				const api = githubApiFake(APP_IDENTITY)
+				api.comments.push(
+					appSummary({ ...SUMMARY_MARKER, head: 'head', finished: true }),
+					appSummary(
+						{ ...SUMMARY_MARKER, head: 'head', finished: true },
+						{ id: 'newer-summary', databaseId: 102 }
+					)
+				)
+				const status = newestStatus(toCommitStatus('ready', 0, true))
+				api.nullNodes.threads = 1
+				const sweep = StatusSweepService.use(service => service.sweep()).pipe(
+					Effect.provide(
+						StatusSweepServiceLive.pipe(
+							Layer.provide(Layer.merge(api.api, status.layer))
+						)
+					),
+					provideListCompleteness(false)
+				)
+				expect(yield* sweep).toEqual({
+					checked: 1,
+					updated: 1,
+					failed: 0,
+					dismissal: NO_DISMISSAL,
+				})
+				expect(status.statuses).toEqual([
+					{
+						sha: 'head',
+						state: 'pending',
+						description: toIncompleteDescription(['review threads']),
+					},
+				])
+				expect(api.writes).toEqual([])
+				// A complete sweep leaves the duplicates' status as it is again.
+				api.nullNodes.threads = 0
+				expect(yield* sweep).toMatchObject({ checked: 1, updated: 0 })
+				expect(status.statuses).toHaveLength(1)
+			})
+	)
+})
+
+/** A list the sweep reads leniently, as the fake's null nodes name it. */
+type SweptList = 'threads' | 'comments' | 'reviews' | 'thread comments'
+
+/**
+ * Lists one null node in `list` on every read of the sweep: after the threads, comments or
+ * reviews, or in a resolved bug thread read whole, which is settled when read complete. The
+ * returned call makes the reads complete again.
+ */
+function sweepNullNode(
+	api: ReturnType<typeof githubApiFake>,
+	list: SweptList
+): () => void {
+	if (list !== 'thread comments') {
+		api.nullNodes[list] = 1
+		return () => {
+			api.nullNodes[list] = 0
+		}
+	}
+	const { thread, comments } = unsettledBugThread('outside')
+	// The comment before the latest ones is no answer, so the thread read whole is settled.
+	const answer = comments.find(
+		comment => parseReplyMarker(comment.body)?.unsettled
+	)
+	const settled = comments.map(comment =>
+		comment === answer ? { ...comment, body: 'context' } : comment
+	)
+	api.threads.push(thread)
+	api.threadReader.read = readThreadOverHttp(
+		settled.map(comment => (comment.body === 'context' ? null : comment))
+	)
+	return () => {
+		api.threadReader.read = readThreadOverHttp(settled)
+	}
+}
+
+/** A status fake for pull request 17 whose head shows the newest status written, `first` before any. */
+function newestStatus(first: CommitStatusText) {
+	const status = githubStatusFake({
+		listOpenPullRequests: () => Effect.succeed([openPullRequest(17, 'head')]),
+		getStatus: () =>
+			Effect.succeed({
+				id: status.statuses.length,
+				...first,
+				...status.statuses.at(-1),
+				context: 'MNG Review',
+				creator: null,
+			}),
+	})
+	return status
+}

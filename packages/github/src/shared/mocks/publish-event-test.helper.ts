@@ -7,20 +7,26 @@ import { ThreadResolutionServiceLive } from '../../modules/publish/application/t
 import type { BotIdentity } from '../../platform/bot-identity.helper'
 import { GitHubConfig } from '../../platform/github.config'
 import { createRepo, gitLayer } from './git-test.helper'
-import { githubApiFake } from './github-api-fake.helper'
+import {
+	githubApiFake,
+	type GitHubApiFakeOptions,
+} from './github-api-fake.helper'
 import { GITHUB_SETTINGS } from './github-http.helper'
 import { githubStatusFake } from './github-status-fake.helper'
 import { agentReport, APP_IDENTITY, report, RULES } from './publish-test.helper'
 
 /** Local history and recording services for event tests; no endpoint or transport layer. */
-export function publishEventFixture(identity: BotIdentity = APP_IDENTITY) {
+export function publishEventFixture(
+	identity: BotIdentity = APP_IDENTITY,
+	options: GitHubApiFakeOptions = {}
+) {
 	const repo = createRepo()
 	const original = `${Array.from({ length: 12 }, (_, index) => `line ${index + 1}`).join('\n')}\n`
 	repo.write('src/store.ts', original)
 	const base = repo.commit()
 	repo.write('src/store.ts', original.replace('line 10\n', 'changed 10\n'))
 	const head = repo.commit()
-	const fake = githubApiFake(identity)
+	const fake = githubApiFake(identity, options)
 	fake.command.pullRequest = {
 		...fake.command.pullRequest,
 		head: { ...fake.command.pullRequest.head, sha: head },

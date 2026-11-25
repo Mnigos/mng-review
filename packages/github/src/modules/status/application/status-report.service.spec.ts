@@ -2,6 +2,10 @@ import { layer } from '@effect/vitest'
 import type { ReviewReport } from '@mng-review/engine'
 import { Effect, Layer } from 'effect'
 import { GitHubApiError } from '../../../platform/github.errors'
+import {
+	collectListed,
+	provideListCompleteness,
+} from '../../../platform/list-completeness.context'
 import { githubStatusFake } from '../../../shared/mocks/github-status-fake.helper'
 import {
 	bug,
@@ -10,7 +14,11 @@ import {
 	TOKEN_MODE_OWNED,
 } from '../../../shared/mocks/publish-test.helper'
 import { isFinished } from '../../publish/domain/bot-thread.helper'
-import { toCommitStatus, UNFINISHED_NOTE } from '../domain/status.helper'
+import {
+	toCommitStatus,
+	toIncompleteDescription,
+	UNFINISHED_NOTE,
+} from '../domain/status.helper'
 import {
 	StatusReportService,
 	StatusReportServiceLive,
@@ -400,4 +408,202 @@ layer(TOKEN_MODE_OWNED)('StatusReportService full review completion', test => {
 						])
 					})
 			)
+})
+
+/** A lenient list read that leaves one null node out, which marks the run incomplete. */
+const DROPPED_NODE = collectListed('listReviews', () =>
+	Effect.succeed({
+		nodes: [null],
+		pageInfo: { hasNextPage: false, endCursor: null },
+	})
+)
+
+/** A clean report of one agent, which a complete run checks as `success`. */
+function cleanReport(): ReviewReport {
+	const fixture = report()
+	return { ...fixture, bugs: [], nits: [], agents: [agentReport('ok')] }
+}
+
+layer(TOKEN_MODE_OWNED)('StatusReportService incomplete list reads', test => {
+	const existing = {
+		id: 1,
+		state: 'failure',
+		description: '1 open bug thread(s); needs fixes',
+		context: 'MNG Review',
+		creator: null,
+	} as const
+	const pending = [
+		{
+			sha: 'head',
+			state: 'pending',
+			description: toIncompleteDescription(['reviews']),
+		},
+	] as const
+	for (const [name, previous, written] of [
+		[
+			'on a head with no status writes pending with the reason',
+			undefined,
+			pending,
+		],
+		['leaves a failure the head has', existing, []],
+		[
+			'turns the success the head has into pending',
+			{ ...existing, ...toCommitStatus('ready', 0, true) },
+			pending,
+		],
+	] as const)
+		test.effect(
+			`a ready incomplete run ${name} and checks nothing as success`,
+			() =>
+				Effect.gen(function* () {
+					const fake = githubStatusFake({
+						getStatus: () => Effect.succeed(previous),
+					})
+					expect(
+						yield* DROPPED_NODE.pipe(
+							Effect.andThen(
+								StatusReportService.use(service =>
+									service.report({
+										head: 'head',
+										report: cleanReport(),
+										verdict: 'ready',
+										openBugs: 0,
+										finished: true,
+									})
+								)
+							),
+							Effect.provide(
+								StatusReportServiceLive.pipe(Layer.provide(fake.layer))
+							),
+							provideListCompleteness(false)
+						)
+					).toEqual({ checks: 1, status: true })
+					expect(fake.statuses).toEqual(written)
+					expect(fake.heads).toEqual(['head'])
+					expect(fake.checks.map(check => check.conclusion)).toEqual([
+						'neutral',
+					])
+				})
+		)
+	for (const verdict of ['needs fixes', 'needs owner'] as const)
+		test.effect(
+			`an incomplete ${verdict} run writes failure as a complete one does`,
+			() =>
+				Effect.gen(function* () {
+					const fake = githubStatusFake()
+					yield* DROPPED_NODE.pipe(
+						Effect.andThen(
+							StatusReportService.use(service =>
+								service.report({
+									head: 'head',
+									report: cleanReport(),
+									verdict,
+									openBugs: verdict === 'needs fixes' ? 1 : 0,
+									finished: true,
+								})
+							)
+						),
+						Effect.provide(
+							StatusReportServiceLive.pipe(Layer.provide(fake.layer))
+						),
+						provideListCompleteness(false)
+					)
+					expect(fake.statuses).toEqual([
+						{
+							sha: 'head',
+							...toCommitStatus(
+								verdict,
+								verdict === 'needs fixes' ? 1 : 0,
+								true
+							),
+						},
+					])
+				})
+		)
+	test.effect('an incomplete run whose status read fails writes nothing', () =>
+		Effect.gen(function* () {
+			const fake = githubStatusFake({
+				getStatus: () =>
+					Effect.fail(
+						new GitHubApiError({ operation: 'getStatus', reason: 'Denied' })
+					),
+			})
+			expect(
+				yield* DROPPED_NODE.pipe(
+					Effect.andThen(
+						StatusReportService.use(service =>
+							service.report({
+								head: 'head',
+								report: cleanReport(),
+								verdict: 'ready',
+								openBugs: 0,
+								finished: true,
+							})
+						)
+					),
+					Effect.provide(
+						StatusReportServiceLive.pipe(Layer.provide(fake.layer))
+					),
+					provideListCompleteness(false)
+				)
+			).toEqual({ checks: 1, status: false })
+			expect(fake.statuses).toEqual([])
+		})
+	)
+	test.effect(
+		'an incomplete needs fixes run whose status read fails still writes failure',
+		() =>
+			Effect.gen(function* () {
+				const fake = githubStatusFake({
+					getStatus: () =>
+						Effect.fail(
+							new GitHubApiError({ operation: 'getStatus', reason: 'Denied' })
+						),
+				})
+				expect(
+					yield* DROPPED_NODE.pipe(
+						Effect.andThen(
+							StatusReportService.use(service =>
+								service.report({
+									head: 'head',
+									report: cleanReport(),
+									verdict: 'needs fixes',
+									openBugs: 1,
+									finished: true,
+								})
+							)
+						),
+						Effect.provide(
+							StatusReportServiceLive.pipe(Layer.provide(fake.layer))
+						),
+						provideListCompleteness(false)
+					)
+				).toEqual({ checks: 1, status: true })
+				expect(fake.statuses).toEqual([
+					{ sha: 'head', ...toCommitStatus('needs fixes', 1, true) },
+				])
+			})
+	)
+	test.effect('a complete run reads no status and writes success', () =>
+		Effect.gen(function* () {
+			const fake = githubStatusFake()
+			yield* StatusReportService.use(service =>
+				service.report({
+					head: 'head',
+					report: cleanReport(),
+					verdict: 'ready',
+					openBugs: 0,
+					finished: true,
+				})
+			).pipe(
+				Effect.provide(StatusReportServiceLive.pipe(Layer.provide(fake.layer))),
+				provideListCompleteness(false)
+			)
+			expect(fake.heads).toEqual([])
+			expect(fake.statuses).toEqual([
+				{ sha: 'head', ...toCommitStatus('ready', 0, true) },
+			])
+			expect(fake.checks.map(check => check.conclusion)).toEqual(['success'])
+		})
+	)
 })

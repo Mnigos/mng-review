@@ -167,16 +167,29 @@ export function readThreadOverHttp(nodes: readonly (ThreadComment | null)[]) {
 		)
 }
 
-/** How many null nodes each list read of the fake lists after its entries, as GitHub can. */
-export interface NullNodes {
-	threads: number
-	comments: number
-	reviews: number
+/** One count of null nodes for each list read of the fake. */
+interface NullNodeCounts<TCount> {
+	threads: TCount
+	comments: TCount
+	reviews: TCount
+}
+
+/**
+ * How many null nodes each list read of the fake lists after its entries, as GitHub can: the next
+ * entry of `queued` for that list, one per read, then the count.
+ */
+export interface NullNodes extends NullNodeCounts<number> {
+	readonly queued: NullNodeCounts<number[]>
 }
 
 /** No null nodes in any list, until a spec sets some. */
 export function toNullNodes(): NullNodes {
-	return { threads: 0, comments: 0, reviews: 0 }
+	return {
+		threads: 0,
+		comments: 0,
+		reviews: 0,
+		queued: { threads: [], comments: [], reviews: [] },
+	}
 }
 
 /** One page of `entries` and `nulls` null nodes after them, answered to every request. */
@@ -196,30 +209,32 @@ function answerListed(
  * real adapter over one page that lists that many null nodes after them.
  */
 export function readListedOverHttp(nullNodes: NullNodes) {
+	const toNulls = (list: keyof NullNodeCounts<number>) =>
+		nullNodes.queued[list].shift() ?? nullNodes[list]
 	return {
-		threads: (threads: readonly ReviewThread[]) =>
-			nullNodes.threads === 0
+		threads: (threads: readonly ReviewThread[]) => {
+			const nulls = toNulls('threads')
+			return nulls === 0
 				? Effect.succeed(threads)
 				: GitHubApiService.use(service => service.listReviewThreads(0)).pipe(
-						Effect.provide(
-							answerListed('reviewThreads', threads, nullNodes.threads).layer
-						)
-					),
-		comments: (comments: readonly PullRequestComment[]) =>
-			nullNodes.comments === 0
+						Effect.provide(answerListed('reviewThreads', threads, nulls).layer)
+					)
+		},
+		comments: (comments: readonly PullRequestComment[]) => {
+			const nulls = toNulls('comments')
+			return nulls === 0
 				? Effect.succeed(comments)
 				: GitHubApiService.use(service => service.listComments(0)).pipe(
-						Effect.provide(
-							answerListed('comments', comments, nullNodes.comments).layer
-						)
-					),
-		reviews: (reviews: readonly PullRequestReview[]) =>
-			nullNodes.reviews === 0
+						Effect.provide(answerListed('comments', comments, nulls).layer)
+					)
+		},
+		reviews: (reviews: readonly PullRequestReview[]) => {
+			const nulls = toNulls('reviews')
+			return nulls === 0
 				? Effect.succeed(reviews)
 				: GitHubReviewService.use(service => service.listReviews(0)).pipe(
-						Effect.provide(
-							answerListed('reviews', reviews, nullNodes.reviews).reviewLayer
-						)
-					),
+						Effect.provide(answerListed('reviews', reviews, nulls).reviewLayer)
+					)
+		},
 	}
 }

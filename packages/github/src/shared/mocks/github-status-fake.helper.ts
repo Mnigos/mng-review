@@ -23,7 +23,10 @@ import {
 	toBotIdentity,
 	toOwnedIdentities,
 } from '../../platform/bot-identity.helper'
-import type { OpenPullRequest } from '../../platform/github-api.schema'
+import type {
+	CommitStatus,
+	OpenPullRequest,
+} from '../../platform/github-api.schema'
 import type {
 	CommentEdits,
 	RiskCommitStatus,
@@ -70,10 +73,13 @@ export function githubStatusFake(
 	const checks: CheckRunInput[] = []
 	const statuses: CommitStatusInput[] = []
 	const heads: string[] = []
+	/** The status each head already has, which `getStatus` answers unless overridden. */
+	const seeded = new Map<string, CommitStatus>()
 	return {
 		checks,
 		statuses,
 		heads,
+		seeded,
 		layer: Layer.succeed(GitHubStatusService, {
 			createCheckRun: input =>
 				Effect.sync(() => {
@@ -92,7 +98,8 @@ export function githubStatusFake(
 					heads.push(head)
 				}).pipe(
 					Effect.andThen(
-						() => overrides.getStatus?.(head) ?? Effect.succeed(undefined)
+						() =>
+							overrides.getStatus?.(head) ?? Effect.succeed(seeded.get(head))
 					)
 				),
 			listOpenPullRequests:

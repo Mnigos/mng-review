@@ -1,9 +1,12 @@
 import { layer } from '@effect/vitest'
-import { Effect } from 'effect'
+import { Effect, Layer } from 'effect'
 import { GITHUB_ACTIONS_IDENTITY } from '../../../platform/bot-identity.helper'
 import { REVIEW_STATE_BY_EVENT } from '../../../platform/github-review.service'
 import { GitHubApiError } from '../../../platform/github.errors'
+import { provideListCompleteness } from '../../../platform/list-completeness.context'
 import { cleanupRepos } from '../../../shared/mocks/git-test.helper'
+import { readThreadOverHttp } from '../../../shared/mocks/github-http.helper'
+import { githubStatusFake } from '../../../shared/mocks/github-status-fake.helper'
 import { publishEventFixture } from '../../../shared/mocks/publish-event-test.helper'
 import {
 	APP_IDENTITY,
@@ -21,8 +24,19 @@ import {
 	pendingReviewThread,
 	ownerReviewThread,
 	ACCEPTED_DECISION,
+	unsettledBugThread,
 } from '../../../shared/mocks/thread-reply-test.helper'
-import { parseSummaryMarker } from '../domain/publish-marker.parser'
+import {
+	StatusReportService,
+	StatusReportServiceLive,
+} from '../../status/application/status-report.service'
+import { toIncompleteDescription } from '../../status/domain/status.helper'
+import {
+	parseReplyMarker,
+	parseSummaryMarker,
+} from '../domain/publish-marker.parser'
+import { PublishIncompleteError } from '../domain/publish.errors'
+import { toIncompleteReason } from '../presentation/review-headline.formatter'
 import { PublishService } from './publish.service'
 import { ReplyPublishService } from './reply-publish.service'
 
@@ -1394,6 +1408,830 @@ layer(APP_MODE_OWNED, { excludeTestServices: true })(
 						'**Comment.** Not approved: the pull request could not be read again before the review, so the earlier state stands.'
 					)
 					expect(body).not.toContain('draft')
+				})
+		)
+	}
+)
+
+/** The four lists a lenient read leaves a null node out of. */
+const LENIENT_LISTS = [
+	'threads',
+	'thread comments',
+	'comments',
+	'reviews',
+] as const
+type LenientList = (typeof LENIENT_LISTS)[number]
+type EventFixture = ReturnType<typeof publishEventFixture>
+/** The name the reasons give each list. */
+const LIST_NAMES = {
+	threads: 'review threads',
+	'thread comments': 'thread comments',
+	comments: 'conversation comments',
+	reviews: 'reviews',
+} as const satisfies Record<LenientList, string>
+
+/** The headline's incomplete-read reason for `list`, as it opens a longer sentence too. */
+function reasonOf(list: LenientList): string {
+	return toIncompleteReason([LIST_NAMES[list]]).replace(/\.$/u, '')
+}
+
+/**
+ * Lists one null node in `list` on every read of the fixture: after the threads, comments or
+ * reviews, or in place of the unsettled answer of a resolved bug thread read whole. The returned
+ * call makes the reads complete again, the answer listed as it is.
+ */
+function listNullNode(fixture: EventFixture, list: LenientList): () => void {
+	if (list !== 'thread comments') {
+		fixture.fake.nullNodes[list] = 1
+		return () => {
+			fixture.fake.nullNodes[list] = 0
+		}
+	}
+	const { thread, comments } = unsettledBugThread('outside')
+	fixture.fake.threads.push(thread)
+	fixture.fake.threadReader.read = readThreadOverHttp(
+		comments.map(comment =>
+			parseReplyMarker(comment.body)?.unsettled ? null : comment
+		)
+	)
+	return () => {
+		fixture.fake.threadReader.read = readThreadOverHttp(comments)
+	}
+}
+
+/** The fixture's change request: the app's finished summary review on the head. */
+function changeRequest(fixture: EventFixture) {
+	return summaryReview(
+		{ ...SUMMARY_MARKER, head: fixture.head, finished: true },
+		{
+			state: 'CHANGES_REQUESTED',
+			commit: { oid: fixture.head },
+			author: { __typename: 'Bot', login: APP_IDENTITY.login },
+		}
+	)
+}
+
+layer(APP_MODE_OWNED, { excludeTestServices: true })(
+	'PublishService incomplete list reads',
+	test => {
+		for (const list of LENIENT_LISTS) {
+			test.effect(
+				`a null node in the ${list} posts no thread for a new finding until a complete read`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = publishEventFixture()
+						const complete = listNullNode(fixture, list)
+						const publishing = PublishService.use(service =>
+							service.publish({
+								...fixture.input,
+								report: { ...fixture.input.report, bugs: [bug()] },
+							})
+						).pipe(
+							Effect.provide(fixture.publisher),
+							provideListCompleteness(false)
+						)
+						expect(yield* publishing).toMatchObject({
+							onLine: 0,
+							onFile: 0,
+							inSummary: 1,
+							incomplete: true,
+						})
+						// One review without inline comments, and no comment on a file.
+						expect(
+							fixture.fake.writes.flatMap(write =>
+								write.method === 'review' ? [write.input.comments] : []
+							)
+						).toEqual([[]])
+						expect(
+							fixture.fake.writes.filter(write => write.method === 'comment')
+						).toEqual([])
+						complete()
+						const next = yield* publishing
+						expect(next).toMatchObject({ onLine: 1, inSummary: 0 })
+						expect(next.incomplete).toBeUndefined()
+					})
+			)
+			test.effect(
+				`a null node in the ${list} keeps the change request and says why, and a complete read approves`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = publishEventFixture()
+						fixture.fake.reviews.push(changeRequest(fixture))
+						const complete = listNullNode(fixture, list)
+						const publishing = PublishService.use(service =>
+							service.publish(fixture.input)
+						).pipe(
+							Effect.provide(fixture.publisher),
+							provideListCompleteness(false)
+						)
+						const first = yield* publishing
+						expect(first).toMatchObject({
+							event: 'REQUEST_CHANGES',
+							dismissal: { dismissed: 0, failed: 0 },
+							incomplete: true,
+						})
+						expect(fixture.fake.reviews[0]?.state).toBe('CHANGES_REQUESTED')
+						expect(
+							fixture.fake.writes.filter(
+								write =>
+									write.method === 'dismissReview' ||
+									(write.method === 'review' && write.input.event === 'APPROVE')
+							)
+						).toEqual([])
+						expect(fixture.fake.reviews.at(-1)?.body).toContain(reasonOf(list))
+						complete()
+						const next = yield* publishing
+						expect(next).toMatchObject({ event: 'APPROVE', verdict: 'ready' })
+						expect(next.incomplete).toBeUndefined()
+						expect(fixture.fake.reviews.at(-1)?.body).not.toContain(
+							reasonOf(list)
+						)
+					})
+			)
+			test.effect(
+				`a null node in the ${list} keeps an owner's wait until a complete read clears it`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = publishEventFixture()
+						fixture.fake.reviews.push(
+							summaryReview(
+								{
+									...SUMMARY_MARKER,
+									head: fixture.head,
+									finished: true,
+									needsOwner: ['thread'],
+								},
+								{ author: { __typename: 'Bot', login: APP_IDENTITY.login } }
+							)
+						)
+						// The unsettled thread of the thread comments case is the waiting one.
+						if (list !== 'thread comments')
+							fixture.fake.threads.push(
+								reviewThread(undefined, {
+									isResolved: true,
+									resolvedBy: { login: 'contributor' },
+								})
+							)
+						const complete = listNullNode(fixture, list)
+						const publishing = PublishService.use(service =>
+							service.publish(fixture.input)
+						).pipe(
+							Effect.provide(fixture.publisher),
+							provideListCompleteness(false)
+						)
+						expect(yield* publishing).toMatchObject({
+							verdict: 'needs owner',
+							waiting: 1,
+							incomplete: true,
+						})
+						expect(
+							parseSummaryMarker(fixture.fake.reviews.at(-1)?.body ?? '')
+								?.needsOwner
+						).toEqual(['thread'])
+						complete()
+						expect(yield* publishing).toMatchObject({ waiting: 0 })
+						expect(
+							parseSummaryMarker(fixture.fake.reviews.at(-1)?.body ?? '')
+								?.needsOwner
+						).toBeUndefined()
+					})
+			)
+		}
+		test.effect(
+			'a reply-only run beside a null node dismisses no change request and says why',
+			() =>
+				Effect.gen(function* () {
+					const fixture = publishEventFixture()
+					fixture.fake.reviews.push(changeRequest(fixture))
+					fixture.fake.nullNodes.comments = 1
+					expect(
+						yield* ReplyPublishService.use(service =>
+							service.publish({
+								pullNumber: 17,
+								head: fixture.head,
+								engineCommit: 'engine',
+								rules: fixture.input.rules,
+								replies: { base: fixture.base, tokens: {}, decisions: [] },
+							})
+						).pipe(
+							Effect.provide(fixture.replyPublisher),
+							provideListCompleteness(false)
+						)
+					).toMatchObject({
+						dismissal: { dismissed: 0, failed: 0 },
+						incomplete: true,
+					})
+					expect(fixture.fake.reviews[0]?.state).toBe('CHANGES_REQUESTED')
+					expect(fixture.fake.reviews.at(-1)?.body).toContain(
+						reasonOf('comments')
+					)
+					// A ready standing on a head with no status yet is pending, never success.
+					expect(fixture.status.statuses).toEqual([
+						{
+							sha: fixture.head,
+							state: 'pending',
+							description: toIncompleteDescription(['conversation comments']),
+						},
+					])
+				})
+		)
+		test.effect(
+			'an incomplete run whose only open bug thread GitHub listed as null writes no success, a complete one does',
+			() =>
+				Effect.gen(function* () {
+					const fixture = publishEventFixture()
+					// The status the head has is the newest one this spec wrote.
+					const status = githubStatusFake({
+						getStatus: () =>
+							Effect.succeed(
+								status.statuses.length === 0
+									? undefined
+									: {
+											id: status.statuses.length,
+											state: status.statuses.at(-1)?.state ?? 'pending',
+											description: status.statuses.at(-1)?.description ?? '',
+											context: 'MNG Review',
+											creator: null,
+										}
+							),
+					})
+					fixture.fake.nullNodes.threads = 1
+					// The publish run's order: the publish, then the checks and the status, in one run.
+					const run = Effect.gen(function* () {
+						const published = yield* PublishService.use(service =>
+							service.publish(fixture.input)
+						)
+						yield* StatusReportService.use(service =>
+							service.report({
+								head: fixture.head,
+								report: fixture.input.report,
+								verdict: published.verdict,
+								openBugs: published.openBugs,
+								finished: published.finished,
+							})
+						)
+						return published
+					}).pipe(
+						Effect.provide(
+							Layer.merge(
+								fixture.publisher,
+								StatusReportServiceLive.pipe(Layer.provide(status.layer))
+							)
+						),
+						provideListCompleteness(false)
+					)
+					expect(yield* run).toMatchObject({
+						verdict: 'ready',
+						openBugs: 0,
+						incomplete: true,
+					})
+					expect(status.statuses).toEqual([
+						{
+							sha: fixture.head,
+							state: 'pending',
+							description: toIncompleteDescription(['review threads']),
+						},
+					])
+					yield* run
+					expect(status.statuses).toHaveLength(1)
+					expect(
+						status.checks.filter(check => check.conclusion === 'success')
+					).toEqual([])
+					fixture.fake.nullNodes.threads = 0
+					expect((yield* run).incomplete).toBeUndefined()
+					expect(status.statuses.at(-1)).toMatchObject({ state: 'success' })
+					expect(status.checks.at(-1)?.conclusion).toBe('success')
+				})
+		)
+		for (const list of LENIENT_LISTS)
+			test.effect(
+				`a null node in the ${list} posts a comment over the app's approval, and a complete run approves again`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = publishEventFixture()
+						const approval = summaryReview(
+							{ ...SUMMARY_MARKER, head: fixture.head, finished: true },
+							{
+								state: 'APPROVED',
+								commit: { oid: fixture.head },
+								author: { __typename: 'Bot', login: APP_IDENTITY.login },
+							}
+						)
+						fixture.fake.reviews.push(approval)
+						const complete = listNullNode(fixture, list)
+						const publishing = PublishService.use(service =>
+							service.publish(fixture.input)
+						).pipe(
+							Effect.provide(fixture.publisher),
+							provideListCompleteness(false)
+						)
+						expect(yield* publishing).toMatchObject({
+							event: 'COMMENT',
+							dismissal: { dismissed: 0, failed: 0 },
+							incomplete: true,
+						})
+						expect(fixture.fake.reviews).toHaveLength(2)
+						expect(fixture.fake.reviews.at(-1)).toMatchObject({
+							state: 'COMMENTED',
+							author: { login: APP_IDENTITY.login },
+						})
+						expect(fixture.fake.reviews.at(-1)?.body).toContain(
+							`**Comment.** Not approved: ${reasonOf(list)}`
+						)
+						// The approval is neither edited nor dismissed.
+						expect(fixture.fake.reviews[0]).toMatchObject({
+							state: 'APPROVED',
+							body: approval.body,
+						})
+						expect(
+							fixture.fake.writes.filter(
+								write =>
+									write.method === 'updateReview' ||
+									write.method === 'dismissReview'
+							)
+						).toEqual([])
+						complete()
+						expect(yield* publishing).toMatchObject({ event: 'APPROVE' })
+						expect(fixture.fake.reviews.at(-1)?.state).toBe('APPROVED')
+					})
+			)
+	}
+)
+
+/** The fixture's summary review with `thread` waiting for the owner, which a contributor resolved. */
+function ownerWait(fixture: EventFixture) {
+	fixture.fake.reviews.push(
+		summaryReview(
+			{
+				...SUMMARY_MARKER,
+				head: fixture.head,
+				finished: true,
+				needsOwner: ['thread'],
+			},
+			{ author: { __typename: 'Bot', login: APP_IDENTITY.login } }
+		)
+	)
+	fixture.fake.threads.push(
+		reviewThread(undefined, {
+			isResolved: true,
+			resolvedBy: { login: 'contributor' },
+		})
+	)
+}
+
+/** The `needs-owner` wait the newest summary review's marker stores. */
+function storedWait(fixture: EventFixture) {
+	return parseSummaryMarker(fixture.fake.reviews.at(-1)?.body ?? '')?.needsOwner
+}
+
+/** The inline comments of every review the fixture's runs posted. */
+function inlineComments(fixture: EventFixture) {
+	return fixture.fake.writes.flatMap(write =>
+		write.method === 'review' ? [write.input.comments.length] : []
+	)
+}
+
+/** A review create GitHub answered with a 503, which it may still have accepted. */
+function unavailableCreate() {
+	return new GitHubApiError({
+		operation: 'createReview',
+		reason: 'Unavailable',
+		status: 503,
+	})
+}
+
+/** A write GitHub refused with a 403. */
+function forbidden(operation: 'createReview' | 'updateReview') {
+	return new GitHubApiError({ operation, reason: 'Forbidden', status: 403 })
+}
+
+/** A `success` the head already has, as an earlier complete run left it. */
+function seedSuccess(fixture: EventFixture) {
+	fixture.status.seeded.set(fixture.head, {
+		id: 1,
+		state: 'success',
+		description: 'ready',
+		context: 'MNG Review',
+		creator: null,
+	})
+}
+
+/** The fixture's full publish, with list completeness tracked as the action tracks it. */
+function publishFull(fixture: EventFixture) {
+	return PublishService.use(service => service.publish(fixture.input)).pipe(
+		Effect.provide(fixture.publisher),
+		provideListCompleteness(false)
+	)
+}
+
+/** The fixture's full publish and then its checks and status, as the publish run does them. */
+function publishAndReport(fixture: EventFixture) {
+	return Effect.gen(function* () {
+		const published = yield* PublishService.use(service =>
+			service.publish(fixture.input)
+		)
+		yield* StatusReportService.use(service =>
+			service.report({
+				head: fixture.head,
+				report: fixture.input.report,
+				verdict: published.verdict,
+				openBugs: published.openBugs,
+				finished: published.finished,
+			})
+		)
+		return published
+	}).pipe(
+		Effect.provide(
+			Layer.merge(
+				fixture.publisher,
+				StatusReportServiceLive.pipe(Layer.provide(fixture.status.layer))
+			)
+		),
+		provideListCompleteness(false)
+	)
+}
+
+/** The fixture's reply-only publish with no decision, with list completeness tracked. */
+function publishReplies(fixture: EventFixture) {
+	return ReplyPublishService.use(service =>
+		service.publish({
+			pullNumber: 17,
+			head: fixture.head,
+			engineCommit: 'engine',
+			rules: fixture.input.rules,
+			replies: { base: fixture.base, tokens: {}, decisions: [] },
+		})
+	).pipe(Effect.provide(fixture.replyPublisher), provideListCompleteness(false))
+}
+
+layer(APP_MODE_OWNED, { excludeTestServices: true })(
+	'PublishService reads that drop a node late in the run',
+	test => {
+		for (const list of ['comments', 'reviews'] as const) {
+			test.effect(
+				`a null node only in the write's own ${list} read keeps the owner's wait and the label`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = publishEventFixture()
+						ownerWait(fixture)
+						// The waiting list's read is complete; the summary write's own read is not.
+						fixture.fake.nullNodes.queued[list].push(0, 1)
+						const publishing = PublishService.use(service =>
+							service.publish(fixture.input)
+						).pipe(
+							Effect.provide(fixture.publisher),
+							provideListCompleteness(false)
+						)
+						expect(yield* publishing).toMatchObject({
+							verdict: 'needs owner',
+							waiting: 1,
+							incomplete: true,
+						})
+						expect(storedWait(fixture)).toEqual(['thread'])
+						expect(
+							fixture.fake.writes.filter(write => write.method === 'unlabel')
+						).toEqual([])
+						expect(yield* publishing).toMatchObject({ waiting: 0 })
+						expect(storedWait(fixture)).toBeUndefined()
+						expect(
+							fixture.fake.writes.filter(write => write.method === 'unlabel')
+						).toHaveLength(1)
+					})
+			)
+			test.effect(
+				`a null node only in the write's own ${list} read keeps a reply-only run's wait and the label`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = publishEventFixture()
+						ownerWait(fixture)
+						fixture.fake.nullNodes.queued[list].push(0, 1)
+						const publishing = ReplyPublishService.use(service =>
+							service.publish({
+								pullNumber: 17,
+								head: fixture.head,
+								engineCommit: 'engine',
+								rules: fixture.input.rules,
+								replies: { base: fixture.base, tokens: {}, decisions: [] },
+							})
+						).pipe(
+							Effect.provide(fixture.replyPublisher),
+							provideListCompleteness(false)
+						)
+						expect(yield* publishing).toMatchObject({
+							verdict: 'needs owner',
+							waiting: 1,
+							incomplete: true,
+						})
+						expect(storedWait(fixture)).toEqual(['thread'])
+						expect(
+							fixture.fake.writes.filter(write => write.method === 'unlabel')
+						).toEqual([])
+						expect(yield* publishing).toMatchObject({ waiting: 0 })
+						expect(storedWait(fixture)).toBeUndefined()
+					})
+			)
+		}
+		test.effect(
+			"a null node only in the write's own review read attaches no inline comment",
+			() =>
+				Effect.gen(function* () {
+					const fixture = publishEventFixture()
+					fixture.fake.nullNodes.queued.reviews.push(0, 1)
+					const publishing = PublishService.use(service =>
+						service.publish({
+							...fixture.input,
+							report: { ...fixture.input.report, bugs: [bug()] },
+						})
+					).pipe(
+						Effect.provide(fixture.publisher),
+						provideListCompleteness(false)
+					)
+					expect(yield* publishing).toMatchObject({
+						onLine: 0,
+						inSummary: 1,
+						incomplete: true,
+					})
+					expect(inlineComments(fixture)).toEqual([0])
+					expect(yield* publishing).toMatchObject({ onLine: 1, inSummary: 0 })
+					expect(inlineComments(fixture)).toEqual([0, 1])
+				})
+		)
+		test.effect(
+			'a null node only in the second thread read posts no comment on a file',
+			() =>
+				Effect.gen(function* () {
+					const fixture = publishEventFixture()
+					fixture.fake.nullNodes.queued.threads.push(0, 1)
+					const publishing = PublishService.use(service =>
+						service.publish({
+							...fixture.input,
+							report: { ...fixture.input.report, bugs: [bug({ line: 2 })] },
+						})
+					).pipe(
+						Effect.provide(fixture.publisher),
+						provideListCompleteness(false)
+					)
+					expect(yield* publishing).toMatchObject({
+						onFile: 0,
+						inSummary: 1,
+						incomplete: true,
+					})
+					expect(
+						fixture.fake.writes.filter(write => write.method === 'comment')
+					).toEqual([])
+					expect(yield* publishing).toMatchObject({ onFile: 1, inSummary: 0 })
+					expect(
+						fixture.fake.writes.filter(write => write.method === 'comment')
+					).toHaveLength(1)
+				})
+		)
+		test.effect(
+			'a finding whose own thread GitHub listed as null goes into the summary, then counts as repeated once',
+			() =>
+				Effect.gen(function* () {
+					const fixture = publishEventFixture()
+					fixture.fake.threads.push(reviewThread())
+					// Both thread reads of the first run list the bot's thread as a null node.
+					fixture.fake.threadSnapshots.push([], [])
+					fixture.fake.nullNodes.queued.threads.push(1, 1)
+					const publishing = PublishService.use(service =>
+						service.publish({
+							...fixture.input,
+							report: { ...fixture.input.report, bugs: [bug()] },
+						})
+					).pipe(
+						Effect.provide(fixture.publisher),
+						provideListCompleteness(false)
+					)
+					expect(yield* publishing).toMatchObject({
+						onLine: 0,
+						onFile: 0,
+						inSummary: 1,
+						repeated: 0,
+						incomplete: true,
+					})
+					const next = yield* publishing
+					expect(next).toMatchObject({
+						onLine: 0,
+						onFile: 0,
+						inSummary: 0,
+						repeated: 1,
+					})
+					expect(next.incomplete).toBeUndefined()
+					expect(yield* publishing).toMatchObject({
+						onLine: 0,
+						onFile: 0,
+						inSummary: 0,
+						repeated: 1,
+					})
+					// The thread is never posted again, inline or on its file.
+					expect(
+						inlineComments(fixture).every(count => count === 0)
+					).toBeTruthy()
+					expect(
+						fixture.fake.writes.filter(write => write.method === 'comment')
+					).toEqual([])
+				})
+		)
+		test.effect(
+			"an incomplete run on a new head dismisses the app's approval of the earlier head and lifts no change request",
+			() =>
+				Effect.gen(function* () {
+					const fixture = publishEventFixture()
+					const earlier = { ...SUMMARY_MARKER, head: 'earlier', finished: true }
+					fixture.fake.reviews.push(
+						summaryReview(earlier, {
+							id: 'request',
+							databaseId: 201,
+							state: 'CHANGES_REQUESTED',
+							commit: { oid: 'earlier' },
+						}),
+						summaryReview(earlier, {
+							id: 'approval',
+							databaseId: 202,
+							state: 'APPROVED',
+							commit: { oid: 'earlier' },
+							author: { __typename: 'Bot', login: APP_IDENTITY.login },
+						})
+					)
+					fixture.fake.nullNodes.threads = 1
+					const publishing = PublishService.use(service =>
+						service.publish(fixture.input)
+					).pipe(
+						Effect.provide(fixture.publisher),
+						provideListCompleteness(false)
+					)
+					expect(yield* publishing).toMatchObject({
+						dismissal: { dismissed: 1, failed: 0 },
+						incomplete: true,
+					})
+					expect(
+						fixture.fake.writes.flatMap(write =>
+							write.method === 'dismissReview' ? [write.id] : []
+						)
+					).toEqual([202])
+					expect(fixture.fake.reviews[0]?.state).toBe('CHANGES_REQUESTED')
+					fixture.fake.nullNodes.threads = 0
+					yield* publishing
+					expect(fixture.fake.reviews[0]?.state).toBe('DISMISSED')
+				})
+		)
+		for (const nulls of [0, 1])
+			test.effect(
+				nulls === 0
+					? 'a transient review create that a complete read confirms approves and clears the wait'
+					: 'a transient review create whose confirming read drops a node but lists the approval counts, approves and clears the wait',
+				() =>
+					Effect.gen(function* () {
+						const fixture = publishEventFixture(APP_IDENTITY, {
+							storeFailedCreates: true,
+						})
+						ownerWait(fixture)
+						fixture.fake.failures.review.push(unavailableCreate())
+						// The waiting list's and the write's own review reads are complete; the confirming one may not be.
+						fixture.fake.nullNodes.queued.reviews.push(0, 0, nulls)
+						const published = yield* publishAndReport(fixture)
+						// The decision came from complete reads; the confirming read only finds the review.
+						expect(published).toMatchObject({ event: 'APPROVE', waiting: 0 })
+						expect(published.incomplete).toBeUndefined()
+						expect(fixture.fake.reviews.at(-1)?.state).toBe('APPROVED')
+						expect(storedWait(fixture)).toBeUndefined()
+						expect(fixture.status.statuses).toMatchObject([
+							{ sha: fixture.head, state: 'success' },
+						])
+					})
+			)
+		test.effect(
+			'a transient review create whose confirming read lists the new review as its null node fails unconfirmed',
+			() =>
+				Effect.gen(function* () {
+					const fixture = publishEventFixture(APP_IDENTITY, {
+						storeFailedCreates: true,
+					})
+					fixture.fake.failures.review.push(unavailableCreate())
+					// Every review read before the create sees the reviews as they are; the confirming read
+					// lists the same ones and a null node where the new review is.
+					fixture.fake.reviewSnapshots.push(
+						[...fixture.fake.reviews],
+						[...fixture.fake.reviews],
+						[...fixture.fake.reviews]
+					)
+					fixture.fake.nullNodes.queued.reviews.push(0, 0, 1)
+					expect(yield* publishFull(fixture).pipe(Effect.flip)).toBeInstanceOf(
+						PublishIncompleteError
+					)
+					// As before the incomplete reads: one review, nothing dismissed, no later write.
+					expect(
+						fixture.fake.writes.flatMap(write =>
+							write.method === 'review' || write.method === 'dismissReview'
+								? [write.method]
+								: []
+						)
+					).toEqual(['review'])
+				})
+		)
+		for (const nulls of [0, 1])
+			test.effect(
+				nulls === 0
+					? "a reply-only run's transient review create that a complete read confirms clears the wait"
+					: "a reply-only run's transient review create whose confirming read drops a node but lists the review counts and clears the wait",
+				() =>
+					Effect.gen(function* () {
+						const fixture = publishEventFixture(APP_IDENTITY, {
+							storeFailedCreates: true,
+						})
+						ownerWait(fixture)
+						// A change request on the head, so the clearing run posts a review instead of editing.
+						fixture.fake.reviews[0] = {
+							...changeRequest(fixture),
+							body: fixture.fake.reviews[0]?.body ?? '',
+						}
+						fixture.fake.failures.review.push(unavailableCreate())
+						fixture.fake.nullNodes.queued.reviews.push(0, 0, nulls)
+						const published = yield* publishReplies(fixture)
+						expect(published).toMatchObject({ verdict: 'ready', waiting: 0 })
+						expect(published.incomplete).toBeUndefined()
+						expect(fixture.fake.reviews).toHaveLength(2)
+						expect(fixture.fake.reviews[0]?.state).toBe('DISMISSED')
+						expect(storedWait(fixture)).toBeUndefined()
+					})
+			)
+		for (const scenario of [
+			{ bug: true, seeded: true, state: 'failure' },
+			{ bug: false, seeded: true, state: 'pending' },
+			{ bug: false, seeded: false, state: 'pending' },
+		] as const)
+			test.effect(
+				scenario.bug
+					? "an incomplete reply-only run's failed write over an open bug it saw turns a success into failure"
+					: `a clean incomplete reply-only run's failed write sets pending ${scenario.seeded ? 'over a success' : 'on a head with no status'}`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = publishEventFixture()
+						if (scenario.seeded) seedSuccess(fixture)
+						// No wait. Each prior review differs from the posted state, so the run creates one.
+						if (scenario.bug) {
+							fixture.fake.reviews.push(
+								summaryReview(
+									{ ...SUMMARY_MARKER, head: fixture.head, finished: true },
+									{ author: { __typename: 'Bot', login: APP_IDENTITY.login } }
+								)
+							)
+							fixture.fake.threads.push(
+								reviewThread({ finding: bug(), kind: 'bug' })
+							)
+						} else fixture.fake.reviews.push(changeRequest(fixture))
+						fixture.fake.nullNodes.threads = 1
+						// Whichever write the run makes, GitHub refuses it.
+						fixture.fake.failures.review.push(forbidden('createReview'))
+						fixture.fake.failures.updateReview.push(forbidden('updateReview'))
+						expect(
+							yield* publishReplies(fixture).pipe(Effect.flip)
+						).toBeInstanceOf(GitHubApiError)
+						expect(fixture.status.statuses).toMatchObject([
+							scenario.bug
+								? { sha: fixture.head, state: 'failure' }
+								: {
+										sha: fixture.head,
+										state: 'pending',
+										description: toIncompleteDescription([LIST_NAMES.threads]),
+									},
+						])
+					})
+			)
+		test.effect(
+			"an incomplete reply-only run whose write fails before rendering counts the marker's unthreaded bugs",
+			() =>
+				Effect.gen(function* () {
+					const fixture = publishEventFixture()
+					seedSuccess(fixture)
+					fixture.fake.reviews.push(
+						summaryReview(
+							{
+								...SUMMARY_MARKER,
+								head: fixture.head,
+								finished: true,
+								unthreadedBugs: 1,
+							},
+							{ author: { __typename: 'Bot', login: APP_IDENTITY.login } }
+						)
+					)
+					fixture.fake.nullNodes.threads = 1
+					// The waiting list's review read passes; the write's own fails before it renders.
+					fixture.fake.failures.listReviews.push(
+						undefined,
+						new GitHubApiError({
+							operation: 'listReviews',
+							reason: 'Unavailable',
+							status: 503,
+						})
+					)
+					expect(
+						yield* publishReplies(fixture).pipe(Effect.flip)
+					).toBeInstanceOf(GitHubApiError)
+					expect(fixture.status.statuses).toMatchObject([
+						{ sha: fixture.head, state: 'failure' },
+					])
 				})
 		)
 	}

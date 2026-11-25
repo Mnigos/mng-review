@@ -1,4 +1,11 @@
-import { toCommitStatus, toSweptStatus, UNFINISHED_NOTE } from './status.helper'
+import {
+	toCommitStatus,
+	toHeldStatus,
+	toIncompleteDescription,
+	toIncompleteStatus,
+	toSweptStatus,
+	UNFINISHED_NOTE,
+} from './status.helper'
 
 describe('toCommitStatus', () => {
 	test.each([
@@ -95,4 +102,77 @@ describe('toSweptStatus', () => {
 			toSweptStatus({ state: 'failure', description: '2 open bugs' }, 1)
 		).toEqual(toCommitStatus('needs fixes', 1, true))
 	})
+})
+
+describe('toIncompleteStatus', () => {
+	const lists = ['review threads', 'reviews'] as const
+	const pending = {
+		state: 'pending',
+		description: toIncompleteDescription(lists),
+	} as const
+	for (const [name, previous] of [
+		['failure', { state: 'failure', description: '1 open bug thread(s)' }],
+		['error', { state: 'error', description: 'no open bug thread' }],
+		['pending', pending],
+	] as const)
+		test(`a success over a ${name} status writes nothing`, () => {
+			expect(
+				toIncompleteStatus(toCommitStatus('ready', 0, true), previous, lists)
+			).toBeUndefined()
+		})
+	for (const [name, previous] of [
+		['a head with no status', undefined],
+		['a success', toCommitStatus('ready', 0, true)],
+	] as const)
+		test(`a success over ${name} becomes pending with the reason`, () => {
+			expect(
+				toIncompleteStatus(toCommitStatus('ready', 0, true), previous, lists)
+			).toEqual(pending)
+		})
+	for (const [name, next] of [
+		['needs fixes', toCommitStatus('needs fixes', 1, true)],
+		['needs owner', toCommitStatus('needs owner', 0, true)],
+		['unfinished', toCommitStatus('ready', 0, false)],
+	] as const)
+		test(`a ${name} ${next.state} status writes as it is`, () => {
+			const success = toCommitStatus('ready', 0, true)
+			expect(toIncompleteStatus(next, success, lists)).toBe(next)
+			expect(toIncompleteStatus(next, undefined, lists)).toBe(next)
+		})
+})
+
+describe('toIncompleteDescription', () => {
+	test('names every list GitHub left an entry out of, under 140 characters', () => {
+		const description = toIncompleteDescription([
+			'review threads',
+			'thread comments',
+			'conversation comments',
+			'reviews',
+		])
+		expect(description).toContain(
+			'review threads, thread comments, conversation comments, reviews'
+		)
+		expect(description.length).toBeLessThanOrEqual(140)
+	})
+})
+
+describe('toHeldStatus', () => {
+	const lists = ['review threads'] as const
+	test('a success after an incomplete read becomes pending with the reason', () => {
+		expect(toHeldStatus(toCommitStatus('ready', 0, true), lists)).toEqual({
+			state: 'pending',
+			description: toIncompleteDescription(lists),
+		})
+	})
+	test('a success after complete reads stays', () => {
+		expect(toHeldStatus(toCommitStatus('ready', 0, true), [])).toBeUndefined()
+	})
+	for (const status of [
+		toCommitStatus('needs fixes', 1, true),
+		toCommitStatus('ready', 0, false),
+		{ state: 'pending', description: null },
+	] as const)
+		test(`a ${status.state} status stays after an incomplete read`, () => {
+			expect(toHeldStatus(status, lists)).toBeUndefined()
+		})
 })
