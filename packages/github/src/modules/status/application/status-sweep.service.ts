@@ -11,6 +11,11 @@ import {
 } from '../../../platform/list-completeness.context'
 import { OwnedIdentities } from '../../../platform/owned-identities.context'
 import {
+	isSameReads,
+	withReadJournal,
+} from '../../../platform/read-journal.context'
+import { ReadJournalLayer } from '../../../platform/read-journal.layer'
+import {
 	ReviewDismissService,
 	ReviewDismissServiceLive,
 } from '../../publish/application/review-dismiss.service'
@@ -19,10 +24,7 @@ import {
 	ThreadReplyServiceLive,
 } from '../../publish/application/thread-reply.service'
 import { isOpenBug, toBotThread } from '../../publish/domain/bot-thread.helper'
-import type {
-	DismissalOutcome,
-	SummaryComment,
-} from '../../publish/domain/publish.types'
+import type { DismissalOutcome } from '../../publish/domain/publish.types'
 import {
 	getDuplicateSummaries,
 	getListedWaiting,
@@ -35,23 +37,20 @@ import {
 } from '../../publish/domain/summary-review.helper'
 import { toResolvers } from '../../publish/domain/thread-conversation.helper'
 import { toClearedMessage } from '../../publish/presentation/summary-status.formatter'
+import type { SweptJudgment, SweptPull } from '../domain/status-sweep.types'
 import {
 	type CommitStatusText,
 	toHeldStatus,
+	toLoweredStatus,
 	toNextSweptStatus,
 	toSweptStanding,
+	UNCONFIRMED_STATUS,
 } from '../domain/status.helper'
 import {
-	getConfirmedSummary,
-	getConfirmedWaiting,
 	getSweptFinished,
 	getUnbackedRequests,
-	getUnchangedReviews,
 	getUnthreadedBugs,
 	isConfirmDue,
-	isPlanTurned,
-	isSweptUnfinished,
-	toConfirmedStatus,
 } from '../domain/sweep-review.helper'
 
 /** What a sweep did. */
@@ -60,24 +59,12 @@ export interface SweepResult {
 	readonly checked: number
 	readonly updated: number
 	/**
-	 * Pull requests the sweep could not read or update, those whose reviews it could not read again
-	 * before the dismissals, and those whose status it updated but whose head it could not read again.
+	 * Pull requests the sweep could not read or update, those it could not read again before it
+	 * raised, and those whose status it updated but whose head it could not read again.
 	 */
 	readonly failed: number
 	/** The current identity's change requests dismissed on heads that stand `success`, and those that failed. */
 	readonly dismissal: DismissalOutcome
-}
-
-/** What the sweep did on one pull request. */
-interface SweptPull {
-	/** `unknown` when it has no status of the bot. */
-	readonly outcome: 'unknown' | 'kept' | 'updated' | 'failed'
-	readonly dismissal: DismissalOutcome
-	/**
-	 * A read before the dismissals failed: the confirming review read, whatever the status write
-	 * did, or the head read after a status update. It counts as failed too.
-	 */
-	readonly readFailed?: boolean
 }
 
 /** Nothing dismissed. */
@@ -90,32 +77,39 @@ const NO_DISMISSAL = {
  * Refreshes the `MNG Review` status of open pull requests whose head already carries one of an
  * owned identity, from the open bug threads of the owned identities now, so a thread resolved by
  * hand counts. It runs no model and posts no comment; pull requests the bot never reviewed are left
- * alone. It reads the status again right before it writes and leaves a newer one alone; a publish
- * run that lands between that read and the write can still be overwritten until the next sweep or
- * push. The summary is the newest summary review of an owned identity, or with none the old sticky
+ * alone. The summary is the newest summary review of an owned identity, or with none the old sticky
  * comment; while the current identity has more than one visible sticky comment and no review, the
  * status is left as it is but for the incomplete-read rule below. A thread a summary marker says
  * waits for the owner keeps the status `failure` until an admin or an allowed login resolves it;
  * the sweep never edits the summary. When no open bug thread, no bug without a thread on the
- * marker's head and nothing waiting remain, finished or not, it dismisses the current identity's
- * change requests it read before the threads, which a person resolving the last thread by hand
- * leaves stale: every one with the marker on the head, only those off the head with the marker on
- * another. With a change request to dismiss, or a `success` to write, it reads the reviews again
- * before it decides the status and skips a request that read shows edited or in another state; a
- * `success` stands only on that read, so a failed one, or one whose newest summary marker an
- * incomplete write left, writes none. It dismisses only once its status write passed the freshness
- * check, or with no write due when the status still has the same writer and state, and only while
- * a read of the head right before the dismissal still shows the head it judged. A failed read on
- * the way counts the pull request as failed. While a list read of a pull request left a node out,
- * that second review read included, the sweep lifts no change request and clears no wait there,
- * and its status is never `success`: a `success` becomes `pending`. A summary marker an incomplete
- * write left (`isIncompleteMarker`) holds the same way until a full run that finished replaces
- * it: the status is never `success`, a `failure` is never lowered (`toIncompleteMarkerStatus`) and
- * no change request is lifted. That holds too when such a marker is newest only in the confirming
- * review read, written by a run that landed between the sweep's two review reads. The status and
- * the requests it lifts are decided again from that read's newest summary, so one posted there that
- * holds a bug without a thread or a wait, or turns a planned `success` aside, writes no `success` and
- * lifts none. That decision can only hold back a planned `success`, never raise a plan to one.
+ * marker's head and nothing waiting remain, finished or not, the current identity's change requests
+ * it read before the threads are stale, which a person resolving the last thread by hand leaves:
+ * every one with the marker on the head, only those off the head with the marker on another.
+ *
+ * Lowering the status needs nothing more. Raising it, by writing `success` or dismissing a stale
+ * change request, stands only on a second pass that makes every read of the first again and gets
+ * the same answers (`isSameReads`): the status, the reviews, the conversation comments, the review
+ * threads, each thread read whole and each resolver's collaborator role. The read journal
+ * (`ReadJournalLayer`) records every GitHub read below the sweep, so nothing the decision reads is
+ * left out of the comparison; only what the sweep reads once for all pull requests stays outside:
+ * the open pull requests and their heads, `commands.allow` and the owned identities. A second pass
+ * that fails, or that left a node out, counts as a change. When something changed, a run or a
+ * person wrote meanwhile: a run writes its own status, and the next sweep settles the rest, so
+ * steady activity on a pull request defers a raise until it quiets down while the blocking status
+ * stays. Such a second pass, a failed one or one that left a node out, only lowers the status
+ * (`toLoweredStatus`): of both passes' plans it writes the most blocking one that blocks more than
+ * the status, a failed one also turns a `success` into `pending` (`UNCONFIRMED_STATUS`), and it
+ * lifts nothing. The
+ * status write still checks right before it writes that the status is the one the sweep read, so a
+ * run that lands after the second read can still be overwritten until the next sweep or push. A
+ * dismissal waits for that write, or with no write due reads the status once more and goes ahead
+ * only while it is still the one the sweep read; either way only while a read of the head right
+ * before it still shows the head the sweep judged. A failed read on the way counts the pull
+ * request as failed.
+ * While a list read of a pull request left a node out, its status is never `success`: a `success`
+ * becomes `pending`. A summary marker an incomplete write left (`isIncompleteMarker`) holds the same
+ * way until a full run that finished replaces it: the status is never `success`, a `failure` is
+ * never lowered (`toIncompleteMarkerStatus`) and no change request is lifted.
  */
 export class StatusSweepService extends Context.Service<
 	StatusSweepService,
@@ -149,21 +143,6 @@ export const StatusSweepServiceLive = Layer.effect(
 		})
 
 		/**
-		 * True when the status still stands as the sweep read it: the same writer set the same state,
-		 * so no publish run wrote between the sweep's reads and now.
-		 */
-		const isUnchanged = Effect.fn('StatusSweepService.isUnchanged')(function* (
-			head: string,
-			previous: CommitStatus
-		) {
-			const latest = yield* github.getStatus(head)
-			return (
-				latest?.state === previous.state &&
-				latest.creator?.login === previous.creator?.login
-			)
-		})
-
-		/**
 		 * Leaves the head's status as it is, but never as `success` after a list read that left a node
 		 * out (`toHeldStatus`); a failed write fails the pull request.
 		 */
@@ -178,18 +157,17 @@ export const StatusSweepServiceLive = Layer.effect(
 			)
 		})
 
-		/** One pull request: `unknown` when it has no status of the bot, else whether it changed. */
-		const sweepOne = Effect.fn('StatusSweepService.sweepOne')(function* (
+		/**
+		 * One pass over a pull request: every read its decision makes, then that decision, with no
+		 * write. `undefined` when the head has no status of the bot.
+		 */
+		const judge = Effect.fn('StatusSweepService.judge')(function* (
 			pullNumber: number,
 			head: string,
 			allow: readonly string[]
 		) {
 			const previous = yield* github.getStatus(head)
-			if (!previous)
-				return {
-					outcome: 'unknown',
-					dismissal: NO_DISMISSAL,
-				} satisfies SweptPull
+			if (!previous) return undefined
 			const { current, identities } = yield* OwnedIdentities
 			// Reviews first: a change request posted after this read is never dismissed by this sweep.
 			const reviews = yield* reviewsApi.listReviews(pullNumber, true)
@@ -210,10 +188,7 @@ export const StatusSweepServiceLive = Layer.effect(
 				summaryReviews.length === 0 &&
 				getDuplicateSummaries(summaries).length > 0
 			)
-				return {
-					outcome: yield* keepStatus(head, previous),
-					dismissal: NO_DISMISSAL,
-				} satisfies SweptPull
+				return { kind: 'duplicate', previous } satisfies SweptJudgment
 			const summary = getPriorSummary(summaryReviews, summaries)
 			const marker = summary?.marker
 			// Hidden summaries still list, and threads the bot sent to the owner still wait, edited or resolved.
@@ -230,92 +205,127 @@ export const StatusSweepServiceLive = Layer.effect(
 				allow,
 			})
 			const uncleared = waiting.filter(id => !cleared.has(id))
-			// A list read that left a node out may miss an open thread, so no request is stale.
-			const incomplete = yield* isReadIncomplete
-			const toUnbacked = (judged: SummaryComment | undefined, waits: number) =>
-				incomplete
+			const bugs = openBugs + getUnthreadedBugs(marker, head)
+			const unfinished = isIncompleteMarker(marker)
+			return {
+				kind: 'judged',
+				previous,
+				// A list read that left a node out may miss an open thread, so no request is stale.
+				stale: (yield* isReadIncomplete)
 					? []
 					: getUnbackedRequests(
 							reviews,
 							current,
 							head,
-							judged?.marker,
-							openBugs + getUnthreadedBugs(judged?.marker, head) + waits === 0
-						)
-			const stale = toUnbacked(summary, uncleared.length)
-			const toNext = Effect.fn('StatusSweepService.toNext')(function* (
-				judged: SummaryComment | undefined,
-				unfinished: boolean,
-				waits: number
-			) {
+							marker,
+							bugs + uncleared.length === 0
+						),
+				standing: toSweptStanding(
+					previous,
+					bugs,
+					!unfinished && getSweptFinished(summary, head),
+					uncleared.length
+				),
+				unfinished,
+			} satisfies SweptJudgment
+		})
+
+		/** One pull request: `unknown` when it has no status of the bot, else whether it changed. */
+		const sweepOne = Effect.fn('StatusSweepService.sweepOne')(function* (
+			pullNumber: number,
+			head: string,
+			allow: readonly string[]
+		) {
+			const first = yield* withReadJournal(judge(pullNumber, head, allow))
+			const judged = first.value
+			if (!judged)
+				return {
+					outcome: 'unknown',
+					dismissal: NO_DISMISSAL,
+				} satisfies SweptPull
+			const { previous } = judged
+			if (judged.kind === 'duplicate')
+				return {
+					outcome: yield* keepStatus(head, previous),
+					dismissal: NO_DISMISSAL,
+				} satisfies SweptPull
+			const { stale, standing, unfinished } = judged
+			const toNext = Effect.fn('StatusSweepService.toNext')(function* () {
 				return toNextSweptStatus(
-					toSweptStanding(
-						previous,
-						openBugs + getUnthreadedBugs(judged?.marker, head),
-						!unfinished && getSweptFinished(judged, head),
-						waits
-					),
+					standing,
 					previous,
 					unfinished,
 					yield* getIncompleteLists
 				)
 			})
-			const planned = yield* toNext(
-				summary,
-				isIncompleteMarker(marker),
-				uncleared.length
-			)
-			// The reviews again before a dismissal or a `success`, so a node this last list read leaves
-			// out holds both back; a failed read dismisses nothing, writes no `success` and fails.
+			const planned = yield* toNext()
+			const due = isConfirmDue(stale, planned)
+			// A `success` or a dismissal stands only on a second pass that reads exactly what the first
+			// read: a run that wrote meanwhile writes its own status, and the next sweep settles the rest.
 			const confirming = yield* Effect.result(
-				isConfirmDue(stale, planned)
-					? reviewsApi.listReviews(pullNumber, true)
+				due
+					? withReadJournal(judge(pullNumber, head, allow))
 					: Effect.succeed(undefined)
 			)
-			// A failed confirming read dismisses nothing and counts whatever the status write does next.
+			// A failed second read raises nothing and counts whatever the status write does next.
 			const readFailed = Result.isFailure(confirming)
-			const latest = Result.getOrUndefined(confirming)
-			// A run that landed between the two review reads may have left a newer summary to decide from.
-			const swept = { summary, latest, summaries, owned: identities, current }
-			const confirmed = getConfirmedSummary(swept)
-			const unfinished = isSweptUnfinished(swept)
-			// A wait in either read holds; one only the confirming read lists is never cleared.
-			const waits = new Set([
-				...uncleared,
-				...getConfirmedWaiting(summary, confirmed),
-			]).size
-			const recomputed = yield* toNext(confirmed, unfinished, waits)
-			// The confirming read only lowers the plan: a `success` stands on a planned one and that read.
-			const next = toConfirmedStatus(planned, recomputed, readFailed)
-			// A newer summary that backs a request, or turns the plan aside, lifts none.
-			const backed = toUnbacked(confirmed, waits)
-			const unchanged =
-				unfinished || isPlanTurned(planned, recomputed)
-					? []
-					: getUnchangedReviews(
-							stale.filter(id => backed.includes(id)),
-							reviews,
-							latest ?? []
+			const second = Result.getOrUndefined(confirming)
+			// A node the second read, or any before it, left out counts as a change.
+			const settled =
+				second !== undefined &&
+				!(yield* isReadIncomplete) &&
+				isSameReads(first.reads, second.reads)
+			// A node the second read left out holds a `success` back as one the first reads left out does.
+			const held = yield* toNext()
+			// Passes that differ, or a second pass that failed or left a node out, only lower: from either
+			// pass's plan, the most blocking one that blocks more than the status, so neither plan's
+			// holds (an unfinished marker's included) can be bypassed and nothing is raised.
+			const recheck = second?.value
+			const next =
+				!due || settled
+					? held
+					: toLoweredStatus(
+							[
+								held,
+								recheck?.kind === 'judged'
+									? toNextSweptStatus(
+											recheck.standing,
+											recheck.previous,
+											recheck.unfinished,
+											yield* getIncompleteLists
+										)
+									: undefined,
+								// A failed second pass holds a `success` back as one that left a node out does.
+								readFailed && previous.state === 'success'
+									? UNCONFIRMED_STATUS
+									: undefined,
+							],
+							previous
 						)
+			const lifted = settled ? stale : []
 			// The head again right before dismissing: a push since the listing keeps every request.
-			const dismiss = Effect.fn('StatusSweepService.dismiss')(function* () {
-				if (unchanged.length === 0) return NO_DISMISSAL
+			const dismiss = Effect.fn('StatusSweepService.dismiss')(function* (
+				written: boolean
+			) {
+				if (lifted.length === 0) return NO_DISMISSAL
 				const pr = yield* api.getPullRequest(pullNumber)
 				if (pr.head.sha !== head) return NO_DISMISSAL
-				// `liftRequests` dismisses none once the confirming read, or any before it, left a node out.
+				// With no write of its own, the status again: a run that wrote one since keeps every request.
+				if (!written && (yield* github.getStatus(head))?.id !== previous.id)
+					return NO_DISMISSAL
+				// `liftRequests` dismisses none once the second read, or any before it, left a node out.
 				return yield* dismissals.liftRequests(
 					pullNumber,
-					unchanged,
+					lifted,
 					toClearedMessage(head)
 				)
 			})
-			if (!next) {
-				// A failed read fails the pull request, as a failed status write does.
-				const standing =
-					stale.length > 0 && (yield* isUnchanged(head, previous))
-				const dismissal = standing ? yield* dismiss() : NO_DISMISSAL
-				return { outcome: 'kept', dismissal, readFailed } satisfies SweptPull
-			}
+			if (!next)
+				return {
+					outcome: 'kept',
+					dismissal: yield* dismiss(false),
+					readFailed,
+				} satisfies SweptPull
 			const outcome = yield* writeStatus(head, previous.id, next).pipe(
 				Effect.orElseSucceed(() => 'failed' as const)
 			)
@@ -326,7 +336,7 @@ export const StatusSweepServiceLive = Layer.effect(
 					readFailed,
 				} satisfies SweptPull
 			// Only once the freshness check passed and the status was written, which a failed read keeps.
-			return yield* dismiss().pipe(
+			return yield* dismiss(true).pipe(
 				Effect.map((dismissal): SweptPull => ({
 					outcome,
 					dismissal,
@@ -376,7 +386,14 @@ export const StatusSweepServiceLive = Layer.effect(
 		return { sweep }
 	})
 ).pipe(
+	// Fresh, so a build that shares these layers elsewhere never hands the sweep one whose reads
+	// bypass its read journal.
 	Layer.provide(
-		Layer.mergeAll(ThreadReplyServiceLive, ReviewDismissServiceLive)
-	)
+		Layer.mergeAll(
+			Layer.fresh(ThreadReplyServiceLive),
+			Layer.fresh(ReviewDismissServiceLive)
+		)
+	),
+	// Every read below the sweep, the thread service's included, goes into the open read journal.
+	Layer.provide(ReadJournalLayer)
 )

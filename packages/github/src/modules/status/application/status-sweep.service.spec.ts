@@ -48,6 +48,7 @@ import {
 	type CommitStatusText,
 	toCommitStatus,
 	toIncompleteDescription,
+	UNCONFIRMED_STATUS,
 	UNFINISHED_NOTE,
 } from '../domain/status.helper'
 import {
@@ -262,8 +263,10 @@ layer(TOKEN_MODE_OWNED)('StatusSweepService latest status', test => {
 						context: 'MNG Review',
 						creator: null,
 					}
+					// The first read and the sweep's second read, then the read right before the write.
 					const getStatusSpy = vi
 						.fn()
+						.mockReturnValueOnce(Effect.succeed(previous))
 						.mockReturnValueOnce(Effect.succeed(previous))
 						.mockReturnValueOnce(
 							latest === 'read-failed'
@@ -296,8 +299,12 @@ layer(TOKEN_MODE_OWNED)('StatusSweepService latest status', test => {
 						failed: latest === 'read-failed' ? 1 : 0,
 						dismissal: NO_DISMISSAL,
 					})
-					expect(getStatusSpy.mock.calls).toEqual([['head'], ['head']])
-					expect(api.threadReads).toEqual([17])
+					expect(getStatusSpy.mock.calls).toEqual([
+						['head'],
+						['head'],
+						['head'],
+					])
+					expect(api.threadReads).toEqual([17, 17])
 					expect(fake.statuses).toEqual(
 						latest === 'same'
 							? [
@@ -457,13 +464,15 @@ layer(TOKEN_MODE_OWNED)('StatusSweepService summary marker', test => {
 							creator: null,
 						}
 						const repaired = toCommitStatus('ready', 0, finished)
-						const getStatusSpy = vi
-							.fn()
-							.mockReturnValueOnce(Effect.succeed(previous))
-							.mockReturnValueOnce(Effect.succeed(previous))
-							.mockReturnValue(
-								Effect.succeed({ ...previous, ...repaired, id: 2 })
+						// The first read, the second read before a `success` and the read before the write.
+						const reads = finished ? 3 : 2
+						const getStatusSpy = vi.fn((_sha: string) =>
+							Effect.succeed(
+								getStatusSpy.mock.calls.length <= reads
+									? previous
+									: { ...previous, ...repaired, id: 2 }
 							)
+						)
 						const fake = githubStatusFake({
 							listOpenPullRequests: () =>
 								Effect.succeed([openPullRequest(17, 'head')]),
@@ -489,11 +498,9 @@ layer(TOKEN_MODE_OWNED)('StatusSweepService summary marker', test => {
 							failed: 0,
 							dismissal: NO_DISMISSAL,
 						})
-						expect(getStatusSpy.mock.calls).toEqual([
-							['head'],
-							['head'],
-							['head'],
-						])
+						expect(getStatusSpy.mock.calls).toEqual(
+							Array.from({ length: reads + 1 }, () => ['head'])
+						)
 						expect(fake.statuses).toHaveLength(1)
 						expect(api.writes).toEqual([])
 					})
@@ -899,8 +906,14 @@ layer(APP_MODE_OWNED)(
 									? [{ sha: 'head', ...toCommitStatus('ready', 0, finished) }]
 									: []
 							)
-							expect(getStatusSpy).toHaveBeenCalledTimes(hidden ? 2 : 1)
-							expect(api.commentReads).toEqual([17])
+							// A repair to `success` reads the status again before it writes.
+							expect(getStatusSpy).toHaveBeenCalledTimes(
+								hidden ? (finished ? 3 : 2) : 1
+							)
+							// A repair to `success` reads the comments again in its second pass.
+							expect(api.commentReads).toEqual(
+								hidden && finished ? [17, 17] : [17]
+							)
 							expect(api.writes).toEqual([])
 						})
 				)
@@ -1378,11 +1391,12 @@ layer(APP_MODE_OWNED)('StatusSweepService recovered owner state', test => {
 						expect(
 							api.reads.filter(read => read.startsWith('listThreadComments:'))
 						).toEqual(
-							// Each sweep reads it whole for its bug count and the owner answer and, for an
-							// owner's resolution, again for an unsettled answer.
+							// Each pass reads it whole for its bug count and the owner answer and, for an
+							// owner's resolution, again for an unsettled answer; the first sweep of an owner's
+							// resolution raises to `success`, so it makes a second pass.
 							scenario === 'outside-window'
 								? Array.from(
-										{ length: resolver === 'writer' ? 4 : 6 },
+										{ length: resolver === 'writer' ? 4 : 9 },
 										() => 'listThreadComments:thread'
 									)
 								: []
@@ -1603,7 +1617,10 @@ function onListedHead(api: ApiFake, head = 'head'): ApiFake {
 	return api
 }
 
-/** An open pull request on `head` whose own summary marks it finished, and its status. */
+/**
+ * An open pull request on `head` whose own summary marks it finished, and its status: read `n` gives
+ * `statuses[n - 1]`, then the last one, each entry under an id of its own as a new status would be.
+ */
 function sweepSetup(statuses: readonly CommitStatusText[]) {
 	const api = onListedHead(githubApiFake(APP_IDENTITY))
 	const author = { __typename: 'Bot', login: APP_IDENTITY.login } as const
@@ -1613,16 +1630,15 @@ function sweepSetup(statuses: readonly CommitStatusText[]) {
 			{ databaseId: 101, author }
 		)
 	)
-	const getStatusSpy = vi.fn((_sha: string) =>
-		Effect.succeed({
-			id: getStatusSpy.mock.calls.length,
-			...(statuses[getStatusSpy.mock.calls.length - 1] ??
-				statuses.at(-1) ??
-				toCommitStatus('ready', 0, true)),
+	const getStatusSpy = vi.fn((_sha: string) => {
+		const index = Math.min(getStatusSpy.mock.calls.length, statuses.length)
+		return Effect.succeed({
+			id: Math.max(index, 1),
+			...(statuses[index - 1] ?? toCommitStatus('ready', 0, true)),
 			context: 'MNG Review',
 			creator: null,
 		})
-	)
+	})
 	const status = githubStatusFake({
 		listOpenPullRequests: () => Effect.succeed([openPullRequest(17, 'head')]),
 		getStatus: getStatusSpy,
@@ -1788,14 +1804,38 @@ layer(APP_MODE_OWNED)('StatusSweepService review dismissals', test => {
 		'a status write that fails its freshness check keeps the change request',
 		() =>
 			Effect.gen(function* () {
-				// The previous status is stale, so a write is due; a publish run wrote a newer one meanwhile.
-				const fixture = sweepSetup([toCommitStatus('needs fixes', 1, true)])
+				const fixture = sweepSetup([])
 				fixture.api.reviews.push(fixture.request)
-				expect(yield* fixture.sweep).toMatchObject({
+				// The previous status is stale, so a write is due. Both passes read it under one id; a
+				// publish run writes a newer one just before the read inside the write.
+				const getStatusSpy = vi.fn((_sha: string) =>
+					Effect.succeed({
+						id: getStatusSpy.mock.calls.length <= 2 ? 1 : 2,
+						...toCommitStatus('needs fixes', 1, true),
+						context: 'MNG Review',
+						creator: null,
+					})
+				)
+				const status = githubStatusFake({
+					listOpenPullRequests: () =>
+						Effect.succeed([openPullRequest(17, 'head')]),
+					getStatus: getStatusSpy,
+				})
+				expect(
+					yield* StatusSweepService.use(service => service.sweep()).pipe(
+						Effect.provide(
+							StatusSweepServiceLive.pipe(
+								Layer.provide(Layer.merge(fixture.api.api, status.layer))
+							)
+						)
+					)
+				).toMatchObject({
 					updated: 0,
+					failed: 0,
 					dismissal: NO_DISMISSAL,
 				})
-				expect(fixture.status.statuses).toEqual([])
+				expect(getStatusSpy).toHaveBeenCalledTimes(3)
+				expect(status.statuses).toEqual([])
 				expect(fixture.api.reviews[1]?.state).toBe('CHANGES_REQUESTED')
 			})
 	)
@@ -1990,7 +2030,7 @@ function rewriteSetup(finished = true) {
 layer(APP_MODE_OWNED)('StatusSweepService reads before dismissals', test => {
 	for (const finished of [false, true])
 		test.effect(
-			`a review re-read that fails counts as failed and ${finished ? 'writes no success' : 'keeps the update'}`,
+			`a review re-read that fails counts as failed and writes ${finished ? 'no success' : 'no error over the failure'}`,
 			() =>
 				Effect.gen(function* () {
 					const fixture = rewriteSetup(finished)
@@ -2004,16 +2044,12 @@ layer(APP_MODE_OWNED)('StatusSweepService reads before dismissals', test => {
 					)
 					expect(yield* fixture.sweep).toEqual({
 						checked: 1,
-						updated: finished ? 0 : 1,
+						updated: 0,
 						failed: 1,
 						dismissal: NO_DISMISSAL,
 					})
-					// A `success` stands only on the confirming read; an `error` needs none.
-					expect(fixture.status.statuses).toEqual(
-						finished
-							? []
-							: [{ sha: 'head', ...toCommitStatus('ready', 0, false) }]
-					)
+					// Both lift the `failure`, so both stand only on a confirming read that agrees.
+					expect(fixture.status.statuses).toEqual([])
 					expect(fixture.api.reviews[0]?.state).toBe('CHANGES_REQUESTED')
 				})
 		)
@@ -2389,7 +2425,8 @@ layer(APP_MODE_OWNED)('StatusSweepService incomplete list reads', test => {
 					provideListCompleteness(false)
 				)
 				expect((yield* sweep).dismissal).toEqual({ dismissed: 1, failed: 0 })
-				expect(reads).toEqual([0, 1])
+				// The second pull request's threads again in the read before its dismissal.
+				expect(reads).toEqual([0, 1, 2])
 			})
 	)
 	test.effect(
@@ -2585,21 +2622,46 @@ layer(APP_MODE_OWNED)('StatusSweepService failed confirming reads', test => {
 		'a failed confirming read counts as failed after a status update when the head moved',
 		() =>
 			Effect.gen(function* () {
-				// The last full run did not finish, so the sweep writes `error`, which needs no read.
-				const fixture = rewriteSetup(false)
-				failConfirmingRead(fixture.api)
-				onListedHead(fixture.api, 'next-head')
-				expect(yield* fixture.sweep).toEqual({
+				const api = githubApiFake(APP_IDENTITY)
+				const author = { __typename: 'Bot', login: APP_IDENTITY.login } as const
+				// The newest summary did not finish, so the sweep lowers the `success` to `error`, which
+				// needs no confirming read, and has a change request to dismiss.
+				api.reviews.push(
+					summaryReview(SUMMARY_MARKER, {
+						databaseId: 102,
+						state: 'CHANGES_REQUESTED',
+						author,
+					}),
+					summaryReview(
+						{ ...SUMMARY_MARKER, head: 'head', finished: false },
+						{ databaseId: 101, author }
+					)
+				)
+				const status = newestStatus(toCommitStatus('ready', 0, true))
+				failConfirmingRead(api)
+				onListedHead(api, 'next-head')
+				expect(
+					yield* StatusSweepService.use(service => service.sweep()).pipe(
+						Effect.provide(
+							StatusSweepServiceLive.pipe(
+								Layer.provide(Layer.merge(api.api, status.layer))
+							)
+						)
+					)
+				).toEqual({
 					checked: 1,
 					updated: 1,
 					failed: 1,
 					dismissal: NO_DISMISSAL,
 				})
-				expect(fixture.api.reviews[0]?.state).toBe('CHANGES_REQUESTED')
+				expect(status.statuses).toEqual([
+					{ sha: 'head', ...toCommitStatus('ready', 0, false) },
+				])
+				expect(api.reviews[0]?.state).toBe('CHANGES_REQUESTED')
 			})
 	)
 	test.effect(
-		'a failed confirming read counts as failed with no status write due when the head moved',
+		'a failed confirming read with no status write due counts as failed and holds the success back when the head moved',
 		() =>
 			Effect.gen(function* () {
 				const fixture = sweepSetup([toCommitStatus('ready', 0, true)])
@@ -2608,11 +2670,14 @@ layer(APP_MODE_OWNED)('StatusSweepService failed confirming reads', test => {
 				onListedHead(fixture.api, 'next-head')
 				expect(yield* fixture.sweep).toEqual({
 					checked: 1,
-					updated: 0,
+					updated: 1,
 					failed: 1,
 					dismissal: NO_DISMISSAL,
 				})
-				expect(fixture.status.statuses).toEqual([])
+				// The failed second pass holds the `success` back as `pending`.
+				expect(fixture.status.statuses).toEqual([
+					{ sha: 'head', ...UNCONFIRMED_STATUS },
+				])
 				expect(fixture.api.reviews[1]?.state).toBe('CHANGES_REQUESTED')
 			})
 	)
@@ -2706,7 +2771,7 @@ layer(APP_MODE_OWNED)('StatusSweepService unfinished summaries', test => {
 					expect(
 						fixture.api.writes.filter(write => write.method === 'dismissReview')
 					).toEqual([])
-					// Over a `success` the unfinished standing is `error`; a `failure` stays.
+					// The second pass lowers a `success` to the unfinished standing's `error`; a `failure` stays.
 					expect(status.statuses).toEqual(
 						standing === 'success'
 							? [{ sha: 'head', ...toCommitStatus('ready', 0, false) }]
