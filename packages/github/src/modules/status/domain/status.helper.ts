@@ -1,4 +1,5 @@
 import { Predicate } from 'effect'
+import type { CommitStatus } from '../../../platform/github-api.schema'
 import type { CommitState } from '../../../platform/github-status.service'
 import type { LenientList } from '../../../platform/list-completeness.context'
 import type { Verdict } from '../../publish/presentation/summary-comment.formatter'
@@ -179,6 +180,35 @@ export function toSweptStatus(
 		previous,
 		toSweptStanding(previous, openBugs, lastRunFinished, waiting)
 	)
+}
+
+/** What a raise or the sweep reads of the last full run: whether it finished on the head and when. */
+export interface FinishedRun {
+	/** `getSweptFinished`: true only for a finished full run on the head. */
+	readonly finished: boolean | undefined
+	/** The marker's `reviewedAt`, which only a finished full run stamps. */
+	readonly reviewedAt?: string
+}
+
+/**
+ * True when a later run outran the finished full run the marker records: the head's status does
+ * not say `success`, says the run did not finish (`UNFINISHED_NOTE`, which a failed publish, an
+ * offline reviewer and every status judged from such a run carry), and was written no earlier than
+ * that run's stamp. Its findings may never have reached a marker, so the head stands as unfinished
+ * until a full run finishes again. Only a `created_at` strictly before the stamp orders the status
+ * first; a tie, a missing time or one that does not parse counts as later, which a marker from
+ * before the stamp also does.
+ */
+export function isOutrunFinish(
+	previous: Pick<CommitStatus, 'state' | 'description' | 'created_at'>,
+	run: FinishedRun
+): boolean {
+	if (run.finished !== true || previous.state === 'success') return false
+	if (!(previous.description ?? '').includes(UNFINISHED_NOTE)) return false
+	const statusAt = Date.parse(previous.created_at ?? '')
+	const reviewedAt = Date.parse(run.reviewedAt ?? '')
+	if (Number.isNaN(statusAt) || Number.isNaN(reviewedAt)) return true
+	return statusAt >= reviewedAt
 }
 
 /** The commit states from the most blocking to the least, as the sweep lowers a status. */

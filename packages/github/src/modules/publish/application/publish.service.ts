@@ -1,4 +1,4 @@
-import { Context, Effect, Layer } from 'effect'
+import { Clock, Context, Effect, Layer } from 'effect'
 import { GitHubConfig } from '../../../platform/github.config'
 import type { GitHubApiError } from '../../../platform/github.errors'
 import { isReadIncomplete } from '../../../platform/list-completeness.context'
@@ -250,6 +250,8 @@ export const PublishServiceLive = Layer.effect(
 				...planned,
 				threads: inline ? filed : filed.map(toSummaryPlace),
 			})
+			// The stamp a finished full run leaves in its marker, which orders a later run's statuses.
+			const reviewedAt = new Date(yield* Clock.currentTimeMillis).toISOString()
 			const toUpdate = (
 				plan: PublishPlan,
 				waitUpdate: WaitingUpdate,
@@ -262,6 +264,7 @@ export const PublishServiceLive = Layer.effect(
 					failed: hasFailedRuns(report),
 					unthreadedBugs: countUnthreadedBugs(plan, latest),
 					waiting: waitUpdate,
+					reviewedAt,
 				}) satisfies MarkerUpdate
 			const written = yield* summaries
 				.write(pullNumber, {

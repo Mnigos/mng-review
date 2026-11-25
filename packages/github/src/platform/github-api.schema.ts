@@ -278,6 +278,8 @@ export const commitStatusSchema = Schema.Struct({
 	creator: Schema.NullOr(
 		Schema.Struct({ login: Schema.String, type: Schema.String })
 	),
+	/** When the status was written, to the second; each write is a new status. */
+	created_at: Schema.optionalKey(Schema.String),
 })
 export type CommitStatus = typeof commitStatusSchema.Type
 

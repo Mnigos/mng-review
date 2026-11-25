@@ -16,6 +16,7 @@ import type {
 } from '../domain/status-sweep.types'
 import {
 	type CommitStatusText,
+	isOutrunFinish,
 	toHeldStatus,
 	toLoweredStatus,
 	toNextSweptStatus,
@@ -49,7 +50,9 @@ export interface SweepResult {
  * admin or an allowed login resolves it; the sweep never edits the summary. While a list read of a
  * pull request left a node out, a `success` becomes `INCOMPLETE_STATUS`, and the result names the
  * lists (`incomplete`); a summary marker an incomplete write left (`isIncompleteMarker`) never
- * lowers a `failure` (`toIncompleteMarkerStatus`). The status write reads the status again right
+ * lowers a `failure` (`toIncompleteMarkerStatus`). A status a later unfinished run left after the
+ * marker's last finished full run (`isOutrunFinish`) judges the head unfinished, so a lowering to
+ * `failure` keeps the note that run did not finish. The status write reads the status again right
  * before it writes and skips the write when that read already sees another status; GitHub takes no
  * expected status, so a status posted after that read can still be followed by the sweep's
  * lowering. A failed read or write counts the pull request as failed.
@@ -116,10 +119,11 @@ export const StatusSweepServiceLive = Layer.effect(
 			return {
 				kind: 'judged',
 				previous,
+				// A later unfinished run outran the finished marker: the head stands as unfinished.
 				standing: toSweptStanding(
 					previous,
 					state.bugs,
-					state.finished,
+					isOutrunFinish(previous, state) ? false : state.finished,
 					state.uncleared
 				),
 				unfinished: state.unfinished,

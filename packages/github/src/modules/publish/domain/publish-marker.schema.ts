@@ -54,6 +54,13 @@ export const summaryMarkerSchema = Schema.Struct({
 	/** Whether the last run finished; the status sweep reads it, never the status text. */
 	finished: Schema.optionalKey(Schema.Boolean),
 	/**
+	 * When the last full run that finished wrote this marker (ISO 8601, the runner's clock). Only
+	 * such a run sets it; every other write (a reply-only run, a reservation, a partial or unfinished
+	 * run, an offline status) carries it unchanged, so the raise can tell a later run's unfinished
+	 * status from one that run replaced. Unset on markers from before it.
+	 */
+	reviewedAt: Schema.optionalKey(Schema.String),
+	/**
 	 * The last full run had a run or unit that failed or never reported (`hasFailedRuns`), so a
 	 * reply-only run on its head clears no change request. Unset when none failed.
 	 */

@@ -1,3 +1,4 @@
+import type { CommitStatus } from '../../../platform/github-api.schema'
 import type { DismissalOutcome } from '../../publish/domain/publish.types'
 import type { CommitStatusText } from '../domain/status.helper'
 
@@ -78,4 +79,45 @@ export interface RaiseResult {
 	readonly movedBeforeDismissal?: true
 	/** The pull request closed between the status write and the dismissal; every request stays. */
 	readonly closedBeforeDismissal?: true
+}
+
+/** What a scan judged so far, kept when its deadline or limit cuts it short. */
+export interface ScanTally {
+	readonly due: readonly number[]
+	/** Open pull requests listed; none until the listing returns. */
+	readonly read: number
+	readonly failed: number
+	readonly scanned: number
+	/** Judgments that read past the status and the reviews, or failed. */
+	readonly full: number
+	readonly stop?: 'deadline' | 'limit' | 'bound'
+	/** The pull request being judged now, which a cut at the bound drops. */
+	readonly current?: number
+}
+
+/** What one judgment found to write on a head. */
+export interface RaiseJudgment {
+	/** The bot's status on the head when judged; unset when it has none. */
+	readonly previous?: CommitStatus
+	/**
+	 * The status to write: the plan when it differs from `previous`, or under a marker an incomplete
+	 * run left, or one a later `error` outran, only one that blocks more.
+	 */
+	readonly status?: CommitStatusText
+	/** The current identity's change requests nothing backs. */
+	readonly stale: readonly number[]
+	/** The judgment read past the status and the reviews, which a scan's limit counts. */
+	readonly full?: true
+}
+
+/** What the status write did: the status written, or why GitHub refused it; empty for none. */
+export type StatusWrite = Pick<RaiseResult, 'status' | 'statusError'>
+
+/** The pull request right before the dismissal: still open on the head, closed, or moved. */
+export type DismissalGate = 'open' | 'closed' | 'moved'
+
+/** What the dismissal step did, and what the pull request was right before it. */
+export interface LiftResult {
+	readonly gate: DismissalGate
+	readonly dismissal: DismissalOutcome
 }

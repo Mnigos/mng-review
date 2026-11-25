@@ -52,6 +52,8 @@ export interface ReadState {
 	readonly unfinished: boolean
 	/** Whether the last full run finished on the head (`getSweptFinished`); `false` while unfinished. */
 	readonly finished: boolean | undefined
+	/** The marker's `reviewedAt`: when its last finished full run wrote it. */
+	readonly reviewedAt?: string
 }
 
 /** What one pass of reads over a pull request found. */

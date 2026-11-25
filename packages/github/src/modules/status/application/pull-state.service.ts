@@ -45,14 +45,18 @@ export interface PullStateInput {
  *
  * The summary is the newest summary review of an owned identity, or with none the old sticky
  * comment; while the current identity has more than one visible sticky comment and no review, the
- * pull request is `duplicate` and nothing is judged. A thread a summary marker says waits for the
- * owner stays waiting until an admin or an allowed login resolves it. When no open bug thread, no
+ * pull request is `duplicate` and nothing is judged. A thread waits for the owner when any summary,
+ * hidden or not, lists it, or when the bot's own unedited `needs-owner` answer stands in it
+ * (`getSentToOwner`), so a wait a run sent whose summary write failed waits all the same; it stays
+ * waiting until an admin or an allowed login resolves it. When no open bug thread, no
  * bug without a thread in the newest marker (on whatever head it is) and nothing waiting remain,
  * finished or not, the current identity's change requests in `reviews` are stale: every one with
  * the marker on the head, only those off the head with the marker on another. `bugs`, which sets
  * the status, counts the marker's bugs without a thread only on its own head
  * (`getUnthreadedBugs`). None is stale while a list read of the
  * run left a node out or the marker is one an incomplete write left (`isIncompleteMarker`).
+ * `reviewedAt` is the marker's stamp of its last finished full run, which orders a later run's
+ * unfinished status against it (`isOutrunFinish`).
  */
 export class PullStateService extends Context.Service<
 	PullStateService,
@@ -123,6 +127,9 @@ export const PullStateServiceLive = Layer.effect(
 				uncleared,
 				unfinished,
 				finished: !unfinished && getSweptFinished(summary, head),
+				...(marker?.reviewedAt === undefined
+					? {}
+					: { reviewedAt: marker.reviewedAt }),
 			} satisfies PullState
 		})
 

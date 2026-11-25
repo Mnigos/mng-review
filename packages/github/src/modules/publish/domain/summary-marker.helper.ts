@@ -24,6 +24,8 @@ export interface MarkerUpdate {
 	readonly unthreadedBugs: number
 	/** Threads this run sent to the owner, and waiting ones an owner cleared. */
 	readonly waiting?: WaitingUpdate
+	/** When the run writes the marker (ISO 8601); stamped only when it replaces the full review. */
+	readonly reviewedAt?: string
 }
 
 /** How a run changes the threads that wait for the owner. */
@@ -78,7 +80,8 @@ function isReplacing(
  * finish) keeps the previous head; a partial run keeps the previous finished and failed flags as
  * well, so it never stands for a full review. Such a run adds its own unthreaded bugs to those
  * already on the same head, so they keep blocking until the next full review replaces the count; a
- * bug it found again is counted twice until then. The threads waiting for the owner lose those an owner cleared
+ * bug it found again is counted twice until then. Only a run that replaces it stamps `reviewedAt`;
+ * every other run carries the stamp. The threads waiting for the owner lose those an owner cleared
  * and gain this run's, whatever the head. A marker an incomplete write left (`isIncompleteMarker`)
  * stays one until such a full run replaces it. Every other field of the previous marker, such as
  * the manual runs, is carried as it was.
@@ -92,6 +95,7 @@ export function toNextSummaryMarker(
 		unthreadedBugs: previousBugs,
 		needsOwner: previousWaiting,
 		failed: previousFailed,
+		reviewedAt: previousReviewedAt,
 		...carried
 	} = previous ?? { v: MARKER_VERSION, runs: 0 }
 	const needsOwner = toNextWaiting(previousWaiting, update.waiting)
@@ -106,6 +110,7 @@ export function toNextSummaryMarker(
 			? previousFailed
 			: update.finished && update.failed === true
 	const head = reviewed ? update.head : previousHead
+	const reviewedAt = reviewed ? update.reviewedAt : previousReviewedAt
 	const added = previousHead === update.head ? update.unthreadedBugs : 0
 	const unthreadedBugs = reviewed
 		? update.unthreadedBugs
@@ -117,6 +122,7 @@ export function toNextSummaryMarker(
 		finished,
 		...(failed === true ? { failed } : {}),
 		...(head === undefined ? {} : { head }),
+		...(reviewedAt === undefined ? {} : { reviewedAt }),
 		...(unthreadedBugs > 0 ? { unthreadedBugs } : {}),
 		...(needsOwner.length > 0 ? { needsOwner } : {}),
 	}

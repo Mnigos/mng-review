@@ -202,6 +202,13 @@ function error(status?: number) {
 	})
 }
 
+/** The stamp a finished full run leaves in its marker, at the runner's time. */
+const STAMPED = {
+	reviewedAt: expect.stringMatching(
+		/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/u
+	) as unknown,
+} as const
+
 afterEach(cleanupRepos)
 
 layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
@@ -734,6 +741,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 						runs: 1,
 						head: fixture.head,
 						finished: true,
+						...STAMPED,
 					})
 					expect(fixture.fake.threads).toEqual([])
 				})
@@ -1253,6 +1261,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 								runs: prior === 'absent' ? 1 : 4,
 								finished: outcome === 'finished',
 								...(expectedHead === undefined ? {} : { head: expectedHead }),
+								...(outcome === 'finished' ? STAMPED : {}),
 							}
 							expect(
 								parseSummaryMarker(reviewBody(fixture.fake) ?? '')
@@ -1767,6 +1776,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 							runs: 8,
 							head: finished ? fixture.head : fresh.head,
 							finished,
+							...(finished ? STAMPED : {}),
 						})
 						expect(body).toContain(`**Verdict: ${verdict}**`)
 						expect(body).not.toContain('Other run details.')
@@ -1811,6 +1821,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 						manualRuns: 2,
 						head: fixture.head,
 						finished: true,
+						...STAMPED,
 					})
 					expect(reviewBody(fixture.fake)).toContain('**Verdict: ready**')
 					expect(reviewBody(fixture.fake)).not.toContain(
@@ -2058,6 +2069,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 							runs: 1,
 							head: fixture.head,
 							finished: true,
+							...STAMPED,
 						})
 						if (place === 'unposted')
 							fixture.fake.failures.comment.push(error(503))
@@ -2087,6 +2099,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 							head: fixture.head,
 							finished: true,
 							unthreadedBugs: 1,
+							...STAMPED,
 						})
 						expect(fixture.fake.threads).toEqual([])
 						const status = toCommitStatus(
@@ -2135,6 +2148,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 							runs: 3,
 							head: fixture.head,
 							finished: true,
+							...STAMPED,
 						})
 					})
 			)
@@ -2173,6 +2187,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 								head: fixture.head,
 								finished: true,
 								unthreadedBugs: 2,
+								...STAMPED,
 							})
 							if (place === 'unposted')
 								fixture.fake.failures.comment.push(error(503))
@@ -2220,6 +2235,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 								head: fixture.head,
 								finished: false,
 								unthreadedBugs: openBugs,
+								...STAMPED,
 							})
 							expect(reviewBody(fixture.fake)).toContain(
 								'2 bug(s) without a thread from earlier runs on this head still count until a full review checks them again.'
@@ -2270,6 +2286,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 								runs: 3,
 								head: fixture.head,
 								finished: true,
+								...STAMPED,
 							})
 							expect(reviewBody(fixture.fake)).not.toContain(
 								'from earlier runs on this head still count'
@@ -2359,6 +2376,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 							head: fixture.head,
 							finished: true,
 							unthreadedBugs: 1,
+							...STAMPED,
 						}
 						expect(parseSummaryMarker(reviewBody(fixture.fake) ?? '')).toEqual(
 							marker
@@ -2398,6 +2416,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 							runs: 3,
 							head: fixture.head,
 							finished: true,
+							...STAMPED,
 						})
 						expect(reviewBody(fixture.fake)).not.toContain(
 							'from earlier runs on this head still count'
@@ -3384,6 +3403,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 						runs: 1,
 						finished: true,
 						head: fixture.head,
+						...STAMPED,
 						needsOwner: ['thread'],
 					})
 				})

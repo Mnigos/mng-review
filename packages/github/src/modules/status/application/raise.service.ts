@@ -1,8 +1,5 @@
 import { Clock, Context, Duration, Effect, Layer, Ref, Result } from 'effect'
-import type {
-	CommitStatus,
-	OpenPullRequest,
-} from '../../../platform/github-api.schema'
+import type { OpenPullRequest } from '../../../platform/github-api.schema'
 import { GitHubApiService } from '../../../platform/github-api.service'
 import { GitHubReviewService } from '../../../platform/github-review.service'
 import { GitHubStatusService } from '../../../platform/github-status.service'
@@ -18,95 +15,32 @@ import {
 	ReviewDismissServiceLive,
 } from '../../publish/application/review-dismiss.service'
 import { ThreadReplyServiceLive } from '../../publish/application/thread-reply.service'
-import type { DismissalOutcome } from '../../publish/domain/publish.types'
-import type { ReviewDecision } from '../../publish/domain/review-event.helper'
 import { getStaleChangeRequests } from '../../publish/domain/summary-review.helper'
 import { toClearedMessage } from '../../publish/presentation/summary-status.formatter'
 import { getScanStride } from '../domain/raise-scan.helper'
 import {
-	type CommitStatusText,
+	isOutrunFinish,
 	toLoweredStatus,
 	toNextSweptStatus,
 	toSweptStanding,
 } from '../domain/status.helper'
 import { PullStateService, PullStateServiceLive } from './pull-state.service'
+import {
+	CLEARING,
+	getWriteOutcome,
+	isDue,
+	NO_DISMISSAL,
+} from './raise.service.helper'
 import type {
+	LiftResult,
 	RaiseFindResult,
+	RaiseJudgment,
 	RaiseOutcome,
 	RaiseResult,
 	RaiseScan,
+	ScanTally,
+	StatusWrite,
 } from './raise.service.types'
-
-/** What a scan judged so far, kept when its deadline or limit cuts it short. */
-interface ScanTally {
-	readonly due: readonly number[]
-	/** Open pull requests listed; none until the listing returns. */
-	readonly read: number
-	readonly failed: number
-	readonly scanned: number
-	/** Judgments that read past the status and the reviews, or failed. */
-	readonly full: number
-	readonly stop?: 'deadline' | 'limit' | 'bound'
-	/** The pull request being judged now, which a cut at the bound drops. */
-	readonly current?: number
-}
-
-/** What one judgment found to write on a head. */
-interface RaiseJudgment {
-	/** The bot's status on the head when judged; unset when it has none. */
-	readonly previous?: CommitStatus
-	/**
-	 * The status to write: the plan when it differs from `previous`, or under a marker an incomplete
-	 * run left only one that blocks more.
-	 */
-	readonly status?: CommitStatusText
-	/** The current identity's change requests nothing backs. */
-	readonly stale: readonly number[]
-	/** The judgment read past the status and the reviews, which a scan's limit counts. */
-	readonly full?: true
-}
-
-/** What the status write did: the status written, or why GitHub refused it; empty for none. */
-type StatusWrite = Pick<RaiseResult, 'status' | 'statusError'>
-
-/** The pull request right before the dismissal: still open on the head, closed, or moved. */
-type DismissalGate = 'open' | 'closed' | 'moved'
-
-/** What the dismissal step did, and what the pull request was right before it. */
-interface LiftResult {
-	readonly gate: DismissalGate
-	readonly dismissal: DismissalOutcome
-}
-
-/** A raise's outcome once it tried its writes: only a write that landed raises. */
-const getWriteOutcome = (
-	written: StatusWrite,
-	lifted: LiftResult
-): RaiseOutcome => {
-	if (written.status?.state === 'success' || lifted.dismissal.dismissed > 0)
-		return 'raised'
-	if (written.status) return 'updated'
-	if (written.statusError !== undefined || lifted.dismissal.failed > 0)
-		return 'refused'
-	return lifted.gate === 'closed' ? 'closed' : 'moved'
-}
-
-/** Nothing dismissed. */
-const NO_DISMISSAL = {
-	dismissed: 0,
-	failed: 0,
-} as const satisfies DismissalOutcome
-
-/** A write that clears, as `getStaleChangeRequests` takes it: every owned change request is stale. */
-const CLEARING = {
-	event: 'COMMENT',
-	clears: true,
-} as const satisfies Pick<ReviewDecision, 'event' | 'clears'>
-
-/** True when a judgment writes anything: a raise, or a status that changed. */
-function isDue(judgment: RaiseJudgment): boolean {
-	return judgment.status !== undefined || judgment.stale.length > 0
-}
 
 /**
  * Between runs the only place that raises: it writes the bot's `success` and lifts the current
@@ -117,10 +51,15 @@ function isDue(judgment: RaiseJudgment): boolean {
  * thread, no bug without a thread in the newest marker's `unthreadedBugs` (on any head for a change
  * request; only a later marker that no longer lists them clears them), nothing waiting for the owner
  * and no summary an incomplete run left, with every list read complete (`PullStateService.read`).
- * The status follows the sweep's rules (`toNextSweptStatus`): `success` only on a finished run on the
- * head. From a complete read it also writes a changed blocking plan, such as `error` over a
- * `failure` once a cleared wait leaves an unfinished run, or a new bug count; under a marker an
- * incomplete run left only a plan that blocks more (`toLoweredStatus`).
+ * A wait counts from any summary's list or from the bot's `needs-owner` answer in its thread, so a
+ * run whose summary write failed cannot leave one out. The status follows the sweep's rules
+ * (`toNextSweptStatus`): `success` only on a finished run on the head. From a complete read it also
+ * writes a changed blocking plan, such as `error` over a `failure` once a cleared wait leaves an
+ * unfinished run, or a new bug count; under a marker an incomplete run left only a plan that blocks
+ * more (`toLoweredStatus`). A status that says the run did not finish, written no earlier than the
+ * marker's stamp of its last finished full run (`isOutrunFinish`), outruns that run: a later run may
+ * have found bugs no marker holds, so the raise judges the head unfinished, which keeps the note in
+ * every status it writes, and lifts nothing. Only a full run that finishes later releases it.
  *
  * Only the reply schedule runs it. `findDue`, in the find job with a read-only token, lists a pull
  * request only when its plan differs from its status or a change request would be lifted. `raise`
@@ -128,7 +67,8 @@ function isDue(judgment: RaiseJudgment): boolean {
  * request and the status again right before its writes and writes nothing when it closed or either
  * changed; only a write that landed counts as a raise. A person can
  * still reopen a thread after the judgment read the review threads and before the writes; the next
- * sweep lowers the status again, and nothing restores a change request once dismissed.
+ * sweep that actually runs lowers the status again, and nothing restores a change request once
+ * dismissed.
  */
 export class RaiseService extends Context.Service<
 	RaiseService,
@@ -183,8 +123,15 @@ export const RaiseServiceLive = Layer.effect(
 				return { stale: [], full: true } satisfies RaiseJudgment
 			if (!previous)
 				return { stale: state.stale, full: true } satisfies RaiseJudgment
+			// A later run that did not finish may have found bugs the finished marker never recorded.
+			const outrun = isOutrunFinish(previous, state)
 			const planned = toNextSweptStatus(
-				toSweptStanding(previous, state.bugs, state.finished, state.uncleared),
+				toSweptStanding(
+					previous,
+					state.bugs,
+					outrun ? false : state.finished,
+					state.uncleared
+				),
 				previous,
 				state.unfinished,
 				yield* getIncompleteLists
@@ -197,7 +144,7 @@ export const RaiseServiceLive = Layer.effect(
 			return {
 				previous,
 				...(status ? { status } : {}),
-				stale: state.stale,
+				stale: outrun ? [] : state.stale,
 				full: true,
 			} satisfies RaiseJudgment
 		})
