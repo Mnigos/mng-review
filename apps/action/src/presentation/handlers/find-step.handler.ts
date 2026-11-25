@@ -1,16 +1,16 @@
 import { RulesService } from '@mng-review/engine'
 import {
 	GitHubConfig,
-	type LiftFindResult,
+	type RaiseFindResult,
 	provideListCompleteness,
 	provideOwnedIdentities,
 	type ReplyCandidate,
 	type ReplyFindResult,
 	ReplyFindService,
-	RequestLiftService,
+	RaiseService,
 	toLogText,
 } from '@mng-review/github'
-import { Console, Effect } from 'effect'
+import { Clock, Console, Duration, Effect } from 'effect'
 import {
 	maxPullRequestsConfig,
 	runNumberConfig,
@@ -32,52 +32,129 @@ import { formatFindSummary } from '../summary.formatter'
 
 /** The rules the find step reads the owned identities from: `HEAD` of the default branch checkout. */
 const FIND_RULES_REF = 'HEAD'
-/** The most jobs GitHub builds from one matrix; the rest of the lifts wait for the next tick. */
-export const LIFT_MATRIX_LIMIT = 256
+/** The most jobs GitHub builds from one matrix; the rest of the raises wait for the next tick. */
+export const RAISE_MATRIX_LIMIT = 256
+/**
+ * How long after the step starts the raise scan may start judgments after its first. It runs beside
+ * the reply scan, and a judgment that started runs to its end unless the scan reaches
+ * `RAISE_SCAN_BOUND`.
+ */
+export const RAISE_SCAN_DEADLINE = Duration.minutes(2)
+/**
+ * When, after the step starts, the whole raise scan ends, whatever still runs: the judgments
+ * finished by then are listed, and one still running is dropped for the tick. The job's setup takes
+ * up to about a minute before the step, so this lands near four of the find job's five minutes and
+ * leaves room to write the outputs; the replies are never lost to a hung judgment.
+ */
+export const RAISE_SCAN_BOUND = Duration.minutes(3)
+/**
+ * The most full raise judgments one tick makes (about six to ten requests each on `github.token`,
+ * whose 1,000 requests an hour every workflow of the repository shares); the first reads, a status
+ * and the reviews of each open pull request, add about 2N for N open ones and are not capped. The
+ * scan starts `getScanStride` pull requests further each run number, so every one is judged within
+ * N ticks, and within ceil(N / step) when ticks make their judgments, both while N stays the same.
+ */
+export const RAISE_SCAN_LIMIT = 20
 
-/** A pull request the lift job judges again, as its matrix takes it. */
-export interface LiftEntry {
+/** A pull request the raise job judges again, as its matrix takes it. */
+export interface RaiseEntry {
 	readonly number: number
 }
 
 /** What the find step lists for the later jobs. */
 interface FindLists {
 	readonly pulls: readonly ReplyCandidate[]
-	readonly lifts: readonly LiftEntry[]
+	readonly raises: readonly RaiseEntry[]
 }
 
-/** The lifts `findDue` listed, or why it could not list them. */
-interface ListedLifts extends LiftFindResult {
+/** The raises `findDue` listed, or why it could not list them. */
+interface ListedRaises extends RaiseFindResult {
 	readonly error?: string
 }
 
+/** Why no raise was listed, as the line and the run page's warning say it. */
+function toUnlistedText(error: string): string {
+	return `the pull requests to raise could not be listed: ${error}`
+}
+
+/** The bound ended the raise scan before its listing returned, so nothing was judged. */
+const UNLISTED_AT_BOUND =
+	'the raise scan hit its hard bound before it listed the open pull requests'
+
+/** Whether the bound ended the raise scan before its listing returned. */
+function isCutBeforeListing(due: ListedRaises): boolean {
+	return due.stop === 'bound' && due.read === 0
+}
+
+/** The run page's warning for a raise scan cut short, worded from where it stopped. */
+function toCutWarning(due: ListedRaises): string | undefined {
+	const left = `${due.unscanned} pull request(s) not judged this tick`
+	if (due.dropped !== undefined)
+		return `the raise scan hit its hard bound while judging #${due.dropped}; ${left}`
+	if (isCutBeforeListing(due)) return `${UNLISTED_AT_BOUND}; no raise this tick`
+	if (due.stop === 'bound')
+		return `the raise scan hit its hard bound between judgments; ${left}`
+	if (due.unscanned > 0) return `the raise scan reached its deadline; ${left}`
+	return undefined
+}
+
+/** No raise listed, named in the line and warned on the run page, since find still passes. */
+const listNoRaise = Effect.fn('findStep.listNoRaise')(function* (
+	error: string
+) {
+	yield* Console.log(`::warning::${toLogText(toUnlistedText(error))}`)
+	const none: ListedRaises = {
+		pulls: [],
+		read: 0,
+		failed: 0,
+		unscanned: 0,
+		deferred: 0,
+		error,
+	}
+	return none
+})
+
 /** Nothing for any later job. */
-const NOTHING_FOUND = { pulls: [], lifts: [] } as const satisfies FindLists
+const NOTHING_FOUND = { pulls: [], raises: [] } as const satisfies FindLists
 
 /** What the find step found, in words, with the pull requests whose read failed. */
-function toFindLine(found: ReplyFindResult, due: ListedLifts): string {
+function toFindLine(found: ReplyFindResult, due: ListedRaises): string {
 	const { candidates, failed } = found
 	const skipped =
 		failed > 0 ? `; ${failed} pull request(s) could not be read` : ''
-	const lifts =
+	const raises =
 		due.pulls.length === 0
 			? ''
-			: `; a change request to lift on ${due.pulls.map(pull => `#${pull}`).join(', ')}`
+			: `; a status or change request to raise on ${due.pulls.map(pull => `#${pull}`).join(', ')}`
 	const unjudged =
 		due.failed > 0
-			? `; ${due.failed} pull request(s) could not be judged for a lift`
+			? `; ${due.failed} pull request(s) could not be judged for a raise`
 			: ''
 	const unlisted =
 		due.error === undefined
+			? isCutBeforeListing(due)
+				? `; ${UNLISTED_AT_BOUND}`
+				: ''
+			: `; ${toUnlistedText(due.error)}`
+	const unscanned =
+		due.unscanned > 0
+			? `; ${due.unscanned} pull request(s) not judged for a raise before the deadline`
+			: ''
+	const deferred =
+		due.deferred > 0
+			? `; ${due.deferred} pull request(s) left for later ticks after ${RAISE_SCAN_LIMIT} judgments`
+			: ''
+	const dropped =
+		due.dropped === undefined
 			? ''
-			: `; the change requests to lift could not be listed: ${due.error}`
-	const tail = `${skipped}${lifts}${unjudged}${unlisted}`
+			: `; the raise judgment of #${due.dropped} was cut at the hard bound`
+	const tail = `${skipped}${raises}${unjudged}${unscanned}${dropped}${deferred}${unlisted}`
 	if (candidates.length === 0)
 		return `reply schedule: no reply waits for an answer${tail}`
 	return `reply schedule: replies wait on ${candidates.map(pull => `#${pull.number}`).join(', ')}${tail}`
 }
 
-/** Writes `pulls` and `lifts`, the log line and the job summary. */
+/** Writes `pulls` and `raises`, the log line and the job summary. */
 const finishFind = Effect.fn('findStep.finish')(function* (
 	lists: FindLists,
 	line: string
@@ -85,7 +162,7 @@ const finishFind = Effect.fn('findStep.finish')(function* (
 	const env = yield* runnerEnvironmentConfig
 	yield* writeOutputs(yield* outputPathConfig, {
 		pulls: JSON.stringify(lists.pulls),
-		lifts: JSON.stringify(lists.lifts),
+		raises: JSON.stringify(lists.raises),
 	})
 	yield* Console.log(toLogText(`mng-review: ${line}`))
 	yield* writeSummary(env.summaryPath, formatFindSummary(line))
@@ -99,57 +176,73 @@ const failFind = Effect.fn('findStep.fail')(function* (line: string) {
 
 /**
  * The find step of the reply schedule: lists the open pull requests of this repository with a
- * reply waiting in the bot's threads, and those whose current-identity change request nothing backs
- * any more (`RequestLiftService.findDue`), over the read token, with the owned identities and
- * `commands.allow` from the default branch's rules, so a pull request never decides whose threads
- * count. It calls no model and writes nothing on GitHub. The step output `pulls` is a JSON list of
- * numbers and full commit SHAs, which the review and publish jobs take as their matrix; `lifts` is
- * a JSON list of numbers, at most `LIFT_MATRIX_LIMIT`, for the lift job, which judges each again
- * inside its pull request's publish group. A pull request may be in both: its replies go through
- * the reply path once, and the lift job judges it after its publish leg. A failed list of the open
- * pull requests for the replies, a git error, or a reply read that failed on every pull request
- * lists nothing and exits 1; a read that failed on some is named in the line and the rest are
- * listed. A lift listing that fails lists no lift, is named in the line and keeps the replies. A
- * `ConfigError` is left to `failFindConfig`.
+ * reply waiting in the bot's threads, and those with a raise due (`RaiseService.findDue`: the plan
+ * differs from the bot's status, or its current-identity change request would be lifted), over the
+ * read token, with the owned identities and `commands.allow` from the default branch's rules, so a
+ * pull request never decides whose threads count. It calls no model and writes nothing on GitHub.
+ * The step output `pulls` is a JSON list of numbers and full commit SHAs, which the review and
+ * publish jobs take as their matrix; `raises` is a JSON list of numbers, at most
+ * `RAISE_MATRIX_LIMIT`, for the raise job, which judges each again inside its pull request's
+ * publish group. A pull request may be in both: its replies go through the reply path once, and the
+ * raise job judges it after its publish leg. A failed list of the open pull requests for the
+ * replies, a git error, or a reply read that failed on every pull request lists nothing and exits
+ * 1; a read that failed on some is named in the line and the rest are listed. The raise scan runs
+ * beside the reply scan, makes at most `RAISE_SCAN_LIMIT` full judgments, starts up to that many
+ * pull requests further each run number, always judges the one at its start and starts no later
+ * judgment past `RAISE_SCAN_DEADLINE`; it lists what it judged, in its order, and warns only about
+ * what the deadline left out. At `RAISE_SCAN_BOUND` the whole scan, its listing included, ends:
+ * what it judged is listed, the judgment in flight is dropped, the warning says where the bound cut,
+ * and the outputs are written. Every due pull request is listed within N ticks for N open ones, and
+ * within ceil(N / step) for the `getScanStride` step when ticks make their judgments, both while N
+ * stays the same. A raise listing that fails lists no raise, warns, is named in the line and keeps
+ * the replies. A `ConfigError` is left to `failFindConfig`.
  */
 export const runFindStep = Effect.gen(function* () {
+	const started = yield* Clock.currentTimeMillis
 	const rules = yield* RulesService.use(service => service.load(FIND_RULES_REF))
 	const { identity } = yield* GitHubConfig
 	const max = yield* maxPullRequestsConfig
 	const rotation = yield* runNumberConfig
-	const found = yield* ReplyFindService.use(service =>
+	const replies = ReplyFindService.use(service =>
 		service.find({ max, rotation })
 	).pipe(
 		provideOwnedIdentities(identity, rules.config.identity.previous),
 		provideListCompleteness(rules.config.risk.enabled),
 		Effect.catchTag('GitHubApiError', error => failFind(error.message))
 	)
+	// The raise scan starts further each run and stops starting judgments at its deadline, keeping
+	// what it judged; a listing that fails or outlasts the bound lists no raise but keeps the replies.
+	const raises = RaiseService.use(service =>
+		service.findDue(rules.config.commands.allow, {
+			rotation,
+			deadline: started + Duration.toMillis(RAISE_SCAN_DEADLINE),
+			bound: started + Duration.toMillis(RAISE_SCAN_BOUND),
+			limit: RAISE_SCAN_LIMIT,
+		})
+	).pipe(
+		provideOwnedIdentities(identity, rules.config.identity.previous),
+		provideListCompleteness(rules.config.risk.enabled),
+		Effect.map((listed): ListedRaises => listed),
+		Effect.catchTag('GitHubApiError', error => listNoRaise(error.message))
+	)
+	// Side by side, so a slow reply scan never takes the raise scan's time.
+	const [found, due] = yield* Effect.all([replies, raises], {
+		concurrency: 2,
+	})
 	if (found.read > 0 && found.failed === found.read)
 		return yield* failFind(
 			`no open pull request could be read (${found.failed})`
 		)
-	// A lift listing that fails lists no lift but keeps the replies: the reply legs need find to pass.
-	const due = yield* RequestLiftService.use(service =>
-		service.findDue(rules.config.commands.allow)
-	).pipe(
-		provideOwnedIdentities(identity, rules.config.identity.previous),
-		provideListCompleteness(rules.config.risk.enabled),
-		Effect.map((listed): ListedLifts => listed),
-		Effect.catchTag('GitHubApiError', error =>
-			Effect.succeed<ListedLifts>({
-				pulls: [],
-				read: 0,
-				failed: 0,
-				error: error.message,
-			})
-		)
-	)
+	const cut = toCutWarning(due)
+	if (cut !== undefined) yield* Console.log(`::warning::${toLogText(cut)}`)
 	return yield* finishFind(
 		{
 			pulls: found.candidates,
-			lifts: due.pulls
-				.slice(0, LIFT_MATRIX_LIMIT)
-				.map((number): LiftEntry => ({ number })),
+			// In the scan's order, which already starts further each run number; a second rotation here
+			// would cancel it.
+			raises: due.pulls
+				.slice(0, RAISE_MATRIX_LIMIT)
+				.map((number): RaiseEntry => ({ number })),
 		},
 		toFindLine(found, due)
 	)

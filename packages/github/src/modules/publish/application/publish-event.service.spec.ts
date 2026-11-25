@@ -42,7 +42,7 @@ import {
 import {
 	type CommitStatusText,
 	toCommitStatus,
-	toIncompleteDescription,
+	INCOMPLETE_STATUS,
 } from '../../status/domain/status.helper'
 import {
 	parseReplyMarker,
@@ -1704,8 +1704,7 @@ layer(APP_MODE_OWNED, { excludeTestServices: true })(
 					expect(status.statuses).toEqual([
 						{
 							sha: fixture.head,
-							state: 'pending',
-							description: toIncompleteDescription(['review threads']),
+							...INCOMPLETE_STATUS,
 						},
 					])
 					yield* run
@@ -2271,8 +2270,7 @@ layer(APP_MODE_OWNED, { excludeTestServices: true })(
 								? { sha: fixture.head, state: 'failure' }
 								: {
 										sha: fixture.head,
-										state: 'pending',
-										description: toIncompleteDescription([LIST_NAMES.threads]),
+										...INCOMPLETE_STATUS,
 									},
 						])
 					})

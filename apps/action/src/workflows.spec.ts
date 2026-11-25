@@ -324,28 +324,35 @@ describe('reply schedule workflow boundaries', () => {
 			'MNG_REVIEW_MAX_PULL_REQUESTS: ${{ inputs.max-pull-requests }}'
 		)
 		expect(find).toContain('pulls: ${{ steps.find.outputs.pulls }}')
-		expect(find).toContain('lifts: ${{ steps.find.outputs.lifts }}')
-	})
-	test('lift runs after publish in the publish group with the app key and no endpoint', () => {
-		const lift = getJob(workflow, 'lift')
-		expect(lift).toContain('needs: [find, publish]')
-		expect(lift).toContain(
-			"if: ${{ !cancelled() && needs.find.outputs.lifts != '[]' && needs.find.outputs.lifts != '' }}"
+		expect(find).toContain('raises: ${{ steps.find.outputs.raises }}')
+		// Reading the bot's status needs statuses read, which callers already grant as write.
+		expect(find).toMatch(
+			/permissions:\n\s+contents: read\n\s+pull-requests: read\n\s+statuses: read\n/u
 		)
-		expect(lift).toContain('pull: ${{ fromJSON(needs.find.outputs.lifts) }}')
-		expect(lift).toContain('max-parallel: 1')
-		expect(lift).toContain(
+	})
+	test('raise runs after publish in the publish group with the app key and no endpoint', () => {
+		const raise = getJob(workflow, 'raise')
+		expect(raise).toContain('needs: [find, publish]')
+		expect(raise).toContain(
+			"if: ${{ !cancelled() && needs.find.outputs.raises != '[]' && needs.find.outputs.raises != '' }}"
+		)
+		expect(raise).toContain('pull: ${{ fromJSON(needs.find.outputs.raises) }}')
+		// Each entry has its own group; the cap only bounds the reads on the app token at once.
+		expect(raise).toContain('max-parallel: 4')
+		expect(raise).toContain(
 			'group: mng-review-publish-${{ matrix.pull.number }}'
 		)
-		expect(lift).toContain('cancel-in-progress: false')
-		expect(lift).toContain('MNG_REVIEW_MODE: lift')
-		expect(lift).toContain('MNG_REVIEW_TARGET_PR: ${{ matrix.pull.number }}')
-		expect(lift).toContain('ref: ${{ github.event.repository.default_branch }}')
-		expect(lift).not.toMatch(/llm-|tailscale|statuses:|MNG_REVIEW_TRIGGER/u)
+		expect(raise).toContain('cancel-in-progress: false')
+		expect(raise).toContain('MNG_REVIEW_MODE: raise')
+		expect(raise).toContain('MNG_REVIEW_TARGET_PR: ${{ matrix.pull.number }}')
+		expect(raise).toContain(
+			'ref: ${{ github.event.repository.default_branch }}'
+		)
+		expect(raise).not.toMatch(/llm-|tailscale|MNG_REVIEW_TRIGGER/u)
 		expect(
-			new Set([...lift.matchAll(/secrets\.([\w-]+)/gu)].map(match => match[1]))
+			new Set([...raise.matchAll(/secrets\.([\w-]+)/gu)].map(match => match[1]))
 		).toEqual(new Set(['app-client-id', 'app-private-key']))
-		const mint = lift
+		const mint = raise
 			.split(/^ {6}- /mu)
 			.find(step => step.includes('uses: actions/create-github-app-token@'))
 		expect(
@@ -353,15 +360,19 @@ describe('reply schedule workflow boundaries', () => {
 				?.match(/^\s+permission-[\w-]+:\s*\w+/gmu)
 				?.map(line => line.trim())
 				.toSorted()
-		).toEqual(['permission-contents: read', 'permission-pull-requests: write'])
-		expect(lift).toContain("inputs.app-slug == '' && github.token || ''")
-		expect(lift).toMatch(
-			/permissions:\n\s+contents: read\n\s+pull-requests: write\n/u
+		).toEqual([
+			'permission-contents: read',
+			'permission-pull-requests: write',
+			'permission-statuses: write',
+		])
+		expect(raise).toContain("inputs.app-slug == '' && github.token || ''")
+		expect(raise).toMatch(
+			/permissions:\n\s+contents: read\n\s+pull-requests: write\n\s+statuses: write\n/u
 		)
 	})
-	test('the review and publish legs never take the lifts', () => {
+	test('the review and publish legs never take the raises', () => {
 		for (const job of ['review', 'publish'])
-			expect(getJob(workflow, job)).not.toContain('outputs.lifts')
+			expect(getJob(workflow, job)).not.toContain('outputs.raises')
 	})
 	test('the inputs, secrets and permissions callers grant are unchanged', () => {
 		const header = workflow.slice(0, workflow.indexOf('\njobs:'))

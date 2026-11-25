@@ -39,11 +39,9 @@ export interface PullStateInput {
 }
 
 /**
- * The judgment the status sweep and the change request lift share: from the reviews, the
- * conversation comments and the review threads of a pull request, what is open on it, whether
- * nothing backs the current identity's change requests, and how far the last full run got. It
- * writes nothing; every read goes through the GitHub services it is given, so a sweep that
- * journals them compares this pass with a later one.
+ * The judgment the status sweep and the raise share: from the reviews, the conversation comments
+ * and the review threads of a pull request, what is open on it, whether nothing backs the current
+ * identity's change requests, and how far the last full run got. It writes nothing.
  *
  * The summary is the newest summary review of an owned identity, or with none the old sticky
  * comment; while the current identity has more than one visible sticky comment and no review, the

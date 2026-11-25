@@ -182,7 +182,7 @@ const makeGitHubConfig = (
 	})
 
 /**
- * For the steps that write (publish, sweep). Without `MNG_REVIEW_APP_SLUG`: `GITHUB_TOKEN` is
+ * For the steps that write (publish, sweep, raise). Without `MNG_REVIEW_APP_SLUG`: `GITHUB_TOKEN` is
  * required and the app variables must be empty. With it: a valid slug, `MNG_REVIEW_APP_TOKEN`,
  * `MNG_REVIEW_MINTED_APP_SLUG` equal to the slug without regard to case, and an empty
  * `GITHUB_TOKEN`.

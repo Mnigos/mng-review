@@ -16,7 +16,7 @@ import {
 import { isFinished } from '../../publish/domain/bot-thread.helper'
 import {
 	toCommitStatus,
-	toIncompleteDescription,
+	INCOMPLETE_STATUS,
 	UNFINISHED_NOTE,
 } from '../domain/status.helper'
 import {
@@ -472,8 +472,7 @@ layer(TOKEN_MODE_OWNED)('StatusReportService incomplete list reads', test => {
 	const pending = [
 		{
 			sha: 'head',
-			state: 'pending',
-			description: toIncompleteDescription(['reviews']),
+			...INCOMPLETE_STATUS,
 		},
 	] as const
 	for (const [name, previous, written] of [

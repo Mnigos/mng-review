@@ -1,7 +1,7 @@
 import {
+	INCOMPLETE_STATUS,
 	toCommitStatus,
 	toHeldStatus,
-	toIncompleteDescription,
 	toIncompleteMarkerStatus,
 	toIncompleteStatus,
 	toLoweredStatus,
@@ -64,8 +64,8 @@ describe('toSweptStatus', () => {
 			toSweptStatus({ state: 'failure', description: '1 open bug' }, 0)
 		).toEqual(toCommitStatus('ready', 0, true))
 	})
-	test.each(['failure', 'pending', 'success', 'error'])(
-		'%s with the unfinished note stays error after the last bug resolves',
+	test.each(['failure', 'pending', 'success'])(
+		'%s with the unfinished note becomes error after the last bug resolves',
 		state => {
 			expect(
 				toSweptStatus(
@@ -75,6 +75,14 @@ describe('toSweptStatus', () => {
 			).toEqual(toCommitStatus('ready', 0, false))
 		}
 	)
+	test('an error with the unfinished note is left as it is after the last bug resolves', () => {
+		expect(
+			toSweptStatus(
+				{ state: 'error', description: `1 open bug; ${UNFINISHED_NOTE}` },
+				0
+			)
+		).toBeUndefined()
+	})
 	test('a previous error without the note is normalized to an unfinished error', () => {
 		expect(
 			toSweptStatus({ state: 'error', description: 'offline' }, 0)
@@ -108,48 +116,25 @@ describe('toSweptStatus', () => {
 })
 
 describe('toIncompleteStatus', () => {
-	const lists = ['review threads', 'reviews'] as const
-	const pending = {
-		state: 'pending',
-		description: toIncompleteDescription(lists),
-	} as const
 	for (const [name, previous] of [
 		['failure', { state: 'failure', description: '1 open bug thread(s)' }],
 		['error', { state: 'error', description: 'no open bug thread' }],
-		['pending', pending],
+		['pending', INCOMPLETE_STATUS],
+		['other pending', { state: 'pending', description: 'a review is running' }],
 	] as const)
 		test(`a success over a ${name} status writes nothing`, () => {
 			expect(
-				toIncompleteStatus(toCommitStatus('ready', 0, true), previous, lists)
+				toIncompleteStatus(toCommitStatus('ready', 0, true), previous)
 			).toBeUndefined()
 		})
 	for (const [name, previous] of [
 		['a head with no status', undefined],
 		['a success', toCommitStatus('ready', 0, true)],
 	] as const)
-		test(`a success over ${name} becomes pending with the reason`, () => {
+		test(`a success over ${name} becomes the stable incomplete pending`, () => {
 			expect(
-				toIncompleteStatus(toCommitStatus('ready', 0, true), previous, lists)
-			).toEqual(pending)
-		})
-	test("a success over another run's pending names this run's lists", () => {
-		expect(
-			toIncompleteStatus(
-				toCommitStatus('ready', 0, true),
-				{ state: 'pending', description: toIncompleteDescription(['reviews']) },
-				lists
-			)
-		).toEqual(pending)
-	})
-	for (const description of [null, 'a review is running'])
-		test(`a success over a pending that is not an incomplete read's (${description}) writes nothing`, () => {
-			expect(
-				toIncompleteStatus(
-					toCommitStatus('ready', 0, true),
-					{ state: 'pending', description },
-					lists
-				)
-			).toBeUndefined()
+				toIncompleteStatus(toCommitStatus('ready', 0, true), previous)
+			).toEqual(INCOMPLETE_STATUS)
 		})
 	for (const [name, next] of [
 		['needs fixes', toCommitStatus('needs fixes', 1, true)],
@@ -158,33 +143,30 @@ describe('toIncompleteStatus', () => {
 	] as const)
 		test(`a ${name} ${next.state} status writes as it is`, () => {
 			const success = toCommitStatus('ready', 0, true)
-			expect(toIncompleteStatus(next, success, lists)).toBe(next)
-			expect(toIncompleteStatus(next, undefined, lists)).toBe(next)
+			expect(toIncompleteStatus(next, success)).toBe(next)
+			expect(toIncompleteStatus(next, undefined)).toBe(next)
 		})
 })
 
-describe('toIncompleteDescription', () => {
-	test('names every list GitHub left an entry out of, under 140 characters', () => {
-		const description = toIncompleteDescription([
+describe('INCOMPLETE_STATUS', () => {
+	test('names no list and fits in 140 characters', () => {
+		for (const list of [
 			'review threads',
 			'thread comments',
 			'conversation comments',
 			'reviews',
 		])
-		expect(description).toContain(
-			'review threads, thread comments, conversation comments, reviews'
-		)
-		expect(description.length).toBeLessThanOrEqual(140)
+			expect(INCOMPLETE_STATUS.description).not.toContain(list)
+		expect(INCOMPLETE_STATUS.description.length).toBeLessThanOrEqual(140)
 	})
 })
 
 describe('toHeldStatus', () => {
 	const lists = ['review threads'] as const
-	test('a success after an incomplete read becomes pending with the reason', () => {
-		expect(toHeldStatus(toCommitStatus('ready', 0, true), lists)).toEqual({
-			state: 'pending',
-			description: toIncompleteDescription(lists),
-		})
+	test('a success after an incomplete read becomes the stable incomplete pending', () => {
+		expect(toHeldStatus(toCommitStatus('ready', 0, true), lists)).toEqual(
+			INCOMPLETE_STATUS
+		)
 	})
 	test('a success after complete reads stays', () => {
 		expect(toHeldStatus(toCommitStatus('ready', 0, true), [])).toBeUndefined()
@@ -233,10 +215,7 @@ describe('toNextSweptStatus', () => {
 			toNextSweptStatus(ready, { state: 'success', description: null }, false, [
 				'reviews',
 			])
-		).toEqual({
-			state: 'pending',
-			description: toIncompleteDescription(['reviews']),
-		})
+		).toEqual(INCOMPLETE_STATUS)
 	})
 	test('never lowers a failure on a marker an incomplete write left', () => {
 		expect(

@@ -3791,14 +3791,14 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 						isResolved: true,
 						resolvedBy: { login: 'contributor' },
 					})
+					// A green head the sweep lowers for the recovered wait.
 					const statuses = githubStatusFake({
 						listOpenPullRequests: () =>
 							Effect.succeed([openPullRequest(17, fixture.head)]),
 						getStatus: () =>
 							Effect.succeed({
 								id: 1,
-								state: 'failure',
-								description: 'stale',
+								...toCommitStatus('ready', 0, true),
 								context: 'MNG Review',
 								creator: null,
 							}),

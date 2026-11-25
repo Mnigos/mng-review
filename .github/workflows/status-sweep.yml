@@ -1,8 +1,8 @@
-# Reusable status sweep: refreshes the MNG Review commit status of open pull requests whose head
-# already carries it, from the bot's open bug threads, so a thread resolved by hand counts. It
-# writes statuses only: the reply schedule (review-converse.yml) dismisses a change request nothing
-# backs, inside the pull request's publish group. It runs no model and needs no endpoint; the
-# caller runs it on a schedule and after a reply's signal. With app-slug and the app's two secrets
+# Reusable status sweep: lowers the MNG Review commit status of open pull requests whose head
+# already carries it, from the bot's open bug threads, a recorded wait, an unfinished run or an
+# incomplete read. It never writes success and dismisses no review: the reply schedule
+# (review-converse.yml) raises, inside the pull request's publish group. It runs no model and needs
+# no endpoint; the caller runs it on a schedule and after a reply's signal. With app-slug and the app's two secrets
 # it writes as the app. The rules, identity.previous included, come from the default branch. See
 # README.md.
 name: MNG Review status sweep
