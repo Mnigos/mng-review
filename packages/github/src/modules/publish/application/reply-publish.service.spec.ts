@@ -33,6 +33,10 @@ import {
 	unsettledBugThread,
 } from '../../../shared/mocks/thread-reply-test.helper'
 import {
+	RaiseService,
+	RaiseServiceLive,
+} from '../../status/application/raise.service'
+import {
 	StatusSweepService,
 	StatusSweepServiceLive,
 } from '../../status/application/status-sweep.service'
@@ -898,5 +902,145 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 						).toMatchObject({ openBugs: 1, unsettled: 1 })
 					})
 			)
+	}
+)
+
+/** Who may clear a wait in the raise below: `contributor`, listed in `commands.allow`. */
+const OWNER_ALLOW = ['contributor'] as const
+
+/** Marks the fixture's thread resolved by `login`. */
+function resolveThreadBy(fixture: ReturnType<typeof setup>, login: string) {
+	const index = fixture.fake.threads.findIndex(thread => thread.id === 'thread')
+	const thread = fixture.fake.threads[index]
+	if (thread)
+		fixture.fake.threads[index] = {
+			...thread,
+			isResolved: true,
+			resolvedBy: { login },
+		}
+}
+
+/**
+ * The reply schedule's find and locked job on the fixture's pull request, over the statuses the
+ * reply run wrote: the head's status is the newest one written.
+ */
+function raiseAfterRun(fixture: ReturnType<typeof setup>) {
+	const raiseStatus = githubStatusFake({
+		listOpenPullRequests: () =>
+			Effect.succeed([openPullRequest(17, fixture.head)]),
+		getStatus: () => {
+			const newest = fixture.status.statuses.at(-1)
+			return Effect.succeed(
+				newest && {
+					id: fixture.status.statuses.length,
+					state: newest.state,
+					description: newest.description,
+					context: 'MNG Review',
+					creator: null,
+				}
+			)
+		},
+		setStatus: input =>
+			Effect.sync(() => {
+				fixture.status.statuses.push(input)
+			}),
+	})
+	const raising = RaiseServiceLive.pipe(
+		Layer.provide(Layer.merge(raiseStatus.layer, fixture.fake.api))
+	)
+	return {
+		findDue: RaiseService.use(service => service.findDue(OWNER_ALLOW)).pipe(
+			Effect.provide(raising)
+		),
+		raise: RaiseService.use(service => service.raise(17, OWNER_ALLOW)).pipe(
+			Effect.provide(raising)
+		),
+	}
+}
+
+layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
+	'ReplyPublishService then the raise',
+	test => {
+		test.effect(
+			'a wait a failed summary write left off the marker holds the raise until an owner resolves its thread',
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup()
+					const { head } = fixture
+					fixture.fake.reviews.splice(
+						0,
+						1,
+						summaryReview(
+							{ ...SUMMARY_MARKER, head, finished: true },
+							{ state: 'CHANGES_REQUESTED', commit: { oid: head } }
+						)
+					)
+					fixture.fake.command.role = 'write'
+					const { pullRequest } = fixture.fake.command
+					fixture.fake.command.pullRequest = {
+						...pullRequest,
+						head: { ...pullRequest.head, sha: head },
+					}
+					fixture.fake.threads.push(threadAtCommit(fixture.base))
+					fixture.fake.failures.updateReview.push(
+						new GitHubApiError({
+							operation: 'updateReview',
+							reason: 'summary unavailable',
+							status: 503,
+						})
+					)
+					yield* ReplyPublishService.use(service =>
+						service.publish({
+							...fixture.input,
+							rules: RULES,
+							replies: {
+								...fixture.input.replies,
+								decisions: [
+									decidedReply({
+										action: 'needs-owner',
+										reason: 'An owner must decide.',
+									}),
+								],
+							},
+						})
+					).pipe(Effect.provide(fixture.publisher), Effect.flip)
+					// The run set `needs owner` and the label, but its wait never reached the marker.
+					expect(fixture.status.statuses).toEqual([
+						{ sha: head, ...toCommitStatus('needs owner', 1, true) },
+					])
+					expect(
+						parseSummaryMarker(fixture.fake.reviews[0]?.body ?? '')?.needsOwner
+					).toBeUndefined()
+					// A writer who may not clear the wait resolves the bug thread: only the wait blocks now.
+					resolveThreadBy(fixture, 'writer')
+					const next = raiseAfterRun(fixture)
+					yield* next.findDue
+					expect(yield* next.raise).toMatchObject({
+						status: toCommitStatus('needs owner', 0, true),
+						dismissal: { dismissed: 0, failed: 0 },
+					})
+					expect(
+						fixture.status.statuses.filter(status => status.state === 'success')
+					).toEqual([])
+					expect(
+						fixture.fake.writes.filter(
+							write => write.method === 'dismissReview'
+						)
+					).toEqual([])
+					// The owner resolves the thread by hand: one schedule run clears it.
+					resolveThreadBy(fixture, 'contributor')
+					expect((yield* next.findDue).pulls).toEqual([17])
+					expect(yield* next.raise).toMatchObject({
+						outcome: 'raised',
+						status: toCommitStatus('ready', 0, true),
+						dismissal: { dismissed: 1, failed: 0 },
+					})
+					expect(
+						fixture.fake.reviews.filter(
+							review => review.state === 'CHANGES_REQUESTED'
+						)
+					).toEqual([])
+				})
+		)
 	}
 )
