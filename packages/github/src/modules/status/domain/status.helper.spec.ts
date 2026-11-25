@@ -4,6 +4,7 @@ import {
 	toIncompleteDescription,
 	toIncompleteMarkerStatus,
 	toIncompleteStatus,
+	toLoweredStatus,
 	toNextSweptStatus,
 	toSweptStatus,
 	UNFINISHED_NOTE,
@@ -244,5 +245,29 @@ describe('toNextSweptStatus', () => {
 	})
 	test('writes nothing when the head already says the same', () => {
 		expect(toNextSweptStatus(ready, ready, false, [])).toBeUndefined()
+	})
+})
+
+describe('toLoweredStatus', () => {
+	const failure = toCommitStatus('needs fixes', 1, true)
+	const error = toCommitStatus('ready', 0, false)
+	const success = toCommitStatus('ready', 0, true)
+	test('writes the most blocking plan that blocks more than the status', () => {
+		expect(toLoweredStatus([error, undefined], success)).toEqual(error)
+		expect(toLoweredStatus([error, failure], success)).toEqual(failure)
+		expect(toLoweredStatus([undefined, failure], error)).toEqual(failure)
+	})
+	test.each([
+		['a success', [success, undefined], error],
+		['an error over a failure', [error, error], failure],
+		['the same state as the status', [failure, undefined], failure],
+		['no plan', [undefined, undefined], success],
+		[
+			'a state the order does not know',
+			[failure, error],
+			{ ...success, state: 'other' },
+		],
+	] as const)('writes nothing for %s', (_name, candidates, current) => {
+		expect(toLoweredStatus(candidates, current)).toBeUndefined()
 	})
 })

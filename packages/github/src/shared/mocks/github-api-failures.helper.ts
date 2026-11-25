@@ -23,7 +23,7 @@ export function toApiFailures() {
 		unresolve: [] as (GitHubApiError | undefined)[],
 		/** `undefined` lets that call succeed, so a later one can fail. */
 		listThreads: [] as (GitHubApiError | undefined)[],
-		listComments: [] as GitHubApiError[],
+		listComments: [] as (GitHubApiError | undefined)[],
 		/** `undefined` lets that call succeed, so a later one can fail. */
 		getPullRequest: [] as (GitHubApiError | undefined)[],
 		getIssueComment: [] as GitHubApiError[],
