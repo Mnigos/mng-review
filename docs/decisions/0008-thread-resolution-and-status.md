@@ -22,7 +22,7 @@ Publish mode (ADR 0007) posts a thread per finding and a sticky summary. A pull 
 - A fix closes its thread for the bot without anyone clicking, and the status turns green when the last bug thread closes, by a push or by hand within one sweep interval. On GitHub the thread stays open, with the bot's reply as its last comment, until a person resolves it; a reply after the bot's reopens it for the bot.
 - The validator can resolve a thread whose finding still holds when it misreads the change; the reply names the head and the reason, and a later run posts the finding again when it finds it.
 - Resolving by hand is a dismissal anyone with write access can make; the summary still lists the finding when it is found again.
-- A publish run that lands between the sweep's last read and its write can be overwritten until the next sweep or push; a caller can avoid that by giving the sweep and the review one concurrency group.
+- A publish run that lands between the sweep's last read and its write can be overwritten until the next sweep that actually runs or the next push; a caller can avoid that by giving the sweep and the review one concurrency group.
 - The run count lives in an issue comment; editing it makes the comment no longer the bot's, and the bot then starts a new summary with the count at one. Deleting it does the same. Writers can therefore reset the count; the limit guards against loops and accidents, not against people with write access.
 - Rejected: `contents: write` for the publish job so the bot can resolve threads itself; a status that counts unverified threads (they rest on behaviour the repository cannot show); a sweep that runs the model; resolving threads that have replies before the reply flow reads them.
 

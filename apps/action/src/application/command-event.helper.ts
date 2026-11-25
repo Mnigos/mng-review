@@ -56,8 +56,8 @@ export function toCommandEvent(
 
 /**
  * Why the reply schedule no longer answers on a pull request it listed, read again in a later job:
- * it closed, became a draft or a fork, or moved to another head or base, which the next tick reads
- * again.
+ * it closed, became a draft or a fork, or moved to another head or base, which the next schedule
+ * run that actually happens reads again.
  */
 export function getConverseMismatch(
 	pr: PullRequest,

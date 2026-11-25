@@ -542,7 +542,7 @@ layer(FileSystemLayer)('find step raises', test => {
 				)
 				expect(yield* TestConsole.logLines).toEqual([
 					'::warning::the raise scan hit its hard bound while judging #2; 2 pull request(s) not judged this tick',
-					'mng-review: reply schedule: replies wait on #17; a status or change request to raise on #1; 2 pull request(s) not judged for a raise before the deadline; the raise judgment of #2 was cut at the hard bound',
+					'mng-review: reply schedule: replies wait on #17; a status or change request to raise on #1; 2 pull request(s) not judged for a raise before the hard bound; the raise judgment of #2 was cut at the hard bound',
 				])
 			}).pipe(Effect.provide(Layer.fresh(TestConsole.layer)))
 	)
@@ -557,7 +557,7 @@ layer(FileSystemLayer)('find step raises', test => {
 			'between judgments',
 			{ pulls: [23], read: 5, unscanned: 2, stop: 'bound' },
 			'the raise scan hit its hard bound between judgments; 2 pull request(s) not judged this tick',
-			'; a status or change request to raise on #23; 2 pull request(s) not judged for a raise before the deadline',
+			'; a status or change request to raise on #23; 2 pull request(s) not judged for a raise before the hard bound',
 		],
 	] as const)
 		test.effect(

@@ -8,7 +8,7 @@ export interface RaiseFindResult {
 	/** Open pull requests listed. */
 	readonly read: number
 	readonly failed: number
-	/** Open pull requests the scan did not reach before its deadline. */
+	/** Open pull requests the scan did not reach before its deadline, or its bound with `stop`. */
 	readonly unscanned: number
 	/** Open pull requests left for later ticks once the scan made its `limit` of full judgments. */
 	readonly deferred: number
