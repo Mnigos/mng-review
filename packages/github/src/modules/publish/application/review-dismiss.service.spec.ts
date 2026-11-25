@@ -72,3 +72,83 @@ layer(APP_MODE_OWNED)('ReviewDismissService', test => {
 				})
 		)
 })
+
+/** A ready or blocking standing a write's state was decided on. */
+function replyEvidence(verdict: 'ready' | 'needs fixes' | 'needs owner') {
+	return {
+		kind: 'reply',
+		verdict,
+		openBugs: verdict === 'needs fixes' ? 1 : 0,
+		current: true,
+		onHead: true,
+		failed: false,
+		authored: false,
+	} as const
+}
+
+layer(APP_MODE_OWNED)('ReviewDismissService approval withdrawal', test => {
+	for (const scenario of [
+		{ name: 'needs fixes', verdict: 'needs fixes', nulls: 1, current: 'head' },
+		{ name: 'needs owner', verdict: 'needs owner', nulls: 1, current: 'head' },
+		{ name: 'ready', verdict: 'ready', nulls: 1, current: 'head' },
+		{ name: 'complete', verdict: 'needs fixes', nulls: 0, current: 'head' },
+		{ name: 'moved head', verdict: 'needs fixes', nulls: 1, current: 'pushed' },
+	] as const)
+		test.effect(
+			`withdraws the current identity's approval of the head only for an incomplete blocking run on it: ${scenario.name}`,
+			() =>
+				Effect.gen(function* () {
+					const fake = githubApiFake(APP_IDENTITY)
+					const author = {
+						__typename: 'Bot',
+						login: APP_IDENTITY.login,
+					} as const
+					fake.reviews.push(
+						summaryReview(SUMMARY_MARKER, {
+							databaseId: 301,
+							state: 'APPROVED',
+							commit: { oid: scenario.current },
+							author,
+						}),
+						// Another owned identity's approval is not the current identity's to withdraw here.
+						summaryReview(SUMMARY_MARKER, {
+							databaseId: 302,
+							state: 'APPROVED',
+							commit: { oid: scenario.current },
+						})
+					)
+					fake.nullNodes.reviews = scenario.nulls
+					const withdrawn =
+						scenario.name === 'needs fixes' || scenario.name === 'needs owner'
+					const dismissal = yield* Effect.gen(function* () {
+						const reviews = yield* GitHubReviewService.use(service =>
+							service.listReviews(17, true)
+						)
+						return yield* ReviewDismissService.use(service =>
+							service.withdrawApprovals(
+								17,
+								{ head: 'head', current: scenario.current },
+								reviews,
+								replyEvidence(scenario.verdict)
+							)
+						)
+					}).pipe(
+						Effect.provide(
+							Layer.merge(
+								ReviewDismissServiceLive.pipe(Layer.provide(fake.api)),
+								fake.api
+							)
+						),
+						provideListCompleteness(false)
+					)
+					expect(dismissal).toEqual({
+						dismissed: withdrawn ? 1 : 0,
+						failed: 0,
+					})
+					expect(fake.reviews.map(review => review.state)).toEqual([
+						withdrawn ? 'DISMISSED' : 'APPROVED',
+						'APPROVED',
+					])
+				})
+		)
+})

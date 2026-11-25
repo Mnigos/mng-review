@@ -245,6 +245,26 @@ layer(Layer.empty)('PublishRunService', test => {
 		})
 	)
 	test.effect(
+		'passes the hold a published summary kept to the status report',
+		() =>
+			Effect.gen(function* () {
+				const fixture = setup()
+				fixture.publishSpy.mockReturnValue(
+					Effect.succeed({ ...PUBLISHED, finished: false, held: true })
+				)
+				const service = yield* PublishRunService.pipe(
+					Effect.provide(fixture.service)
+				)
+				yield* service.run(
+					outcomeFile({ status: 'reviewed', report: reviewReport() }),
+					CONTEXT
+				)
+				expect(fixture.reportSpy).toHaveBeenCalledExactlyOnceWith(
+					expect.objectContaining({ finished: false, held: true })
+				)
+			})
+	)
+	test.effect(
 		'offline publishes its summary and reports an offline status',
 		() =>
 			Effect.gen(function* () {

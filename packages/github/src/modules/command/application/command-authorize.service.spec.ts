@@ -490,3 +490,32 @@ layer(APP_MODE_OWNED)('CommandAuthorizeService', test => {
 			})
 	)
 })
+
+layer(APP_MODE_OWNED)('CommandAuthorizeService unfinished summaries', test => {
+	for (const [command, status] of [
+		['review', 'authorized'],
+		['run storage', 'denied'],
+	] as const)
+		test.effect(
+			`${command} at the manual run cap over an unfinished summary is ${status}`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = harness()
+					const body = `@mng-review ${command}`
+					fixture.fake.command.comment = { ...COMMAND_COMMENT, body }
+					// An incomplete write left the hold; only a full review can replace it.
+					fixture.fake.comments.push(
+						appSummary({
+							...SUMMARY_MARKER,
+							manualRuns: fixture.rules.config.commands.max_runs,
+							finished: false,
+							failed: true,
+						})
+					)
+					expect(yield* fixture.authorize({ ...COMMENT, body })).toMatchObject({
+						status,
+					})
+					expect(fixture.fake.writes).toEqual([])
+				})
+		)
+})

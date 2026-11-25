@@ -5,6 +5,7 @@ import { ReplyPublishServiceLive } from '../../modules/publish/application/reply
 import { SummaryReviewServiceLive } from '../../modules/publish/application/summary-review.service'
 import { ThreadResolutionServiceLive } from '../../modules/publish/application/thread-resolution.service'
 import type { BotIdentity } from '../../platform/bot-identity.helper'
+import type { GitHubStatusService } from '../../platform/github-status.service'
 import { GitHubConfig } from '../../platform/github.config'
 import { createRepo, gitLayer } from './git-test.helper'
 import {
@@ -15,10 +16,14 @@ import { GITHUB_SETTINGS } from './github-http.helper'
 import { githubStatusFake } from './github-status-fake.helper'
 import { agentReport, APP_IDENTITY, report, RULES } from './publish-test.helper'
 
-/** Local history and recording services for event tests; no endpoint or transport layer. */
+/**
+ * Local history and recording services for event tests; no endpoint or transport layer.
+ * `statusOverrides` replaces status calls, such as a status read GitHub refuses.
+ */
 export function publishEventFixture(
 	identity: BotIdentity = APP_IDENTITY,
-	options: GitHubApiFakeOptions = {}
+	options: GitHubApiFakeOptions = {},
+	statusOverrides: Partial<GitHubStatusService['Service']> = {}
 ) {
 	const repo = createRepo()
 	const original = `${Array.from({ length: 12 }, (_, index) => `line ${index + 1}`).join('\n')}\n`
@@ -31,7 +36,7 @@ export function publishEventFixture(
 		...fake.command.pullRequest,
 		head: { ...fake.command.pullRequest.head, sha: head },
 	}
-	const status = githubStatusFake()
+	const status = githubStatusFake(statusOverrides)
 	const dependencies = Layer.mergeAll(
 		fake.api,
 		status.layer,
@@ -82,5 +87,15 @@ export function publishEventFixture(
 			},
 		},
 	} as const satisfies PublishInput
-	return { repo, base, head, fake, status, publisher, replyPublisher, input }
+	return {
+		repo,
+		base,
+		head,
+		fake,
+		status,
+		summary,
+		publisher,
+		replyPublisher,
+		input,
+	}
 }

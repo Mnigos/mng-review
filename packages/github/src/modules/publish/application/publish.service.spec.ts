@@ -24,6 +24,7 @@ import {
 	ACCEPTING_RULES,
 	APP_IDENTITY,
 	APP_MODE_OWNED,
+	appSummary,
 	bug,
 	botThread,
 	botClosedReviewThread,
@@ -1500,6 +1501,29 @@ layer(APP_MODE_OWNED, { excludeTestServices: true })(
 							write => write.method === 'review' || write.method === 'comment'
 						)
 					).toHaveLength(1)
+				})
+		)
+		test.effect(
+			'a full write over only a hidden sticky summary counts from its runs and leaves it alone',
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup(undefined, APP_IDENTITY)
+					const sticky = appSummary(
+						{ ...SUMMARY_MARKER, runs: 9, manualRuns: 2 },
+						{ isMinimized: true }
+					)
+					fixture.fake.comments.push(sticky)
+					const publisher = yield* PublishService.pipe(
+						Effect.provide(fixture.publisher)
+					)
+					expect(yield* publisher.publish(fixture.input)).toMatchObject({
+						run: 10,
+					})
+					expect(
+						parseSummaryMarker(reviewBody(fixture.fake) ?? '')
+					).toMatchObject({ runs: 10, manualRuns: 2 })
+					// Counting only: the write edits, minimizes and deletes no hidden sticky comment.
+					expect(fixture.fake.comments).toEqual([sticky])
 				})
 		)
 	}

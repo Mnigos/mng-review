@@ -10,6 +10,8 @@ import {
 import { Effect, FileSystem, Layer } from 'effect'
 // oxlint-disable-next-line no-restricted-imports -- The summary's count is asserted at the real marker boundary.
 import { parseSummaryMarker } from '../../../../../packages/github/src/modules/publish/domain/publish-marker.parser'
+// oxlint-disable-next-line no-restricted-imports -- A declared agent the command can name.
+import { agent as domainAgent } from '../../../../../packages/github/src/shared/mocks/domain-test.helper'
 // oxlint-disable-next-line no-restricted-imports -- The test brief requires the existing recording GitHub fake fixtures.
 import {
 	appSummary,
@@ -271,6 +273,98 @@ layer(FileSystemLayer)('reserve step list completeness', test => {
 					)
 					expect(reserveManualRunSpy).toHaveBeenCalledOnce()
 					expect(seen).toEqual([riskEnabled])
+				})
+		)
+})
+
+layer(FileSystemLayer)('reserve step incomplete reads', test => {
+	test.effect(
+		'a summary read that drops a node counts nothing and names the incomplete list',
+		() =>
+			Effect.gen(function* () {
+				const fixture = stepFixture([], true)
+				const pr = fixture.api.command.pullRequest
+				fixture.api.command.pullRequest = {
+					...pr,
+					base: { ...pr.base, sha: fixture.base },
+					head: { ...pr.head, sha: fixture.head },
+				}
+				// The null node may be the only summary marker, which holds the count.
+				fixture.api.nullNodes.comments = 1
+				yield* runReserveStep.pipe(
+					Effect.provide(
+						PrepareRunServiceLive.pipe(Layer.provide(fixture.rulesLayer))
+					),
+					Effect.provide(fixture.publisherLayer),
+					Effect.provide(
+						fixture.envLayer({
+							MNG_REVIEW_APP_SLUG: 'mng-review',
+							MNG_REVIEW_TARGET_PR: '17',
+							MNG_REVIEW_TARGET_BASE: fixture.base,
+							MNG_REVIEW_TARGET_HEAD: fixture.head,
+						})
+					)
+				)
+				const fs = yield* FileSystem.FileSystem
+				expect(yield* fs.readFileString(fixture.paths.output)).toBe(
+					'reserved=false\n'
+				)
+				expect(fixture.api.writes).toEqual([])
+				const summary = yield* fs.readFileString(fixture.paths.summary)
+				expect(summary).toContain('conversation comments')
+				expect(summary).not.toContain('max\\_runs')
+			})
+	)
+	for (const agent of [undefined, 'storage'] as const)
+		test.effect(
+			`${agent === undefined ? 'a review' : 'a run of one agent'} at the cap over an unfinished summary ${agent === undefined ? 'is' : 'is not'} reserved`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = stepFixture([], true)
+					const pr = fixture.api.command.pullRequest
+					fixture.api.command.pullRequest = {
+						...pr,
+						base: { ...pr.base, sha: fixture.base },
+						head: { ...pr.head, sha: fixture.head },
+					}
+					const rules = { ...fixture.rules, agents: [domainAgent('storage')] }
+					// An incomplete write left the hold; only a full review can replace it.
+					fixture.api.comments.push(
+						appSummary({
+							...SUMMARY_MARKER,
+							manualRuns: rules.config.commands.max_runs,
+							finished: false,
+							failed: true,
+						})
+					)
+					yield* runReserveStep.pipe(
+						Effect.provide(
+							PrepareRunServiceLive.pipe(
+								Layer.provide(
+									Layer.succeed(RulesService, {
+										load: () => Effect.succeed(rules),
+									})
+								)
+							)
+						),
+						Effect.provide(fixture.publisherLayer),
+						Effect.provide(
+							fixture.envLayer({
+								MNG_REVIEW_APP_SLUG: 'mng-review',
+								MNG_REVIEW_TARGET_PR: '17',
+								MNG_REVIEW_TARGET_BASE: fixture.base,
+								MNG_REVIEW_TARGET_HEAD: fixture.head,
+								...(agent === undefined
+									? {}
+									: { MNG_REVIEW_COMMAND_AGENT: agent }),
+							})
+						)
+					)
+					expect(
+						yield* (yield* FileSystem.FileSystem).readFileString(
+							fixture.paths.output
+						)
+					).toBe(`reserved=${agent === undefined}\n`)
 				})
 		)
 })

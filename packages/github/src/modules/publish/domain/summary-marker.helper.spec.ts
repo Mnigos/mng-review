@@ -11,6 +11,7 @@ import {
 	type MarkerUpdate,
 	toNextSummaryMarker,
 	toAnsweredMarker,
+	toHoldFlags,
 	toJudgedMarker,
 	toRepliedMarker,
 } from './summary-marker.helper'
@@ -29,6 +30,37 @@ describe('toNextSummaryMarker', () => {
 			finished: true,
 			unthreadedBugs: 2,
 		})
+	})
+
+	/** A marker a write whose own read left a node out wrote: unfinished and failed. */
+	const incomplete = {
+		...SUMMARY_MARKER,
+		runs: 4,
+		finished: false,
+		failed: true,
+	} as const
+	for (const [name, update] of [
+		['a full run that did not finish', { finished: false, partial: false }],
+		['a partial run', { finished: true, partial: true }],
+	] as const)
+		test(`${name} keeps the hold of a marker an incomplete write left`, () => {
+			expect(
+				toNextSummaryMarker(incomplete, {
+					head: SUMMARY_MARKER.head,
+					unthreadedBugs: 0,
+					...update,
+				})
+			).toMatchObject({ finished: false, failed: true })
+		})
+	test('a full run that finished replaces the hold of a marker an incomplete write left', () => {
+		const next = toNextSummaryMarker(incomplete, {
+			head: SUMMARY_MARKER.head,
+			finished: true,
+			partial: false,
+			unthreadedBugs: 0,
+		})
+		expect(next.finished).toBe(true)
+		expect(next.failed).toBeUndefined()
 	})
 
 	test.each([0, 7])(
@@ -621,5 +653,16 @@ describe('summary command answers', () => {
 		expect(
 			toMarkerComment('summary', { v: 1, runs: 1, answers }).length
 		).toBeLessThanOrEqual(65_536 - 15_000)
+	})
+})
+
+describe('toHoldFlags', () => {
+	test('flags an incomplete read and a marker that keeps the hold apart', () => {
+		const held = { ...SUMMARY_MARKER, finished: false, failed: true }
+		expect(toHoldFlags(false, SUMMARY_MARKER)).toEqual({})
+		expect(toHoldFlags(true, SUMMARY_MARKER)).toEqual({ incomplete: true })
+		expect(toHoldFlags(false, held)).toEqual({ held: true })
+		// A finished run that failed an agent keeps no hold.
+		expect(toHoldFlags(false, { ...held, finished: true })).toEqual({})
 	})
 })
