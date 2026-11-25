@@ -262,6 +262,7 @@ layer(Layer.empty)('AgentLoopService', test => {
 					expect(
 						yield* AgentLoopService.use(loop => loop.run(REQUEST))
 					).toEqual({
+						tokenRate: expect.any(Number) as unknown,
 						value: { findings: [], dropped: 0 },
 						toolCalls: 0,
 						turns: 1,
@@ -702,6 +703,7 @@ layer(Layer.empty)('AgentLoopService', test => {
 							1
 					)
 					expect(yield* Fiber.join(fiber)).toEqual({
+						tokenRate: expect.any(Number) as unknown,
 						value: { findings: [], dropped: 0 },
 						toolCalls: 1,
 						turns: 2,
@@ -1169,6 +1171,7 @@ layer(Layer.empty)('conversation token budget and sources', test => {
 							})
 						)
 					).toEqual({
+						tokenRate: expect.any(Number) as unknown,
 						value: { findings: [], dropped: 0 },
 						toolCalls: 5,
 						turns: 2,
@@ -1518,6 +1521,7 @@ layer(Layer.empty)('coverage continuation', test => {
 								})
 							)
 						).toEqual({
+							tokenRate: expect.any(Number) as unknown,
 							unread: untouched(paths),
 							value: { ...first, dropped: 0 },
 							turns: 1,
@@ -1557,6 +1561,7 @@ layer(Layer.empty)('coverage continuation', test => {
 						})
 					)
 				).toEqual({
+					tokenRate: expect.any(Number) as unknown,
 					unread: [],
 					value: { findings: [], dropped: 0 },
 					turns: 2,
@@ -1614,6 +1619,7 @@ layer(Layer.empty)('coverage continuation', test => {
 								})
 							)
 						).toEqual({
+							tokenRate: expect.any(Number) as unknown,
 							unread: untouched(paths),
 							value: { findings: [], dropped: 0 },
 							continued: true,
@@ -1668,6 +1674,7 @@ layer(Layer.empty)('coverage continuation', test => {
 					expect(
 						yield* AgentLoopService.use(loop => loop.run(COVERED_REQUEST))
 					).toEqual({
+						tokenRate: expect.any(Number) as unknown,
 						// The scripted tool reports no diff parts or lines, so the file was not received whole.
 						unread: untouched([BILLING_PATH]),
 						value: { findings: [], dropped: 0 },
@@ -1697,6 +1704,7 @@ layer(Layer.empty)('coverage continuation', test => {
 				expect(
 					yield* AgentLoopService.use(loop => loop.run(COVERED_REQUEST))
 				).toEqual({
+					tokenRate: expect.any(Number) as unknown,
 					unread: untouched([BILLING_PATH]),
 					value: rawParsed(),
 					continued: true,
@@ -1721,6 +1729,7 @@ layer(Layer.empty)('coverage continuation', test => {
 				expect(
 					yield* AgentLoopService.use(loop => loop.run(COVERED_REQUEST))
 				).toEqual({
+					tokenRate: expect.any(Number) as unknown,
 					unread: untouched([BILLING_PATH]),
 					value: { findings: [], dropped: 0 },
 					continued: true,
@@ -1767,6 +1776,7 @@ layer(Layer.empty)('coverage continuation', test => {
 					expect(
 						yield* AgentLoopService.use(loop => loop.run(COVERED_REQUEST))
 					).toEqual({
+						tokenRate: expect.any(Number) as unknown,
 						unread: untouched([BILLING_PATH]),
 						value: { findings: [first, second], dropped: 0 },
 						continued: true,

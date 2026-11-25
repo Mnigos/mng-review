@@ -504,6 +504,7 @@ layer(Layer.empty)('review token allocation', test => {
 						expect(context?.fanOut).toBe(true)
 						expect(context?.tokens).toEqual({
 							pool: expect.any(Object) as unknown,
+							room: expect.any(Object) as unknown,
 							runTokens,
 							allowance: Math.floor(
 								(allowances[index] ?? 0) * (narrowed ? scenario.share : 1)

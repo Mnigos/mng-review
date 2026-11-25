@@ -1,6 +1,6 @@
 import type { Finding, ModelSetting } from '@mng-review/domain'
 import type { Rules } from '../../../platform/config/rules.service'
-import type { TokenPool } from '../domain/loop-budget.helper'
+import type { TokenPool, TokenRoom } from '../domain/loop-budget.helper'
 import type { AgentRunReport } from '../domain/review-report.types'
 import type { RepoToolName } from './repo.toolkit'
 import type { RepoScope } from './services/repo-tools.service'
@@ -26,6 +26,8 @@ export interface FinderTokens {
 	readonly runTokens: number
 	/** Shares finders left unspent, which the main reviewer's conversations may claim. */
 	readonly pool?: TokenPool
+	/** Free finder tokens under the run's cap, which granted conversations take at their token rate. */
+	readonly room?: TokenRoom
 }
 
 /** A finder's report and its findings, `max_findings` applied. */
@@ -55,4 +57,6 @@ export interface FinderJob {
 	 * the review grants what `tokens` lacks of it, within the run's cap. Unset without coverage.
 	 */
 	readonly need?: number
+	/** What the sizing added to `tokens` for `need` (`toSizedJobs`); unset when it added none. */
+	readonly granted?: number
 }

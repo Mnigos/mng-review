@@ -139,7 +139,11 @@ describe('toSizedJobs', () => {
 			1000
 		)
 		expect(sized).toEqual({
-			jobs: [[job(400, 400), job(100)], undefined, [job(50, 20)]],
+			jobs: [
+				[{ ...job(400, 400), granted: 300 }, job(100)],
+				undefined,
+				[job(50, 20)],
+			],
 			granted: 300,
 			needed: 300,
 			capped: false,
@@ -148,7 +152,10 @@ describe('toSizedJobs', () => {
 	test('cuts every grant alike past the room and says so', () => {
 		const sized = toSizedJobs([[job(100, 400)], [job(100, 200)]], 200)
 		expect(sized).toEqual({
-			jobs: [[job(250, 400)], [job(150, 200)]],
+			jobs: [
+				[{ ...job(250, 400), granted: 150 }],
+				[{ ...job(150, 200), granted: 50 }],
+			],
 			granted: 200,
 			needed: 400,
 			capped: true,

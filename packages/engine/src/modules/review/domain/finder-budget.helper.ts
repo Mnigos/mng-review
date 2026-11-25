@@ -105,6 +105,15 @@ export function toUnreadReport(
 	return files.length > 0 ? { unread: files.length, unreadFiles: files } : {}
 }
 
+/** The token rates of an agent report, to two decimals; none when empty. */
+export function toRateReport(
+	rates: readonly number[]
+): Pick<AgentRunReport, 'tokenRates'> {
+	return rates.length > 0
+		? { tokenRates: rates.map(rate => Math.round(rate * 100) / 100) }
+		: {}
+}
+
 /**
  * The share of what reading every cut file needs (`needed` tokens beyond the conversations' shares)
  * that the run can grant within `room`: 1 when it fits, else the same smaller factor for every

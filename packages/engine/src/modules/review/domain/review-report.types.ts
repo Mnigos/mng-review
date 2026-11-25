@@ -53,6 +53,12 @@ export interface AgentRunReport {
 	readonly unread?: number
 	/** The files `unread` counts, each with its reason, in unit order; unset when none. */
 	readonly unreadFiles?: readonly UnreadFile[]
+	/**
+	 * Each answered conversation's token rate, real first-call input tokens per estimated token
+	 * (`getTokenRate`), to two decimals, in job order; unset when none answered. A granted
+	 * conversation over 1 took its grant times the rate less 1 from the run's free tokens.
+	 */
+	readonly tokenRates?: readonly number[]
 	/** Units the token budget stopped before they answered; the agent's name when it is not split. */
 	readonly unfinished?: readonly string[]
 	readonly wallMillis: number
