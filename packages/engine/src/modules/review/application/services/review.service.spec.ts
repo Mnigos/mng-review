@@ -756,3 +756,79 @@ layer(Layer.empty)('coverage sizing', test => {
 				})
 		)
 })
+
+layer(Layer.empty)('token rate room', test => {
+	for (const capped of [false, true])
+		test.effect(
+			capped
+				? 'a rate past the room under the cap reports the cap'
+				: 'what reviewers take from the room adds to the run and its validation',
+			() =>
+				Effect.gen(function* () {
+					const tokensPerRun = 3_000_000
+					const cfg = config({
+						depth: 'deep',
+						limits: {
+							tokens_per_run: tokensPerRun,
+							tokens_by_depth: {
+								quick: 100_000,
+								balanced: 300_000,
+								deep: 300_000,
+							},
+						},
+					})
+					const plannedTokens = getPlannedTokens(cfg.limits, 'deep')
+					const runTokens = Math.floor(plannedTokens * FINDER_TOKEN_SHARE)
+					const cap = Math.floor(tokensPerRun * FINDER_TOKEN_SHARE)
+					const ask = capped ? cap : 1000
+					const asked = yield* Ref.make(false)
+					const findSpy = vi.fn<FinderService['Service']['run']>(
+						(run, context) =>
+							Effect.gen(function* () {
+								const { room } = context.tokens
+								if (
+									room &&
+									run.role === 'reviewer' &&
+									!(yield* Ref.getAndSet(asked, true))
+								)
+									yield* room.take(ask)
+								return finderResult([], run.name)
+							})
+					)
+					const validateAllSpy = vi.fn<
+						ValidatorService['Service']['validateAll']
+					>(bugs => Effect.succeed({ bugs, validations: [] }))
+					const report = yield* ReviewService.use(review =>
+						review.review(reviewRequest(cfg, [agent('billing')]))
+					).pipe(
+						Effect.provide(
+							reviewLayer(
+								findSpy,
+								() => Effect.die('unexpected validation'),
+								Effect.succeed([]),
+								0,
+								validateAllSpy,
+								jobsOf(1000, 151_000)
+							)
+						)
+					)
+					const reviewers = findSpy.mock.calls.filter(
+						([run]) => run.role === 'reviewer'
+					).length
+					const needed = 150_000 * reviewers
+					const rooms = findSpy.mock.calls.map(
+						([, context]) => context.tokens.room
+					)
+					expect(rooms[0]).toBeDefined()
+					for (const room of rooms) expect(room).toBe(rooms[0])
+					const left = cap - runTokens - needed
+					const taken = Math.min(ask, left)
+					expect(validateAllSpy.mock.calls[0]?.[1].budget?.runTokens).toBe(
+						plannedTokens + needed + taken
+					)
+					expect(report.capped).toEqual(
+						capped ? { needed: runTokens + needed + ask, cap } : undefined
+					)
+				})
+		)
+})

@@ -35,7 +35,7 @@ import {
 	toolCall,
 } from '../../../../shared/mocks/review-test.helper'
 import { getFirstDiffChars } from '../../domain/finder-budget.helper'
-import { makeTokenPool } from '../../domain/loop-budget.helper'
+import { makeTokenPool, makeTokenRoom } from '../../domain/loop-budget.helper'
 import {
 	MIN_UNIT_TOKENS,
 	FINDER_TOKEN_SHARE,
@@ -1474,5 +1474,59 @@ layer(Layer.empty)('sized jobs and unread files', test => {
 			expect(jobs[0]?.coverage).toEqual([BILLING_PATH])
 			expect(jobs[0]?.need).toBeGreaterThan(jobs[0]?.tokens ?? 0)
 		})
+	)
+})
+
+layer(Layer.empty)('finder token rates', test => {
+	test.effect(
+		'gives every conversation the room, a granted one its grant, and reports each rate',
+		() =>
+			Effect.gen(function* () {
+				const room = yield* makeTokenRoom(1000)
+				const requests: Omit<LoopRequest<unknown>, 'coverage'>[] = []
+				const rates = [1.8333, 0.912]
+				const run: AgentLoopService['Service']['run'] = request => {
+					const tokenRate = rates[requests.length]
+					requests.push(request)
+					return request.parse({ findings: [] }).pipe(
+						Effect.orDie,
+						Effect.map(value => ({
+							value,
+							turns: 1,
+							toolCalls: 0,
+							spentTokens: 5,
+							unspentTokens: 0,
+							...(tokenRate === undefined ? {} : { tokenRate }),
+						}))
+					)
+				}
+				const job = { system: 'system', user: 'unit', tools: [] }
+				const result = yield* FinderService.use(finder =>
+					finder.run(
+						plannedRun(),
+						context({
+							tokens: { allowance: 1000, runTokens: 10_000, room },
+						}),
+						[
+							{ ...job, unit: 'a', tokens: 1500, granted: 500 },
+							{ ...job, unit: 'b', tokens: 500 },
+						]
+					)
+				).pipe(
+					Effect.provide(
+						FinderServiceLive.pipe(
+							Layer.provide(Layer.succeed(AgentLoopService, { run })),
+							Layer.provide(
+								reviewDependencies(() => Effect.die('unexpected model call'))
+							)
+						)
+					)
+				)
+				expect(requests.map(request => request.budget)).toEqual([
+					{ runTokens: 10_000, conversationTokens: 1500, room, grant: 500 },
+					{ runTokens: 10_000, conversationTokens: 500, room },
+				])
+				expect(result.report.tokenRates).toEqual([1.83, 0.91])
+			})
 	)
 })

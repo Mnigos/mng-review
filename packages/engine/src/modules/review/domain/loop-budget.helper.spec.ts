@@ -2,9 +2,11 @@ import { layer } from '@effect/vitest'
 import { Effect, Layer, Ref } from 'effect'
 import {
 	getMissingTokens,
+	getTokenRate,
 	isOutOfTokens,
 	makeConversationBudget,
 	makeTokenPool,
+	makeTokenRoom,
 	toAffordableOutputs,
 	toEstimatedTokens,
 } from './loop-budget.helper'
@@ -265,6 +267,125 @@ layer(Layer.empty)('tool output room', test => {
 			)
 			yield* unbounded.claimFor(state, 1000)
 			expect(yield* unbounded.current).toBeUndefined()
+		})
+	)
+})
+
+layer(Layer.empty)('token room', test => {
+	test.effect(
+		'gives at most what it holds and counts what it could not give',
+		() =>
+			Effect.gen(function* () {
+				const room = yield* makeTokenRoom(500)
+				expect(yield* room.take(300)).toBe(300)
+				expect(yield* room.take(400)).toBe(200)
+				expect(yield* room.take(0)).toBe(0)
+				expect(yield* room.taken).toBe(500)
+				expect(yield* room.short).toBe(200)
+			})
+	)
+	test.effect('a room under zero gives nothing', () =>
+		Effect.gen(function* () {
+			const room = yield* makeTokenRoom(-5)
+			expect(yield* room.take(10)).toBe(0)
+			expect(yield* room.taken).toBe(0)
+			expect(yield* room.short).toBe(10)
+		})
+	)
+})
+
+describe('token rate', () => {
+	for (const [real, estimate, rate] of [
+		[200, 100, 2],
+		[50, 100, 0.5],
+		[100, 100, 1],
+		[7, 0, 1],
+	] as const)
+		test(`${real} real tokens over an estimate of ${estimate} is a rate of ${rate}`, () =>
+			expect(getTokenRate(real, estimate)).toBe(rate))
+})
+
+layer(Layer.empty)('conversation token rate', test => {
+	const GRANTED = { runTokens: 5000, conversationTokens: 3000, grant: 1000 }
+	for (const [real, taken] of [
+		[200, 1000],
+		[150, 500],
+		[100, 0],
+		[50, 0],
+	] as const)
+		test.effect(
+			`a first call of ${real} tokens over an estimate of 100 takes ${taken} from the room`,
+			() =>
+				Effect.gen(function* () {
+					const room = yield* makeTokenRoom(10_000)
+					const budget = yield* makeConversationBudget(
+						{ ...GRANTED, room },
+						Effect.succeed(0)
+					)
+					expect(yield* budget.applyRate(real, 100)).toBe(real / 100)
+					expect(yield* budget.current).toEqual({
+						...GRANTED,
+						room,
+						runTokens: GRANTED.runTokens + taken,
+						conversationTokens: GRANTED.conversationTokens + taken,
+					})
+					expect(yield* room.taken).toBe(taken)
+					expect(
+						yield* budget.settle({ spentTokens: 0, unspentTokens: 0 })
+					).toEqual({
+						spentTokens: 0,
+						unspentTokens: GRANTED.conversationTokens + taken,
+						tokenRate: real / 100,
+					})
+				})
+		)
+	test.effect('takes no more than the room holds', () =>
+		Effect.gen(function* () {
+			const room = yield* makeTokenRoom(300)
+			const budget = yield* makeConversationBudget(
+				{ ...GRANTED, room },
+				Effect.succeed(0)
+			)
+			yield* budget.applyRate(300, 100)
+			expect(yield* budget.current).toMatchObject({
+				conversationTokens: GRANTED.conversationTokens + 300,
+			})
+			expect(yield* room.taken).toBe(300)
+			expect(yield* room.short).toBe(1700)
+			expect(yield* budget.applyRate(900, 100)).toBe(3)
+			expect(yield* room.short).toBe(1700)
+		})
+	)
+	test.effect(
+		'another conversation taking from the room raises the run stop',
+		() =>
+			Effect.gen(function* () {
+				const room = yield* makeTokenRoom(10_000)
+				const budget = yield* makeConversationBudget(
+					{ runTokens: 100, conversationTokens: 1000, room },
+					Effect.succeed(150)
+				)
+				const state = { spentTokens: 0, nextInputTokens: 10 }
+				expect(yield* budget.isSpent(state)).toBeTruthy()
+				yield* room.take(100)
+				expect(yield* budget.isSpent(state)).toBe(false)
+			})
+	)
+	test.effect('without a grant or a room the rate takes nothing', () =>
+		Effect.gen(function* () {
+			const room = yield* makeTokenRoom(10_000)
+			const ungranted = yield* makeConversationBudget(
+				{ ...BUDGET, room },
+				Effect.succeed(0)
+			)
+			expect(yield* ungranted.applyRate(300, 100)).toBe(3)
+			expect(yield* room.taken).toBe(0)
+			const roomless = yield* makeConversationBudget(
+				{ ...BUDGET, grant: 1000 },
+				Effect.succeed(0)
+			)
+			yield* roomless.applyRate(300, 100)
+			expect(yield* roomless.current).toEqual({ ...BUDGET, grant: 1000 })
 		})
 	)
 })

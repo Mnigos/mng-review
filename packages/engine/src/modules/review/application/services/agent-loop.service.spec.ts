@@ -33,6 +33,7 @@ import {
 import { fenceData } from '../../../../utils/fence.util'
 import {
 	makeTokenPool,
+	makeTokenRoom,
 	toEstimatedTokens,
 } from '../../domain/loop-budget.helper'
 import { toContinuationMessage } from '../../domain/loop-message.helper'
@@ -2470,5 +2471,107 @@ layer(Layer.empty)('reading before the answer', test => {
 					)
 				)
 			)
+	)
+})
+
+/** A first call of `firstTokens` that reads a file, then the answer. */
+function readThenAnswer(firstTokens: number) {
+	return loopLayer(
+		(_call, index) =>
+			Effect.succeed(
+				index === 0
+					? [
+							toolCall('read_file', { path: BILLING_PATH }),
+							finishWithUsage(firstTokens),
+						]
+					: answer()
+			),
+		{ tokensPerRun: 20_000 }
+	)
+}
+
+layer(Layer.empty)('token rate sizing', test => {
+	const estimate = toEstimatedTokens(REQUEST.system + REQUEST.user)
+	const finishTokens =
+		FINISH.usage.inputTokens.total + FINISH.usage.outputTokens.total
+	for (const { rate, room, taken } of [
+		{ rate: 2, room: 10_000, taken: 1000 },
+		{ rate: 0.5, room: 10_000, taken: 0 },
+		{ rate: 2, room: 300, taken: 300 },
+	])
+		test.effect(
+			`a first call at ${rate} times its estimate with ${room} tokens of room adds ${taken} to the grant of 1000`,
+			() =>
+				Effect.gen(function* () {
+					const tokenRoom = yield* makeTokenRoom(room)
+					const firstTokens = estimate * rate
+					yield* Effect.gen(function* () {
+						expect(
+							yield* AgentLoopService.use(loop =>
+								loop.run({
+									...REQUEST,
+									budget: {
+										runTokens: 20_000,
+										conversationTokens: 3000,
+										room: tokenRoom,
+										grant: 1000,
+									},
+								})
+							)
+						).toMatchObject({
+							tokenRate: rate,
+							spentTokens: firstTokens + finishTokens,
+							unspentTokens: 3000 + taken - firstTokens - finishTokens,
+						})
+						expect(yield* tokenRoom.taken).toBe(taken)
+						expect(yield* tokenRoom.short).toBe(
+							Math.max(0, 1000 * (rate - 1) - taken)
+						)
+					}).pipe(Effect.provide(readThenAnswer(firstTokens)))
+				})
+		)
+	test.effect(
+		'what the room gives raises the run stop the next turn checks',
+		() =>
+			Effect.gen(function* () {
+				const tokenRoom = yield* makeTokenRoom(10_000)
+				yield* Effect.gen(function* () {
+					yield* AgentLoopService.use(loop =>
+						loop.run({
+							...REQUEST,
+							budget: {
+								runTokens: estimate,
+								conversationTokens: 3000,
+								room: tokenRoom,
+								grant: 1000,
+							},
+						})
+					)
+					const calls = yield* ScriptedLlm.use(script => script.calls)
+					expect(
+						calls[1]?.options.tools.map(tool => String(tool.name))
+					).toEqual([...REQUEST.tools, REQUEST.finish])
+				}).pipe(Effect.provide(readThenAnswer(estimate * 2)))
+			})
+	)
+	test.effect(
+		'a conversation without a grant measures its rate and takes nothing',
+		() =>
+			Effect.gen(function* () {
+				const tokenRoom = yield* makeTokenRoom(10_000)
+				expect(
+					yield* AgentLoopService.use(loop =>
+						loop.run({
+							...REQUEST,
+							budget: {
+								runTokens: 20_000,
+								conversationTokens: 3000,
+								room: tokenRoom,
+							},
+						})
+					).pipe(Effect.provide(readThenAnswer(estimate * 3)))
+				).toMatchObject({ tokenRate: 3 })
+				expect(yield* tokenRoom.taken).toBe(0)
+			})
 	)
 })
