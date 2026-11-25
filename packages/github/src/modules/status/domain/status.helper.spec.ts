@@ -1,5 +1,6 @@
 import {
 	INCOMPLETE_STATUS,
+	toChangedStatus,
 	toCommitStatus,
 	toHeldStatus,
 	toIncompleteMarkerStatus,
@@ -248,5 +249,37 @@ describe('toLoweredStatus', () => {
 		],
 	] as const)('writes nothing for %s', (_name, candidates, current) => {
 		expect(toLoweredStatus(candidates, current)).toBeUndefined()
+	})
+})
+
+describe('toChangedStatus', () => {
+	for (const cause of ['the reviewer was offline', 'publishing failed'])
+		test(`an error that says ${cause} keeps its cause over a generic unfinished error`, () => {
+			expect(
+				toChangedStatus(
+					{ state: 'error', description: `${cause}; ${UNFINISHED_NOTE}` },
+					toCommitStatus('ready', 0, false)
+				)
+			).toBeUndefined()
+		})
+	test('an error that names no unfinished run still changes', () => {
+		expect(
+			toChangedStatus(
+				{ state: 'error', description: 'something else' },
+				toCommitStatus('ready', 0, false)
+			)
+		).toEqual(toCommitStatus('ready', 0, false))
+	})
+	test('a failure over an unfinished error still changes', () => {
+		const failure = toCommitStatus('needs fixes', 1, false)
+		expect(
+			toChangedStatus(
+				{
+					state: 'error',
+					description: `publishing failed; ${UNFINISHED_NOTE}`,
+				},
+				failure
+			)
+		).toEqual(failure)
 	})
 })

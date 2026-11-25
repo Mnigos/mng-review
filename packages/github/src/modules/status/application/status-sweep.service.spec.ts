@@ -1777,6 +1777,71 @@ layer(APP_MODE_OWNED)('StatusSweepService incomplete list reads', test => {
 				expect(status.statuses).toHaveLength(1)
 			})
 	)
+	test.effect(
+		'incomplete sweeps that leave out different lists keep one stable pending and report the lists',
+		() =>
+			Effect.gen(function* () {
+				const fixture = sweepSetup([])
+				const status = newestStatus(toCommitStatus('ready', 0, true))
+				const sweep = StatusSweepService.use(service => service.sweep()).pipe(
+					Effect.provide(
+						StatusSweepServiceLive.pipe(
+							Layer.provide(Layer.merge(fixture.api.api, status.layer))
+						)
+					),
+					provideListCompleteness(false)
+				)
+				fixture.api.nullNodes.threads = 1
+				expect(yield* sweep).toEqual({
+					checked: 1,
+					updated: 1,
+					failed: 0,
+					incomplete: [{ pullNumber: 17, lists: ['review threads'] }],
+				})
+				// The status names no list, so a later read that leaves out another one writes nothing.
+				fixture.api.nullNodes.threads = 0
+				fixture.api.nullNodes.comments = 1
+				expect(yield* sweep).toEqual({
+					checked: 1,
+					updated: 0,
+					failed: 0,
+					incomplete: [{ pullNumber: 17, lists: ['conversation comments'] }],
+				})
+				expect(status.statuses).toEqual([{ sha: 'head', ...INCOMPLETE_STATUS }])
+			})
+	)
+	test.effect(
+		'a pull request whose later read fails still reports the lists its earlier reads left out',
+		() =>
+			Effect.gen(function* () {
+				const fixture = sweepSetup([])
+				const status = newestStatus(toCommitStatus('ready', 0, true))
+				// The review read leaves a node out; the conversation comment read after it fails.
+				fixture.api.nullNodes.reviews = 1
+				fixture.api.failures.listComments.push(
+					new GitHubApiError({
+						operation: 'listComments',
+						reason: 'unavailable',
+						status: 503,
+					})
+				)
+				expect(
+					yield* StatusSweepService.use(service => service.sweep()).pipe(
+						Effect.provide(
+							StatusSweepServiceLive.pipe(
+								Layer.provide(Layer.merge(fixture.api.api, status.layer))
+							)
+						),
+						provideListCompleteness(false)
+					)
+				).toEqual({
+					checked: 1,
+					updated: 0,
+					failed: 1,
+					incomplete: [{ pullNumber: 17, lists: ['reviews'] }],
+				})
+			})
+	)
 })
 
 /** A status fake for pull request 17 whose head shows the newest status written, `first` before any. */
@@ -1839,4 +1904,78 @@ layer(APP_MODE_OWNED)('StatusSweepService unfinished summaries', test => {
 					)
 				})
 		)
+})
+
+/** The current identity as the fake lists its comments and reviews. */
+const APP_AUTHOR = { __typename: 'Bot', login: APP_IDENTITY.login } as const
+
+layer(APP_MODE_OWNED)('StatusSweepService never raises', test => {
+	for (const recorded of ['a bug', 'an owner wait'] as const)
+		test.effect(
+			`a publisher that records ${recorded} and writes failure after the sweep read a clear state gets no success over it`,
+			() =>
+				Effect.gen(function* () {
+					const api = onListedHead(githubApiFake(APP_IDENTITY))
+					api.reviews.push(
+						summaryReview(
+							{ ...SUMMARY_MARKER, head: 'head', finished: true },
+							{ databaseId: 101, author: APP_AUTHOR }
+						)
+					)
+					// A person resolved the last bug thread; the bot's status still says `failure`.
+					api.threads.push(reviewThread(undefined, { isResolved: true }))
+					const blocking =
+						recorded === 'a bug'
+							? toCommitStatus('needs fixes', 1, true)
+							: toCommitStatus('needs owner', 0, true)
+					const status = newestStatus(toCommitStatus('needs fixes', 1, true))
+					const published: string[] = []
+					// The sweep's thread read sees the clear state; right after it a publisher records what
+					// blocks on the pull request and writes its `failure`.
+					api.threadSnapshots.shift = () => {
+						const clear = [...api.threads]
+						if (published.length > 0) return clear
+						published.push(recorded)
+						if (recorded === 'a bug') api.threads.splice(0, 1, reviewThread())
+						else
+							api.reviews.push(
+								summaryReview(
+									{
+										...SUMMARY_MARKER,
+										head: 'head',
+										finished: true,
+										needsOwner: ['thread'],
+									},
+									{ id: 'waiting-102', databaseId: 102, author: APP_AUTHOR }
+								)
+							)
+						status.statuses.push({ sha: 'head', ...blocking })
+						return clear
+					}
+					expect(
+						yield* StatusSweepService.use(service => service.sweep()).pipe(
+							Effect.provide(
+								StatusSweepServiceLive.pipe(
+									Layer.provide(Layer.merge(api.api, status.layer))
+								)
+							)
+						)
+					).toEqual({ checked: 1, updated: 0, failed: 0 })
+					// The publisher ran, and its `failure` is the newest status: the sweep wrote nothing.
+					expect(published).toEqual([recorded])
+					expect(status.statuses).toEqual([{ sha: 'head', ...blocking }])
+				})
+		)
+	test.effect('a clear pull request keeps its failure for the locked job', () =>
+		Effect.gen(function* () {
+			const fixture = sweepSetup([toCommitStatus('needs fixes', 1, true)])
+			fixture.api.threads.push(reviewThread(undefined, { isResolved: true }))
+			expect(yield* fixture.sweep).toEqual({
+				checked: 1,
+				updated: 0,
+				failed: 0,
+			})
+			expect(fixture.status.statuses).toEqual([])
+		})
+	)
 })
