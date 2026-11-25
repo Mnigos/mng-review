@@ -126,6 +126,29 @@ layer(FileSystemLayer)('raise step', test => {
 			])
 		}).pipe(Effect.provide(Layer.fresh(TestConsole.layer)))
 	)
+	test.effect(
+		'a status update beside a refused dismissal reports the dismissal and passes',
+		() =>
+			Effect.gen(function* () {
+				const fixture = stepFixture()
+				yield* runRaise(fixture, () =>
+					Effect.succeed<RaiseResult>({
+						outcome: 'updated',
+						head: 'head',
+						status: { state: 'error', description: 'no open bug thread' },
+						dismissal: { dismissed: 0, failed: 1 },
+					})
+				)
+				expect(yield* TestConsole.logLines).toEqual([
+					'mng-review: raise on #17: error written, 0 change request(s) dismissed, 1 not dismissed',
+				])
+				expect(
+					yield* (yield* FileSystem.FileSystem).readFileString(
+						fixture.paths.summary
+					)
+				).toContain('1 not dismissed')
+			}).pipe(Effect.provide(Layer.fresh(TestConsole.layer)))
+	)
 	test.effect('a raise that only lifts says the status is unchanged', () =>
 		Effect.gen(function* () {
 			const fixture = stepFixture()

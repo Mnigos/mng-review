@@ -587,6 +587,11 @@ layer(FileSystemLayer)('find step raises', test => {
 						`::warning::${warning}`,
 						`mng-review: reply schedule: replies wait on #17${line}`,
 					])
+					const summary = yield* (yield* FileSystem.FileSystem).readFileString(
+						fixture.paths.summary
+					)
+					expect(summary).toContain('hard bound')
+					expect(summary).not.toContain('deadline')
 				}).pipe(Effect.provide(Layer.fresh(TestConsole.layer)))
 		)
 	test.effect(
