@@ -666,3 +666,49 @@ describe('toHoldFlags', () => {
 		expect(toHoldFlags(false, { ...held, finished: true })).toEqual({})
 	})
 })
+
+describe('toNextSummaryMarker finished-run stamp', () => {
+	const stamped = {
+		...SUMMARY_MARKER,
+		runs: 4,
+		finished: true,
+		reviewedAt: '2026-11-20T10:00:00.000Z',
+	} as const
+	const at = '2026-11-20T11:00:00.000Z'
+	test('a full run that finished stamps its time', () => {
+		expect(
+			toNextSummaryMarker(stamped, {
+				head: SUMMARY_MARKER.head,
+				finished: true,
+				partial: false,
+				unthreadedBugs: 0,
+				reviewedAt: at,
+			}).reviewedAt
+		).toBe(at)
+	})
+	for (const [name, update] of [
+		['a full run that did not finish', { finished: false, partial: false }],
+		['a partial run', { finished: true, partial: true }],
+	] as const)
+		test(`${name} carries the last finished run's stamp`, () => {
+			expect(
+				toNextSummaryMarker(stamped, {
+					head: SUMMARY_MARKER.head,
+					unthreadedBugs: 0,
+					reviewedAt: at,
+					...update,
+				}).reviewedAt
+			).toBe(stamped.reviewedAt)
+		})
+	test('a reply-only run carries the stamp', () => {
+		expect(
+			toRepliedMarker(stamped, { added: ['thread'], cleared: new Set() })
+				.reviewedAt
+		).toBe(stamped.reviewedAt)
+	})
+	test('the stamp survives the marker text', () => {
+		expect(
+			parseSummaryMarker(toMarkerComment('summary', stamped))?.reviewedAt
+		).toBe(stamped.reviewedAt)
+	})
+})

@@ -1,5 +1,6 @@
 import {
 	INCOMPLETE_STATUS,
+	isOutrunFinish,
 	toChangedStatus,
 	toCommitStatus,
 	toHeldStatus,
@@ -282,4 +283,100 @@ describe('toChangedStatus', () => {
 			)
 		).toEqual(failure)
 	})
+})
+
+describe('isOutrunFinish', () => {
+	const reviewedAt = '2026-11-20T10:00:00Z'
+	const finished = { finished: true, reviewedAt } as const
+	const later = '2026-11-20T10:01:00Z'
+	test.each([
+		[
+			'a failed publish after the finished run',
+			'error',
+			`publishing failed; ${UNFINISHED_NOTE}`,
+			later,
+			true,
+		],
+		[
+			'a failure that kept the note after it',
+			'failure',
+			`1 open bug thread(s); needs fixes; ${UNFINISHED_NOTE}`,
+			later,
+			true,
+		],
+		[
+			'an error in the same second',
+			'error',
+			`publishing failed; ${UNFINISHED_NOTE}`,
+			reviewedAt,
+			true,
+		],
+		[
+			'an error without its time',
+			'error',
+			`publishing failed; ${UNFINISHED_NOTE}`,
+			undefined,
+			true,
+		],
+		[
+			'an error whose time does not parse',
+			'error',
+			`publishing failed; ${UNFINISHED_NOTE}`,
+			'later',
+			true,
+		],
+		[
+			'an error before the finished run',
+			'error',
+			`publishing failed; ${UNFINISHED_NOTE}`,
+			'2026-11-20T09:59:00Z',
+			false,
+		],
+		[
+			'a failure without the note after it',
+			'failure',
+			'1 open bug thread(s); needs fixes',
+			later,
+			false,
+		],
+		['a success after it', 'success', 'no open bug thread', later, false],
+	] as const)('%s gives %s', (_name, state, description, createdAt, outrun) => {
+		expect(
+			isOutrunFinish(
+				{
+					state,
+					description,
+					...(createdAt === undefined ? {} : { created_at: createdAt }),
+				},
+				finished
+			)
+		).toBe(outrun)
+	})
+	test('a finished marker from before the stamp counts as outrun', () => {
+		expect(
+			isOutrunFinish(
+				{
+					state: 'error',
+					description: `publishing failed; ${UNFINISHED_NOTE}`,
+					created_at: '2026-11-20T09:59:00Z',
+				},
+				{ finished: true }
+			)
+		).toBeTruthy()
+	})
+	test.each([false, undefined])(
+		'a run that did not finish on the head (%s) is never outrun',
+		state => {
+			expect(
+				isOutrunFinish(
+					{
+						state: 'error',
+						description: `publishing failed; ${UNFINISHED_NOTE}`,
+						created_at: later,
+					},
+					{ finished: state, reviewedAt }
+				)
+			).toBe(false)
+		}
+	)
 })

@@ -2,6 +2,7 @@ import { layer } from '@effect/vitest'
 import { Clock, ConfigProvider, Duration, Effect, Fiber, Layer } from 'effect'
 import { TestClock } from 'effect/testing'
 import type {
+	CommitStatus,
 	OpenPullRequest,
 	PullRequestReview,
 } from '../../../platform/github-api.schema'
@@ -76,6 +77,12 @@ function changeRequest(
 	})
 }
 
+/** When GitHub says a status the test wrote was written: after every time the specs seed but one. */
+const WRITTEN_AT = '2026-11-20T10:02:00Z'
+
+/** A status the head has before the raise, with when GitHub says it was written. */
+type SeededStatus = CommitStatusText & Pick<CommitStatus, 'created_at'>
+
 /** The bot's `failure` for the one bug thread a person since resolved by hand. */
 const ONE_BUG = toCommitStatus('needs fixes', 1, true)
 /** The `success` a raise writes once nothing blocks. */
@@ -89,7 +96,7 @@ const READY = toCommitStatus('ready', 0, true)
 function raiseSetup(
 	pulls: readonly OpenPullRequest[] = [openPullRequest(17, 'head')],
 	head = 'head',
-	previous: CommitStatusText | null = ONE_BUG,
+	previous: SeededStatus | null = ONE_BUG,
 	allow: readonly string[] = [],
 	setStatus?: GitHubStatusService['Service']['setStatus'],
 	readDelay?: Duration.Input,
@@ -117,7 +124,10 @@ function raiseSetup(
 			statusReads.count += 1
 			// A read that never ends, for a judgment the scan's hard bound must drop.
 			if (statusReads.count === hangAt) return Effect.never
-			const newest = status.statuses.at(-1) ?? previous ?? undefined
+			const written = status.statuses.at(-1)
+			const newest = written
+				? { created_at: WRITTEN_AT, ...written }
+				: (previous ?? undefined)
 			const read = Effect.succeed(
 				newest && {
 					id: status.statuses.length + 1,
@@ -1231,6 +1241,241 @@ layer(APP_MODE_OWNED)('RaiseService closed and refused', test => {
 					head: 'head',
 					dismissal: { dismissed: 0, failed: 1 },
 				})
+			})
+	)
+})
+
+/** When the earlier full run finished, a minute before and after it, and after the test's writes. */
+const EARLIER_AT = '2026-11-20T09:59:00Z'
+const REVIEWED_AT = '2026-11-20T10:00:00Z'
+const LATER_AT = '2026-11-20T10:01:00Z'
+const RELEASED_AT = '2026-11-20T10:03:00Z'
+
+/** The `error`s a run writes when it ends without writing a finished summary. */
+const RUN_ERRORS = {
+	'publishing failed': `publishing failed; ${UNFINISHED_NOTE}`,
+	'reviewer offline': `the reviewer was offline; ${UNFINISHED_NOTE}`,
+} as const
+
+/** A finished full run on the head that stamped `reviewedAt` (unset: a marker from before the stamp). */
+function finishedMarker(reviewedAt?: string): SummaryMarker {
+	return {
+		...ON_HEAD,
+		finished: true,
+		...(reviewedAt === undefined ? {} : { reviewedAt }),
+	}
+}
+
+/** What the head's `error` says and when it was written; unset `at` is a status without the time. */
+interface SeededError {
+	readonly description: string
+	readonly at?: string
+}
+
+/** When GitHub says the summary review was posted and last edited. */
+type WrittenTimes = Pick<
+	PullRequestReview,
+	'createdAt' | 'submittedAt' | 'lastEditedAt'
+>
+
+/**
+ * `raiseSetup` after a full run that finished on the head: its summary and its change request with
+ * `marker`, posted or edited at `written`, and the `error` a later run wrote on the head.
+ */
+function erroredSetup(
+	error: SeededError,
+	marker: SummaryMarker,
+	written: WrittenTimes = {}
+) {
+	const fixture = raiseSetup(undefined, undefined, {
+		state: 'error',
+		description: error.description,
+		...(error.at === undefined ? {} : { created_at: error.at }),
+	})
+	fixture.api.reviews.splice(
+		0,
+		fixture.api.reviews.length,
+		summaryReview(marker, { databaseId: 101, author: APP_AUTHOR, ...written }),
+		changeRequest(written, marker)
+	)
+	return fixture
+}
+
+layer(APP_MODE_OWNED)('RaiseService errors a later run wrote', test => {
+	for (const [name, description] of Object.entries(RUN_ERRORS))
+		test.effect(
+			`a ${name} error written after the finished run on the head keeps the error and the change request`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = erroredSetup(
+						{ description, at: LATER_AT },
+						finishedMarker(REVIEWED_AT)
+					)
+					expect((yield* fixture.findDue).pulls).toEqual([])
+					expect(yield* fixture.raise).toEqual({
+						outcome: 'not-due',
+						head: 'head',
+						dismissal: { dismissed: 0, failed: 0 },
+					})
+					expect(fixture.status.statuses).toEqual([])
+					expect(fixture.dismissed()).toEqual([])
+				})
+		)
+	const laterEdits = [
+		{
+			name: 'a reply-only run',
+			marker: { ...finishedMarker(REVIEWED_AT), needsOwner: ['waiting'] },
+		},
+		{
+			name: 'a manual run reserving its review',
+			marker: { ...finishedMarker(REVIEWED_AT), manualRuns: 1 },
+		},
+	] as const
+	for (const { name, marker } of laterEdits)
+		test.effect(
+			`an edit by ${name} after the error keeps the error and the change request`,
+			() =>
+				Effect.gen(function* () {
+					// The edit carries the finished flag and the stamp of the earlier full run forward.
+					const fixture = erroredSetup(
+						{ description: RUN_ERRORS['publishing failed'], at: LATER_AT },
+						marker,
+						{
+							createdAt: EARLIER_AT,
+							submittedAt: EARLIER_AT,
+							lastEditedAt: RELEASED_AT,
+						}
+					)
+					fixture.api.threads.push(
+						reviewThread(undefined, {
+							id: 'waiting',
+							isResolved: true,
+							resolvedBy: { login: 'contributor' },
+						})
+					)
+					fixture.api.command.role = 'admin'
+					expect((yield* fixture.findDue).pulls).toEqual([])
+					expect((yield* fixture.raise).outcome).toBe('not-due')
+					expect(fixture.status.statuses).toEqual([])
+					expect(fixture.dismissed()).toEqual([])
+				})
+		)
+	const unknownOrders = [
+		{
+			name: 'an error without its time',
+			error: { description: RUN_ERRORS['publishing failed'] },
+			marker: finishedMarker(REVIEWED_AT),
+		},
+		{
+			name: 'a finished marker from before the stamp',
+			error: { description: RUN_ERRORS['publishing failed'], at: LATER_AT },
+			marker: finishedMarker(),
+		},
+		{
+			name: 'an error in the same second as the finished run',
+			error: { description: RUN_ERRORS['publishing failed'], at: REVIEWED_AT },
+			marker: finishedMarker(REVIEWED_AT),
+		},
+	] as const
+	for (const { name, error, marker } of unknownOrders)
+		test.effect(
+			`${name} cannot be ordered, so the error and the change request stay`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = erroredSetup(error, marker)
+					expect((yield* fixture.findDue).pulls).toEqual([])
+					expect((yield* fixture.raise).outcome).toBe('not-due')
+					expect(fixture.status.statuses).toEqual([])
+					expect(fixture.dismissed()).toEqual([])
+				})
+		)
+	test.effect('a full run that finished after the error still raises', () =>
+		Effect.gen(function* () {
+			// Its own status write failed, so the head still shows the older error.
+			const fixture = erroredSetup(
+				{ description: RUN_ERRORS['publishing failed'], at: EARLIER_AT },
+				finishedMarker(REVIEWED_AT)
+			)
+			expect((yield* fixture.findDue).pulls).toEqual([17])
+			expect(yield* fixture.raise).toEqual({
+				outcome: 'raised',
+				head: 'head',
+				status: READY,
+				dismissal: { dismissed: 1, failed: 0 },
+			})
+			expect(fixture.dismissed()).toEqual([102])
+		})
+	)
+	test.effect(
+		'a later error survives a lowering to failure and a hand resolve, until a full run finishes',
+		() =>
+			Effect.gen(function* () {
+				// Run B on the same head posted a bug thread, then its publishing failed.
+				const fixture = erroredSetup(
+					{ description: RUN_ERRORS['publishing failed'], at: LATER_AT },
+					finishedMarker(REVIEWED_AT)
+				)
+				fixture.api.threads.splice(0, 1, reviewThread())
+				const unfinishedBug = toCommitStatus('needs fixes', 1, false)
+				expect(yield* fixture.sweep).toMatchObject({ updated: 1 })
+				expect(fixture.status.statuses).toEqual([
+					{ sha: 'head', ...unfinishedBug },
+				])
+				expect((yield* fixture.findDue).pulls).toEqual([])
+				// A writer resolves B's thread: the failure, written after the finished run, still holds.
+				fixture.api.threads.splice(
+					0,
+					1,
+					reviewThread(undefined, { isResolved: true })
+				)
+				expect(yield* fixture.sweep).toMatchObject({ updated: 0 })
+				expect((yield* fixture.findDue).pulls).toEqual([17])
+				const unfinished = toCommitStatus('ready', 0, false)
+				expect(yield* fixture.raise).toEqual({
+					outcome: 'updated',
+					head: 'head',
+					status: unfinished,
+					dismissal: { dismissed: 0, failed: 0 },
+				})
+				expect((yield* fixture.findDue).pulls).toEqual([])
+				expect(
+					fixture.status.statuses.filter(status => status.state === 'success')
+				).toEqual([])
+				expect(fixture.dismissed()).toEqual([])
+				// A full run finishes on the head after those writes; its own status write failed.
+				const released = finishedMarker(RELEASED_AT)
+				fixture.api.reviews.splice(
+					0,
+					fixture.api.reviews.length,
+					summaryReview(released, { databaseId: 101, author: APP_AUTHOR }),
+					changeRequest({}, released)
+				)
+				expect((yield* fixture.findDue).pulls).toEqual([17])
+				expect(yield* fixture.raise).toMatchObject({
+					outcome: 'raised',
+					status: READY,
+					dismissal: { dismissed: 1, failed: 0 },
+				})
+				expect(fixture.dismissed()).toEqual([102])
+			})
+	)
+	test.effect(
+		'an open bug thread over a later error writes a failure that keeps the unfinished note, and the change request stays',
+		() =>
+			Effect.gen(function* () {
+				const fixture = erroredSetup(
+					{ description: RUN_ERRORS['publishing failed'], at: LATER_AT },
+					finishedMarker(REVIEWED_AT)
+				)
+				fixture.api.threads.splice(0, 1, reviewThread())
+				expect((yield* fixture.findDue).pulls).toEqual([17])
+				expect(yield* fixture.raise).toEqual({
+					outcome: 'updated',
+					head: 'head',
+					status: toCommitStatus('needs fixes', 1, false),
+					dismissal: { dismissed: 0, failed: 0 },
+				})
+				expect(fixture.dismissed()).toEqual([])
 			})
 	)
 })

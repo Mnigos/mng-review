@@ -33,10 +33,17 @@ import {
 	unsettledBugThread,
 } from '../../../shared/mocks/thread-reply-test.helper'
 import {
+	RaiseService,
+	RaiseServiceLive,
+} from '../../status/application/raise.service'
+import {
 	StatusSweepService,
 	StatusSweepServiceLive,
 } from '../../status/application/status-sweep.service'
-import { toCommitStatus } from '../../status/domain/status.helper'
+import {
+	toCommitStatus,
+	UNFINISHED_NOTE,
+} from '../../status/domain/status.helper'
 import { toBodyDigest, toBotThread } from '../domain/bot-thread.helper'
 import {
 	parseReplyMarker,
@@ -49,7 +56,10 @@ import {
 	ReplyPublishServiceLive,
 	type ReplyPublishInput,
 } from './reply-publish.service'
-import { SummaryReviewServiceLive } from './summary-review.service'
+import {
+	SummaryReviewService,
+	SummaryReviewServiceLive,
+} from './summary-review.service'
 
 const RESOLVED = {
 	action: 'resolved',
@@ -71,8 +81,11 @@ function threadAtCommit(commit: string) {
 	}
 }
 
+/** What the status boundary of a test does differently, such as a status write GitHub refuses. */
+type StatusOverrides = Parameters<typeof githubStatusFake>[0]
+
 /** Real local history and recording GitHub boundaries, with no model or HTTP layer. */
-function setup() {
+function setup(statusOverrides: StatusOverrides = {}) {
 	const repo = createRepo()
 	const original = `${Array.from({ length: 12 }, (_, index) => `line ${index + 1}`).join('\n')}\n`
 	repo.write('src/store.ts', original)
@@ -80,32 +93,32 @@ function setup() {
 	repo.write('src/store.ts', original.replace('line 10\n', 'changed 10\n'))
 	const head = repo.commit()
 	const fake = githubApiFake()
-	const status = githubStatusFake()
+	const status = githubStatusFake(statusOverrides)
 	fake.reviews.push(
 		summaryReview(
 			{ ...SUMMARY_MARKER, head, finished: true },
 			{ author: { __typename: 'Bot', login: GITHUB_ACTIONS_IDENTITY.login } }
 		)
 	)
+	const boundaries = Layer.mergeAll(
+		fake.api,
+		status.layer,
+		gitLayer(repo.root),
+		Layer.succeed(GitHubConfig, {
+			serverUrl: 'https://github.com',
+			apiUrl: 'https://api.github.com',
+			graphqlUrl: 'https://api.github.com/graphql',
+			owner: 'example',
+			name: 'project',
+			token: Redacted.make('fixture'),
+			identity: GITHUB_ACTIONS_IDENTITY,
+		})
+	)
 	const publisher = ReplyPublishServiceLive.pipe(
 		Layer.provide(SummaryReviewServiceLive),
-		Layer.provide(
-			Layer.mergeAll(
-				fake.api,
-				status.layer,
-				gitLayer(repo.root),
-				Layer.succeed(GitHubConfig, {
-					serverUrl: 'https://github.com',
-					apiUrl: 'https://api.github.com',
-					graphqlUrl: 'https://api.github.com/graphql',
-					owner: 'example',
-					name: 'project',
-					token: Redacted.make('fixture'),
-					identity: GITHUB_ACTIONS_IDENTITY,
-				})
-			)
-		)
+		Layer.provide(boundaries)
 	)
+	const summaries = SummaryReviewServiceLive.pipe(Layer.provide(boundaries))
 	const input = {
 		pullNumber: 17,
 		head,
@@ -113,7 +126,7 @@ function setup() {
 		rules: ACCEPTING_RULES,
 		replies: { base, tokens: {}, decisions: [] },
 	} as const satisfies ReplyPublishInput
-	return { repo, base, head, fake, status, publisher, input }
+	return { repo, base, head, fake, status, publisher, summaries, input }
 }
 
 afterEach(cleanupRepos)
@@ -898,5 +911,322 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 						).toMatchObject({ openBugs: 1, unsettled: 1 })
 					})
 			)
+	}
+)
+
+/** Who may clear a wait in the raise below: `contributor`, listed in `commands.allow`. */
+const OWNER_ALLOW = ['contributor'] as const
+
+/** Marks the fixture's thread resolved by `login`. */
+function resolveThreadBy(fixture: ReturnType<typeof setup>, login: string) {
+	const index = fixture.fake.threads.findIndex(thread => thread.id === 'thread')
+	const thread = fixture.fake.threads[index]
+	if (thread)
+		fixture.fake.threads[index] = {
+			...thread,
+			isResolved: true,
+			resolvedBy: { login },
+		}
+}
+
+/**
+ * The reply schedule's find and locked job on the fixture's pull request, over the statuses the
+ * reply run wrote: the head's status is the newest one written.
+ */
+function raiseAfterRun(fixture: ReturnType<typeof setup>) {
+	const raiseStatus = githubStatusFake({
+		listOpenPullRequests: () =>
+			Effect.succeed([openPullRequest(17, fixture.head)]),
+		getStatus: () => {
+			const newest = fixture.status.statuses.at(-1)
+			return Effect.succeed(
+				newest && {
+					id: fixture.status.statuses.length,
+					state: newest.state,
+					description: newest.description,
+					context: 'MNG Review',
+					creator: null,
+				}
+			)
+		},
+		setStatus: input =>
+			Effect.sync(() => {
+				fixture.status.statuses.push(input)
+			}),
+	})
+	const raising = RaiseServiceLive.pipe(
+		Layer.provide(Layer.merge(raiseStatus.layer, fixture.fake.api))
+	)
+	return {
+		findDue: RaiseService.use(service => service.findDue(OWNER_ALLOW)).pipe(
+			Effect.provide(raising)
+		),
+		raise: RaiseService.use(service => service.raise(17, OWNER_ALLOW)).pipe(
+			Effect.provide(raising)
+		),
+	}
+}
+
+layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
+	'ReplyPublishService then the raise',
+	test => {
+		test.effect(
+			'a wait a failed summary write left off the marker holds the raise until an owner resolves its thread',
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup()
+					const { head } = fixture
+					fixture.fake.reviews.splice(
+						0,
+						1,
+						summaryReview(
+							{ ...SUMMARY_MARKER, head, finished: true },
+							{ state: 'CHANGES_REQUESTED', commit: { oid: head } }
+						)
+					)
+					fixture.fake.command.role = 'write'
+					const { pullRequest } = fixture.fake.command
+					fixture.fake.command.pullRequest = {
+						...pullRequest,
+						head: { ...pullRequest.head, sha: head },
+					}
+					fixture.fake.threads.push(threadAtCommit(fixture.base))
+					fixture.fake.failures.updateReview.push(
+						new GitHubApiError({
+							operation: 'updateReview',
+							reason: 'summary unavailable',
+							status: 503,
+						})
+					)
+					yield* ReplyPublishService.use(service =>
+						service.publish({
+							...fixture.input,
+							rules: RULES,
+							replies: {
+								...fixture.input.replies,
+								decisions: [
+									decidedReply({
+										action: 'needs-owner',
+										reason: 'An owner must decide.',
+									}),
+								],
+							},
+						})
+					).pipe(Effect.provide(fixture.publisher), Effect.flip)
+					// The run set `needs owner` and the label, but its wait never reached the marker.
+					expect(fixture.status.statuses).toEqual([
+						{ sha: head, ...toCommitStatus('needs owner', 1, true) },
+					])
+					expect(
+						parseSummaryMarker(fixture.fake.reviews[0]?.body ?? '')?.needsOwner
+					).toBeUndefined()
+					// A writer who may not clear the wait resolves the bug thread: only the wait blocks now.
+					resolveThreadBy(fixture, 'writer')
+					const next = raiseAfterRun(fixture)
+					yield* next.findDue
+					expect(yield* next.raise).toMatchObject({
+						status: toCommitStatus('needs owner', 0, true),
+						dismissal: { dismissed: 0, failed: 0 },
+					})
+					expect(
+						fixture.status.statuses.filter(status => status.state === 'success')
+					).toEqual([])
+					expect(
+						fixture.fake.writes.filter(
+							write => write.method === 'dismissReview'
+						)
+					).toEqual([])
+					// The owner resolves the thread by hand: one schedule run clears it.
+					resolveThreadBy(fixture, 'contributor')
+					expect((yield* next.findDue).pulls).toEqual([17])
+					expect(yield* next.raise).toMatchObject({
+						outcome: 'raised',
+						status: toCommitStatus('ready', 0, true),
+						dismissal: { dismissed: 1, failed: 0 },
+					})
+					expect(
+						fixture.fake.reviews.filter(
+							review => review.state === 'CHANGES_REQUESTED'
+						)
+					).toEqual([])
+				})
+		)
+	}
+)
+
+/** When the last full run finished on the head, and when a later run's error was written. */
+const REVIEWED_AT = '2026-11-20T10:00:00.000Z'
+const ERROR_AT = '2026-11-20T10:01:00.000Z'
+/** Who may clear a wait or lift a change request in the raises below. */
+const NO_ALLOW = [] as const
+
+/** The head's `error` a later run wrote, as the status read returns it. */
+function laterError(description: string) {
+	return {
+		id: 1,
+		state: 'error',
+		description,
+		context: 'MNG Review',
+		creator: null,
+		created_at: ERROR_AT,
+	} as const
+}
+
+/**
+ * The fixture after a full run that finished on the head at `REVIEWED_AT`, with its change request,
+ * the head as the pull request's; `statusOverrides` is the status boundary of the runs that follow.
+ */
+function finishedSetup(statusOverrides: StatusOverrides = {}) {
+	const fixture = setup(statusOverrides)
+	const { head } = fixture
+	fixture.fake.reviews.splice(
+		0,
+		1,
+		summaryReview(
+			{ ...SUMMARY_MARKER, head, finished: true, reviewedAt: REVIEWED_AT },
+			{
+				state: 'CHANGES_REQUESTED',
+				commit: { oid: head },
+				createdAt: REVIEWED_AT,
+				submittedAt: REVIEWED_AT,
+			}
+		)
+	)
+	fixture.fake.command.role = 'write'
+	const { pullRequest } = fixture.fake.command
+	fixture.fake.command.pullRequest = {
+		...pullRequest,
+		head: { ...pullRequest.head, sha: head },
+	}
+	return fixture
+}
+
+/** The raise over the fixture's pull request while the head's status stays `error`. */
+function raiseOverError(
+	fixture: ReturnType<typeof setup>,
+	error: ReturnType<typeof laterError>
+) {
+	const raiseStatus = githubStatusFake({
+		listOpenPullRequests: () =>
+			Effect.succeed([openPullRequest(17, fixture.head)]),
+		getStatus: () => Effect.succeed(error),
+	})
+	const raising = RaiseServiceLive.pipe(
+		Layer.provide(Layer.merge(raiseStatus.layer, fixture.fake.api))
+	)
+	return {
+		statuses: raiseStatus.statuses,
+		findDue: RaiseService.use(service => service.findDue(NO_ALLOW)).pipe(
+			Effect.provide(raising)
+		),
+		raise: RaiseService.use(service => service.raise(17, NO_ALLOW)).pipe(
+			Effect.provide(raising)
+		),
+	}
+}
+
+/** The newest summary marker on the fake. */
+function newestMarker(fixture: ReturnType<typeof setup>) {
+	return parseSummaryMarker(fixture.fake.reviews.at(-1)?.body ?? '')
+}
+
+layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
+	'ReplyPublishService and the raise after a later error',
+	test => {
+		test.effect(
+			'a command that reserves after a failed publish and then publishes nothing leaves the raise held',
+			() =>
+				Effect.gen(function* () {
+					const fixture = finishedSetup()
+					const error = laterError(`publishing failed; ${UNFINISHED_NOTE}`)
+					// The reservation edits the summary, then the review ends failed, skipped or with an
+					// invalid config: nothing is published and no status is written.
+					expect(
+						yield* SummaryReviewService.use(service =>
+							service.reserveManualRun({
+								pullNumber: 17,
+								head: fixture.head,
+								engineCommit: 'engine',
+								maxRuns: 5,
+								handle: 'mng-review',
+							})
+						).pipe(Effect.provide(fixture.summaries))
+					).toBeTruthy()
+					expect(newestMarker(fixture)).toMatchObject({
+						finished: true,
+						manualRuns: 1,
+						reviewedAt: REVIEWED_AT,
+					})
+					const next = raiseOverError(fixture, error)
+					expect((yield* next.findDue).pulls).toEqual([])
+					expect((yield* next.raise).outcome).toBe('not-due')
+					expect(next.statuses).toEqual([])
+					expect(
+						fixture.fake.writes.filter(
+							write => write.method === 'dismissReview'
+						)
+					).toEqual([])
+				})
+		)
+		test.effect(
+			'a reply-only run whose own status write does not land leaves the raise held',
+			() =>
+				Effect.gen(function* () {
+					const fixture = finishedSetup({
+						setStatus: () =>
+							Effect.fail(
+								new GitHubApiError({
+									operation: 'setStatus',
+									reason: 'unavailable',
+									status: 503,
+								})
+							),
+					})
+					const error = laterError(`publishing failed; ${UNFINISHED_NOTE}`)
+					yield* ReplyPublishService.use(service =>
+						service.publish({ ...fixture.input, rules: RULES })
+					).pipe(Effect.provide(fixture.publisher))
+					// The run edited the summary and carried the earlier run's stamp; its status never landed.
+					expect(newestMarker(fixture)).toMatchObject({
+						finished: true,
+						reviewedAt: REVIEWED_AT,
+					})
+					// The run's own writes are its publish job's; the raise adds none.
+					const writes = fixture.fake.writes.length
+					const next = raiseOverError(fixture, error)
+					expect((yield* next.findDue).pulls).toEqual([])
+					expect((yield* next.raise).outcome).toBe('not-due')
+					expect(next.statuses).toEqual([])
+					expect(fixture.fake.writes).toHaveLength(writes)
+				})
+		)
+		test.effect(
+			'an offline run marks the summary unfinished before its error, so the raise writes no success',
+			() =>
+				Effect.gen(function* () {
+					const fixture = finishedSetup()
+					yield* SummaryReviewService.use(service =>
+						service.publishStatus({
+							pullNumber: 17,
+							head: fixture.head,
+							engineCommit: 'engine',
+							status: 'Reviewer offline',
+						})
+					).pipe(Effect.provide(fixture.summaries))
+					expect(newestMarker(fixture)).toMatchObject({
+						finished: false,
+						reviewedAt: REVIEWED_AT,
+					})
+					const next = raiseOverError(
+						fixture,
+						laterError(`the reviewer was offline; ${UNFINISHED_NOTE}`)
+					)
+					yield* next.findDue
+					yield* next.raise
+					expect(
+						next.statuses.filter(status => status.state === 'success')
+					).toEqual([])
+				})
+		)
 	}
 )

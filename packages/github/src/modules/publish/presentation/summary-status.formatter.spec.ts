@@ -23,6 +23,7 @@ const MARKER = {
 	finished: true,
 	unthreadedBugs: 3,
 	needsOwner: ['waiting'],
+	reviewedAt: '2026-11-20T10:00:00.000Z',
 } as const
 const PRIOR = {
 	id: 101,
