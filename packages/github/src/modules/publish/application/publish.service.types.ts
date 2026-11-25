@@ -125,7 +125,12 @@ export interface PublishResult {
 	readonly unsettled: number
 	/**
 	 * A list read of the run left a null node out: its new threads went into the summary, and it
-	 * cleared no wait, approved nothing and dismissed nothing.
+	 * cleared no wait, approved nothing and lifted no change request.
 	 */
 	readonly incomplete?: true
+	/**
+	 * The summary marker the run wrote keeps the hold an incomplete write left
+	 * (`isIncompleteMarker`), so its status lowers no `failure` (`toIncompleteMarkerStatus`).
+	 */
+	readonly held?: true
 }

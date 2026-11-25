@@ -31,7 +31,10 @@ import {
 	StatusReportService,
 	StatusReportServiceLive,
 } from '../../status/application/status-report.service'
-import { toIncompleteDescription } from '../../status/domain/status.helper'
+import {
+	toCommitStatus,
+	toIncompleteDescription,
+} from '../../status/domain/status.helper'
 import {
 	parseReplyMarker,
 	parseSummaryMarker,
@@ -1481,6 +1484,8 @@ layer(APP_MODE_OWNED, { excludeTestServices: true })(
 				() =>
 					Effect.gen(function* () {
 						const fixture = publishEventFixture()
+						// A summary the write's read finds, so the incomplete run still writes its review.
+						fixture.fake.reviews.push(summaryReview())
 						const complete = listNullNode(fixture, list)
 						const publishing = PublishService.use(service =>
 							service.publish({
@@ -1525,9 +1530,11 @@ layer(APP_MODE_OWNED, { excludeTestServices: true })(
 							Effect.provide(fixture.publisher),
 							provideListCompleteness(false)
 						)
+						// A write whose own read left a node out posts a comment beside the change request.
+						const created = list === 'comments' || list === 'reviews'
 						const first = yield* publishing
 						expect(first).toMatchObject({
-							event: 'REQUEST_CHANGES',
+							event: created ? 'COMMENT' : 'REQUEST_CHANGES',
 							dismissal: { dismissed: 0, failed: 0 },
 							incomplete: true,
 						})
@@ -1626,13 +1633,9 @@ layer(APP_MODE_OWNED, { excludeTestServices: true })(
 					expect(fixture.fake.reviews.at(-1)?.body).toContain(
 						reasonOf('comments')
 					)
-					// A ready standing on a head with no status yet is pending, never success.
+					// The write's own read left a node out, so its marker never finished: never success.
 					expect(fixture.status.statuses).toEqual([
-						{
-							sha: fixture.head,
-							state: 'pending',
-							description: toIncompleteDescription(['conversation comments']),
-						},
+						{ sha: fixture.head, ...toCommitStatus('incomplete', 0, false) },
 					])
 				})
 		)
@@ -1726,9 +1729,11 @@ layer(APP_MODE_OWNED, { excludeTestServices: true })(
 							Effect.provide(fixture.publisher),
 							provideListCompleteness(false)
 						)
+						// The unsettled bug a null answer keeps open blocks, so the approval is withdrawn.
+						const blocks = list === 'thread comments'
 						expect(yield* publishing).toMatchObject({
 							event: 'COMMENT',
-							dismissal: { dismissed: 0, failed: 0 },
+							dismissal: { dismissed: blocks ? 1 : 0, failed: 0 },
 							incomplete: true,
 						})
 						expect(fixture.fake.reviews).toHaveLength(2)
@@ -1739,18 +1744,19 @@ layer(APP_MODE_OWNED, { excludeTestServices: true })(
 						expect(fixture.fake.reviews.at(-1)?.body).toContain(
 							`**Comment.** Not approved: ${reasonOf(list)}`
 						)
-						// The approval is neither edited nor dismissed.
+						// The approval is never edited, and dismissed only when the run blocks.
 						expect(fixture.fake.reviews[0]).toMatchObject({
-							state: 'APPROVED',
+							state: blocks ? 'DISMISSED' : 'APPROVED',
 							body: approval.body,
 						})
 						expect(
-							fixture.fake.writes.filter(
-								write =>
-									write.method === 'updateReview' ||
-									write.method === 'dismissReview'
+							fixture.fake.writes.flatMap(write =>
+								write.method === 'updateReview' ||
+								write.method === 'dismissReview'
+									? [write.method]
+									: []
 							)
-						).toEqual([])
+						).toEqual(blocks ? ['dismissReview'] : [])
 						complete()
 						expect(yield* publishing).toMatchObject({ event: 'APPROVE' })
 						expect(fixture.fake.reviews.at(-1)?.state).toBe('APPROVED')
@@ -1960,6 +1966,8 @@ layer(APP_MODE_OWNED, { excludeTestServices: true })(
 			() =>
 				Effect.gen(function* () {
 					const fixture = publishEventFixture()
+					// A summary the write's read finds, so the incomplete run still writes its review.
+					fixture.fake.reviews.push(summaryReview())
 					fixture.fake.nullNodes.queued.reviews.push(0, 1)
 					const publishing = PublishService.use(service =>
 						service.publish({

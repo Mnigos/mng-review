@@ -1,5 +1,5 @@
 import type { ReviewReport } from '@mng-review/engine'
-import { Context, Effect, Layer } from 'effect'
+import { Context, Effect, Layer, Result } from 'effect'
 import { GitHubStatusService } from '../../../platform/github-status.service'
 import {
 	getIncompleteLists,
@@ -11,6 +11,7 @@ import type { Verdict } from '../../publish/presentation/summary-comment.formatt
 import {
 	type CommitStatusText,
 	toCommitStatus,
+	toIncompleteMarkerStatus,
 	toIncompleteStatus,
 	UNFINISHED_NOTE,
 } from '../domain/status.helper'
@@ -28,12 +29,27 @@ export interface StatusReportInput {
 	readonly openBugs: number
 	/** A full review finished on this head; a partial run alone never makes it so. */
 	readonly finished: boolean
+	/** The run's summary marker keeps the hold an incomplete write left (`PublishResult.held`). */
+	readonly held?: true
 }
 
 /** What was written: check runs and whether the status was set. */
 export interface StatusReportResult {
 	readonly checks: number
 	readonly status: boolean
+	/** An incomplete run could not read the head's status for a held `success`, so it wrote none. */
+	readonly statusUnread?: true
+}
+
+/** What a verdict's status write did. */
+export interface VerdictStatusWrite {
+	/** The status was set, or the head keeps the one it has. */
+	readonly set: boolean
+	/**
+	 * An incomplete run could not read the head's status for a would-be `success`, so it wrote
+	 * none: `pending` written blind could lower a `failure`.
+	 */
+	readonly unread?: true
 }
 
 /**
@@ -41,7 +57,9 @@ export interface StatusReportResult {
  * `neutral` otherwise, never blocking) and the `MNG Review` commit status from the verdict, or
  * `error` when the reviewer was offline or publishing failed part way. A failed write is counted
  * out, never fatal. Once a list read of the run left a node out (`isReadIncomplete`), no check
- * run and no status is `success` (`toIncompleteStatus`).
+ * run and no status is `success` (`toIncompleteStatus`). While the run's summary marker keeps the
+ * hold an incomplete write left (`held`), a status that does not block lowers no `failure`
+ * (`setIncompleteMarkerStatus`).
  */
 export class StatusReportService extends Context.Service<
 	StatusReportService,
@@ -51,13 +69,24 @@ export class StatusReportService extends Context.Service<
 		) => Effect.Effect<StatusReportResult, never, OwnedIdentities>
 		/**
 		 * Sets the `MNG Review` status a verdict gives; while the run is incomplete, never `success`
-		 * (`toIncompleteStatus`), which reads the head's status first. `false` when the write, or
-		 * that read, failed; a status that blocks or did not finish is written without the read.
+		 * (`toIncompleteStatus`), which reads the head's status first. Not `set` when the write, or
+		 * that read, failed; a failed read is `unread` and logged as a warning. A status that blocks
+		 * or did not finish is written without the read.
 		 */
 		readonly setVerdictStatus: (
 			head: string,
 			next: CommitStatusText
-		) => Effect.Effect<boolean, never, OwnedIdentities>
+		) => Effect.Effect<VerdictStatusWrite, never, OwnedIdentities>
+		/**
+		 * Sets the status a standing judged from a summary marker an incomplete write left gives
+		 * (`toIncompleteMarkerStatus`): a `failure` always, anything else only over no status or a
+		 * `success`, through `setVerdictStatus`. When the head's status cannot be read it writes
+		 * nothing, since that status may be a `failure`; the result is `unread` and logged.
+		 */
+		readonly setIncompleteMarkerStatus: (
+			head: string,
+			next: CommitStatusText
+		) => Effect.Effect<VerdictStatusWrite, never, OwnedIdentities>
 		/** Sets `error` on a head the review could not run on; `false` when the write failed. */
 		readonly reportOffline: (head: string) => Effect.Effect<boolean>
 		/**
@@ -73,20 +102,47 @@ export const StatusReportServiceLive = Layer.effect(
 	Effect.gen(function* () {
 		const github = yield* GitHubStatusService
 
+		/** Writes `text` on `head`; a failed write is not `set`. */
+		const writeStatus = (head: string, text: CommitStatusText) =>
+			github.setStatus({ sha: head, ...text }).pipe(
+				Effect.as<VerdictStatusWrite>({ set: true }),
+				Effect.orElseSucceed((): VerdictStatusWrite => ({ set: false }))
+			)
+
 		const setVerdictStatus = Effect.fn('StatusReportService.setVerdictStatus')(
 			function* (head: string, next: CommitStatusText) {
 				const lists = yield* getIncompleteLists
+				if (lists.length === 0 || next.state !== 'success')
+					return yield* writeStatus(head, next)
 				// A thread the run could not see may block, so the head's own status decides a success.
-				const text =
-					lists.length > 0 && next.state === 'success'
-						? toIncompleteStatus(next, yield* github.getStatus(head), lists)
-						: next
-				if (!text) return true
-				yield* github.setStatus({ sha: head, ...text })
-				return true
-			},
-			Effect.orElseSucceed(() => false)
+				const previous = yield* Effect.result(github.getStatus(head))
+				if (Result.isFailure(previous)) {
+					yield* Effect.logWarning(
+						`mng-review: the MNG Review status of ${head} could not be read after a list read left an entry out (${lists.join(', ')}), so this run wrote no status`
+					)
+					return { set: false, unread: true } satisfies VerdictStatusWrite
+				}
+				const text = toIncompleteStatus(next, previous.success, lists)
+				if (!text) return { set: true } satisfies VerdictStatusWrite
+				return yield* writeStatus(head, text)
+			}
 		)
+
+		const setIncompleteMarkerStatus = Effect.fn(
+			'StatusReportService.setIncompleteMarkerStatus'
+		)(function* (head: string, next: CommitStatusText) {
+			if (next.state === 'failure') return yield* setVerdictStatus(head, next)
+			const previous = yield* Effect.result(github.getStatus(head))
+			if (Result.isFailure(previous)) {
+				yield* Effect.logWarning(
+					`mng-review: the MNG Review status of ${head} could not be read under an unfinished summary, so this run wrote no status`
+				)
+				return { set: false, unread: true } satisfies VerdictStatusWrite
+			}
+			const text = toIncompleteMarkerStatus(next, previous.success)
+			if (!text) return { set: true } satisfies VerdictStatusWrite
+			return yield* setVerdictStatus(head, text)
+		})
 
 		const report = Effect.fn('StatusReportService.report')(function* (
 			input: StatusReportInput
@@ -126,14 +182,18 @@ export const StatusReportServiceLive = Layer.effect(
 				},
 				{ concurrency: 1 }
 			)
-			const status = yield* setVerdictStatus(
+			const setStatus = input.held
+				? setIncompleteMarkerStatus
+				: setVerdictStatus
+			const status = yield* setStatus(
 				input.head,
 				toCommitStatus(input.verdict, input.openBugs, input.finished)
 			)
 			return {
 				checks: checks.reduce((sum, written) => sum + written, 0),
-				status,
-			}
+				status: status.set,
+				...(status.unread ? { statusUnread: true } : {}),
+			} satisfies StatusReportResult
 		})
 
 		/** Sets `error` with `description`; a failed write is `false`, never fatal. */
@@ -158,6 +218,12 @@ export const StatusReportServiceLive = Layer.effect(
 			}
 		)
 
-		return { report, setVerdictStatus, reportOffline, reportUnfinished }
+		return {
+			report,
+			setVerdictStatus,
+			setIncompleteMarkerStatus,
+			reportOffline,
+			reportUnfinished,
+		}
 	})
 )

@@ -1951,14 +1951,14 @@ layer(APP_MODE_OWNED)('StatusSweepService review dismissals', test => {
 })
 
 /**
- * A finished pull request on `head` with one change request of the current identity and a stale
- * `failure` status the sweep rewrites to `success`.
+ * A pull request on `head` with one change request of the current identity and a stale `failure`
+ * status the sweep rewrites to `success`, or to `error` when its last full run did not finish.
  */
-function rewriteSetup() {
+function rewriteSetup(finished = true) {
 	const api = onListedHead(githubApiFake(APP_IDENTITY))
 	api.reviews.push(
 		summaryReview(
-			{ ...SUMMARY_MARKER, head: 'head', finished: true },
+			{ ...SUMMARY_MARKER, head: 'head', finished },
 			{
 				databaseId: 101,
 				state: 'CHANGES_REQUESTED',
@@ -1988,29 +1988,35 @@ function rewriteSetup() {
 }
 
 layer(APP_MODE_OWNED)('StatusSweepService reads before dismissals', test => {
-	test.effect(
-		'a review re-read that fails after the status update counts as failed and keeps the update',
-		() =>
-			Effect.gen(function* () {
-				const fixture = rewriteSetup()
-				fixture.api.failures.listReviews.push(
-					undefined,
-					new GitHubApiError({
-						operation: 'listReviews',
-						reason: 'Denied',
-						status: 403,
+	for (const finished of [false, true])
+		test.effect(
+			`a review re-read that fails counts as failed and ${finished ? 'writes no success' : 'keeps the update'}`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = rewriteSetup(finished)
+					fixture.api.failures.listReviews.push(
+						undefined,
+						new GitHubApiError({
+							operation: 'listReviews',
+							reason: 'Denied',
+							status: 403,
+						})
+					)
+					expect(yield* fixture.sweep).toEqual({
+						checked: 1,
+						updated: finished ? 0 : 1,
+						failed: 1,
+						dismissal: NO_DISMISSAL,
 					})
-				)
-				expect(yield* fixture.sweep).toEqual({
-					checked: 1,
-					updated: 1,
-					failed: 1,
-					dismissal: NO_DISMISSAL,
+					// A `success` stands only on the confirming read; an `error` needs none.
+					expect(fixture.status.statuses).toEqual(
+						finished
+							? []
+							: [{ sha: 'head', ...toCommitStatus('ready', 0, false) }]
+					)
+					expect(fixture.api.reviews[0]?.state).toBe('CHANGES_REQUESTED')
 				})
-				expect(fixture.status.statuses).toHaveLength(1)
-				expect(fixture.api.reviews[0]?.state).toBe('CHANGES_REQUESTED')
-			})
-	)
+		)
 	test.effect(
 		'a head re-read that fails after the status update counts as failed and keeps the update',
 		() =>

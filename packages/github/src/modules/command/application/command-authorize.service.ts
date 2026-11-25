@@ -4,6 +4,7 @@ import { Context, Effect, Layer, Schema } from 'effect'
 import { GitHubApiService } from '../../../platform/github-api.service'
 import { OwnedIdentities } from '../../../platform/owned-identities.context'
 import { SummaryReviewService } from '../../publish/application/summary-review.service'
+import { isManualRunCapped } from '../../publish/domain/summary-marker.helper'
 import { isOwnerAccess } from '../domain/command-access.helper'
 import { getCommandHandle } from '../domain/command-handle.helper'
 import type {
@@ -51,7 +52,8 @@ function getAuthorDenial(
  * new comment a person wrote, with a mention command for the configured handle, still unchanged
  * when read again, by an admin or a login in `commands.allow` that still has write access, naming
  * a declared agent if any, on an open pull request from this repository with full commits, below
- * `commands.max_runs` counted over the owned identities' summary. Any GitHub error denies.
+ * `commands.max_runs` counted over the owned identities' summary, which a full review passes while
+ * the newest summary is unfinished (`isManualRunCapped`). Any GitHub error denies.
  */
 export class CommandAuthorizeService extends Context.Service<
 	CommandAuthorizeService,
@@ -111,7 +113,7 @@ export const CommandAuthorizeServiceLive = Layer.effect(
 			if (!isCommitSha(pr.base.sha) || !isCommitSha(pr.head.sha))
 				return deny('the pull request has no valid commits')
 			const prior = yield* summaries.readPrior(comment.issueNumber)
-			if ((prior?.manualRuns ?? 0) >= commands.max_runs)
+			if (isManualRunCapped(prior, commands.max_runs, command.agent))
 				return deny(`commands.max_runs reached (${commands.max_runs})`)
 			return {
 				status: 'authorized',

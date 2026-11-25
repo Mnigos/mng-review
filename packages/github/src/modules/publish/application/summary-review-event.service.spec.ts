@@ -631,7 +631,7 @@ layer(APP_MODE_OWNED)('SummaryReviewService commit ownership', test => {
 					})
 				).toBeTruthy()
 				expect(fixture.fake.reviewCommitReads).toEqual([
-					undefined,
+					false,
 					undefined,
 					false,
 				])

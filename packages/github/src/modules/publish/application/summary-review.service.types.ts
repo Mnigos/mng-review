@@ -7,6 +7,7 @@ import type {
 	ReviewEvent,
 } from '../../../platform/github-review.service'
 import type { GitHubApiError } from '../../../platform/github.errors'
+import type { SummaryMarker } from '../domain/publish-marker.schema'
 import type { SummaryMarkerError } from '../domain/publish.errors'
 import type {
 	DecidedSummary,
@@ -49,6 +50,8 @@ export type SummaryWriteError = GitHubApiError | SummaryMarkerError
 export interface ManualRunInput extends PublishTarget {
 	/** `commands.max_runs` at the reviewed base. */
 	readonly maxRuns: number
+	/** The one agent the command named; unset for a full review. */
+	readonly agent?: string
 	/** The handle commands mention; a status review the reservation creates names it in a code span. */
 	readonly handle: string
 }
@@ -59,13 +62,16 @@ export interface ManualRunInput extends PublishTarget {
  * lists: GitHub refused them, or the run is incomplete. `moved` is true when the write's own read
  * of the pull request's head, right before the review, did not show the reviewed head (or
  * failed). `incomplete` is true when a list read of the run, the write's own included, left a
- * null node out, so the summary clears no wait.
+ * null node out, so the summary clears no wait. `counted` is the marker a run counts from
+ * (`getPriorMarker`): `current`'s, or with no visible summary one that carries only the counts of
+ * the hidden sticky comments, whose bodies a write never copies.
  */
 export type SummaryRender = (
 	current: SummaryComment | undefined,
 	inline: boolean,
 	moved: boolean,
-	incomplete: boolean
+	incomplete: boolean,
+	counted: SummaryMarker | undefined
 ) => RenderedSummary
 
 /** One run's review: the summary, the run's new inline comments and whether it posted threads. */
@@ -87,6 +93,10 @@ export interface SummaryRead {
 	readonly comments: readonly PullRequestComment[]
 	readonly reviews: readonly SummaryReview[]
 	readonly summaries: readonly SummaryComment[]
+	/** Hidden sticky summaries, which only count runs (`toHiddenSummaryComments`). */
+	readonly hidden: readonly SummaryComment[]
+	/** This read's own list reads left a null node out, which may be the newest summary. */
+	readonly incomplete?: boolean
 }
 
 /** A review this write posted or edited: its id, summary, decision, state and commit, and whether its comments went in. */

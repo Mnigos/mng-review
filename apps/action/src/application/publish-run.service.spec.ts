@@ -160,6 +160,8 @@ function setup(
 					report: reportSpy,
 					setVerdictStatus: () =>
 						Effect.die('the run sets the status through report'),
+					setIncompleteMarkerStatus: () =>
+						Effect.die('the run sets the status through report'),
 					reportOffline: reportOfflineSpy,
 					reportUnfinished: reportUnfinishedSpy,
 				}),

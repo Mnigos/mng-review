@@ -26,7 +26,8 @@ export class SummaryCleanupService extends Context.Service<
 		/**
 		 * Hides the reviews and comments of `found` but `kept`, the review the write left. An approval
 		 * or change request on the current head stays visible when the run reviewed another head, and
-		 * every one when the current head could not be read.
+		 * every one when the current head could not be read. Once `isReadIncomplete`, it hides and
+		 * deletes nothing and reports each one `kept`.
 		 */
 		readonly cleanUp: (
 			found: SummaryRead,

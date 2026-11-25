@@ -1,6 +1,7 @@
 import { ConfigError } from '@mng-review/domain'
 import {
 	getCommandHandle,
+	getIncompleteLists,
 	GitHubConfig,
 	provideListCompleteness,
 	provideOwnedIdentities,
@@ -43,8 +44,8 @@ function refuse(reason: string): ReserveDecision {
 
 /**
  * The checks of a run once more, at the base commit's rules and the pull request read again, then
- * the count: a closed, moved, fork or draft pull request, a skip rule, an undeclared agent or the
- * cap reserves nothing.
+ * the count: a closed, moved, fork or draft pull request, a skip rule, an undeclared agent, the
+ * cap or a summary read that left a node out reserves nothing.
  */
 const reserve = Effect.fn('reserveStep.reserve')(function* (
 	target: CommandTarget,
@@ -70,21 +71,28 @@ const reserve = Effect.fn('reserveStep.reserve')(function* (
 		return refuse(`no declared agent is named ${target.agent}`)
 	const { identity } = yield* GitHubConfig
 	const { max_runs: maxRuns } = rules.config.commands
-	const reserved = yield* SummaryReviewService.use(service =>
-		service.reserveManualRun({
-			pullNumber: target.pullNumber,
-			head: target.head,
-			engineCommit: context.engineCommit,
-			maxRuns,
-			handle: context.handle,
-		})
-	).pipe(
+	const { reserved, lists } = yield* Effect.gen(function* () {
+		const counted = yield* SummaryReviewService.use(service =>
+			service.reserveManualRun({
+				pullNumber: target.pullNumber,
+				head: target.head,
+				engineCommit: context.engineCommit,
+				maxRuns,
+				handle: context.handle,
+				...(target.agent === undefined ? {} : { agent: target.agent }),
+			})
+		)
+		return { reserved: counted, lists: yield* getIncompleteLists }
+	}).pipe(
 		provideOwnedIdentities(identity, rules.config.identity.previous),
 		provideListCompleteness(rules.config.risk.enabled)
 	)
-	return reserved
-		? ({ reserved: true } satisfies ReserveDecision)
-		: refuse(`commands.max_runs reached (${maxRuns})`)
+	if (reserved) return { reserved: true } satisfies ReserveDecision
+	if (lists.length > 0)
+		return refuse(
+			`a list GitHub returned was incomplete (${lists.join(', ')}), so the run count is unknown`
+		)
+	return refuse(`commands.max_runs reached (${maxRuns})`)
 })
 
 /**

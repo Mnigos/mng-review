@@ -2,6 +2,7 @@ import { toCodeSpan } from '../../../utils/markdown.util'
 import type { SummaryMarker } from '../domain/publish-marker.schema'
 import { MARKER_VERSION } from '../domain/publish.constants'
 import type { RenderedSummary, SummaryComment } from '../domain/publish.types'
+import { toIncompleteMarker } from '../domain/summary-marker.helper'
 import {
 	formatStatusComment,
 	toSummaryWithMarker,
@@ -33,6 +34,21 @@ export function toOfflineSummary(
 	return {
 		body: formatStatusComment(status, NO_RUN_MARKER, links),
 		marker: NO_RUN_MARKER,
+	}
+}
+
+/**
+ * The render of a run whose list reads left a node out, with its marker set unfinished and failed
+ * (`toIncompleteMarker`); the text, the evidence and the standing stay as rendered.
+ */
+export function toIncompleteSummary(
+	rendered: RenderedSummary
+): RenderedSummary {
+	const marker = toIncompleteMarker(rendered.marker)
+	return {
+		...rendered,
+		body: toSummaryWithMarker(rendered.body, marker),
+		marker,
 	}
 }
 
@@ -90,4 +106,12 @@ export function toStaleApprovalMessage(head: string): string {
 /** The reason another owned identity's approval is dismissed with once the current identity's replaces it. */
 export function toReplacedApprovalMessage(head: string): string {
 	return `MNG Review's current identity reviewed ${toCodeSpan(head)}; its review replaces this approval.`
+}
+
+/**
+ * The reason the current identity's approval of `head` is dismissed with when a run whose list reads
+ * left a node out still found something that blocks.
+ */
+export function toBlockedApprovalMessage(head: string): string {
+	return `MNG Review found an open bug or a thread waiting for the owner at ${toCodeSpan(head)}, so this approval no longer stands.`
 }

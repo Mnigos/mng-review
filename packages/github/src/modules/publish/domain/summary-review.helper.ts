@@ -10,10 +10,12 @@ import type {
 import { REVIEW_STATE_BY_EVENT } from '../../../platform/github-review.service'
 import { isBotComment } from './bot-thread.helper'
 import { parseSummaryMarker } from './publish-marker.parser'
+import type { SummaryMarker } from './publish-marker.schema'
+import { MARKER_VERSION } from './publish.constants'
 import type { SummaryComment, SummaryReview } from './publish.types'
 import type { ReviewDecision } from './review-event.helper'
 import { getSummary } from './summary-comment.helper'
-import { toReadMarker } from './summary-marker.helper'
+import { toCountedMarker, toReadMarker } from './summary-marker.helper'
 
 /** States that block or approve; a review in one of them stands for its own commit only. */
 const VERDICT_STATES: ReadonlySet<ReviewState> = new Set([
@@ -56,13 +58,45 @@ export function toSummaryReviews(
 
 /**
  * The summary a run builds on: the newest summary review of any owned identity, or with none the
- * old sticky comment (`getSummary`), so the run count and the waiting list carry over.
+ * old sticky comment (`getSummary`), so the run count and the waiting list carry over. Its run
+ * counts are the most any listed summary holds (`toCountedMarker`), the `hidden` sticky comments
+ * (`toHiddenSummaryComments`) included, which it never builds on.
  */
 export function getPriorSummary(
 	reviews: readonly SummaryReview[],
-	comments: readonly SummaryComment[]
+	comments: readonly SummaryComment[],
+	hidden: readonly SummaryComment[] = []
 ): SummaryComment | undefined {
-	return reviews.at(-1) ?? getSummary(comments)
+	const prior = reviews.at(-1) ?? getSummary(comments)
+	if (!prior) return undefined
+	const listed = [...reviews, ...comments, ...hidden].map(
+		summary => summary.marker
+	)
+	const marker = toCountedMarker(prior.marker, listed)
+	if (
+		marker.runs === prior.marker.runs &&
+		marker.manualRuns === prior.marker.manualRuns
+	)
+		return prior
+	return { ...prior, marker }
+}
+
+/**
+ * The marker a run counts from: the prior summary's (`getPriorSummary`), or with no visible
+ * summary a new one that carries only the counts of the `hidden` sticky comments, since no run
+ * builds on, edits or cleans up a hidden one.
+ */
+export function getPriorMarker(
+	reviews: readonly SummaryReview[],
+	comments: readonly SummaryComment[],
+	hidden: readonly SummaryComment[]
+): SummaryMarker | undefined {
+	const prior = getPriorSummary(reviews, comments, hidden)
+	if (prior || hidden.length === 0) return prior?.marker
+	return toCountedMarker(
+		{ v: MARKER_VERSION, runs: 0, finished: false },
+		hidden.map(summary => summary.marker)
+	)
 }
 
 /** The head a run reviewed and the pull request's head as publishing read it again, unset when that read failed. */

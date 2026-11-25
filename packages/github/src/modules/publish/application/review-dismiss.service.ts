@@ -1,9 +1,11 @@
 import { Context, Effect, Layer } from 'effect'
+import { isIdentity } from '../../../platform/bot-identity.helper'
 import type { PullRequestReview } from '../../../platform/github-api.schema'
 import { GitHubReviewService } from '../../../platform/github-review.service'
 import { isReadIncomplete } from '../../../platform/list-completeness.context'
 import { OwnedIdentities } from '../../../platform/owned-identities.context'
 import type { DismissalOutcome } from '../domain/publish.types'
+import { isBlocking, type ReviewEvidence } from '../domain/review-event.helper'
 import {
 	getOutlivedReview,
 	getStaleApprovals,
@@ -11,6 +13,7 @@ import {
 	type WriteHeads,
 } from '../domain/summary-review.helper'
 import {
+	toBlockedApprovalMessage,
 	toClearedMessage,
 	toOutlivedReviewMessage,
 	toReplacedApprovalMessage,
@@ -25,6 +28,8 @@ export interface DismissedAfter extends Pick<
 > {
 	/** The write posted this review rather than edited an earlier one. */
 	readonly created: boolean
+	/** What the write's state was decided on; unset judged nothing. */
+	readonly evidence?: ReviewEvidence
 }
 
 /** What the dismissals after a write did, and whether one dismissed the review the write left. */
@@ -62,12 +67,25 @@ export class ReviewDismissService extends Context.Service<
 			message: string
 		) => Effect.Effect<DismissalOutcome>
 		/**
+		 * The current identity's approvals of the current head, when the run reviewed that head, a list
+		 * read of the run left a node out (`isReadIncomplete`) and `evidence` still blocks: the run
+		 * keeps the state as a comment, so the approval would otherwise stand over what it found.
+		 * Withdrawing it only lowers approval. None for any other run.
+		 */
+		readonly withdrawApprovals: (
+			pullNumber: number,
+			heads: WriteHeads,
+			reviews: readonly PullRequestReview[],
+			evidence: ReviewEvidence | undefined
+		) => Effect.Effect<DismissalOutcome, never, OwnedIdentities>
+		/**
 		 * After a write: the owned change requests a clearing write leaves stale
 		 * (`getStaleChangeRequests`, through `liftRequests`) and the owned approvals that outlived
 		 * the current head (`getStaleApprovals`), among `reviews` as read before the write, and the
 		 * review the write left when a push landed right after it (`getOutlivedReview`; a change
 		 * request through `liftRequests`). An incomplete run still dismisses the approvals and an
-		 * outlived approval, which only lowers approval.
+		 * outlived approval, which only lowers approval, and one that blocks withdraws the current
+		 * identity's approvals of the head (`withdrawApprovals`).
 		 */
 		readonly dismissStale: (
 			pullNumber: number,
@@ -112,6 +130,36 @@ export const ReviewDismissServiceLive = Layer.effect(
 				return yield* dismiss(pullNumber, ids, message)
 			}
 		)
+
+		const withdrawApprovals = Effect.fn(
+			'ReviewDismissService.withdrawApprovals'
+		)(function* (
+			pullNumber: number,
+			heads: WriteHeads,
+			reviews: readonly PullRequestReview[],
+			evidence: ReviewEvidence | undefined
+		) {
+			const { current } = yield* OwnedIdentities
+			const blocks =
+				evidence !== undefined &&
+				evidence.kind !== 'offline' &&
+				isBlocking(evidence.verdict)
+			if (!blocks || heads.current !== heads.head || !(yield* isReadIncomplete))
+				return NOTHING_DISMISSED
+			const ids = reviews.flatMap(review =>
+				review.state === 'APPROVED' &&
+				review.databaseId !== null &&
+				review.commit?.oid === heads.current &&
+				isIdentity(review.author, current)
+					? [review.databaseId]
+					: []
+			)
+			return yield* dismiss(
+				pullNumber,
+				ids,
+				toBlockedApprovalMessage(heads.head)
+			)
+		})
 
 		const dismissStale = Effect.fn('ReviewDismissService.dismissStale')(
 			function* (
@@ -169,19 +217,21 @@ export const ReviewDismissServiceLive = Layer.effect(
 					outlived === undefined ? [] : [outlived],
 					toOutlivedReviewMessage(latest)
 				)
+				const withdrawn = yield* withdrawApprovals(
+					pullNumber,
+					heads,
+					reviews.filter(review => review.databaseId !== written.id),
+					written.evidence
+				)
+				const outcomes = [requests, approvals, replaced, own, withdrawn]
 				return {
-					dismissed:
-						requests.dismissed +
-						approvals.dismissed +
-						replaced.dismissed +
-						own.dismissed,
-					failed:
-						requests.failed + approvals.failed + replaced.failed + own.failed,
+					dismissed: outcomes.reduce((sum, entry) => sum + entry.dismissed, 0),
+					failed: outcomes.reduce((sum, entry) => sum + entry.failed, 0),
 					outlived: own.dismissed > 0,
 				} satisfies StaleDismissal
 			}
 		)
 
-		return { dismiss, liftRequests, dismissStale }
+		return { dismiss, liftRequests, withdrawApprovals, dismissStale }
 	})
 )

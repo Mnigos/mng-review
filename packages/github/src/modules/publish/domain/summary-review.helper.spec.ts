@@ -286,7 +286,11 @@ describe('summary reviews', () => {
 			APP_MODE_IDENTITIES,
 			APP_IDENTITY
 		)
-		expect(getPriorSummary(reviews, comments)).toBe(reviews[0])
+		// The review is the prior; an older sticky comment's higher count still carries.
+		expect(getPriorSummary(reviews, comments)).toMatchObject({
+			id: reviews[0]?.id,
+			marker: { runs: 20 },
+		})
 		expect(getPriorSummary([], comments)).toBe(comments[0])
 		expect(getPriorSummary([], [])).toBeUndefined()
 	})

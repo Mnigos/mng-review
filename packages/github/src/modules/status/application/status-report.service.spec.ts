@@ -546,7 +546,7 @@ layer(TOKEN_MODE_OWNED)('StatusReportService incomplete list reads', test => {
 					),
 					provideListCompleteness(false)
 				)
-			).toEqual({ checks: 1, status: false })
+			).toEqual({ checks: 1, status: false, statusUnread: true })
 			expect(fake.statuses).toEqual([])
 		})
 	)
