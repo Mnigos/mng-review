@@ -1,13 +1,12 @@
 import { Context, Effect, Layer } from 'effect'
-import { GitHubApiService } from '../../../platform/github-api.service'
 import { GitHubConfig } from '../../../platform/github.config'
 import type { GitHubApiError } from '../../../platform/github.errors'
+import { isReadIncomplete } from '../../../platform/list-completeness.context'
 import { OwnedIdentities } from '../../../platform/owned-identities.context'
 import {
 	getOwnerAnswered,
 	getOwnerWaiting,
 	isFinished,
-	toBotThread,
 } from '../domain/bot-thread.helper'
 import { getCoverageGaps, hasFailedRuns } from '../domain/coverage-gap.helper'
 import {
@@ -15,6 +14,7 @@ import {
 	countUnthreadedBugs,
 	planPublish,
 	toSummaryPlace,
+	toWithheldPlan,
 } from '../domain/publish-plan.helper'
 import { getPublishStanding } from '../domain/publish-standing.helper'
 import { CLOSING_ACTIONS, LIMITED_ACTIONS } from '../domain/publish.constants'
@@ -32,6 +32,8 @@ import {
 	toAnsweredMarker,
 	toJudgedMarker,
 	toNextSummaryMarker,
+	toStoredWaits,
+	type WaitingUpdate,
 } from '../domain/summary-marker.helper'
 import {
 	toAnswerCounts,
@@ -45,6 +47,10 @@ import {
 	formatThreadComment,
 	toBlobLinks,
 } from '../presentation/thread-comment.formatter'
+import {
+	PublishReadService,
+	PublishReadServiceLive,
+} from './publish-read.service'
 import type {
 	CheckedRun,
 	PublishInput,
@@ -73,7 +79,10 @@ import { ThreadResolutionService } from './thread-resolution.service'
  * pass its own git check (`ReplyCheckService`, `ThreadReplyService`) and settles earlier
  * unsettled answers; it keeps the owner's waiting threads in the summary marker, drops those an
  * owner cleared, and adds or removes the `needs-owner` label. Threads a failed whole-thread read
- * left unknown wait for this run only: they count in its verdict but are never stored.
+ * left unknown wait for this run only: they count in its verdict but are never stored. Once a list
+ * read of the run left a node out (`isReadIncomplete`), new threads go into the summary, no wait
+ * is cleared, the label stays, and the review neither approves nor lifts a change request. File
+ * comments wait for the last thread read, and inline ones for the summary write's own read.
  */
 export class PublishService extends Context.Service<
 	PublishService,
@@ -95,7 +104,7 @@ export class PublishService extends Context.Service<
 export const PublishServiceLive = Layer.effect(
 	PublishService,
 	Effect.gen(function* () {
-		const api = yield* GitHubApiService
+		const reads = yield* PublishReadService
 		const config = yield* GitHubConfig
 		const resolution = yield* ThreadResolutionService
 		const summaries = yield* SummaryReviewService
@@ -104,43 +113,10 @@ export const PublishServiceLive = Layer.effect(
 		const replyChecks = yield* ReplyCheckService
 		const poster = yield* ThreadPostService
 
-		/** The pull request's review threads as GitHub returns them, and the bot's among them. */
-		const readAll = Effect.fn('PublishService.readAll')(function* (
-			pullNumber: number
-		) {
-			const { identities } = yield* OwnedIdentities
-			const raw = yield* api.listReviewThreads(pullNumber)
-			const threads = raw.flatMap(
-				thread => toBotThread(thread, identities) ?? []
-			)
-			return { raw, threads }
-		})
-
 		const readThreads = Effect.fn('PublishService.readThreads')(function* (
 			pullNumber: number
 		) {
-			return (yield* readAll(pullNumber)).threads
-		})
-
-		/**
-		 * Whether the run stands for a full review of its head. A push can land while a run reviews,
-		 * so the pull request is read again: one whose head moved meanwhile, or cannot be read, is
-		 * partial, as is a command that named a single agent.
-		 */
-		const checkRun = Effect.fn('PublishService.checkRun')(function* (
-			input: PublishInput
-		) {
-			const { current } = yield* OwnedIdentities
-			const pr = yield* api
-				.getPullRequest(input.pullNumber)
-				.pipe(Effect.orElseSucceed(() => undefined))
-			const moved = pr?.head.sha !== input.head
-			return {
-				head: input.head,
-				partial: input.command?.agentOnly === true || moved,
-				moved,
-				authored: pr?.user?.login.toLowerCase() === current.restLogin,
-			} satisfies CheckedRun
+			return (yield* reads.readAll(pullNumber)).threads
 		})
 
 		const publish = Effect.fn('PublishService.publish')(function* (
@@ -148,7 +124,7 @@ export const PublishServiceLive = Layer.effect(
 		) {
 			const { report, pullNumber } = input
 			const links = toBlobLinks(config, input)
-			const first = yield* readAll(pullNumber)
+			const first = yield* reads.readAll(pullNumber)
 			const found = first.threads
 			const agents = new Map(
 				input.rules.agents.map(agent => [agent.name, agent])
@@ -222,14 +198,10 @@ export const PublishServiceLive = Layer.effect(
 				{ outcome: report, config: input.rules.config, agents },
 				{ threads, lines, changedPlaces }
 			)
-			const planned = yield* places.keepCheckedEdits(draft, input.head)
-			const filed = yield* poster.postFiles(input, planned.threads)
-			const onLine = filed.filter(thread => thread.place === 'line')
-			const posting =
-				onLine.length > 0 || filed.some(thread => thread.place === 'file')
+			const edited = yield* places.keepCheckedEdits(draft, input.head)
 			const unsettled = yield* conversation.settle(first.raw, answered)
 			// Read again after the answers; a failed read keeps the first, unseen reopened threads too.
-			const second = yield* readAll(pullNumber).pipe(
+			const second = yield* reads.readAll(pullNumber).pipe(
 				Effect.map(read => ({ ...read, reread: true })),
 				Effect.orElseSucceed(() => ({ ...first, reread: false }))
 			)
@@ -237,9 +209,9 @@ export const PublishServiceLive = Layer.effect(
 			const latest = second.reread ? second.threads : threads
 			// Every new bug counts from the plan; an unsettled resolved bug counts open too.
 			const known = yield* conversation.resolveUnsettled(latest, second.raw)
-			const threadBugs = countOpenBugs(planned, known)
-			const run = yield* checkRun(input)
-			// Publishing's own read of the bot's threads, after this run's answers and file threads.
+			const threadBugs = countOpenBugs(edited, known)
+			const run = yield* reads.checkRun(input)
+			// Publishing's own read of the bot's threads, after this run's answers.
 			const [gap, ...more] = [
 				...(second.reread ? [] : [{ kind: 'threads' } as const]),
 				...getCoverageGaps(report, latest),
@@ -260,23 +232,35 @@ export const PublishServiceLive = Layer.effect(
 				threads: second.raw,
 				allow: input.rules.config.commands.allow,
 			})
+			// After the last thread read: one that left a node out may hide the thread a new one repeats.
+			const planned = (yield* isReadIncomplete)
+				? toWithheldPlan(edited)
+				: edited
+			const filed = yield* poster.postFiles(input, planned.threads)
 			// Held threads count in this run's verdict and status; the marker never stores them.
-			const held = waits.held.filter(id => !cleared.has(id))
+			const toWaits = (incomplete: boolean) =>
+				toStoredWaits({ all, held: waits.held, cleared }, incomplete)
+			const onLine = filed.filter(thread => thread.place === 'line')
+			const posting =
+				onLine.length > 0 || filed.some(thread => thread.place === 'file')
 			/** The plan with its line threads inline, or in the summary when GitHub refused them. */
 			const toPlan = (inline: boolean): PublishPlan => ({
 				...planned,
 				threads: inline ? filed : filed.map(toSummaryPlace),
 			})
-			const toUpdate = (plan: PublishPlan, checked: CheckedRun = run) =>
+			const toUpdate = (
+				plan: PublishPlan,
+				waitUpdate: WaitingUpdate,
+				checked: CheckedRun = run
+			) =>
 				({
 					head: checked.head,
 					partial: checked.partial,
 					finished: isFinished(report),
 					failed: hasFailedRuns(report),
 					unthreadedBugs: countUnthreadedBugs(plan, latest),
-					waiting: { added: all.filter(id => !cleared.has(id)), cleared },
+					waiting: waitUpdate,
 				}) satisfies MarkerUpdate
-			const basis = { report, threadBugs, held }
 			const written = yield* summaries
 				.write(pullNumber, {
 					head: input.head,
@@ -286,12 +270,14 @@ export const PublishServiceLive = Layer.effect(
 						body: formatThreadComment(thread, links, true),
 					})),
 					fresh: posting,
-					render: (prior, inline, moved) => {
+					render: (prior, inline, moved, incomplete) => {
 						// A push after the head check: partial, so the marker keeps the previous head and flags.
 						const checked = moved ? { ...run, partial: true, moved } : run
 						const plan = toPlan(inline)
-						const update = toUpdate(plan, checked)
+						const { update: waitUpdate, held } = toWaits(incomplete)
+						const update = toUpdate(plan, waitUpdate, checked)
 						const marker = toNextSummaryMarker(prior?.marker, update)
+						const basis = { report, threadBugs, held }
 						const judged = getPublishStanding(basis, marker, update, checked)
 						const evidence = {
 							kind: 'review',
@@ -341,15 +327,25 @@ export const PublishServiceLive = Layer.effect(
 				})
 				.pipe(Effect.mapError(error => new PublishIncompleteError({ error })))
 			const plan = toPlan(written.inline)
+			// A read that left a node out, the write's own included, cleared no wait.
+			const incompleteRead = yield* isReadIncomplete
+			const afterWrite = toWaits(incompleteRead)
 			// The standing of the render the write used, which judged against the write's own head read.
 			const { finished, openBugs, verdict } =
 				written.standing ??
-				getPublishStanding(basis, written.marker, toUpdate(plan), run)
-			const owner = toJudgedMarker(written.marker, held).needsOwner?.length ?? 0
-			// The label outlives the run, so held threads never set it.
+				getPublishStanding(
+					{ report, threadBugs, held: afterWrite.held },
+					written.marker,
+					toUpdate(plan, afterWrite.update),
+					run
+				)
+			const owner =
+				toJudgedMarker(written.marker, afterWrite.held).needsOwner?.length ?? 0
+			// The label outlives the run, so held threads never set it, and an incomplete run never
+			// removes it: with no count before, it can only add it.
 			const label = yield* conversation.syncLabel(
 				pullNumber,
-				stored.length,
+				incompleteRead ? 0 : stored.length,
 				written.marker.needsOwner?.length ?? 0
 			)
 			const count = (place: PlannedThread['place']) =>
@@ -375,6 +371,7 @@ export const PublishServiceLive = Layer.effect(
 				finished,
 				cleanup: written.cleanup,
 				unsettled: unsettled.size,
+				...(incompleteRead ? { incomplete: true } : {}),
 			} satisfies PublishResult
 		})
 
@@ -386,7 +383,8 @@ export const PublishServiceLive = Layer.effect(
 			ThreadPlaceServiceLive,
 			ThreadReplyServiceLive,
 			ReplyCheckServiceLive,
-			ThreadPostServiceLive
+			ThreadPostServiceLive,
+			PublishReadServiceLive
 		)
 	)
 )

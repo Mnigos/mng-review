@@ -1,20 +1,15 @@
-import { Context, Effect, Layer, Result } from 'effect'
-import { isIdentity } from '../../../platform/bot-identity.helper'
-import { isNotFound, isTransient } from '../../../platform/github-api.helper'
-import type { PullRequestReview } from '../../../platform/github-api.schema'
+import { Context, Effect, Layer } from 'effect'
+import { isNotFound } from '../../../platform/github-api.helper'
 import { GitHubApiService } from '../../../platform/github-api.service'
 import {
 	GitHubReviewService,
 	REVIEW_EVENT_BY_STATE,
-	REVIEW_STATE_BY_EVENT,
-	type ReviewInput,
 } from '../../../platform/github-review.service'
 import { GitHubConfig } from '../../../platform/github.config'
 import type { GitHubApiError } from '../../../platform/github.errors'
+import { getIncompleteLists } from '../../../platform/list-completeness.context'
 import { OwnedIdentities } from '../../../platform/owned-identities.context'
-import { isRefused } from '../domain/bot-thread.helper'
 import type { SummaryMarker } from '../domain/publish-marker.schema'
-import type { DecidedSummary } from '../domain/publish.types'
 import {
 	type LatestHead,
 	toDecidedSummary,
@@ -43,13 +38,13 @@ import {
 	ReviewDismissService,
 	ReviewDismissServiceLive,
 } from './review-dismiss.service'
+import { ReviewPostService, ReviewPostServiceLive } from './review-post.service'
 import {
 	SummaryCleanupService,
 	SummaryCleanupServiceLive,
 } from './summary-cleanup.service'
 import type {
 	ManualRunInput,
-	PostedReview,
 	SummaryDraft,
 	SummaryRead,
 	SummaryWriteError,
@@ -102,6 +97,7 @@ export const SummaryReviewServiceLive = Layer.effect(
 		const api = yield* GitHubApiService
 		const github = yield* GitHubReviewService
 		const dismissals = yield* ReviewDismissService
+		const posting = yield* ReviewPostService
 		const cleanups = yield* SummaryCleanupService
 		const config = yield* GitHubConfig
 
@@ -146,82 +142,11 @@ export const SummaryReviewServiceLive = Layer.effect(
 		)
 
 		/**
-		 * Submits a review. A create with no answer or a 5xx is checked by a read: a review of the
-		 * current identity that was not in `before` and has this body is taken as this one.
-		 */
-		const create = Effect.fn('SummaryReviewService.create')(function* (
-			pullNumber: number,
-			input: ReviewInput,
-			before: readonly PullRequestReview[]
-		) {
-			const created = yield* Effect.result(
-				github.createReview(pullNumber, input)
-			)
-			if (Result.isSuccess(created)) return created.success
-			if (!isTransient(created.failure)) return yield* created.failure
-			const { current } = yield* OwnedIdentities
-			const known = new Set(before.map(review => review.databaseId))
-			const own = (yield* github.listReviews(pullNumber)).findLast(
-				review =>
-					!known.has(review.databaseId) &&
-					isIdentity(review.author, current) &&
-					review.body === input.body
-			)
-			if (own?.databaseId === null || own?.databaseId === undefined)
-				return yield* created.failure
-			return own.databaseId
-		})
-
-		/**
-		 * Posts the run's review with its inline comments and the decided state. When GitHub refuses
-		 * one comment (422), the summary is rendered again with their findings in the body, decided
-		 * again, and posted with no comments.
-		 */
-		const post = Effect.fn('SummaryReviewService.post')(function* (
-			pullNumber: number,
-			draft: SummaryDraft,
-			decided: DecidedSummary,
-			retry: () => DecidedSummary,
-			before: readonly PullRequestReview[]
-		) {
-			const comments = draft.comments ?? []
-			const review = {
-				commitId: draft.head,
-				event: decided.decision.event,
-				body: decided.rendered.body,
-				comments,
-			} satisfies ReviewInput
-			const first = yield* Effect.result(create(pullNumber, review, before))
-			const posted = (id: number, chosen: DecidedSummary, inline: boolean) =>
-				({
-					id,
-					...chosen,
-					review: {
-						state: REVIEW_STATE_BY_EVENT[chosen.decision.event],
-						commit: draft.head,
-					},
-					inline,
-				}) satisfies PostedReview
-			if (Result.isSuccess(first)) return posted(first.success, decided, true)
-			if (comments.length === 0 || !isRefused(first.failure))
-				return yield* first.failure
-			const fallback = retry()
-			const id = yield* create(
-				pullNumber,
-				{
-					...review,
-					event: fallback.decision.event,
-					body: fallback.rendered.body,
-					comments: [],
-				},
-				before
-			)
-			return posted(id, fallback, false)
-		})
-
-		/**
 		 * Edits the newest summary review when it can be edited (keeping its state), else posts one in
-		 * the state `toDecidedSummary` picks; the body's headline names the state it lands in.
+		 * the state `toDecidedSummary` picks; the body's headline names the state it lands in. A run
+		 * whose list reads, this write's own included, left a node out never edits an approval: it
+		 * posts a `COMMENT` review, so the approval is no longer the newest. It attaches no inline
+		 * comment then, and its summary lists their findings and clears no wait.
 		 */
 		const writeReview = Effect.fn('SummaryReviewService.writeReview')(
 			function* (
@@ -233,9 +158,16 @@ export const SummaryReviewServiceLive = Layer.effect(
 				const { identities } = yield* OwnedIdentities
 				const changesRequested = hasChangeRequest(found.raw, identities)
 				const prior = getPriorSummary(found.reviews, found.summaries)
+				// The write's own read may have hidden a thread an inline comment would repeat.
+				const incomplete = latest.incomplete !== undefined
 				const decide = (inline: boolean) =>
 					toDecidedSummary(
-						draft.render(prior, inline, latest.current !== draft.head),
+						draft.render(
+							prior,
+							inline && !incomplete,
+							latest.current !== draft.head,
+							incomplete
+						),
 						changesRequested,
 						latest,
 						draft.head
@@ -250,7 +182,9 @@ export const SummaryReviewServiceLive = Layer.effect(
 					fresh,
 					{ head: draft.head, current: latest.current }
 				)
-				if (editable) {
+				// An incomplete run leaves no approval as the app's newest review: it posts a comment over it.
+				const keptApproval = incomplete && editable?.state === 'APPROVED'
+				if (editable && !keptApproval) {
 					const edited = toHeadedSummary(
 						decided,
 						REVIEW_EVENT_BY_STATE[editable.state]
@@ -266,24 +200,29 @@ export const SummaryReviewServiceLive = Layer.effect(
 							id: editable.id,
 							...edited,
 							review: { state: editable.state, commit: editable.commit },
-							inline: true,
+							inline: !incomplete,
 							created: false,
 						}
 				}
-				const posted = yield* post(
+				const posted = yield* posting.post(
 					pullNumber,
-					draft,
+					incomplete ? { ...draft, comments: [] } : draft,
 					toHeadedSummary(decided),
 					() => toHeadedSummary(decide(false)),
 					found.raw
 				)
-				return { ...posted, created: true }
+				return {
+					...posted,
+					inline: posted.inline && !incomplete,
+					created: true,
+				}
 			}
 		)
 
 		/**
 		 * The pull request's head, whether the token's identity opened it and whether it is open and
 		 * not a draft, read again; a failed read leaves the head and the state unknown, never a draft.
+		 * It also names the lists a read of the run so far left a node out of (`getIncompleteLists`).
 		 */
 		const readHead = Effect.fn('SummaryReviewService.readHead')(function* (
 			pullNumber: number
@@ -292,10 +231,12 @@ export const SummaryReviewServiceLive = Layer.effect(
 			const pr = yield* api
 				.getPullRequest(pullNumber)
 				.pipe(Effect.orElseSucceed(() => undefined))
+			const lists = yield* getIncompleteLists
 			return {
 				current: pr?.head.sha,
 				authored: pr?.user?.login.toLowerCase() === current.restLogin,
 				...(pr ? { open: pr.state === 'open' && pr.draft !== true } : {}),
+				...(lists.length > 0 ? { incomplete: lists } : {}),
 			} satisfies LatestHead
 		})
 
@@ -370,7 +311,7 @@ export const SummaryReviewServiceLive = Layer.effect(
 					input.handle,
 					toBlobLinks(config, input)
 				)
-				yield* create(
+				yield* posting.create(
 					input.pullNumber,
 					{
 						commitId: input.head,
@@ -394,6 +335,10 @@ export const SummaryReviewServiceLive = Layer.effect(
 	})
 ).pipe(
 	Layer.provide(
-		Layer.mergeAll(ReviewDismissServiceLive, SummaryCleanupServiceLive)
+		Layer.mergeAll(
+			ReviewDismissServiceLive,
+			SummaryCleanupServiceLive,
+			ReviewPostServiceLive
+		)
 	)
 )

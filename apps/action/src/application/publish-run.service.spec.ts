@@ -158,6 +158,8 @@ function setup(
 				Layer.succeed(RulesService, { load: loadSpy }),
 				Layer.succeed(StatusReportService, {
 					report: reportSpy,
+					setVerdictStatus: () =>
+						Effect.die('the run sets the status through report'),
 					reportOffline: reportOfflineSpy,
 					reportUnfinished: reportUnfinishedSpy,
 				}),

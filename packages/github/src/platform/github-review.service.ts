@@ -4,7 +4,6 @@ import {
 	PULL_REQUEST_REVIEWS_QUERY,
 	PULL_REQUEST_REVIEWS_WITH_COMMITS_QUERY,
 } from './github-api.constants'
-import { collect } from './github-api.helper'
 import {
 	createdSchema,
 	type PullRequestReview,
@@ -13,7 +12,7 @@ import {
 } from './github-api.schema'
 import { makeGitHubHttp } from './github-http.client'
 import type { GitHubApiError } from './github.errors'
-import { ListCompleteness } from './list-completeness.context'
+import { collectListed } from './list-completeness.context'
 
 /** The events a submitted review can carry, as the REST API names them. */
 export const REVIEW_EVENTS = ['COMMENT', 'APPROVE', 'REQUEST_CHANGES'] as const
@@ -89,28 +88,22 @@ export const GitHubReviewServiceLive = Layer.effect(
 			pullNumber: number,
 			withCommits = false
 		) {
-			const { complete } = yield* ListCompleteness
-			return yield* collect(
-				'listReviews',
-				cursor =>
-					query(
-						'listReviews',
-						withCommits
-							? PULL_REQUEST_REVIEWS_WITH_COMMITS_QUERY
-							: PULL_REQUEST_REVIEWS_QUERY,
-						{
-							owner: config.owner,
-							name: config.name,
-							number: pullNumber,
-							cursor,
-						},
-						pullRequestReviewsAnswerSchema
-					).pipe(
-						Effect.map(answer => answer.data?.repository?.pullRequest?.reviews)
-					),
-				complete,
-				null,
-				0
+			return yield* collectListed('listReviews', cursor =>
+				query(
+					'listReviews',
+					withCommits
+						? PULL_REQUEST_REVIEWS_WITH_COMMITS_QUERY
+						: PULL_REQUEST_REVIEWS_QUERY,
+					{
+						owner: config.owner,
+						name: config.name,
+						number: pullNumber,
+						cursor,
+					},
+					pullRequestReviewsAnswerSchema
+				).pipe(
+					Effect.map(answer => answer.data?.repository?.pullRequest?.reviews)
+				)
 			)
 		})
 

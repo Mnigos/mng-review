@@ -55,14 +55,17 @@ export interface ManualRunInput extends PublishTarget {
 
 /**
  * Builds the summary over the one read just before the write; `undefined` when there is none.
- * `inline` is `false` when GitHub refused the inline comments, whose findings the body then lists.
- * `moved` is true when the write's own read of the pull request's head, right before the review,
- * did not show the reviewed head (or failed).
+ * `inline` is `false` when the review carries no inline comments, whose findings the body then
+ * lists: GitHub refused them, or the run is incomplete. `moved` is true when the write's own read
+ * of the pull request's head, right before the review, did not show the reviewed head (or
+ * failed). `incomplete` is true when a list read of the run, the write's own included, left a
+ * null node out, so the summary clears no wait.
  */
 export type SummaryRender = (
 	current: SummaryComment | undefined,
 	inline: boolean,
-	moved: boolean
+	moved: boolean,
+	incomplete: boolean
 ) => RenderedSummary
 
 /** One run's review: the summary, the run's new inline comments and whether it posted threads. */

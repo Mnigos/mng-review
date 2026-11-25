@@ -1,4 +1,4 @@
-import { Context, Effect, Layer } from 'effect'
+import { Context, Effect, Layer, Result } from 'effect'
 import type { BotIdentity } from '../../../platform/bot-identity.helper'
 import type {
 	CommitStatus,
@@ -8,6 +8,11 @@ import { GitHubApiService } from '../../../platform/github-api.service'
 import { GitHubReviewService } from '../../../platform/github-review.service'
 import { GitHubStatusService } from '../../../platform/github-status.service'
 import type { GitHubApiError } from '../../../platform/github.errors'
+import {
+	getIncompleteLists,
+	isReadIncomplete,
+	restartListCount,
+} from '../../../platform/list-completeness.context'
 import { OwnedIdentities } from '../../../platform/owned-identities.context'
 import {
 	ReviewDismissService,
@@ -32,7 +37,13 @@ import {
 } from '../../publish/domain/summary-review.helper'
 import { toResolvers } from '../../publish/domain/thread-conversation.helper'
 import { toClearedMessage } from '../../publish/presentation/summary-status.formatter'
-import { type CommitStatusText, toSweptStatus } from '../domain/status.helper'
+import {
+	type CommitStatusText,
+	toChangedStatus,
+	toHeldStatus,
+	toIncompleteStatus,
+	toSweptStanding,
+} from '../domain/status.helper'
 
 /** What a sweep did. */
 export interface SweepResult {
@@ -112,21 +123,25 @@ const NO_DISMISSAL = {
 
 /**
  * Refreshes the `MNG Review` status of open pull requests whose head already carries one of an
- * owned identity, from the open bug threads of the owned identities now, so a thread resolved by hand counts. It runs no model and posts no
- * comment; pull requests the bot never reviewed are left alone. It reads the status again right
- * before it writes and leaves a newer one alone; a publish run that lands between that read and
- * the write can still be overwritten until the next sweep or push. The summary is the newest
- * summary review of an owned identity, or with none the old sticky comment; while the current
- * identity has more than one visible sticky comment and no review, the status is left as it is. A
- * thread a summary marker says waits for the owner keeps the status `failure` until an admin or an
- * allowed login resolves it; the sweep never edits the summary. When no open bug thread, no bug
- * without a thread on the marker's head and nothing waiting remain, finished or not, it dismisses
- * the current identity's change requests it read before the threads, which a person resolving the
- * last thread by hand leaves stale: every one with the marker on the head, only those off the head
- * with the marker on another. It does so only once its status write passed the freshness check,
- * or with no write due when the status still has the same writer and state, and only while a read
- * right before the dismissal still shows the head it judged; it skips one a read then shows edited
- * or in another state. A failed read on the way counts the pull request as failed.
+ * owned identity, from the open bug threads of the owned identities now, so a thread resolved by
+ * hand counts. It runs no model and posts no comment; pull requests the bot never reviewed are left
+ * alone. It reads the status again right before it writes and leaves a newer one alone; a publish
+ * run that lands between that read and the write can still be overwritten until the next sweep or
+ * push. The summary is the newest summary review of an owned identity, or with none the old sticky
+ * comment; while the current identity has more than one visible sticky comment and no review, the
+ * status is left as it is but for the incomplete-read rule below. A thread a summary marker says
+ * waits for the owner keeps the status `failure` until an admin or an allowed login resolves it;
+ * the sweep never edits the summary. When no open bug thread, no bug without a thread on the
+ * marker's head and nothing waiting remain, finished or not, it dismisses the current identity's
+ * change requests it read before the threads, which a person resolving the last thread by hand
+ * leaves stale: every one with the marker on the head, only those off the head with the marker on
+ * another. With a change request to dismiss, it reads the reviews again before it decides the
+ * status and skips a request that read shows edited or in another state. It dismisses only once its status write passed the freshness
+ * check, or with no write due when the status still has the same writer and state, and only while
+ * a read of the head right before the dismissal still shows the head it judged. A failed read on
+ * the way counts the pull request as failed. While a list read of a pull request left a node out,
+ * that second review read included, the sweep lifts no change request and clears no wait there,
+ * and its status is never `success`: a `success` becomes `pending`.
  */
 export class StatusSweepService extends Context.Service<
 	StatusSweepService,
@@ -174,6 +189,38 @@ export const StatusSweepServiceLive = Layer.effect(
 			)
 		})
 
+		/**
+		 * The status the threads stand for, held back from `success` while a list read of the pull
+		 * request left a node out (`toIncompleteStatus`), since a thread it could not see may block;
+		 * `undefined` when the head keeps the status it has.
+		 */
+		const toNextStatus = Effect.fn('StatusSweepService.toNextStatus')(
+			function* (standing: CommitStatusText, previous: CommitStatus) {
+				const lists = yield* getIncompleteLists
+				return toChangedStatus(
+					previous,
+					lists.length > 0
+						? toIncompleteStatus(standing, previous, lists)
+						: standing
+				)
+			}
+		)
+
+		/**
+		 * Leaves the head's status as it is, but never as `success` after a list read that left a node
+		 * out (`toHeldStatus`); a failed write fails the pull request.
+		 */
+		const keepStatus = Effect.fn('StatusSweepService.keepStatus')(function* (
+			head: string,
+			previous: CommitStatus
+		) {
+			const held = toHeldStatus(previous, yield* getIncompleteLists)
+			if (!held) return 'kept' as const
+			return yield* writeStatus(head, previous.id, held).pipe(
+				Effect.orElseSucceed(() => 'failed' as const)
+			)
+		})
+
 		/** One pull request: `unknown` when it has no status of the bot, else whether it changed. */
 		const sweepOne = Effect.fn('StatusSweepService.sweepOne')(function* (
 			pullNumber: number,
@@ -206,7 +253,10 @@ export const StatusSweepServiceLive = Layer.effect(
 				summaryReviews.length === 0 &&
 				getDuplicateSummaries(summaries).length > 0
 			)
-				return { outcome: 'kept', dismissal: NO_DISMISSAL } satisfies SweptPull
+				return {
+					outcome: yield* keepStatus(head, previous),
+					dismissal: NO_DISMISSAL,
+				} satisfies SweptPull
 			const summary = getPriorSummary(summaryReviews, summaries)
 			const marker = summary?.marker
 			const onHead = marker?.head === head
@@ -230,39 +280,51 @@ export const StatusSweepServiceLive = Layer.effect(
 				allow,
 			})
 			const owner = waiting.filter(id => !cleared.has(id)).length
-			const stale = getUnbackedRequests(
-				reviews,
-				current,
-				head,
-				marker,
-				openBugs + unthreaded + owner === 0
+			// A list read that left a node out may miss an open thread, so no request is stale.
+			const stale = (yield* isReadIncomplete)
+				? []
+				: getUnbackedRequests(
+						reviews,
+						current,
+						head,
+						marker,
+						openBugs + unthreaded + owner === 0
+					)
+			// The reviews again before the status, so a node this last list read leaves out holds back
+			// `success` as well as the dismissals; a failed read dismisses nothing and fails.
+			const unchanged = yield* Effect.result(
+				stale.length === 0
+					? Effect.succeed([])
+					: reviewsApi
+							.listReviews(pullNumber, true)
+							.pipe(
+								Effect.map(latest =>
+									getUnchangedReviews(stale, reviews, latest)
+								)
+							)
 			)
-			// Read the head and the reviews again right before dismissing; a push since the listing
-			// keeps every request, and a failed read dismisses nothing and fails.
+			// The head again right before dismissing: a push since the listing keeps every request.
 			const dismiss = Effect.fn('StatusSweepService.dismiss')(function* () {
 				if (stale.length === 0) return NO_DISMISSAL
 				const pr = yield* api.getPullRequest(pullNumber)
 				if (pr.head.sha !== head) return NO_DISMISSAL
-				const latest = yield* reviewsApi.listReviews(pullNumber, true)
-				const unchanged = getUnchangedReviews(stale, reviews, latest)
-				if (unchanged.length === 0) return NO_DISMISSAL
-				return yield* dismissals.dismiss(
+				if (Result.isFailure(unchanged)) return yield* unchanged.failure
+				// `liftRequests` dismisses none once the confirming read, or any before it, left a node out.
+				return yield* dismissals.liftRequests(
 					pullNumber,
-					unchanged,
+					unchanged.success,
 					toClearedMessage(head)
 				)
 			})
-			const next = toSweptStatus(
-				previous,
-				openBugs + unthreaded,
-				finished,
-				owner
+			const next = yield* toNextStatus(
+				toSweptStanding(previous, openBugs + unthreaded, finished, owner),
+				previous
 			)
 			if (!next) {
 				// A failed read fails the pull request, as a failed status write does.
-				const unchanged =
+				const standing =
 					stale.length > 0 && (yield* isUnchanged(head, previous))
-				const dismissal = unchanged ? yield* dismiss() : NO_DISMISSAL
+				const dismissal = standing ? yield* dismiss() : NO_DISMISSAL
 				return { outcome: 'kept', dismissal } satisfies SweptPull
 			}
 			const outcome = yield* writeStatus(head, previous.id, next).pipe(
@@ -289,6 +351,7 @@ export const StatusSweepServiceLive = Layer.effect(
 				pulls,
 				pull =>
 					sweepOne(pull.number, pull.head.sha, allow).pipe(
+						restartListCount,
 						Effect.orElseSucceed((): SweptPull => ({
 							outcome: 'failed',
 							dismissal: NO_DISMISSAL,

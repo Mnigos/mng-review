@@ -9,7 +9,7 @@ import {
 	REVIEW_THREADS_QUERY,
 	THREAD_COMMENTS_QUERY,
 } from './github-api.constants'
-import { collect, read } from './github-api.helper'
+import { read } from './github-api.helper'
 import {
 	type CollaboratorRole,
 	collaboratorRoleSchema,
@@ -29,7 +29,7 @@ import {
 } from './github-api.schema'
 import { makeGitHubHttp } from './github-http.client'
 import type { GitHubApiError } from './github.errors'
-import { ListCompleteness } from './list-completeness.context'
+import { collectListed } from './list-completeness.context'
 
 /** A single review comment: on a line, or on the whole file when `line` is unset. */
 export interface ReviewCommentInput {
@@ -128,23 +128,17 @@ export const GitHubApiServiceLive = Layer.effect(
 
 		const listReviewThreads = Effect.fn('GitHubApiService.listReviewThreads')(
 			function* (pullNumber: number) {
-				const { complete } = yield* ListCompleteness
-				return yield* collect(
-					'listReviewThreads',
-					cursor =>
-						query(
-							'listReviewThreads',
-							REVIEW_THREADS_QUERY,
-							toVariables(pullNumber, cursor),
-							reviewThreadsAnswerSchema
-						).pipe(
-							Effect.map(
-								answer => answer.data?.repository?.pullRequest?.reviewThreads
-							)
-						),
-					complete,
-					null,
-					0
+				return yield* collectListed('listReviewThreads', cursor =>
+					query(
+						'listReviewThreads',
+						REVIEW_THREADS_QUERY,
+						toVariables(pullNumber, cursor),
+						reviewThreadsAnswerSchema
+					).pipe(
+						Effect.map(
+							answer => answer.data?.repository?.pullRequest?.reviewThreads
+						)
+					)
 				)
 			}
 		)
@@ -152,39 +146,27 @@ export const GitHubApiServiceLive = Layer.effect(
 		const listComments = Effect.fn('GitHubApiService.listComments')(function* (
 			pullNumber: number
 		) {
-			const { complete } = yield* ListCompleteness
-			return yield* collect(
-				'listComments',
-				cursor =>
-					query(
-						'listComments',
-						PULL_REQUEST_COMMENTS_QUERY,
-						toVariables(pullNumber, cursor),
-						pullRequestCommentsAnswerSchema
-					).pipe(
-						Effect.map(answer => answer.data?.repository?.pullRequest?.comments)
-					),
-				complete,
-				null,
-				0
+			return yield* collectListed('listComments', cursor =>
+				query(
+					'listComments',
+					PULL_REQUEST_COMMENTS_QUERY,
+					toVariables(pullNumber, cursor),
+					pullRequestCommentsAnswerSchema
+				).pipe(
+					Effect.map(answer => answer.data?.repository?.pullRequest?.comments)
+				)
 			)
 		})
 
 		const listThreadComments = Effect.fn('GitHubApiService.listThreadComments')(
 			function* (threadId: string) {
-				const { complete } = yield* ListCompleteness
-				return yield* collect(
-					'listThreadComments',
-					cursor =>
-						query(
-							'listThreadComments',
-							THREAD_COMMENTS_QUERY,
-							{ id: threadId, cursor },
-							threadCommentsAnswerSchema
-						).pipe(Effect.map(answer => answer.data?.node?.comments)),
-					complete,
-					null,
-					0
+				return yield* collectListed('listThreadComments', cursor =>
+					query(
+						'listThreadComments',
+						THREAD_COMMENTS_QUERY,
+						{ id: threadId, cursor },
+						threadCommentsAnswerSchema
+					).pipe(Effect.map(answer => answer.data?.node?.comments))
 				)
 			}
 		)

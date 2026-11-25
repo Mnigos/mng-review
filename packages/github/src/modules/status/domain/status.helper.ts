@@ -1,4 +1,5 @@
 import type { CommitState } from '../../../platform/github-status.service'
+import type { LenientList } from '../../../platform/list-completeness.context'
 import type { Verdict } from '../../publish/presentation/summary-comment.formatter'
 
 /** What the `MNG Review` status says: its state and a description under GitHub's 140 characters. */
@@ -65,6 +66,55 @@ export function toSweptStanding(
 	)
 }
 
+/**
+ * The description of a status an incomplete run holds back from `success`: the lists GitHub left
+ * an entry out of, so someone can find it, within GitHub's 140 characters.
+ */
+export function toIncompleteDescription(lists: readonly LenientList[]): string {
+	return `a list GitHub returned was incomplete (${lists.join(', ')}); waits for a complete read`
+}
+
+/**
+ * The status a run whose list reads left a null node out of `lists` writes instead of `next`: a
+ * blocking or unfinished one as it is. A `success` becomes `pending` on a head with no status or
+ * with `success`, since a thread the run could not see may still block (ADR 0012); over a
+ * `pending`, `failure` or `error` the head keeps it (`undefined`).
+ */
+export function toIncompleteStatus(
+	next: CommitStatusText,
+	previous: PreviousStatus | undefined,
+	lists: readonly LenientList[]
+): CommitStatusText | undefined {
+	if (next.state !== 'success') return next
+	if (previous && previous.state !== 'success') return undefined
+	return toHeldStatus({ state: 'success', description: null }, lists)
+}
+
+/**
+ * The status a run whose list reads left a null node out of `lists` writes when it keeps the head's
+ * own: `pending` over a `success`, as `toIncompleteStatus` holds one back; `undefined` otherwise.
+ */
+export function toHeldStatus(
+	previous: PreviousStatus,
+	lists: readonly LenientList[]
+): CommitStatusText | undefined {
+	if (lists.length === 0 || previous.state !== 'success') return undefined
+	return { state: 'pending', description: toIncompleteDescription(lists) }
+}
+
+/** `next`, or `undefined` when it is missing or says what `previous` says. */
+export function toChangedStatus(
+	previous: PreviousStatus,
+	next: CommitStatusText | undefined
+): CommitStatusText | undefined {
+	if (
+		next?.state === previous.state &&
+		next.description === previous.description
+	)
+		return undefined
+	return next
+}
+
 /** The status the sweep sets (`toSweptStanding`), or `undefined` when it stays. */
 export function toSweptStatus(
 	previous: PreviousStatus,
@@ -72,11 +122,8 @@ export function toSweptStatus(
 	lastRunFinished?: boolean,
 	waiting = 0
 ): CommitStatusText | undefined {
-	const next = toSweptStanding(previous, openBugs, lastRunFinished, waiting)
-	if (
-		next.state === previous.state &&
-		next.description === previous.description
+	return toChangedStatus(
+		previous,
+		toSweptStanding(previous, openBugs, lastRunFinished, waiting)
 	)
-		return undefined
-	return next
 }

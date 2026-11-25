@@ -281,6 +281,26 @@ export function getStandingVerdict(
 	return finished ? 'ready' : 'incomplete'
 }
 
+/** The open bugs, finished flag and verdict of the summary's head after a reply-only run. */
+export function toReplyStanding(
+	marker: SummaryMarker,
+	head: string,
+	threadBugs: number
+) {
+	const onHead = marker.head === head
+	const openBugs = threadBugs + (onHead ? (marker.unthreadedBugs ?? 0) : 0)
+	const finished = marker.finished === true && onHead
+	const waiting = marker.needsOwner?.length ?? 0
+	return {
+		openBugs,
+		finished,
+		verdict: getStandingVerdict(openBugs, finished, waiting),
+	}
+}
+
+/** What a reply-only run judged of the summary's head (`toReplyStanding`). */
+export type ReplyStanding = ReturnType<typeof toReplyStanding>
+
 /** True when every finder answered: no endpoint failure, no budget stop, no agent that failed or stopped. */
 export function isFinished(report: ReviewReport): boolean {
 	return (

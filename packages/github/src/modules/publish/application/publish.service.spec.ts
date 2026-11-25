@@ -4523,7 +4523,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 	test => {
 		for (const list of ['threads', 'comments', 'reviews'] as const) {
 			test.effect(
-				`with the rating off, a null node in the ${list} is left out and the publish succeeds`,
+				`with the rating off, a null node in the ${list} is left out and its finding goes into the summary`,
 				() =>
 					Effect.gen(function* () {
 						const fixture = setup()
@@ -4535,7 +4535,13 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 								Effect.provide(fixture.publisher),
 								provideListCompleteness(false)
 							)
-						).toMatchObject({ onLine: 1, run: 1, verdict: 'needs fixes' })
+						).toMatchObject({
+							onLine: 0,
+							inSummary: 1,
+							run: 1,
+							verdict: 'needs fixes',
+							incomplete: true,
+						})
 						expect(fixture.fake.writes.map(call => call.method)).toEqual([
 							'review',
 						])
@@ -4562,7 +4568,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 		}
 		for (const complete of [true, false])
 			test.effect(
-				`an unsettled answer GitHub lists as a null node keeps its bug open only while the rating is on (${complete})`,
+				`an unsettled answer GitHub lists as a null node keeps its bug open, and with the rating off marks the run incomplete (${complete})`,
 				() =>
 					Effect.gen(function* () {
 						const fixture = setup()
@@ -4573,19 +4579,20 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 								parseReplyMarker(comment.body)?.unsettled ? null : comment
 							)
 						)
-						expect(
-							yield* PublishService.use(service =>
-								service.publish(withoutBugs(fixture.input))
-							).pipe(
-								Effect.provide(fixture.publisher),
-								provideListCompleteness(complete)
-							)
-						).toMatchObject({ openBugs: complete ? 1 : 0 })
+						const published = yield* PublishService.use(service =>
+							service.publish(withoutBugs(fixture.input))
+						).pipe(
+							Effect.provide(fixture.publisher),
+							provideListCompleteness(complete)
+						)
+						expect(published.openBugs).toBe(1)
+						// With the rating on the read fails and counts as unsettled; it left nothing out.
+						expect(published.incomplete).toBe(complete ? undefined : true)
 					})
 			)
 		for (const complete of [true, false])
 			test.effect(
-				`an admin's resolution clears a wait beside a null node only while the rating is off (${complete})`,
+				`an admin's resolution beside a null node clears no wait (${complete})`,
 				() =>
 					Effect.gen(function* () {
 						const fixture = setup()
@@ -4621,10 +4628,13 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 							expect(fixture.fake.reviews).toEqual([waiting])
 							return
 						}
-						expect(yield* publishing).toMatchObject({ waiting: 0 })
+						expect(yield* publishing).toMatchObject({
+							waiting: 1,
+							incomplete: true,
+						})
 						expect(
 							parseSummaryMarker(reviewBody(fixture.fake) ?? '')?.needsOwner
-						).toBeUndefined()
+						).toEqual(['thread'])
 					})
 			)
 	}

@@ -123,4 +123,9 @@ export interface PublishResult {
 	readonly cleanup: SummaryCleanup
 	/** Threads whose newest app answer is still unsettled after the run; any fails the job. */
 	readonly unsettled: number
+	/**
+	 * A list read of the run left a null node out: its new threads went into the summary, and it
+	 * cleared no wait, approved nothing and dismissed nothing.
+	 */
+	readonly incomplete?: true
 }

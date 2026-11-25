@@ -70,8 +70,8 @@ function answered(answers: readonly AnswerEntry[]): SummaryDraft {
 	const base = draft()
 	return {
 		...base,
-		render: (prior, inline, moved) => {
-			const rendered = base.render(prior, inline, moved)
+		render: (prior, inline, moved, incomplete) => {
+			const rendered = base.render(prior, inline, moved, incomplete)
 			const marker = { ...rendered.marker, answers }
 			return { ...rendered, marker, body: toMarkerComment('summary', marker) }
 		},
@@ -316,7 +316,7 @@ layer(TOKEN_MODE_OWNED)('SummaryReviewService', test => {
 		test.effect(`unknown create does not accept a ${mismatch} review`, () =>
 			Effect.gen(function* () {
 				const fixture = setup()
-				const { body } = draft().render(undefined, true, false)
+				const { body } = draft().render(undefined, true, false, false)
 				const candidate = summaryReview(SUMMARY_MARKER, {
 					body,
 					...(mismatch === 'foreign'
