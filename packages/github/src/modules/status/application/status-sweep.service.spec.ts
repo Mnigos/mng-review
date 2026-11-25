@@ -27,6 +27,7 @@ import {
 	bug,
 	SUMMARY_MARKER,
 	TOKEN_MODE_OWNED,
+	threadReply,
 } from '../../../shared/mocks/publish-test.helper'
 import {
 	editedOwnerReviewThread,
@@ -38,6 +39,7 @@ import {
 	SummaryReviewService,
 	SummaryReviewServiceLive,
 } from '../../publish/application/summary-review.service'
+import { ThreadReplyServiceLive } from '../../publish/application/thread-reply.service'
 import {
 	parseReplyMarker,
 	parseSummaryMarker,
@@ -1840,6 +1842,48 @@ layer(APP_MODE_OWNED)('StatusSweepService review dismissals', test => {
 			})
 	)
 	test.effect(
+		'with no status write due, a status written after the second pass keeps the change request',
+		() =>
+			Effect.gen(function* () {
+				const fixture = sweepSetup([])
+				fixture.api.reviews.push(fixture.request)
+				// Both passes read the same `success`; a publish run posts and writes its own status before
+				// the dismissal.
+				const getStatusSpy = vi.fn((_sha: string) =>
+					Effect.succeed({
+						id: getStatusSpy.mock.calls.length <= 2 ? 1 : 2,
+						...toCommitStatus('ready', 0, true),
+						context: 'MNG Review',
+						creator: null,
+					})
+				)
+				const status = githubStatusFake({
+					listOpenPullRequests: () =>
+						Effect.succeed([openPullRequest(17, 'head')]),
+					getStatus: getStatusSpy,
+				})
+				expect(
+					yield* StatusSweepService.use(service => service.sweep()).pipe(
+						Effect.provide(
+							StatusSweepServiceLive.pipe(
+								Layer.provide(Layer.merge(fixture.api.api, status.layer))
+							)
+						)
+					)
+				).toEqual({
+					checked: 1,
+					updated: 0,
+					failed: 0,
+					dismissal: NO_DISMISSAL,
+				})
+				expect(getStatusSpy).toHaveBeenCalledTimes(3)
+				expect(
+					fixture.api.writes.filter(write => write.method === 'dismissReview')
+				).toEqual([])
+				expect(fixture.api.reviews[1]?.state).toBe('CHANGES_REQUESTED')
+			})
+	)
+	test.effect(
 		'a change request edited between the read and the dismissal is kept',
 		() =>
 			Effect.gen(function* () {
@@ -2967,4 +3011,548 @@ layer(APP_MODE_OWNED)('StatusSweepService unfinished summaries', test => {
 					).toEqual([])
 				})
 		)
+	for (const change of ['another summary', 'the same summary edited'] as const)
+		test.effect(
+			`a confirming read that lists ${change}, clean and finished, holds a planned success, lowers to the bug it missed and dismisses nothing`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = sweepSetup([])
+					// The request comes before the finished summary, so the sweep plans `success` over the
+					// `error`.
+					fixture.api.reviews.unshift(fixture.request)
+					const status = newestStatus(toCommitStatus('ready', 0, false))
+					const author = {
+						__typename: 'Bot',
+						login: APP_IDENTITY.login,
+					} as const
+					const marker = { ...SUMMARY_MARKER, head: 'head', finished: true }
+					// A full run posts new bug threads and a clean finished summary between the two review
+					// reads; the sweep's thread read came before the threads.
+					fixture.api.threads.push(reviewThread())
+					fixture.api.threadSnapshots.push([])
+					fixture.api.reviewSnapshots.push(
+						[...fixture.api.reviews],
+						change === 'another summary'
+							? [
+									...fixture.api.reviews,
+									summaryReview(
+										{ ...marker, runs: 2 },
+										{ id: 'newer-103', databaseId: 103, author }
+									),
+								]
+							: [
+									fixture.request,
+									summaryReview(
+										{ ...marker, runs: 2 },
+										{ databaseId: 101, author }
+									),
+								]
+					)
+					const sweep = StatusSweepService.use(service => service.sweep()).pipe(
+						Effect.provide(
+							StatusSweepServiceLive.pipe(
+								Layer.provide(Layer.merge(fixture.api.api, status.layer))
+							)
+						)
+					)
+					expect(yield* sweep).toEqual({
+						checked: 1,
+						updated: 1,
+						failed: 0,
+						dismissal: NO_DISMISSAL,
+					})
+					// The second pass sees the run's open bug thread and lowers the `error` to `failure`.
+					expect(status.statuses).toEqual([
+						{ sha: 'head', ...toCommitStatus('needs fixes', 1, true) },
+					])
+					expect(
+						fixture.api.writes.filter(write => write.method === 'dismissReview')
+					).toEqual([])
+					expect(fixture.api.reviews[0]?.state).toBe('CHANGES_REQUESTED')
+				})
+		)
+})
+
+/** The current identity as the fake lists its comments and reviews. */
+const APP_AUTHOR = { __typename: 'Bot', login: APP_IDENTITY.login } as const
+
+/**
+ * Changes a run or a person makes between the sweep's first pass and its second, each set up on
+ * the fake GitHub and each holding the raise. The first review read is the one the setup lists.
+ */
+const BETWEEN_READS = {
+	'a publish posts a change request summary with its bug threads': api => {
+		api.reviewSnapshots.push(
+			[...api.reviews],
+			[
+				...api.reviews,
+				summaryReview(
+					{ ...SUMMARY_MARKER, head: 'head', finished: true, runs: 2 },
+					{
+						id: 'publish-103',
+						databaseId: 103,
+						state: 'CHANGES_REQUESTED',
+						author: APP_AUTHOR,
+					}
+				),
+			]
+		)
+		api.threadSnapshots.push([])
+		api.threads.push(reviewThread())
+	},
+	'a run posts a bug thread before its summary': api => {
+		api.threadSnapshots.push([])
+		api.threads.push(reviewThread())
+	},
+	'a run posts a review that carries no summary': api => {
+		api.reviewSnapshots.push(
+			[...api.reviews],
+			[
+				...api.reviews,
+				{
+					...summaryReview(SUMMARY_MARKER, { author: APP_AUTHOR }),
+					id: 'note-104',
+					databaseId: 104,
+					body: 'A note.',
+				},
+			]
+		)
+	},
+	'a reply run reopens a resolved bug thread': api => {
+		api.threadSnapshots.push([reviewThread(undefined, { isResolved: true })])
+		api.threads.push(reviewThread())
+	},
+	'only the comment count of a resolved bug thread changes': api => {
+		const resolved = reviewThread(undefined, { isResolved: true })
+		api.threadSnapshots.push([resolved])
+		api.threads.push({
+			...resolved,
+			comments: { ...resolved.comments, totalCount: 2 },
+		})
+	},
+	"only the body of the bot's closing reply changes": api => {
+		const closed = botClosedReviewThread()
+		api.threadSnapshots.push([closed])
+		api.threads.push({
+			...closed,
+			latest: {
+				nodes: (closed.latest?.nodes ?? []).map(comment => ({
+					...comment,
+					body: 'Edited away.',
+				})),
+			},
+		})
+	},
+	'only who resolved a thread changes': api => {
+		const resolved = reviewThread(undefined, {
+			isResolved: true,
+			resolvedBy: { login: 'owner' },
+		})
+		api.threadSnapshots.push([resolved])
+		api.threads.push({ ...resolved, resolvedBy: { login: 'contributor' } })
+	},
+	'a hidden sticky summary is unhidden': api => {
+		const sticky = appSummary(
+			{ ...SUMMARY_MARKER, head: 'head', finished: true },
+			{ isMinimized: true }
+		)
+		api.commentSnapshots.push([sticky], [{ ...sticky, isMinimized: false }])
+	},
+	'a sticky summary changes': api => {
+		const sticky = appSummary({
+			...SUMMARY_MARKER,
+			head: 'head',
+			finished: true,
+		})
+		api.commentSnapshots.push(
+			[sticky],
+			[{ ...sticky, body: `${sticky.body}\nEdited.` }]
+		)
+	},
+	'only the second thread read leaves a node out': api => {
+		api.nullNodes.queued.threads.push(0, 1)
+	},
+	'only the second comment read fails': api => {
+		api.failures.listComments.push(
+			undefined,
+			new GitHubApiError({
+				operation: 'listComments',
+				reason: 'Unavailable',
+				status: 503,
+			})
+		)
+	},
+} as const satisfies Record<string, (api: ApiFake) => void>
+/** The changes in `BETWEEN_READS` after which the second pass finds an open bug and lowers to it. */
+const LOWERING_CHANGES = [
+	'a publish posts a change request summary with its bug threads',
+	'a run posts a bug thread before its summary',
+	'a reply run reopens a resolved bug thread',
+	"only the body of the bot's closing reply changes",
+] as const satisfies readonly (keyof typeof BETWEEN_READS)[]
+
+layer(APP_MODE_OWNED)('StatusSweepService changes between the reads', test => {
+	for (const [change, setUp] of Object.entries(BETWEEN_READS))
+		test.effect(
+			`${change} between the reads: no success and no dismissal`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = sweepSetup([])
+					// The request comes before the finished summary, so the sweep plans `success` over the
+					// `error` and has the request to dismiss.
+					fixture.api.reviews.unshift(fixture.request)
+					const status = newestStatus(toCommitStatus('ready', 0, false))
+					setUp(fixture.api)
+					const sweep = StatusSweepService.use(service => service.sweep()).pipe(
+						Effect.provide(
+							StatusSweepServiceLive.pipe(
+								Layer.provide(Layer.merge(fixture.api.api, status.layer))
+							)
+						),
+						provideListCompleteness(false)
+					)
+					const lowers = LOWERING_CHANGES.some(entry => entry === change)
+					expect(yield* sweep).toEqual({
+						checked: 1,
+						updated: lowers ? 1 : 0,
+						failed: change === 'only the second comment read fails' ? 1 : 0,
+						dismissal: NO_DISMISSAL,
+					})
+					// The second pass can lower the `error` to a bug it finds, never raise it.
+					expect(status.statuses).toEqual(
+						lowers
+							? [{ sha: 'head', ...toCommitStatus('needs fixes', 1, true) }]
+							: []
+					)
+					expect(
+						fixture.api.writes.filter(write => write.method === 'dismissReview')
+					).toEqual([])
+					expect(fixture.api.reviews[0]?.state).toBe('CHANGES_REQUESTED')
+				})
+		)
+	test.effect(
+		'a bug reopened between the passes lowers a success and dismisses nothing',
+		() =>
+			Effect.gen(function* () {
+				const fixture = sweepSetup([])
+				fixture.api.reviews.push(fixture.request)
+				const status = newestStatus(toCommitStatus('ready', 0, true))
+				// A person reopens a bug thread between the passes and writes no status.
+				fixture.api.threadSnapshots.push([
+					reviewThread(undefined, { isResolved: true }),
+				])
+				fixture.api.threads.push(reviewThread())
+				const sweep = StatusSweepService.use(service => service.sweep()).pipe(
+					Effect.provide(
+						StatusSweepServiceLive.pipe(
+							Layer.provide(Layer.merge(fixture.api.api, status.layer))
+						)
+					)
+				)
+				expect(yield* sweep).toEqual({
+					checked: 1,
+					updated: 1,
+					failed: 0,
+					dismissal: NO_DISMISSAL,
+				})
+				expect(status.statuses).toEqual([
+					{ sha: 'head', ...toCommitStatus('needs fixes', 1, true) },
+				])
+				expect(
+					fixture.api.writes.filter(write => write.method === 'dismissReview')
+				).toEqual([])
+				expect(fixture.api.reviews[1]?.state).toBe('CHANGES_REQUESTED')
+			})
+	)
+	test.effect(
+		'an unfinished marker posted between the passes keeps a failure the first pass would lift to error',
+		() =>
+			Effect.gen(function* () {
+				const api = onListedHead(githubApiFake(APP_IDENTITY))
+				// The summary and the change request sit on the older head, so the first pass sees nothing
+				// open and plans `error` over the `failure`, with the request to dismiss.
+				api.reviews.push(
+					summaryReview(
+						{ ...SUMMARY_MARKER, head: 'older-head', finished: true },
+						{
+							databaseId: 101,
+							state: 'CHANGES_REQUESTED',
+							commit: { oid: 'older-head' },
+							author: APP_AUTHOR,
+						}
+					)
+				)
+				const status = newestStatus(toCommitStatus('needs fixes', 1, true))
+				// An incomplete publish posts its unfinished marker and keeps the status it found.
+				api.reviewSnapshots.push(
+					[...api.reviews],
+					[...api.reviews, unfinishedSummary(103)]
+				)
+				const sweep = StatusSweepService.use(service => service.sweep()).pipe(
+					Effect.provide(
+						StatusSweepServiceLive.pipe(
+							Layer.provide(Layer.merge(api.api, status.layer))
+						)
+					)
+				)
+				expect(yield* sweep).toEqual({
+					checked: 1,
+					updated: 0,
+					failed: 0,
+					dismissal: NO_DISMISSAL,
+				})
+				expect(status.statuses).toEqual([])
+				expect(api.reviews[0]?.state).toBe('CHANGES_REQUESTED')
+			})
+	)
+	test.effect(
+		'a bug reopened between the passes keeps a failure the first pass would lift to error',
+		() =>
+			Effect.gen(function* () {
+				const api = onListedHead(githubApiFake(APP_IDENTITY))
+				// The last full run did not finish, so with the bug resolved the first pass plans `error`.
+				api.reviews.push(
+					summaryReview(SUMMARY_MARKER, {
+						databaseId: 102,
+						state: 'CHANGES_REQUESTED',
+						author: APP_AUTHOR,
+					}),
+					summaryReview(
+						{ ...SUMMARY_MARKER, head: 'head', finished: false },
+						{ databaseId: 101, author: APP_AUTHOR }
+					)
+				)
+				const status = newestStatus(toCommitStatus('needs fixes', 1, false))
+				// A person resolved the bug before the first pass; a reply run reopens it before the second.
+				api.threadSnapshots.push([
+					reviewThread(undefined, { isResolved: true }),
+				])
+				api.threads.push(reviewThread())
+				const sweep = StatusSweepService.use(service => service.sweep()).pipe(
+					Effect.provide(
+						StatusSweepServiceLive.pipe(
+							Layer.provide(Layer.merge(api.api, status.layer))
+						)
+					)
+				)
+				expect(yield* sweep).toEqual({
+					checked: 1,
+					updated: 0,
+					failed: 0,
+					dismissal: NO_DISMISSAL,
+				})
+				expect(status.statuses).toEqual([])
+				expect(api.reviews[0]?.state).toBe('CHANGES_REQUESTED')
+			})
+	)
+	test.effect(
+		"passes that differ still write the first pass's plan when it lowers the status",
+		() =>
+			Effect.gen(function* () {
+				const api = onListedHead(githubApiFake(APP_IDENTITY))
+				// The newest summary did not finish, so the first pass lowers the `success` to `error`.
+				api.reviews.push(
+					summaryReview(SUMMARY_MARKER, {
+						databaseId: 102,
+						state: 'CHANGES_REQUESTED',
+						author: APP_AUTHOR,
+					}),
+					summaryReview(
+						{ ...SUMMARY_MARKER, head: 'head', finished: false },
+						{ databaseId: 101, author: APP_AUTHOR }
+					)
+				)
+				const status = newestStatus(toCommitStatus('ready', 0, true))
+				// A person replies in a resolved bug thread between the passes, which changes nothing open.
+				const resolved = reviewThread(undefined, { isResolved: true })
+				api.threadSnapshots.push([resolved])
+				api.threads.push({
+					...resolved,
+					comments: { ...resolved.comments, totalCount: 2 },
+				})
+				const sweep = StatusSweepService.use(service => service.sweep()).pipe(
+					Effect.provide(
+						StatusSweepServiceLive.pipe(
+							Layer.provide(Layer.merge(api.api, status.layer))
+						)
+					)
+				)
+				expect(yield* sweep).toEqual({
+					checked: 1,
+					updated: 1,
+					failed: 0,
+					dismissal: NO_DISMISSAL,
+				})
+				expect(status.statuses).toEqual([
+					{ sha: 'head', ...toCommitStatus('ready', 0, false) },
+				])
+				expect(api.reviews[0]?.state).toBe('CHANGES_REQUESTED')
+			})
+	)
+	test.effect(
+		'a second pass that differs and still finds nothing open writes no success over a failure',
+		() =>
+			Effect.gen(function* () {
+				const fixture = sweepSetup([])
+				fixture.api.reviews.unshift(fixture.request)
+				const status = newestStatus(toCommitStatus('needs fixes', 1, true))
+				// The first pass sees the open bug resolved and plans `success`; the second sees the
+				// thread edited, still resolved, so it plans `success` too and lowers nothing.
+				const resolved = reviewThread(undefined, { isResolved: true })
+				fixture.api.threadSnapshots.push([resolved])
+				fixture.api.threads.push({
+					...resolved,
+					comments: { ...resolved.comments, totalCount: 2 },
+				})
+				const sweep = StatusSweepService.use(service => service.sweep()).pipe(
+					Effect.provide(
+						StatusSweepServiceLive.pipe(
+							Layer.provide(Layer.merge(fixture.api.api, status.layer))
+						)
+					)
+				)
+				expect(yield* sweep).toMatchObject({
+					updated: 0,
+					dismissal: NO_DISMISSAL,
+				})
+				expect(status.statuses).toEqual([])
+			})
+	)
+	test.effect(
+		'a run that changes nothing between the reads leaves the sweep free to raise',
+		() =>
+			Effect.gen(function* () {
+				const fixture = sweepSetup([])
+				fixture.api.reviews.unshift(fixture.request)
+				const status = newestStatus(toCommitStatus('ready', 0, false))
+				fixture.api.threads.push(reviewThread(undefined, { isResolved: true }))
+				const sweep = StatusSweepService.use(service => service.sweep()).pipe(
+					Effect.provide(
+						StatusSweepServiceLive.pipe(
+							Layer.provide(Layer.merge(fixture.api.api, status.layer))
+						)
+					)
+				)
+				expect(yield* sweep).toEqual({
+					checked: 1,
+					updated: 1,
+					failed: 0,
+					dismissal: { dismissed: 1, failed: 0 },
+				})
+				expect(status.statuses).toEqual([
+					{ sha: 'head', ...toCommitStatus('ready', 0, true) },
+				])
+				expect(fixture.api.reviews[0]?.state).toBe('DISMISSED')
+			})
+	)
+	test.effect(
+		'with no status write due, a status rewritten in the same state by the same writer keeps the change request',
+		() =>
+			Effect.gen(function* () {
+				// A run writes the same `success` again between the reads, under a new id.
+				const fixture = sweepSetup([
+					toCommitStatus('ready', 0, true),
+					toCommitStatus('ready', 0, true),
+				])
+				fixture.api.reviews.push(fixture.request)
+				expect(yield* fixture.sweep).toMatchObject({
+					updated: 0,
+					dismissal: NO_DISMISSAL,
+				})
+				expect(fixture.status.statuses).toEqual([])
+				expect(fixture.api.reviews[1]?.state).toBe('CHANGES_REQUESTED')
+			})
+	)
+})
+
+/** A person's reply in a review thread, saying `body`. */
+function personReply(body: string) {
+	return threadReply({
+		databaseId: 3,
+		body,
+		author: { __typename: 'User', login: 'contributor' },
+	})
+}
+
+layer(APP_MODE_OWNED)('StatusSweepService failed second passes', test => {
+	for (const standing of ['success', 'failure'] as const)
+		test.effect(
+			`a failed second pass after a bug reopened ${standing === 'success' ? 'turns a success into pending' : 'writes nothing over a failure'} and dismisses nothing`,
+			() =>
+				Effect.gen(function* () {
+					const fixture = sweepSetup([])
+					fixture.api.reviews.push(fixture.request)
+					const status = newestStatus(
+						standing === 'success'
+							? toCommitStatus('ready', 0, true)
+							: toCommitStatus('needs fixes', 1, true)
+					)
+					// A person reopens a bug between the passes, and the second pass then fails.
+					fixture.api.threadSnapshots.push([
+						reviewThread(undefined, { isResolved: true }),
+					])
+					fixture.api.threads.push(reviewThread())
+					failConfirmingRead(fixture.api)
+					const sweep = StatusSweepService.use(service => service.sweep()).pipe(
+						Effect.provide(
+							StatusSweepServiceLive.pipe(
+								Layer.provide(Layer.merge(fixture.api.api, status.layer))
+							)
+						)
+					)
+					expect(yield* sweep).toEqual({
+						checked: 1,
+						updated: standing === 'success' ? 1 : 0,
+						failed: 1,
+						dismissal: NO_DISMISSAL,
+					})
+					expect(status.statuses).toEqual(
+						standing === 'success'
+							? [{ sha: 'head', ...UNCONFIRMED_STATUS }]
+							: []
+					)
+					expect(fixture.api.reviews[1]?.state).toBe('CHANGES_REQUESTED')
+				})
+		)
+	test.effect(
+		'a sweep beside another thread service still journals its whole-thread reads',
+		() =>
+			Effect.gen(function* () {
+				const fixture = sweepSetup([])
+				fixture.api.reviews.unshift(fixture.request)
+				const status = newestStatus(toCommitStatus('ready', 0, false))
+				// A resolved bug thread whose window shows no app answer, so each pass reads it whole; a
+				// person replies in it between the passes, which changes nothing open.
+				const thread = reviewThread(undefined, { isResolved: true })
+				fixture.api.threads.push({
+					...thread,
+					comments: { ...thread.comments, totalCount: 3 },
+					latest: { nodes: [] },
+				})
+				const wholeReadSpy = vi.fn((_threadId: string) =>
+					Effect.succeed([
+						...thread.comments.nodes,
+						personReply(
+							wholeReadSpy.mock.calls.length === 1 ? 'first' : 'second'
+						),
+					])
+				)
+				fixture.api.threadReader.read = wholeReadSpy
+				const github = Layer.merge(fixture.api.api, status.layer)
+				// The thread service built beside the sweep must not stand in for the sweep's own.
+				const sweep = StatusSweepService.use(service => service.sweep()).pipe(
+					Effect.provide(
+						Layer.mergeAll(ThreadReplyServiceLive, StatusSweepServiceLive).pipe(
+							Layer.provide(github)
+						)
+					)
+				)
+				expect(yield* sweep).toMatchObject({
+					updated: 0,
+					dismissal: NO_DISMISSAL,
+				})
+				expect(wholeReadSpy).toHaveBeenCalledTimes(2)
+				expect(status.statuses).toEqual([])
+			})
+	)
 })
