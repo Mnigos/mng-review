@@ -42,7 +42,6 @@ import {
 } from './summary-review.service'
 import type { SummaryDraft } from './summary-review.service.types'
 
-const NO_DISMISSAL = { dismissed: 0, failed: 0 } as const
 const TARGET = { pullNumber: 17, head: 'head', engineCommit: 'engine' } as const
 const RESERVE = { ...TARGET, maxRuns: 5, handle: 'review-bot' } as const
 const INLINE = [{ path: 'src/example.ts', line: 7, body: 'Finding' }] as const
@@ -801,7 +800,6 @@ layer(TOKEN_MODE_OWNED)('Summary review status sweep', test => {
 						checked: 1,
 						updated: 1,
 						failed: 0,
-						dismissal: NO_DISMISSAL,
 					})
 					expect(statuses.statuses).toEqual([
 						{

@@ -26,6 +26,7 @@ import {
 	ReplyDecisionServiceLive,
 	ReplyFindServiceLive,
 	ReplyPublishServiceLive,
+	RequestLiftServiceLive,
 	RiskFinishServiceLive,
 	RiskReadServiceLive,
 	RiskStartServiceLive,
@@ -72,6 +73,10 @@ import {
 	failFindConfig,
 	runFindStep,
 } from './presentation/handlers/find-step.handler'
+import {
+	failLiftConfig,
+	runLiftStep,
+} from './presentation/handlers/lift-step.handler'
 import { runPrepareStep } from './presentation/handlers/prepare-step.handler'
 import {
 	failPublishConfig,
@@ -220,10 +225,22 @@ const ReserveLive = PrepareRunServiceLive.pipe(
 	Layer.provideMerge(RulesLive)
 )
 
-/** The find step: the reply reads over the read token and the default branch's rules; no model. */
-const FindLive = ReplyFindServiceLive.pipe(
+/**
+ * The find step: the reply reads and the lift judgments over the read token and the default
+ * branch's rules; no model.
+ */
+const FindLive = Layer.mergeAll(
+	ReplyFindServiceLive,
+	RequestLiftServiceLive
+).pipe(
 	Layer.provideMerge(SummaryReviewServiceLive),
 	Layer.provideMerge(toGitHubLive(GitHubReadConfigLive)),
+	Layer.provideMerge(RulesLive)
+)
+
+/** The lift job: the judgment and the dismissal over the write token and the default branch's rules. */
+const LiftLive = RequestLiftServiceLive.pipe(
+	Layer.provideMerge(toGitHubLive(GitHubWriteConfigLive)),
 	Layer.provideMerge(RulesLive)
 )
 
@@ -269,7 +286,7 @@ const runInvalidMode = Effect.gen(function* () {
 		status: 'invalid-config',
 		source: MODE_VARIABLE,
 		reason:
-			'must be shadow, prepare, review, publish, sweep, authorize, reserve, find, risk-cleanup, deny or risk-sweep',
+			'must be shadow, prepare, review, publish, sweep, authorize, reserve, find, risk-cleanup, deny, risk-sweep or lift',
 	}
 	yield* Console.log(formatLogLine(invalid))
 	yield* writeSummary(
@@ -328,6 +345,11 @@ const runAction = Effect.gen(function* () {
 		return yield* runFindStep.pipe(
 			Effect.provide(FindLive),
 			Effect.catchTag('ConfigError', failFindConfig)
+		)
+	if (mode.value === 'lift')
+		return yield* maskAppToken().pipe(
+			Effect.andThen(runLiftStep.pipe(Effect.provide(LiftLive))),
+			Effect.catchTag('ConfigError', failLiftConfig)
 		)
 	if (mode.value === 'prepare')
 		return yield* runPrepareStep.pipe(Effect.provide(PrepareLive))

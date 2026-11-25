@@ -56,6 +56,7 @@ export const RUN_MODES = [
 	'risk-cleanup',
 	'deny',
 	'risk-sweep',
+	'lift',
 ] as const
 export type RunMode = (typeof RUN_MODES)[number]
 
@@ -66,8 +67,9 @@ export type RunMode = (typeof RUN_MODES)[number]
  * the outcome file and calls no model. `sweep` reviews nothing and refreshes the `MNG Review`
  * status of open pull requests. A mention command runs `authorize` (checks the comment over the
  * read token, no secret) and `reserve` (counts the manual run before the review job starts).
- * The reply schedule runs `find` (lists the pull requests with a reply waiting over the read
- * token, no model). `risk-cleanup` runs after a failed or cancelled publish and writes step 1's
+ * The reply schedule runs `find` (lists the pull requests with a reply waiting, and those whose
+ * change request nothing backs any more, over the read token, no model) and `lift` (dismisses
+ * such a change request inside the pull request's publish group, no model). `risk-cleanup` runs after a failed or cancelled publish and writes step 1's
  * risk `error` again; `deny` posts a denial or cap reply for a refused command; `risk-sweep` is
  * the sweep's per-pull-request risk job (the thread raise and the dispatches). Any other value
  * fails, before the review spends anything.

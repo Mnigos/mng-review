@@ -3,6 +3,7 @@ import {
 	GitHubApiError,
 	ListCompleteness,
 	ReplyFindService,
+	RequestLiftServiceLive,
 } from '@mng-review/github'
 import { Effect, FileSystem, Layer } from 'effect'
 import { TestConsole } from 'effect/testing'
@@ -16,6 +17,11 @@ import { runFindStep } from './find-step.handler'
 afterEach(() => {
 	cleanupRepos()
 })
+
+/** The lift judgments over the fixture's fake GitHub, whose status fake lists no open pull request. */
+function liftLayer(fixture: Pick<ReturnType<typeof stepFixture>, 'status'>) {
+	return RequestLiftServiceLive.pipe(Layer.provide(fixture.status.layer))
+}
 
 layer(FileSystemLayer)('find step', test => {
 	for (const rotation of [undefined, 7])
@@ -38,6 +44,7 @@ layer(FileSystemLayer)('find step', test => {
 								readPending: () => Effect.succeed({ threads: [], replies: [] }),
 							})
 						),
+						Effect.provide(liftLayer(fixture)),
 						Effect.provide(fixture.publisherLayer),
 						Effect.provide(
 							fixture.envLayer({
@@ -60,7 +67,7 @@ layer(FileSystemLayer)('find step', test => {
 						yield* (yield* FileSystem.FileSystem).readFileString(
 							fixture.paths.output
 						)
-					).toBe(`pulls=${JSON.stringify(candidates)}\n`)
+					).toBe(`pulls=${JSON.stringify(candidates)}\nlifts=[]\n`)
 					expect(fixture.api.writes).toEqual([])
 				})
 		)
@@ -75,6 +82,7 @@ layer(FileSystemLayer)('find step', test => {
 						readPending: () => Effect.succeed({ threads: [], replies: [] }),
 					})
 				),
+				Effect.provide(liftLayer(fixture)),
 				Effect.provide(fixture.publisherLayer),
 				Effect.provide(fixture.envLayer())
 			)
@@ -82,7 +90,7 @@ layer(FileSystemLayer)('find step', test => {
 				yield* (yield* FileSystem.FileSystem).readFileString(
 					fixture.paths.output
 				)
-			).toBe('pulls=[]\n')
+			).toBe('pulls=[]\nlifts=[]\n')
 			expect(fixture.api.writes).toEqual([])
 		})
 	)
@@ -122,6 +130,7 @@ layer(FileSystemLayer)('find step failures', test => {
 							readPending: () => Effect.succeed({ threads: [], replies: [] }),
 						})
 					),
+					Effect.provide(liftLayer(fixture)),
 					Effect.provide(fixture.publisherLayer),
 					Effect.provide(fixture.envLayer()),
 					Effect.result
@@ -135,7 +144,7 @@ layer(FileSystemLayer)('find step failures', test => {
 					})
 				const fs = yield* FileSystem.FileSystem
 				expect(yield* fs.readFileString(fixture.paths.output)).toBe(
-					`pulls=${JSON.stringify(scenario === 'partial failure' ? candidates : [])}\n`
+					`pulls=${JSON.stringify(scenario === 'partial failure' ? candidates : [])}\nlifts=[]\n`
 				)
 				const line =
 					scenario === 'partial failure'
@@ -190,6 +199,7 @@ layer(FileSystemLayer)('find step list completeness', test => {
 								readPending: () => Effect.succeed({ threads: [], replies: [] }),
 							})
 						),
+						Effect.provide(liftLayer(fixture)),
 						Effect.provide(fixture.publisherLayer),
 						Effect.provide(fixture.envLayer())
 					)

@@ -39,7 +39,7 @@ const CONTEXT = {
 	engineCommit: '1234567890abcdef',
 } as const satisfies SummaryContext
 const MALICIOUS = '![x](https://evil.example/a.png) <img src=x> | col'
-const NONE = { dismissed: 0, failed: 0 } as const
+
 const OUTCOMES = [
 	{
 		outcome: { status: 'skipped', reason: 'draft pull request' },
@@ -582,24 +582,19 @@ describe('sweep formatters', () => {
 				checked: 4,
 				updated: 2,
 				failed: 1,
-				dismissal: { dismissed: 2, failed: 1 },
 			})
 		).toBe(
-			'status sweep: 4 pull request(s) carry the status, 2 updated, 1 failed; 2 change request(s) dismissed, 1 not dismissed'
+			'status sweep: 4 pull request(s) carry the status, 2 updated, 1 failed'
 		)
-		expect(
-			formatSweepLine({ checked: 0, updated: 0, failed: 0, dismissal: NONE })
-		).toBe(
-			'status sweep: 0 pull request(s) carry the status, 0 updated, 0 failed; 0 change request(s) dismissed, 0 not dismissed'
+		expect(formatSweepLine({ checked: 0, updated: 0, failed: 0 })).toBe(
+			'status sweep: 0 pull request(s) carry the status, 0 updated, 0 failed'
 		)
 	})
 	test('sweep summaries escape supplied text', () => {
 		expect(formatSweepSummary(MALICIOUS)).toContain(escapeMarkdown(MALICIOUS))
 		expect(formatSweepSummary(MALICIOUS)).not.toContain('![')
 		expect(
-			formatSweepSummary(
-				formatSweepLine({ checked: 2, updated: 1, failed: 0, dismissal: NONE })
-			)
+			formatSweepSummary(formatSweepLine({ checked: 2, updated: 1, failed: 0 }))
 		).toContain('2 pull request')
 	})
 })

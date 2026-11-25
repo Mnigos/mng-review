@@ -25,7 +25,6 @@ const SWEPT = {
 	checked: 1,
 	updated: 0,
 	failed: 0,
-	dismissal: { dismissed: 0, failed: 0 },
 } as const
 const PULL = {
 	number: 17,
@@ -55,7 +54,6 @@ layer(FileSystemLayer)('sweep step app identity', test => {
 									checked: 1,
 									updated: 1,
 									failed: 0,
-									dismissal: { dismissed: 0, failed: 0 },
 								}
 							})
 						)

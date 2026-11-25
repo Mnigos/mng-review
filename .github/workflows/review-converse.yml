@@ -1,14 +1,17 @@
 # Reusable reply schedule: answers authors' replies in the bot's threads that came without a push.
 # The caller runs it on a schedule, by hand, or through workflow_run after a secretless signal on a
 # reply, so it always runs from the default branch; no workflow that holds a secret listens to
-# pull_request_review_comment, whose runs take the caller's file from the pull request's merge ref. It reviews no code and posts no finding. Three jobs, each
+# pull_request_review_comment, whose runs take the caller's file from the pull request's merge ref. It reviews no code and posts no finding. Four jobs, each
 # holding only what it needs:
 # - find: no secret and no tailnet; lists the open pull requests of this repository with a reply
-#   waiting, at most max-pull-requests, over a read-only token, with the rules of the default
-#   branch. When nothing waits, it is the only job that gets a runner.
+#   waiting, at most max-pull-requests, and those whose change request of the bot nothing backs any
+#   more, over a read-only token, with the rules of the default branch. When nothing waits and no
+#   change request is due, it is the only job that gets a runner.
 # - review: the endpoint and tailnet secrets and a read-only token, one pull request at a time; it
 #   probes the endpoint and decides on the replies only.
 # - publish: the app key; answers the decisions without a model call, one pull request at a time.
+# - lift: the app key and no endpoint; after publish, judges each listed pull request again inside
+#   its publish group and dismisses the bot's change request only while nothing backs it.
 # See ADR 0009. Nothing from the caller's repository is installed, built or run.
 name: MNG Review (replies)
 
@@ -74,6 +77,7 @@ jobs:
       pull-requests: read
     outputs:
       pulls: ${{ steps.find.outputs.pulls }}
+      lifts: ${{ steps.find.outputs.lifts }}
     steps:
       # Without these (GitHub Enterprise Server), checkout would fall back to the caller's repository.
       - name: Check the workflow's own commit
@@ -102,7 +106,8 @@ jobs:
       - name: Set up MNG Review
         uses: ./.mng-review-engine/.github/actions/setup-engine
 
-      # Writes `pulls`, a JSON list of numbers and full commit SHAs the entry validated.
+      # Writes `pulls`, a JSON list of numbers and full commit SHAs the entry validated, and `lifts`,
+      # a JSON list of numbers.
       - name: Find
         id: find
         working-directory: .mng-review-engine
@@ -311,3 +316,96 @@ jobs:
           target-head: ${{ matrix.pull.head }}
           outcome-name: mng-review-outcome-${{ matrix.pull.number }}
           result-name: mng-review-result-${{ matrix.pull.number }}
+
+  lift:
+    name: MNG Review (lift on #${{ matrix.pull.number }})
+    # After publish, so a pull request with replies goes through the reply path once and its change
+    # request is judged after the answers landed.
+    needs: [find, publish]
+    if: ${{ !cancelled() && needs.find.outputs.lifts != '[]' && needs.find.outputs.lifts != '' }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        pull: ${{ fromJSON(needs.find.outputs.lifts) }}
+    # The same group as every other summary writer on the pull request: no publish writes between
+    # this job's judgment and its dismissal.
+    concurrency:
+      group: mng-review-publish-${{ matrix.pull.number }}
+      cancel-in-progress: false
+    runs-on: ${{ inputs.runner }}
+    # No endpoint or tailnet secret is named here; the job runs no model and writes no status.
+    permissions:
+      contents: read
+      pull-requests: write
+    timeout-minutes: 5
+    steps:
+      - name: Check the workflow's own commit
+        if: job.workflow_repository == '' || job.workflow_sha == ''
+        run: |
+          echo "::error::job.workflow_repository and job.workflow_sha are not available on this GitHub; MNG Review cannot check out its own code."
+          exit 1
+
+      # The default branch, for the rules (identity.previous, commands.allow); credentials are not
+      # left behind.
+      - name: Check out the default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: repo
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check out MNG Review
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .mng-review-engine
+          persist-credentials: false
+
+      # All three app settings, or none: anything else fails here, before any write.
+      - name: Check the app credentials
+        env:
+          APP_SLUG: ${{ inputs.app-slug }}
+          HAS_CLIENT_ID: ${{ secrets.app-client-id != '' }}
+          HAS_PRIVATE_KEY: ${{ secrets.app-private-key != '' }}
+        run: |
+          if [ -n "$APP_SLUG" ]; then
+            if [ "$HAS_CLIENT_ID" != true ] || [ "$HAS_PRIVATE_KEY" != true ]; then
+              echo "::error::app-slug is set, so app-client-id and app-private-key are required."
+              exit 1
+            fi
+          elif [ "$HAS_CLIENT_ID" = true ] || [ "$HAS_PRIVATE_KEY" = true ]; then
+            echo "::error::app-client-id or app-private-key is set without app-slug."
+            exit 1
+          fi
+
+      # The calling repository only: a dismissal needs pull requests write; no status is written.
+      - name: Mint the app token
+        id: app
+        if: inputs.app-slug != ''
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.app-client-id }}
+          private-key: ${{ secrets.app-private-key }}
+          permission-pull-requests: write
+          # Review threads read through GraphQL name each comment's commit, which needs contents read.
+          permission-contents: read
+
+      - name: Set up MNG Review
+        uses: ./.mng-review-engine/.github/actions/setup-engine
+
+      # The pull request comes from the find job's matrix; the entry reads it again under the group.
+      - name: Lift
+        working-directory: .mng-review-engine
+        env:
+          MNG_REVIEW_MODE: lift
+          MNG_REVIEW_ENGINE_COMMIT: ${{ job.workflow_sha }}
+          MNG_REVIEW_REPO_DIR: ${{ github.workspace }}/repo
+          MNG_REVIEW_TARGET_PR: ${{ matrix.pull.number }}
+          MNG_REVIEW_APP_SLUG: ${{ inputs.app-slug }}
+          MNG_REVIEW_APP_TOKEN: ${{ steps.app.outputs.token }}
+          MNG_REVIEW_MINTED_APP_SLUG: ${{ steps.app.outputs.app-slug }}
+          GITHUB_TOKEN: ${{ inputs.app-slug == '' && github.token || '' }}
+        run: bun --no-env-file apps/action/src/main.ts
