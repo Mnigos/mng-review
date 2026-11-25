@@ -1,8 +1,5 @@
 import { Clock, Context, Duration, Effect, Layer, Ref, Result } from 'effect'
-import type {
-	CommitStatus,
-	OpenPullRequest,
-} from '../../../platform/github-api.schema'
+import type { OpenPullRequest } from '../../../platform/github-api.schema'
 import { GitHubApiService } from '../../../platform/github-api.service'
 import { GitHubReviewService } from '../../../platform/github-review.service'
 import { GitHubStatusService } from '../../../platform/github-status.service'
@@ -18,95 +15,31 @@ import {
 	ReviewDismissServiceLive,
 } from '../../publish/application/review-dismiss.service'
 import { ThreadReplyServiceLive } from '../../publish/application/thread-reply.service'
-import type { DismissalOutcome } from '../../publish/domain/publish.types'
-import type { ReviewDecision } from '../../publish/domain/review-event.helper'
 import { getStaleChangeRequests } from '../../publish/domain/summary-review.helper'
 import { toClearedMessage } from '../../publish/presentation/summary-status.formatter'
 import { getScanStride } from '../domain/raise-scan.helper'
 import {
-	type CommitStatusText,
 	toLoweredStatus,
 	toNextSweptStatus,
 	toSweptStanding,
 } from '../domain/status.helper'
 import { PullStateService, PullStateServiceLive } from './pull-state.service'
+import {
+	CLEARING,
+	getWriteOutcome,
+	isDue,
+	NO_DISMISSAL,
+} from './raise.service.helper'
 import type {
+	LiftResult,
 	RaiseFindResult,
+	RaiseJudgment,
 	RaiseOutcome,
 	RaiseResult,
 	RaiseScan,
+	ScanTally,
+	StatusWrite,
 } from './raise.service.types'
-
-/** What a scan judged so far, kept when its deadline or limit cuts it short. */
-interface ScanTally {
-	readonly due: readonly number[]
-	/** Open pull requests listed; none until the listing returns. */
-	readonly read: number
-	readonly failed: number
-	readonly scanned: number
-	/** Judgments that read past the status and the reviews, or failed. */
-	readonly full: number
-	readonly stop?: 'deadline' | 'limit' | 'bound'
-	/** The pull request being judged now, which a cut at the bound drops. */
-	readonly current?: number
-}
-
-/** What one judgment found to write on a head. */
-interface RaiseJudgment {
-	/** The bot's status on the head when judged; unset when it has none. */
-	readonly previous?: CommitStatus
-	/**
-	 * The status to write: the plan when it differs from `previous`, or under a marker an incomplete
-	 * run left only one that blocks more.
-	 */
-	readonly status?: CommitStatusText
-	/** The current identity's change requests nothing backs. */
-	readonly stale: readonly number[]
-	/** The judgment read past the status and the reviews, which a scan's limit counts. */
-	readonly full?: true
-}
-
-/** What the status write did: the status written, or why GitHub refused it; empty for none. */
-type StatusWrite = Pick<RaiseResult, 'status' | 'statusError'>
-
-/** The pull request right before the dismissal: still open on the head, closed, or moved. */
-type DismissalGate = 'open' | 'closed' | 'moved'
-
-/** What the dismissal step did, and what the pull request was right before it. */
-interface LiftResult {
-	readonly gate: DismissalGate
-	readonly dismissal: DismissalOutcome
-}
-
-/** A raise's outcome once it tried its writes: only a write that landed raises. */
-const getWriteOutcome = (
-	written: StatusWrite,
-	lifted: LiftResult
-): RaiseOutcome => {
-	if (written.status?.state === 'success' || lifted.dismissal.dismissed > 0)
-		return 'raised'
-	if (written.status) return 'updated'
-	if (written.statusError !== undefined || lifted.dismissal.failed > 0)
-		return 'refused'
-	return lifted.gate === 'closed' ? 'closed' : 'moved'
-}
-
-/** Nothing dismissed. */
-const NO_DISMISSAL = {
-	dismissed: 0,
-	failed: 0,
-} as const satisfies DismissalOutcome
-
-/** A write that clears, as `getStaleChangeRequests` takes it: every owned change request is stale. */
-const CLEARING = {
-	event: 'COMMENT',
-	clears: true,
-} as const satisfies Pick<ReviewDecision, 'event' | 'clears'>
-
-/** True when a judgment writes anything: a raise, or a status that changed. */
-function isDue(judgment: RaiseJudgment): boolean {
-	return judgment.status !== undefined || judgment.stale.length > 0
-}
 
 /**
  * Between runs the only place that raises: it writes the bot's `success` and lifts the current

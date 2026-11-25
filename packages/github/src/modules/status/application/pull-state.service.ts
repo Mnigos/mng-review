@@ -45,8 +45,9 @@ export interface PullStateInput {
  *
  * The summary is the newest summary review of an owned identity, or with none the old sticky
  * comment; while the current identity has more than one visible sticky comment and no review, the
- * pull request is `duplicate` and nothing is judged. A thread a summary marker says waits for the
- * owner stays waiting until an admin or an allowed login resolves it. When no open bug thread, no
+ * pull request is `duplicate` and nothing is judged. A thread any summary lists, or one with the
+ * bot's own unedited `needs-owner` answer (`getSentToOwner`), waits for the owner until an admin or
+ * an allowed login resolves it. When no open bug thread, no
  * bug without a thread in the newest marker (on whatever head it is) and nothing waiting remain,
  * finished or not, the current identity's change requests in `reviews` are stale: every one with
  * the marker on the head, only those off the head with the marker on another. `bugs`, which sets
@@ -94,7 +95,7 @@ export const PullStateServiceLive = Layer.effect(
 				return { kind: 'duplicate' } satisfies PullState
 			const summary = getPriorSummary(summaryReviews, summaries)
 			const marker = summary?.marker
-			// Hidden summaries still list, and threads the bot sent to the owner still wait, edited or resolved.
+			// Hidden summaries still list, and a thread with the bot's unedited needs-owner answer still waits.
 			const waiting = [
 				...new Set([
 					...getListedWaiting([...reviews, ...comments], identities),
