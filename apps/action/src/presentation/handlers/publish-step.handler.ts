@@ -78,7 +78,7 @@ const readPushEvent = Effect.fn('publishStep.readPushEvent')(function* (
  * that cannot be read, or a command's that closed or became a fork while the review ran, refuses
  * the file; a moved head is published as a partial command run. For the schedule, a pull request
  * that closed, became a draft or a fork, or moved to another head or base is `skipped`: nothing
- * is posted and the next tick reads it again.
+ * is posted and the next schedule run that actually happens reads it again.
  */
 const readCommandTarget = Effect.fn('publishStep.readCommandTarget')(
 	function* (trigger: RunTrigger) {
@@ -216,11 +216,11 @@ export const publishMissingOutcome = Effect.gen(function* () {
  * missing file, one over the cap, one that does not parse or one bound to another run, attempt,
  * engine or pull request posts nothing and exits 1; for the reply schedule a missing file means
  * the review leg had nothing to answer, and a pull request that changed since the find job listed
- * it is left to the next tick: both post nothing and the step passes. Once the file is trusted, a
- * GitHub refusal is reported and the step passes, as before the split, unless the run rates: then
- * any failed report carries a failed rating, and the step exits 1 on it, on a grant that may
- * still stand or on an answer left unsettled. Without the rating an unsettled answer is logged and
- * keeps its wait, and the step passes.
+ * it is left to the next schedule run that actually happens: both post nothing and the step passes.
+ * Once the file is trusted, a GitHub refusal is reported and the step passes, as before the split,
+ * unless the run rates: then any failed report carries a failed rating, and the step exits 1 on it,
+ * on a grant that may still stand or on an answer left unsettled. Without the rating an unsettled
+ * answer is logged and keeps its wait, and the step passes.
  */
 export const runPublishStep = Effect.gen(function* () {
 	if (yield* publishMissingOutcome) return yield* Effect.void

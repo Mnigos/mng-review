@@ -32,7 +32,7 @@ import { formatFindSummary } from '../summary.formatter'
 
 /** The rules the find step reads the owned identities from: `HEAD` of the default branch checkout. */
 const FIND_RULES_REF = 'HEAD'
-/** The most jobs GitHub builds from one matrix; the rest of the raises wait for the next tick. */
+/** The most jobs GitHub builds from one matrix; the rest of the raises wait for a later run. */
 export const RAISE_MATRIX_LIMIT = 256
 /**
  * How long after the step starts the raise scan may start judgments after its first. It runs beside
@@ -138,7 +138,7 @@ function toFindLine(found: ReplyFindResult, due: ListedRaises): string {
 			: `; ${toUnlistedText(due.error)}`
 	const unscanned =
 		due.unscanned > 0
-			? `; ${due.unscanned} pull request(s) not judged for a raise before the deadline`
+			? `; ${due.unscanned} pull request(s) not judged for a raise before the ${due.stop === 'bound' ? 'hard bound' : 'deadline'}`
 			: ''
 	const deferred =
 		due.deferred > 0

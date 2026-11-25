@@ -47,7 +47,9 @@ function toRaiseLine(pullNumber: number, result: RaiseResult): string {
 		return `${at}: ${status}, the head moved before the dismissal, so the change requests stay`
 	if (result.closedBeforeDismissal)
 		return `${at}: ${status}, the pull request closed before the dismissal, so the change requests stay`
-	if (result.outcome === 'updated') return `${at}: ${status}, nothing to raise`
+	// A refused dismissal is reported beside a blocking status write, which alone is `updated`.
+	if (result.outcome === 'updated' && result.dismissal.failed === 0)
+		return `${at}: ${status}, nothing to raise`
 	return `${at}: ${status}, ${result.dismissal.dismissed} change request(s) dismissed, ${result.dismissal.failed} not dismissed`
 }
 
@@ -71,8 +73,8 @@ const failRaise = Effect.fn('raiseStep.fail')(function* (line: string) {
  * while nothing blocks (`RaiseService.raise`). It calls no model. A read GitHub refuses, or rules
  * that do not load, fail the step with exit 1; a status write GitHub refuses is reported beside the
  * dismissal, which still ran when due, and fails the step too; a dismissal GitHub refuses is
- * reported and passes, for the next tick to try again. A `ConfigError` is left to
- * `failRaiseConfig`.
+ * reported and passes, for the next schedule run that actually happens to try again. A
+ * `ConfigError` is left to `failRaiseConfig`.
  */
 export const runRaiseStep = Effect.gen(function* () {
 	const rules = yield* RulesService.use(service =>
