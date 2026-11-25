@@ -3,6 +3,7 @@ import {
 	GitHubApiError,
 	ListCompleteness,
 	ReplyFindService,
+	RequestLiftService,
 	RequestLiftServiceLive,
 } from '@mng-review/github'
 import { Effect, FileSystem, Layer } from 'effect'
@@ -12,7 +13,7 @@ import {
 	FileSystemLayer,
 } from '../../shared/mocks/git-test.helper'
 import { stepFixture } from '../../shared/mocks/step-test.helper'
-import { runFindStep } from './find-step.handler'
+import { LIFT_MATRIX_LIMIT, runFindStep } from './find-step.handler'
 
 afterEach(() => {
 	cleanupRepos()
@@ -206,4 +207,147 @@ layer(FileSystemLayer)('find step list completeness', test => {
 					expect(seen).toEqual([riskEnabled])
 				})
 		)
+})
+
+/** A reply search that finds the candidates given, for the lift specs. */
+function replyFind(numbers: readonly number[], head: string, base: string) {
+	return Layer.succeed(ReplyFindService, {
+		find: () =>
+			Effect.succeed({
+				candidates: numbers.map(number => ({ number, base, head })),
+				read: 1,
+				failed: 0,
+			}),
+		readPending: () => Effect.succeed({ threads: [], replies: [] }),
+	})
+}
+
+layer(FileSystemLayer)('find step lifts', test => {
+	test.effect(
+		'a pull request with replies and a due lift is in each list once, the lift judged with commands.allow',
+		() =>
+			Effect.gen(function* () {
+				const fixture = stepFixture(undefined, false, false, ['release-owner'])
+				const findDueSpy = vi.fn((_allow: readonly string[]) =>
+					Effect.succeed({ pulls: [17, 23], read: 3, failed: 1 })
+				)
+				yield* runFindStep.pipe(
+					Effect.provide(fixture.rulesLayer),
+					Effect.provide(replyFind([17], fixture.head, fixture.base)),
+					Effect.provide(
+						Layer.succeed(RequestLiftService, {
+							findDue: findDueSpy,
+							lift: () => Effect.die('find never lifts'),
+						})
+					),
+					Effect.provide(fixture.publisherLayer),
+					Effect.provide(fixture.envLayer()),
+					Effect.provide(Layer.fresh(TestConsole.layer))
+				)
+				expect(findDueSpy).toHaveBeenCalledExactlyOnceWith(['release-owner'])
+				const candidates = [
+					{ number: 17, base: fixture.base, head: fixture.head },
+				]
+				expect(
+					yield* (yield* FileSystem.FileSystem).readFileString(
+						fixture.paths.output
+					)
+				).toBe(
+					`pulls=${JSON.stringify(candidates)}\nlifts=${JSON.stringify([{ number: 17 }, { number: 23 }])}\n`
+				)
+				expect(fixture.api.writes).toEqual([])
+			})
+	)
+	test.effect('the line names the lifts and the pull requests not judged', () =>
+		Effect.gen(function* () {
+			const fixture = stepFixture()
+			yield* runFindStep.pipe(
+				Effect.provide(fixture.rulesLayer),
+				Effect.provide(replyFind([], fixture.head, fixture.base)),
+				Effect.provide(
+					Layer.succeed(RequestLiftService, {
+						findDue: () => Effect.succeed({ pulls: [23], read: 2, failed: 1 }),
+						lift: () => Effect.die('find never lifts'),
+					})
+				),
+				Effect.provide(fixture.publisherLayer),
+				Effect.provide(fixture.envLayer())
+			)
+			expect(yield* TestConsole.logLines).toEqual([
+				'mng-review: reply schedule: no reply waits for an answer; a change request to lift on #23; 1 pull request(s) could not be judged for a lift',
+			])
+		}).pipe(Effect.provide(Layer.fresh(TestConsole.layer)))
+	)
+	test.effect(
+		'more lifts than one matrix holds keep the first and leave the rest for the next tick',
+		() =>
+			Effect.gen(function* () {
+				const fixture = stepFixture()
+				const pulls = Array.from(
+					{ length: LIFT_MATRIX_LIMIT + 2 },
+					(_, index) => index + 1
+				)
+				yield* runFindStep.pipe(
+					Effect.provide(fixture.rulesLayer),
+					Effect.provide(replyFind([], fixture.head, fixture.base)),
+					Effect.provide(
+						Layer.succeed(RequestLiftService, {
+							findDue: () =>
+								Effect.succeed({ pulls, read: pulls.length, failed: 0 }),
+							lift: () => Effect.die('find never lifts'),
+						})
+					),
+					Effect.provide(fixture.publisherLayer),
+					Effect.provide(fixture.envLayer()),
+					Effect.provide(Layer.fresh(TestConsole.layer))
+				)
+				const output = yield* (yield* FileSystem.FileSystem).readFileString(
+					fixture.paths.output
+				)
+				const lifts = /^lifts=(.*)$/mu.exec(output)?.[1] ?? '[]'
+				expect(JSON.parse(lifts)).toEqual(
+					pulls.slice(0, LIFT_MATRIX_LIMIT).map(number => ({ number }))
+				)
+			})
+	)
+	test.effect(
+		'a failed list of the lifts keeps the replies, lists no lift and names the failure',
+		() =>
+			Effect.gen(function* () {
+				const fixture = stepFixture()
+				const completed = yield* runFindStep.pipe(
+					Effect.provide(fixture.rulesLayer),
+					Effect.provide(replyFind([17], fixture.head, fixture.base)),
+					Effect.provide(
+						Layer.succeed(RequestLiftService, {
+							findDue: () =>
+								Effect.fail(
+									new GitHubApiError({
+										operation: 'listOpenPullRequests',
+										reason: 'unavailable',
+										status: 503,
+									})
+								),
+							lift: () => Effect.die('find never lifts'),
+						})
+					),
+					Effect.provide(fixture.publisherLayer),
+					Effect.provide(fixture.envLayer()),
+					Effect.result
+				)
+				// A lift listing that fails must not skip the reply legs, which need find to pass.
+				expect(completed._tag).toBe('Success')
+				const candidates = [
+					{ number: 17, base: fixture.base, head: fixture.head },
+				]
+				expect(
+					yield* (yield* FileSystem.FileSystem).readFileString(
+						fixture.paths.output
+					)
+				).toBe(`pulls=${JSON.stringify(candidates)}\nlifts=[]\n`)
+				expect(yield* TestConsole.logLines).toEqual([
+					'mng-review: reply schedule: replies wait on #17; the change requests to lift could not be listed: GitHub listOpenPullRequests failed (HTTP 503): unavailable',
+				])
+			}).pipe(Effect.provide(Layer.fresh(TestConsole.layer)))
+	)
 })

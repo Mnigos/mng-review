@@ -80,6 +80,15 @@ describe('workflow credential and permission separation', () => {
 })
 
 describe('app credentials stay in writing jobs', () => {
+	test('the sweep job reads pull requests and writes statuses only', () => {
+		const sweep = readWorkflow('workflows/status-sweep.yml')
+		expect(sweep.slice(0, sweep.indexOf('\njobs:'))).toMatch(
+			/^permissions:\n {2}contents: read\n {2}pull-requests: read\n {2}statuses: write\n/mu
+		)
+		expect(getJob(sweep, 'sweep')).toMatch(
+			/permissions:\n\s+contents: read\n\s+pull-requests: read\n\s+statuses: write\n/u
+		)
+	})
 	test('only publish and sweep jobs reference the app secrets', () => {
 		const publish = readWorkflow('workflows/review-publish.yml')
 		const sweep = readWorkflow('workflows/status-sweep.yml')
@@ -315,6 +324,68 @@ describe('reply schedule workflow boundaries', () => {
 			'MNG_REVIEW_MAX_PULL_REQUESTS: ${{ inputs.max-pull-requests }}'
 		)
 		expect(find).toContain('pulls: ${{ steps.find.outputs.pulls }}')
+		expect(find).toContain('lifts: ${{ steps.find.outputs.lifts }}')
+	})
+	test('lift runs after publish in the publish group with the app key and no endpoint', () => {
+		const lift = getJob(workflow, 'lift')
+		expect(lift).toContain('needs: [find, publish]')
+		expect(lift).toContain(
+			"if: ${{ !cancelled() && needs.find.outputs.lifts != '[]' && needs.find.outputs.lifts != '' }}"
+		)
+		expect(lift).toContain('pull: ${{ fromJSON(needs.find.outputs.lifts) }}')
+		expect(lift).toContain('max-parallel: 1')
+		expect(lift).toContain(
+			'group: mng-review-publish-${{ matrix.pull.number }}'
+		)
+		expect(lift).toContain('cancel-in-progress: false')
+		expect(lift).toContain('MNG_REVIEW_MODE: lift')
+		expect(lift).toContain('MNG_REVIEW_TARGET_PR: ${{ matrix.pull.number }}')
+		expect(lift).toContain('ref: ${{ github.event.repository.default_branch }}')
+		expect(lift).not.toMatch(/llm-|tailscale|statuses:|MNG_REVIEW_TRIGGER/u)
+		expect(
+			new Set([...lift.matchAll(/secrets\.([\w-]+)/gu)].map(match => match[1]))
+		).toEqual(new Set(['app-client-id', 'app-private-key']))
+		const mint = lift
+			.split(/^ {6}- /mu)
+			.find(step => step.includes('uses: actions/create-github-app-token@'))
+		expect(
+			mint
+				?.match(/^\s+permission-[\w-]+:\s*\w+/gmu)
+				?.map(line => line.trim())
+				.toSorted()
+		).toEqual(['permission-contents: read', 'permission-pull-requests: write'])
+		expect(lift).toContain("inputs.app-slug == '' && github.token || ''")
+		expect(lift).toMatch(
+			/permissions:\n\s+contents: read\n\s+pull-requests: write\n/u
+		)
+	})
+	test('the review and publish legs never take the lifts', () => {
+		for (const job of ['review', 'publish'])
+			expect(getJob(workflow, job)).not.toContain('outputs.lifts')
+	})
+	test('the inputs, secrets and permissions callers grant are unchanged', () => {
+		const header = workflow.slice(0, workflow.indexOf('\njobs:'))
+		expect(header).toMatch(
+			/^permissions:\n {2}contents: read\n {2}pull-requests: write\n {2}statuses: write\n/mu
+		)
+		expect(
+			[...header.matchAll(/^ {6}([\w-]+):\n {8}description:/gmu)].map(
+				match => match[1]
+			)
+		).toEqual([
+			'runner',
+			'tailscale',
+			'tailscale-tags',
+			'timeout-minutes',
+			'app-slug',
+			'max-pull-requests',
+			'llm-url',
+			'llm-key',
+			'tailscale-oauth-client-id',
+			'tailscale-oauth-secret',
+			'app-client-id',
+			'app-private-key',
+		])
 	})
 	for (const job of ['find', 'review', 'publish'])
 		test(`${job} references only its own secrets`, () => {

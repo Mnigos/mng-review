@@ -21,6 +21,7 @@ import {
 	formatPublishLogLine,
 	formatUnsettledLine,
 	formatSweepLine,
+	formatLiftSummary,
 	formatSweepSummary,
 	formatPublishSummary,
 	formatSummary,
@@ -589,6 +590,13 @@ describe('sweep formatters', () => {
 		expect(formatSweepLine({ checked: 0, updated: 0, failed: 0 })).toBe(
 			'status sweep: 0 pull request(s) carry the status, 0 updated, 0 failed'
 		)
+	})
+	test('lift summaries carry their title and escape supplied text', () => {
+		expect(formatLiftSummary(MALICIOUS)).toContain(
+			'## MNG Review (change request lift)'
+		)
+		expect(formatLiftSummary(MALICIOUS)).toContain(escapeMarkdown(MALICIOUS))
+		expect(formatLiftSummary(MALICIOUS)).not.toContain('![')
 	})
 	test('sweep summaries escape supplied text', () => {
 		expect(formatSweepSummary(MALICIOUS)).toContain(escapeMarkdown(MALICIOUS))
