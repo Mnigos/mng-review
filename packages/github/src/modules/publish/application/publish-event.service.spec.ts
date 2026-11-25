@@ -11,6 +11,7 @@ import { publishEventFixture } from '../../../shared/mocks/publish-event-test.he
 import {
 	APP_IDENTITY,
 	APP_MODE_OWNED,
+	appSummary,
 	TOKEN_MODE_OWNED,
 	bug,
 	agentReport,
@@ -1758,6 +1759,27 @@ layer(APP_MODE_OWNED, { excludeTestServices: true })(
 	}
 )
 
+/**
+ * A newer summary review with no wait over the app's old sticky comment that stores `thread`'s
+ * wait; a contributor without owner access resolved the thread, so the wait stands.
+ */
+function stickyWait(fixture: EventFixture) {
+	const marker = { ...SUMMARY_MARKER, head: fixture.head, finished: true }
+	fixture.fake.reviews.push(
+		summaryReview(marker, {
+			author: { __typename: 'Bot', login: APP_IDENTITY.login },
+		})
+	)
+	fixture.fake.comments.push(appSummary({ ...marker, needsOwner: ['thread'] }))
+	fixture.fake.threads.push(
+		reviewThread(undefined, {
+			isResolved: true,
+			resolvedBy: { login: 'contributor' },
+		})
+	)
+	fixture.fake.command.role = 'write'
+}
+
 /** The fixture's summary review with `thread` waiting for the owner, which a contributor resolved. */
 function ownerWait(fixture: EventFixture) {
 	fixture.fake.reviews.push(
@@ -1801,7 +1823,9 @@ function unavailableCreate() {
 }
 
 /** A write GitHub refused with a 403. */
-function forbidden(operation: 'createReview' | 'updateReview') {
+function forbidden(
+	operation: 'createReview' | 'updateReview' | 'minimizeComment'
+) {
 	return new GitHubApiError({ operation, reason: 'Forbidden', status: 403 })
 }
 
@@ -2033,6 +2057,43 @@ layer(APP_MODE_OWNED, { excludeTestServices: true })(
 					).toEqual([])
 				})
 		)
+		for (const path of ['full', 'reply-only'] as const)
+			test.effect(
+				`an incomplete ${path} run keeps the sticky comment whose wait it could not read`,
+				() =>
+					Effect.gen(function* () {
+						const fixture = publishEventFixture()
+						stickyWait(fixture)
+						// The waiting list's read lists the sticky comment as null; the write's own read sees it.
+						fixture.fake.commentSnapshots.push([])
+						fixture.fake.nullNodes.queued.comments.push(1)
+						// GitHub refuses to hide the comment, which a cleanup answers with a delete.
+						fixture.fake.failures.minimize.push(forbidden('minimizeComment'))
+						const publishing =
+							path === 'full'
+								? publishAndReport(fixture)
+								: publishReplies(fixture)
+						expect(yield* publishing).toMatchObject({ incomplete: true })
+						expect(
+							fixture.fake.writes.filter(
+								write =>
+									write.method === 'minimize' || write.method === 'delete'
+							)
+						).toEqual([])
+						expect(fixture.fake.comments).toMatchObject([
+							{ id: 'app-summary', isMinimized: false },
+						])
+						const next = yield* publishing
+						expect(next.incomplete).toBeUndefined()
+						expect(next).toMatchObject({ verdict: 'needs owner', waiting: 1 })
+						expect(storedWait(fixture)).toEqual(['thread'])
+						expect(
+							fixture.status.statuses.filter(
+								status => status.state === 'success'
+							)
+						).toEqual([])
+					})
+			)
 		test.effect(
 			"an incomplete run on a new head dismisses the app's approval of the earlier head and lifts no change request",
 			() =>

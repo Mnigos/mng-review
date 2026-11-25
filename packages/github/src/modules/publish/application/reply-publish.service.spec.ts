@@ -161,6 +161,62 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 					})
 			)
 		test.effect(
+			'keeps a closed bug open when a person replied after the close and before the second read',
+			() =>
+				Effect.gen(function* () {
+					const fixture = setup()
+					const thread = threadAtCommit(fixture.base)
+					fixture.fake.threads.push(thread)
+					// GitHub keeps the thread open; a person answers the bot's close before the reread.
+					fixture.fake.failures.resolve.push(
+						new GitHubApiError({
+							operation: 'resolveThread',
+							reason: 'Forbidden',
+							status: 403,
+						})
+					)
+					fixture.fake.threadSnapshots.push(
+						[thread],
+						[
+							{
+								...thread,
+								comments: { ...thread.comments, totalCount: 4 },
+								latest: {
+									nodes: [
+										{
+											databaseId: 77,
+											body: 'still broken on the second path',
+											author: { __typename: 'User', login: 'contributor' },
+											editor: null,
+											originalCommit: null,
+										},
+									],
+								},
+							},
+						]
+					)
+					expect(
+						yield* ReplyPublishService.use(service =>
+							service.publish({
+								...fixture.input,
+								replies: {
+									...fixture.input.replies,
+									decisions: [decidedReply(RESOLVED)],
+								},
+							})
+						).pipe(Effect.provide(fixture.publisher))
+					).toMatchObject({
+						answered: { resolved: 1 },
+						openBugs: 1,
+						verdict: 'needs fixes',
+					})
+					expect(fixture.fake.threadReads).toHaveLength(2)
+					expect(
+						fixture.status.statuses.filter(status => status.state === 'success')
+					).toEqual([])
+				})
+		)
+		test.effect(
 			'drops resolved and keeps the bug open when its commit is not an ancestor of the bound head',
 			() =>
 				Effect.gen(function* () {
