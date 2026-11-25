@@ -1480,6 +1480,8 @@ layer(Layer.empty)('PublishRunService list completeness', test => {
 		'a refused-gate publish in a rating-on repository fails on a null node and clears no wait',
 		() =>
 			Effect.gen(function* () {
+				// The publish spy fakes the adapter's null-node failure; the adapter itself is
+				// covered by publish.service.spec and the github-api adapter specs.
 				const fixture = setup(
 					false,
 					undefined,

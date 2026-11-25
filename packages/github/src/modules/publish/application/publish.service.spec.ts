@@ -4585,7 +4585,7 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 			)
 		for (const complete of [true, false])
 			test.effect(
-				`an owner's resolution clears a wait beside a null node only while the rating is off (${complete})`,
+				`an admin's resolution clears a wait beside a null node only while the rating is off (${complete})`,
 				() =>
 					Effect.gen(function* () {
 						const fixture = setup()
