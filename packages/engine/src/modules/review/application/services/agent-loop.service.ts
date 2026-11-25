@@ -79,6 +79,7 @@ export const AgentLoopServiceLive = Layer.effect(
 				{ role: 'system', content: request.system },
 				{ role: 'user', content: request.user },
 			])
+			const firstEstimate = toEstimatedTokens(request.system + request.user)
 			const deadline = (yield* Clock.currentTimeMillis) + wallMillis
 			const hardDeadline = deadline + graceMillis
 			const { coverage } = request
@@ -277,6 +278,8 @@ export const AgentLoopServiceLive = Layer.effect(
 							first: state.firstMessageTokens === undefined,
 						})
 					yield* tokens.record(inputTokens + outputTokens)
+					if (state.firstMessageTokens === undefined)
+						yield* tokens.applyRate(inputTokens, firstEstimate)
 					const sent = {
 						...state,
 						wrapUpSent: state.wrapUpSent || wrapUp,
@@ -378,7 +381,7 @@ export const AgentLoopServiceLive = Layer.effect(
 				turn: 1,
 				pending: [],
 				spentTokens: 0,
-				nextInputTokens: toEstimatedTokens(request.system + request.user),
+				nextInputTokens: firstEstimate,
 			}).pipe(
 				Effect.catch(error =>
 					Effect.flatMap(Ref.get(kept), first =>

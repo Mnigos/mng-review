@@ -183,7 +183,8 @@ function getExtraTokens(job: FinderJob): number {
 
 /**
  * The planned runs' jobs with each job's `tokens` raised to its `need`, the tokens reading every
- * file it must read takes, within `room` tokens for all of them together.
+ * file it must read takes, within `room` tokens for all of them together; a raised job carries what
+ * it was given (`granted`), which the loop scales by the job's token rate.
  */
 export function toSizedJobs(
 	runs: readonly (readonly FinderJob[] | undefined)[],
@@ -195,7 +196,12 @@ export function toSizedJobs(
 	const grant = (job: FinderJob) => Math.floor(getExtraTokens(job) * scale)
 	return {
 		jobs: runs.map(jobs =>
-			jobs?.map(job => ({ ...job, tokens: job.tokens + grant(job) }))
+			jobs?.map(job => {
+				const granted = grant(job)
+				return granted > 0
+					? { ...job, tokens: job.tokens + granted, granted }
+					: job
+			})
 		),
 		granted: all.reduce((sum, job) => sum + grant(job), 0),
 		needed,

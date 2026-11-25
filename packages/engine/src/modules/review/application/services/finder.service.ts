@@ -13,6 +13,7 @@ import { fenceData } from '../../../../utils/fence.util'
 import {
 	getFirstDiffChars,
 	toFinderStatus,
+	toRateReport,
 	toUnreadReport,
 } from '../../domain/finder-budget.helper'
 import { toChangeMessage } from '../../domain/finder-message.helper'
@@ -204,6 +205,8 @@ export const FinderServiceLive = Layer.effect(
 						...(run.role === 'reviewer' && context.tokens.pool
 							? { pool: context.tokens.pool }
 							: {}),
+						...(context.tokens.room ? { room: context.tokens.room } : {}),
+						...(job.granted ? { grant: job.granted } : {}),
 					},
 					source: run.name,
 					...(job.coverage
@@ -216,6 +219,7 @@ export const FinderServiceLive = Layer.effect(
 						model: model.model,
 						toolCalls: result.toolCalls,
 						continued: result.continued === true,
+						tokenRate: result.tokenRate,
 						unread: result.unread ?? [],
 						malformed: result.value.dropped,
 						findings: result.value.findings.map(reported =>
@@ -315,6 +319,11 @@ export const FinderServiceLive = Layer.effect(
 					? { continued: done.filter(entry => entry.continued).length }
 					: {}),
 				...toUnreadReport(done.flatMap(entry => entry.unread)),
+				...toRateReport(
+					done.flatMap(entry =>
+						entry.tokenRate === undefined ? [] : [entry.tokenRate]
+					)
+				),
 				...(unfinished.length > 0 ? { unfinished } : {}),
 				...(firstFailure === undefined
 					? {}
