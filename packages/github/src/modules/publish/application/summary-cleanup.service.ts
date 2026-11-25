@@ -1,6 +1,7 @@
 import { Context, Effect, Layer } from 'effect'
 import { isDeclined, isNotFound } from '../../../platform/github-api.helper'
 import { GitHubApiService } from '../../../platform/github-api.service'
+import { isReadIncomplete } from '../../../platform/list-completeness.context'
 import { OwnedIdentities } from '../../../platform/owned-identities.context'
 import type { SummaryCleanup, SummaryComment } from '../domain/publish.types'
 import { toSummaryCleanup } from '../domain/summary-comment.helper'
@@ -16,7 +17,8 @@ const keepOnFailure = Effect.orElseSucceed((): SummaryCleanup => 'kept')
 /**
  * Hides what a summary write left outdated: every earlier review of an owned identity and every
  * old sticky comment. A submitted review cannot be deleted, so one GitHub refuses to hide stays
- * `kept`; the next write tries again.
+ * `kept`; the next write tries again. A run whose list reads left a node out hides and deletes
+ * nothing: the wait an old summary stores may be one it could not read (ADR 0012).
  */
 export class SummaryCleanupService extends Context.Service<
 	SummaryCleanupService,
@@ -59,8 +61,13 @@ export const SummaryCleanupServiceLive = Layer.effect(
 			heads: WriteHeads
 		) {
 			const { identities } = yield* OwnedIdentities
+			const stale = getStaleReviews(found.raw, identities, kept, heads)
+			if (yield* isReadIncomplete)
+				return toSummaryCleanup(
+					[...stale, ...found.summaries].map((): SummaryCleanup => 'kept')
+				)
 			const reviews = yield* Effect.forEach(
-				getStaleReviews(found.raw, identities, kept, heads),
+				stale,
 				review =>
 					api
 						.minimizeComment(review.id)

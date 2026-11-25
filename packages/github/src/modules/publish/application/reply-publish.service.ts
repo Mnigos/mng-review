@@ -227,19 +227,19 @@ export const ReplyPublishServiceLive = Layer.effect(
 					.map(entry => entry.thread.id)
 			)
 			const unsettled = yield* conversation.settle(first.raw, answered)
-			// The answers are posted, so a failed read keeps the first one, but the run clears nothing.
+			// A failed reread keeps the first read and this run's closes; non-closing answers reopen.
 			const second = yield* reads.readAll(pullNumber).pipe(
 				Effect.map(read => ({ ...read, reread: true })),
 				Effect.orElseSucceed(() => ({ ...first, reread: false }))
 			)
-			// A dispatched reply in a resolved thread is answered as if open; unless it closed it, it is.
 			const reopened = answered.filter(
 				entry =>
 					entry.thread.resolved && !CLOSING_ACTIONS.has(entry.decision.action)
 			)
 			const reopenedIds = new Set(reopened.map(entry => entry.thread.id))
 			const latest = second.threads.map(thread => {
-				if (closed.has(thread.id)) return { ...thread, resolved: true }
+				if (!second.reread && closed.has(thread.id))
+					return { ...thread, resolved: true }
 				return reopenedIds.has(thread.id)
 					? { ...thread, resolved: false, closedByBot: false }
 					: thread
