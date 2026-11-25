@@ -3,7 +3,6 @@ import {
 	getSweptFinished,
 	getUnbackedRequests,
 	getUnthreadedBugs,
-	isConfirmDue,
 } from './sweep-review.helper'
 
 const REQUEST = {
@@ -60,14 +59,5 @@ describe('getUnthreadedBugs', () => {
 		expect(getUnthreadedBugs(marker, 'head')).toBe(2)
 		expect(getUnthreadedBugs(marker, 'other')).toBe(0)
 		expect(getUnthreadedBugs(undefined, 'head')).toBe(0)
-	})
-})
-
-describe('isConfirmDue', () => {
-	test('reads again before a dismissal or a success only', () => {
-		expect(isConfirmDue([102], undefined)).toBeTruthy()
-		expect(isConfirmDue([], { state: 'success' })).toBeTruthy()
-		expect(isConfirmDue([], { state: 'error' })).toBeFalsy()
-		expect(isConfirmDue([], undefined)).toBeFalsy()
 	})
 })

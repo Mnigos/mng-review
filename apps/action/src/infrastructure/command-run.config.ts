@@ -78,3 +78,6 @@ export const commandHandlesConfig = Config.all({
 	appSlug: Config.String(APP_SLUG_VARIABLE).pipe(Config.withDefault('')),
 	handle: Config.String(HANDLE_VARIABLE).pipe(Config.withDefault('')),
 }).pipe(Config.map((handles): CommandHandles => handles))
+
+/** `MNG_REVIEW_TARGET_PR`: the pull request the reply schedule's lift job judges, from the find job. */
+export const liftTargetConfig = Config.Int('MNG_REVIEW_TARGET_PR')

@@ -30,6 +30,7 @@ export const PUBLISH_SUMMARY_TITLE = '## MNG Review (publish mode)'
 export const PUBLISH_JOB_SUMMARY_TITLE = '## MNG Review (publish job)'
 export const SWEEP_SUMMARY_TITLE = '## MNG Review (status sweep)'
 export const FIND_SUMMARY_TITLE = '## MNG Review (reply schedule)'
+export const LIFT_SUMMARY_TITLE = '## MNG Review (change request lift)'
 const SHORT_SHA_LENGTH = 8
 const MILLIS_PER_SECOND = 1000
 const PERCENT = 100
@@ -366,7 +367,7 @@ export function formatUnsettledLine(unsettled: number, rated: boolean): string {
 
 /** What the status sweep did, in words. */
 export function formatSweepLine(result: SweepResult): string {
-	return `status sweep: ${result.checked} pull request(s) carry the status, ${result.updated} updated, ${result.failed} failed; ${result.dismissal.dismissed} change request(s) dismissed, ${result.dismissal.failed} not dismissed`
+	return `status sweep: ${result.checked} pull request(s) carry the status, ${result.updated} updated, ${result.failed} failed`
 }
 
 /** The job summary of a status sweep. */
@@ -377,4 +378,9 @@ export function formatSweepSummary(line: string): string {
 /** The job summary of the reply schedule's find step. */
 export function formatFindSummary(line: string): string {
 	return [FIND_SUMMARY_TITLE, '', escapeMarkdown(line), ''].join('\n')
+}
+
+/** The job summary of the reply schedule's lift job. */
+export function formatLiftSummary(line: string): string {
+	return [LIFT_SUMMARY_TITLE, '', escapeMarkdown(line), ''].join('\n')
 }

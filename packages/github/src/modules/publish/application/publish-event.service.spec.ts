@@ -2718,7 +2718,6 @@ layer(APP_MODE_OWNED, { excludeTestServices: true })(
 					expect(swept.statuses.map(status => status.state)).not.toContain(
 						'success'
 					)
-					expect(swept.result.dismissal).toEqual({ dismissed: 0, failed: 0 })
 					expect(stateOf(fixture, newest.databaseId ?? 0)).toBe(
 						'CHANGES_REQUESTED'
 					)

@@ -90,7 +90,6 @@ import {
 
 /** The head check, then the summary write's reads before the review, the cleanup and the dismissals. */
 const HEAD_READS = Array.from({ length: 4 }, () => 'getPullRequest:17')
-const NO_DISMISSAL = { dismissed: 0, failed: 0 } as const
 
 /** `ACCEPTED_DECISION` citing a line the pull request did not change, so publishing's check passes. */
 const ACCEPTED_ON_KEPT_LINE = {
@@ -698,7 +697,6 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 							checked: 1,
 							updated: 0,
 							failed: 0,
-							dismissal: NO_DISMISSAL,
 						})
 						expect(fake.statuses).toEqual([])
 					})
@@ -1086,7 +1084,6 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 						checked: 1,
 						updated: 1,
 						failed: 0,
-						dismissal: NO_DISMISSAL,
 					})
 					expect(status.statuses).toEqual([
 						{ sha: fixture.head, ...toCommitStatus('incomplete', 0, false) },
@@ -2123,7 +2120,6 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 							checked: 1,
 							updated: 0,
 							failed: 0,
-							dismissal: NO_DISMISSAL,
 						})
 						expect(statuses.statuses).toEqual([])
 						expect(statuses.statuses.at(-1)?.state ?? status.state).toBe(
@@ -3819,7 +3815,6 @@ layer(TOKEN_MODE_OWNED, { excludeTestServices: true })(
 						checked: 1,
 						updated: 1,
 						failed: 0,
-						dismissal: NO_DISMISSAL,
 					})
 					expect(statuses.statuses.at(-1)?.state).toBe('failure')
 					expect(

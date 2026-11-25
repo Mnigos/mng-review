@@ -112,7 +112,7 @@ describe('app credentials stay in writing jobs', () => {
 			'sweep',
 			[
 				'permission-statuses: write',
-				'permission-pull-requests: write',
+				'permission-pull-requests: read',
 				'permission-contents: read',
 			],
 		],

@@ -1,9 +1,10 @@
 # Reusable status sweep: refreshes the MNG Review commit status of open pull requests whose head
-# already carries it, from the bot's open bug threads, so a thread resolved by hand counts, and
-# dismisses the bot's change request on a head that no longer has one to stand for (pull requests
-# write). It runs no model and needs no endpoint; the caller runs it on a schedule and after a reply's signal. With app-slug and the app's two
-# secrets it writes as the app. The rules, identity.previous included, come from the default
-# branch. See README.md.
+# already carries it, from the bot's open bug threads, so a thread resolved by hand counts. It
+# writes statuses only: the reply schedule (review-converse.yml) dismisses a change request nothing
+# backs, inside the pull request's publish group. It runs no model and needs no endpoint; the
+# caller runs it on a schedule and after a reply's signal. With app-slug and the app's two secrets
+# it writes as the app. The rules, identity.previous included, come from the default branch. See
+# README.md.
 name: MNG Review status sweep
 
 on:
@@ -29,9 +30,10 @@ on:
         description: Private key of the GitHub App, needed when app-slug is set.
         required: false
 
+# Callers may grant pull requests write; the sweep only reads them.
 permissions:
   contents: read
-  pull-requests: write
+  pull-requests: read
   statuses: write
 
 jobs:
@@ -39,9 +41,10 @@ jobs:
     name: MNG Review status sweep
     runs-on: ${{ inputs.runner }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
+    # Statuses only: the sweep reads pull requests and dismisses no review.
     permissions:
       contents: read
-      pull-requests: write
+      pull-requests: read
       statuses: write
     steps:
       # Without these (GitHub Enterprise Server), checkout would fall back to the caller's repository.
@@ -94,7 +97,7 @@ jobs:
           client-id: ${{ secrets.app-client-id }}
           private-key: ${{ secrets.app-private-key }}
           permission-statuses: write
-          permission-pull-requests: write
+          permission-pull-requests: read
           # Review threads read through GraphQL name each comment's commit, which needs contents read.
           permission-contents: read
 

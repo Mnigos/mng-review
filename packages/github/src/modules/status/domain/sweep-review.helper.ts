@@ -4,11 +4,10 @@ import type { SummaryMarker } from '../../publish/domain/publish-marker.schema'
 import type { SummaryComment } from '../../publish/domain/publish.types'
 import { isIncompleteMarker } from '../../publish/domain/summary-marker.helper'
 import { getStaleChangeRequests } from '../../publish/domain/summary-review.helper'
-import type { CommitStatusText } from './status.helper'
 
 /**
  * The current identity's change requests when nothing open backs one (`unbacked`: no open bug
- * thread, no bug without a thread, nothing waiting), finished or not. With the marker on the head,
+ * thread, no bug without a thread in the marker on any head, nothing waiting), finished or not. With the marker on the head,
  * every one; with it on another head, which an unfinished full run leaves, only those on a known
  * commit other than `head`, the pull request's head: one whose commit is unknown is kept. None
  * while the marker is one an incomplete write left (`isIncompleteMarker`), which may miss what
@@ -50,18 +49,6 @@ export function getSweptFinished(
 	const onHead = marker?.head === head
 	if (!summary?.mine && !onHead) return undefined
 	return marker?.finished && onHead
-}
-
-/**
- * True when the sweep reads the pull request again before it decides: it has a change request to
- * dismiss (`stale`), or would write `success` (`planned`), which only a second pass that read
- * exactly what the first read backs (`isSameReads`).
- */
-export function isConfirmDue(
-	stale: readonly number[],
-	planned: Pick<CommitStatusText, 'state'> | undefined
-): boolean {
-	return stale.length > 0 || planned?.state === 'success'
 }
 
 /**
